@@ -6,6 +6,10 @@ use ml_exp_core::{
     sources::Policy,
 };
 use ml_exp_server::{
+    backends::cloud::{
+        adapter::{Adapter, Profile, Transport},
+        outbox::Outbox,
+    },
     cloud_runs::{Service, Settings},
     read_config, sources,
 };
@@ -583,9 +587,27 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         serde_json::to_vec(&json!({"state":partial,"archive_verified":true})).unwrap(),
     )
     .unwrap();
-    assert!(
+    // Reading stays with the frozen Submission; only a first spend looks at the
+    // data delivery state as it is now.
+    assert_eq!(
         service
             .for_run("demo", "full-inventory", "2026-10-29T00:02:00Z")
+            .unwrap()["submission_id"],
+        large_plan["submission_id"]
+    );
+    assert!(
+        service
+            .prepare(
+                "demo",
+                "full-inventory",
+                Approval {
+                    max_gpu_hours: 1.,
+                    reason: String::new(),
+                },
+                "2026-10-29T00:02:00Z",
+                "2026-10-29T01:01:00Z",
+                &"a".repeat(32),
+            )
             .is_err()
     );
     fs::write(&ready_file, ready_bytes).unwrap();
@@ -1113,6 +1135,118 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
             .is_err()
     );
     check_builder_dispatch_evidence(&settings, &config, sources.clone(), &runtime, temp.path());
+    let mut enabled_config = config.clone();
+    enabled_config["enabled"] = json!(true);
+    let enabled = Service::open(
+        settings.clone(),
+        Settings::from_slice(&serde_json::to_vec(&enabled_config).unwrap()).unwrap(),
+        sources.clone(),
+        None,
+        Default::default(),
+    )
+    .unwrap();
+    // Two Attempts that have not started, stopped at different first-spend gates.
+    let unspent = |run: &str, transition: &str| {
+        let mut unspent_run = request.clone();
+        unspent_run.run_id = run.into();
+        service
+            .create_run("demo", unspent_run, "2026-10-29T01:00:00Z")
+            .unwrap();
+        service
+            .prepare(
+                "demo",
+                run,
+                Approval {
+                    max_gpu_hours: 1.,
+                    reason: String::new(),
+                },
+                "2026-10-29T01:00:00Z",
+                "2026-10-29T01:30:00Z",
+                transition,
+            )
+            .unwrap()["submission_id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let reused = unspent("unspent-prepared", &"a".repeat(32));
+    let authorized = unspent("unspent-authorized", &"b".repeat(32));
+    service
+        .authorize(
+            &authorized,
+            "owned fixture",
+            "2026-10-29T01:01:00Z",
+            &"c".repeat(32),
+        )
+        .unwrap();
+    let original_project = fs::read(temp.path().join("project.json")).unwrap();
+    // Editing the project file is ordinary work while an Attempt is running.
+    ml_exp_io::write_atomic(
+        &temp.path().join("project.json"),
+        &serde_json::to_vec(
+            &json!({"schema_version":1,"project":"demo","title":"Edited after submission","run_roots":["runs"]}),
+        )
+        .unwrap(),
+        false,
+    )
+    .unwrap();
+    let now = "2026-10-29T01:02:00Z";
+    let refused = "CLOUD_EVIDENCE_INVALID";
+    assert_eq!(
+        service
+            .prepare(
+                "demo",
+                "unspent-prepared",
+                Approval {
+                    max_gpu_hours: 1.,
+                    reason: String::new(),
+                },
+                now,
+                "2026-10-29T01:30:00Z",
+                &"d".repeat(32),
+            )
+            .unwrap_err()
+            .code,
+        refused
+    );
+    assert_eq!(
+        service
+            .authorize(&reused, "owned fixture", now, &"e".repeat(32))
+            .unwrap_err()
+            .code,
+        refused
+    );
+    // Cancellation is set, so a missing gate would fail differently and in no
+    // case reach a provider.
+    assert_eq!(
+        enabled
+            .execute(
+                &authorized,
+                &format!("EXECUTE {authorized}"),
+                now,
+                &"f".repeat(32),
+                &std::sync::atomic::AtomicBool::new(true),
+            )
+            .unwrap_err()
+            .code,
+        refused
+    );
+    let unstarted = service.get(&authorized, now).unwrap();
+    assert_eq!(unstarted["status"], "AUTHORIZED");
+    assert!(unstarted.get("cloud_observation").is_none());
+    check_running_attempt_after_project_edit(
+        &service,
+        &enabled,
+        &registry,
+        &config,
+        &profile,
+        action,
+        &execution,
+        &channel.token,
+        &packet,
+        temp.path(),
+        &original_project,
+    );
     let mut changed = request;
     changed.seed = 43;
     assert!(
@@ -1120,11 +1254,254 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
             .create_run("demo", changed, "2026-10-29T00:05:00Z")
             .is_err()
     );
+    // Reads keep serving the frozen Attempt; only a first spend looks at the Run.
     let path = runs.join("train/manifest.json");
     let mut manifest: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     manifest["seed"] = json!(123);
     fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
-    assert!(service.get(action, "2026-10-29T00:06:00Z").is_err());
+    assert_eq!(service.get(action, now).unwrap()["status"], "VERIFIED");
+    // Deleting the Run is the one change that stops a running Attempt's service.
+    ml_exp_server::deletion::RunFence::new(&registry)
+        .mark("demo", "train", &serde_json::Map::new(), now)
+        .unwrap();
+    assert_eq!(service.get(action, now).unwrap_err().code, refused);
+    assert_eq!(
+        service
+            .worker_package("demo", "train", "attempt-001", &channel.token)
+            .unwrap_err()
+            .code,
+        refused
+    );
+    assert_eq!(
+        service
+            .receive("demo", "train", "attempt-001", &channel.token, &packet, now)
+            .unwrap_err()
+            .code,
+        refused
+    );
+    assert_eq!(
+        service
+            .refresh(action, now, &std::sync::atomic::AtomicBool::new(true))
+            .unwrap_err()
+            .code,
+        refused
+    );
+}
+
+/// Stands in for the provider while the outbox records one owned job.
+struct OwnedProvider {
+    row: Value,
+    stopped: std::sync::atomic::AtomicBool,
+}
+impl Transport for OwnedProvider {
+    fn request(
+        &self,
+        request: &ml_exp_core::cloud::Request,
+        _: &std::sync::atomic::AtomicBool,
+    ) -> ml_exp_server::backends::cloud::Result<Value> {
+        let mut row = self.row.clone();
+        if self.stopped.load(std::sync::atomic::Ordering::Relaxed) {
+            row["Status"] = json!("Stopped");
+        }
+        Ok(match request.action.as_str() {
+            "CreateJob" => json!({"JobId":row["JobId"]}),
+            "GetJob" => row,
+            "StopJob" => {
+                self.stopped
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                json!({})
+            }
+            other => panic!("unexpected provider operation {other}"),
+        })
+    }
+}
+
+/// `service` and `enabled` hold real provider clients, so each call passes a set
+/// cancellation flag: the client refuses before opening a connection, and an error
+/// or diagnostic from that point proves the call got past every local gate.
+#[allow(clippy::too_many_arguments)]
+fn check_running_attempt_after_project_edit(
+    service: &Service,
+    enabled: &Service,
+    registry: &std::path::Path,
+    config: &Value,
+    profile: &pai::Profile,
+    action: &str,
+    execution: &ml_exp_core::cloud::action::Execution,
+    token: &str,
+    packet: &ml_exp_core::cloud::exchange::Packet,
+    root: &std::path::Path,
+    original_project: &[u8],
+) {
+    use std::sync::atomic::AtomicBool;
+    let now = "2026-10-29T01:03:00Z";
+    let job = &execution.job;
+    assert_eq!(service.get(action, now).unwrap()["status"], "VERIFIED");
+    assert_eq!(
+        service.for_run("demo", "train", now).unwrap()["submission_id"],
+        action
+    );
+
+    // Worker exchange keeps its own trust edge, the channel token.
+    assert!(
+        service
+            .worker_package("demo", "train", "attempt-001", token)
+            .is_ok()
+    );
+    assert_eq!(
+        service
+            .worker_package("demo", "train", "attempt-001", "wrong-worker-token")
+            .unwrap_err()
+            .http_status,
+        Some(401)
+    );
+    let mut next = packet.clone();
+    next.sequence = 2;
+    next.previous_sha256 = Some(packet.sha256().unwrap());
+    next.history = None;
+    assert_eq!(
+        service
+            .receive(
+                "demo",
+                "train",
+                "attempt-001",
+                "wrong-worker-token",
+                &next,
+                now
+            )
+            .unwrap_err()
+            .http_status,
+        Some(401)
+    );
+    let ack = service
+        .receive("demo", "train", "attempt-001", token, &next, now)
+        .unwrap();
+    assert_eq!(ack.sequence, 2);
+
+    let provider_profile: Profile =
+        serde_json::from_value(config["backends"][0]["profile"].clone()).unwrap();
+    assert_eq!(provider_profile.digest().unwrap(), execution.profile_sha256);
+    let provider = Adapter::new(
+        provider_profile.clone(),
+        OwnedProvider {
+            row: json!({"JobId":"dlc-owned","WorkspaceId":profile.workspace_id,"ResourceId":profile.quota_id,
+                "DisplayName":job.name().unwrap(),"Settings":{"Tags":job.tags(&profile.scope().unwrap()).unwrap()},"Status":"Running"}),
+            stopped: AtomicBool::new(false),
+        },
+    )
+    .unwrap();
+    let outbox = Outbox::open(&registry.join("cloud-submissions/effects")).unwrap();
+    let slot = Outbox::slot(job).unwrap();
+    let unguarded = || -> ml_exp_server::backends::cloud::Result<()> { Ok(()) };
+    outbox
+        .prepare(&provider_profile, job, execution.allocation, &unguarded)
+        .unwrap();
+    outbox
+        .execute(
+            &provider,
+            job,
+            execution.allocation,
+            &format!("SUBMIT {slot}"),
+            &unguarded,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+
+    // Refresh reaches the provider client and retains its failure as a diagnostic.
+    let refreshed = service
+        .refresh(action, now, &AtomicBool::new(true))
+        .unwrap();
+    assert_eq!(
+        refreshed["cloud_observation"]["handle"]["job_id"],
+        "dlc-owned"
+    );
+    assert!(!refreshed["cloud_observation"]["diagnostic"].is_null());
+
+    // Cancel reaches the stop step and takes no effect while cancellation is set.
+    let confirmation = format!("CANCEL {action}");
+    assert_eq!(
+        enabled
+            .cancel(action, &confirmation, now, &AtomicBool::new(true))
+            .unwrap_err()
+            .code,
+        "CLOUD_RESPONSE_UNAVAILABLE"
+    );
+    assert_eq!(outbox.status(job).unwrap()["cancellation_started"], false);
+    // A cancel already recorded continues through reconcile, again without a replay.
+    outbox
+        .stop(
+            &provider,
+            job,
+            execution.allocation,
+            &format!("STOP {slot}"),
+            &unguarded,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    let cancelling = enabled
+        .cancel(action, &confirmation, now, &AtomicBool::new(true))
+        .unwrap();
+    assert_eq!(
+        cancelling["cloud_observation"]["cancellation_started"],
+        true
+    );
+    assert_eq!(
+        cancelling["cloud_observation"]["termination_verified"],
+        true
+    );
+
+    // The parent is terminal with no diagnostic, so only the project edit stands
+    // between it and a retry. A retry publishes nothing a later prepare must refuse.
+    outbox
+        .reconcile(
+            &provider,
+            job,
+            execution.allocation,
+            &unguarded,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert!(outbox.status(job).unwrap()["diagnostic"].is_null());
+    let retry = ml_exp_core::first_submission::native::retry::Request {
+        confirmation: String::new(),
+        resume_from: None,
+        restart_from: Some(ml_exp_core::first_submission::native::retry::StartFrom {
+            run_id: "train".into(),
+            attempt_id: "attempt-001".into(),
+            sync_request_id: String::new(),
+        }),
+        max_gpu_hours: 1.,
+        reason: String::new(),
+    };
+    let run = root.join("runs/train");
+    let status = fs::read(run.join("status.json")).unwrap();
+    assert_eq!(
+        service
+            .retry(action, retry.clone(), now, &AtomicBool::new(true))
+            .unwrap_err()
+            .code,
+        "CLOUD_EVIDENCE_INVALID"
+    );
+    assert!(!run.join("attempts/attempt-002").exists());
+    assert_eq!(fs::read(run.join("status.json")).unwrap(), status);
+    assert_eq!(
+        service.for_run("demo", "train", now).unwrap()["submission_id"],
+        action
+    );
+    // The refusal came before any provider read, and came from the edit: with the
+    // project restored the same retry reaches the provider client, which records
+    // the set cancellation flag as a diagnostic.
+    assert!(outbox.status(job).unwrap()["diagnostic"].is_null());
+    let edited = fs::read(root.join("project.json")).unwrap();
+    ml_exp_io::write_atomic(&root.join("project.json"), original_project, false).unwrap();
+    assert!(
+        service
+            .retry(action, retry, now, &AtomicBool::new(true))
+            .is_err()
+    );
+    assert!(!outbox.status(job).unwrap()["diagnostic"].is_null());
+    assert!(!run.join("attempts/attempt-002").exists());
+    ml_exp_io::write_atomic(&root.join("project.json"), &edited, false).unwrap();
 }
 
 fn check_builder_dispatch_evidence(

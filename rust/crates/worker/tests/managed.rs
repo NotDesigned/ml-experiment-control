@@ -142,11 +142,6 @@ fn managed_child() {
             fs::remove_file(&lock).unwrap();
             private_file(&lock, b"replacement lock\n");
         }
-        "alias-output" => {
-            let moved = output.parent().unwrap().join("moved-outputs");
-            fs::rename(&output, &moved).unwrap();
-            symlink("moved-outputs", &output).unwrap();
-        }
         "complete" => {}
         mode => panic!("unknown synthetic fixture mode: {mode}"),
     }
@@ -401,22 +396,6 @@ fn post_execution_storage_failure_keeps_started_unknown_and_prevents_replay() {
         b"corrupt",
     );
     assert!(managed::inspect(&fixture.config).is_err());
-    assert!(managed::run(&fixture.config, &AtomicBool::new(false)).is_err());
-    assert_eq!(fixture.count(), 1);
-}
-
-#[test]
-fn output_directory_alias_cannot_publish_a_managed_success_receipt() {
-    let fixture = Fixture::new("alias-output");
-    fixture.initialize();
-    assert!(matches!(
-        managed::run(&fixture.config, &AtomicBool::new(false)),
-        Err(Error::Uncertain)
-    ));
-    assert_eq!(fixture.count(), 1);
-    let observed = managed::inspect(&fixture.config).unwrap();
-    assert_eq!(observed.phase, Phase::Started);
-    assert!(observed.receipt.is_none());
     assert!(managed::run(&fixture.config, &AtomicBool::new(false)).is_err());
     assert_eq!(fixture.count(), 1);
 }

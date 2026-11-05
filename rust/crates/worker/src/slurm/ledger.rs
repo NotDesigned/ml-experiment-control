@@ -5,7 +5,6 @@ mod history;
 mod jobs;
 mod observation;
 mod staging;
-use fs2::FileExt;
 use ml_exp_core::identity::submission_marker;
 use ml_exp_core::slurm::{
     helper::{
@@ -14,7 +13,10 @@ use ml_exp_core::slurm::{
     },
     parse_submit_response,
 };
-use ml_exp_io::{directory::Directory, process};
+use ml_exp_io::{
+    directory::{Directory, FileLock, LockOptions, Wait},
+    process,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -189,22 +191,8 @@ struct Receipt {
     job_id: String,
 }
 
-struct Lock {
-    directory: Directory,
-    file: File,
-}
-impl Lock {
-    fn validate(&self) -> Result<()> {
-        Ok(self
-            .directory
-            .validate_regular_entry(OsStr::new(LOCK), &self.file)?)
-    }
-}
-impl Drop for Lock {
-    fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.file);
-    }
-}
+/// Proof that the caller holds `.slurm-helper.lock`.
+type Lock = FileLock;
 
 struct Snapshot {
     directory: Directory,
@@ -236,12 +224,11 @@ impl Helper {
         config.validate()?;
         let shared = staging::open_root(&config)?;
         let root = Directory::open(&config.root, true)?;
-        root.verify_private_parent()?;
+        root.require_private()?;
         if !root.entry_names()?.is_empty() {
             return Err(Error::Bootstrap);
         }
-        let file = root.open_lock(OsStr::new(LOCK))?;
-        let lock = Self::acquire(&root, file, config.lock_timeout, &AtomicBool::new(false))?;
+        let lock = Self::acquire(&root, true, config.lock_timeout, &AtomicBool::new(false))?;
         let names = root.entry_names()?;
         if names != [std::ffi::OsString::from(LOCK)] {
             return Err(Error::Bootstrap);
@@ -261,7 +248,6 @@ impl Helper {
                 claims: BTreeMap::new(),
             })?,
         )?;
-        lock.validate()?;
         drop(lock);
         Ok(Self {
             config,
@@ -273,7 +259,6 @@ impl Helper {
         config.validate()?;
         let shared = staging::open_root(&config)?;
         let root = Directory::open(&config.root, false)?;
-        root.verify_private_parent()?;
         let result = Self {
             config,
             root,
@@ -281,7 +266,6 @@ impl Helper {
         };
         let lock = result.lock(&AtomicBool::new(false))?;
         result.verify_root()?;
-        lock.validate()?;
         drop(lock);
         Ok(result)
     }
@@ -294,7 +278,6 @@ impl Helper {
             return Err(Error::Bootstrap);
         }
         self.registry()?;
-        self.root.verify_attached()?;
         Ok(())
     }
     fn registry(&self) -> Result<Registry> {
@@ -308,51 +291,46 @@ impl Helper {
         }
         Ok(registry)
     }
-    fn verify_issued(&self, intent: &FrozenIntent, directory: &Directory) -> Result<()> {
+    fn verify_issued(&self, intent: &FrozenIntent) -> Result<()> {
         self.verify_root()?;
         let registry = self.registry()?;
         if registry.claims.get(&intent.scope.digest()?) != Some(&intent.digest()?) {
             return Err(Error::Bootstrap);
         }
-        directory.verify_attached()?;
         Ok(())
     }
     fn acquire(
         directory: &Directory,
-        file: File,
+        create: bool,
         timeout: Duration,
         cancelled: &AtomicBool,
     ) -> Result<Lock> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            match FileExt::try_lock_exclusive(&file) {
-                Ok(()) => {
-                    let lock = Lock {
-                        directory: directory.clone(),
-                        file,
-                    };
-                    lock.validate()?;
-                    return Ok(lock);
+        Ok(directory
+            .lock(
+                OsStr::new(LOCK),
+                LockOptions {
+                    create,
+                    wait: Wait::Until {
+                        deadline: Instant::now() + timeout,
+                        cancelled: Some(cancelled),
+                    },
+                    ..Default::default()
+                },
+            )
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::WouldBlock {
+                    std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "helper metadata lock unavailable",
+                    )
+                } else {
+                    error
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    if cancelled.load(Ordering::Relaxed) || Instant::now() >= deadline {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::TimedOut,
-                            "helper metadata lock unavailable",
-                        )
-                        .into());
-                    }
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-                Err(error) => return Err(error.into()),
-            }
-        }
+            })?)
     }
     fn lock(&self, cancelled: &AtomicBool) -> Result<Lock> {
-        let file = self.root.open_existing_lock(OsStr::new(LOCK))?;
-        let lock = Self::acquire(&self.root, file, self.config.lock_timeout, cancelled)?;
+        let lock = Self::acquire(&self.root, false, self.config.lock_timeout, cancelled)?;
         self.verify_root()?;
-        lock.validate()?;
         Ok(lock)
     }
     fn run(&self, intent: &FrozenIntent, create: bool) -> Result<Directory> {
@@ -537,12 +515,6 @@ impl Helper {
         }
         let lock = self.lock(cancelled)?;
         let ledger = self.read_ledger(request.intent())?;
-        // Keep the exact directory used by this operation, rather than only
-        // reopening its pathname after a scheduler call may have changed it.
-        let retained = match &ledger {
-            ReadLedger::Found(snapshot) => Some(snapshot.directory.clone()),
-            _ => None,
-        };
         let outcome = match request.operation() {
             OperationTag::PrepareSubmission if matches!(ledger, ReadLedger::Missing) => {
                 return self.prepare(request, lock, cancelled);
@@ -592,16 +564,12 @@ impl Helper {
             outcome,
             ReplyOutcome::Prepared | ReplyOutcome::Submitted { .. }
         ) {
-            let directory = retained.as_ref().ok_or(Error::Bootstrap)?;
-            self.verify_issued(request.intent(), directory)?;
+            self.verify_issued(request.intent())?;
             if Self::observed(&self.read_ledger(request.intent())?) != outcome {
                 return Err(Error::Bootstrap);
             }
-            self.verify_issued(request.intent(), directory)?;
-        } else if let Some(directory) = retained.as_ref() {
-            directory.verify_attached()?;
+            self.verify_issued(request.intent())?;
         }
-        lock.validate()?;
         Ok(Reply::for_request(request, outcome)?)
     }
     fn prepare(&self, request: &Request, lock: Lock, cancelled: &AtomicBool) -> Result<Reply> {
@@ -626,10 +594,8 @@ impl Helper {
                 },
             )?);
         }
-        lock.validate()?;
         self.root
             .replace_regular(OsStr::new(REGISTRY), &registry_bytes)?;
-        lock.validate()?;
         let run = self.run(request.intent(), true)?;
         let name = Self::claim_name(request.intent());
         // Never repair an empty old claim or race another marker's creator.
@@ -642,18 +608,16 @@ impl Helper {
             )?);
         }
         let directory = run.child(OsStr::new(&name), true)?;
-        lock.validate()?;
         directory.publish_new(OsStr::new(INTENT), &json(request.intent())?)?;
         directory.publish_new(OsStr::new(MANIFEST), manifest.as_bytes())?;
         directory.publish_new(OsStr::new(SCRIPT), script.as_bytes())?;
         // The durable claim prevents replay while a download is running. Do
         // not hold the global metadata lock across that potentially long job:
         // observations and cancellation of other Runs must remain available.
-        lock.validate()?;
         drop(lock);
         self.prepare_shared(request.intent(), manifest.as_bytes(), &directory, cancelled)?;
-        let lock = self.lock(cancelled)?;
-        self.verify_issued(request.intent(), &directory)?;
+        let _lock = self.lock(cancelled)?;
+        self.verify_issued(request.intent())?;
         for (name, expected) in [
             (INTENT, json(request.intent())?),
             (MANIFEST, manifest.as_bytes().to_vec()),
@@ -676,19 +640,17 @@ impl Helper {
             OsStr::new(STATE),
             &json(&LedgerRecord::prepared(request.intent().clone())?)?,
         )?;
-        directory.verify_attached()?;
         if Self::observed(&self.read_ledger(request.intent())?) != ReplyOutcome::Prepared {
             return Err(Error::Bootstrap);
         }
-        self.verify_issued(request.intent(), &directory)?;
-        lock.validate()?;
+        self.verify_issued(request.intent())?;
         Ok(Reply::for_request(request, ReplyOutcome::Prepared)?)
     }
     fn submit(
         &self,
         request: &Request,
         mut snapshot: Snapshot,
-        lock: &Lock,
+        _lock: &Lock,
         cancelled: &AtomicBool,
     ) -> Result<ReplyOutcome> {
         if let Some(receipt) = &snapshot.receipt {
@@ -717,7 +679,6 @@ impl Helper {
                 reason: UnknownReason::MalformedLedger,
             });
         }
-        lock.validate()?;
         snapshot.directory.publish_new(
             OsStr::new(START),
             &json(&Started {
@@ -729,9 +690,8 @@ impl Helper {
         snapshot
             .directory
             .replace_regular(OsStr::new(STATE), &json(&snapshot.record)?)?;
-        self.verify_issued(request.intent(), &snapshot.directory)?;
+        self.verify_issued(request.intent())?;
         self.verify_shared(request.intent(), &snapshot.directory)?;
-        lock.validate()?;
         let argv = vec![
             self.config.sbatch_program.display().to_string(),
             "--parsable".into(),
@@ -758,8 +718,7 @@ impl Helper {
             drain_grace: Duration::from_millis(100),
             cancelled,
         })?;
-        lock.validate()?;
-        self.verify_issued(request.intent(), &snapshot.directory)?;
+        self.verify_issued(request.intent())?;
         if local.exit_code != Some(0)
             || local.timed_out
             || local.cancelled
@@ -797,7 +756,6 @@ impl Helper {
         snapshot
             .directory
             .replace_regular(OsStr::new(STATE), &json(&snapshot.record)?)?;
-        lock.validate()?;
         Ok(ReplyOutcome::Submitted {
             job_id: job.as_str().into(),
         })

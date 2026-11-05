@@ -27,7 +27,6 @@ pub fn scheduler_follows(
 pub struct Policy {
     pub enabled: bool,
     pub interval_seconds: u64,
-    pub max_candidates: usize,
     pub rpc_timeout_seconds: u64,
 }
 impl Default for Policy {
@@ -35,16 +34,13 @@ impl Default for Policy {
         Self {
             enabled: false,
             interval_seconds: 10,
-            max_candidates: 4096,
             rpc_timeout_seconds: 5,
         }
     }
 }
 impl Policy {
     pub fn validate(&self) -> bool {
-        (2..=300).contains(&self.interval_seconds)
-            && (1..=4096).contains(&self.max_candidates)
-            && (1..=30).contains(&self.rpc_timeout_seconds)
+        (2..=300).contains(&self.interval_seconds) && (1..=30).contains(&self.rpc_timeout_seconds)
     }
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -81,7 +77,7 @@ impl Schedule {
         now: u64,
         policy: &Policy,
     ) -> (Self, Option<(String, Phase)>) {
-        if !policy.enabled || !policy.validate() || candidates.len() > policy.max_candidates {
+        if !policy.enabled || !policy.validate() {
             return (self, None);
         }
         self.entries.retain(|key, _| candidates.contains(key));

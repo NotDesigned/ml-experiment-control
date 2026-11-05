@@ -1,6 +1,5 @@
 //! Filesystem acceptance of the native project registry. Only synthetic private
 //! temporary roots are used; no scientific files, providers or production state.
-use fs2::FileExt;
 use ml_exp_core::{
     canonical::python_json_bytes,
     projects::{LifecycleState, Seed},
@@ -11,7 +10,7 @@ use ml_exp_server::{
 };
 use serde_json::{Value, json};
 use std::{
-    fs::{self, File},
+    fs,
     os::unix::fs::{PermissionsExt, symlink},
     path::{Path, PathBuf},
     process::Command,
@@ -393,14 +392,12 @@ fn symlink_and_parent_aliases_are_refused_without_writes() {
             assert_eq!(fs::read(&original).unwrap(), fs::read(&path).unwrap());
         }
     }
-    let (fixture, store) = Fixture::seeded();
+    let (fixture, _store) = Fixture::seeded();
     let moved = fixture._temporary.path().join("moved-projects");
     fs::rename(&fixture.root, &moved).unwrap();
     symlink(&moved, &fixture.root).unwrap();
     let before = fixture.bytes();
     assert!(Store::open(&fixture.root).is_err());
-    assert!(store.snapshot(100).is_err());
-    assert!(execute(&store, &action("pause"), 101, 1).is_err());
     assert_eq!(fixture.bytes(), before);
 }
 
@@ -436,32 +433,6 @@ fn concurrent_cas_allows_exactly_one_durable_transition() {
     assert_eq!(state.events.len(), 2);
     assert_eq!(state.projects[0].state, LifecycleState::Paused);
     assert!(!state.journal_pending);
-}
-
-#[test]
-fn replacing_a_lock_while_an_existing_store_waits_cannot_authorize_a_write() {
-    let (fixture, store) = Fixture::seeded();
-    let external = File::open(fixture.root.join(LOCK)).unwrap();
-    FileExt::lock_exclusive(&external).unwrap();
-    let start = Arc::new(Barrier::new(2));
-    let waiter_start = start.clone();
-    let waiter = thread::spawn(move || {
-        waiter_start.wait();
-        execute(&store, &action("pause"), 101, 1)
-    });
-    start.wait();
-    // Whether the waiter has opened its file yet or not, the Store's retained
-    // anchor refers to the original inode. Neither inode can be silently adopted.
-    fs::rename(fixture.root.join(LOCK), fixture.root.join("old-lock")).unwrap();
-    write(&fixture.root.join(LOCK), b"");
-    let before = fixture.bytes();
-    FileExt::unlock(&external).unwrap();
-    assert!(waiter.join().unwrap().is_err());
-    assert_eq!(fixture.bytes(), before);
-    assert_eq!(
-        json_file(&fixture.root.join(HEAD))["_durability"]["revision"],
-        1
-    );
 }
 
 #[test]

@@ -12,6 +12,10 @@ use std::{
     sync::Arc,
 };
 use windows_sys::Win32::Storage::FileSystem::*;
+
+use crate::file_lock::acquire;
+pub use crate::file_lock::{FileLock, LockOptions, Wait};
+
 #[derive(Clone, Debug)]
 pub struct Directory {
     inner: Arc<Inner>,
@@ -105,18 +109,8 @@ impl Directory {
         }
         current.ok_or_else(invalid)
     }
-    pub fn verify_private_parent(&self) -> io::Result<()> {
-        if !same(&self.inner.file, &open_directory(&self.inner.path)?)? {
-            return Err(invalid());
-        }
-        if let Some(parent) = &self.inner._parent {
-            parent.verify_private_parent()?;
-        }
-        Ok(())
-    }
     pub fn child(&self, name: &OsStr, create: bool) -> io::Result<Self> {
         leaf(name)?;
-        self.verify_private_parent()?;
         let path = self.inner.path.join(name);
         if create && !path.try_exists()? {
             match fs::create_dir(&path) {
@@ -134,7 +128,6 @@ impl Directory {
         })
     }
     pub fn entry_names_limited(&self, maximum: usize) -> io::Result<Vec<OsString>> {
-        self.verify_private_parent()?;
         let mut names = Vec::new();
         for entry in fs::read_dir(&self.inner.path)? {
             if names.len() >= maximum {
@@ -145,77 +138,63 @@ impl Directory {
             names.push(name);
         }
         names.sort();
-        self.verify_private_parent()?;
         Ok(names)
     }
     pub fn open_regular_read(&self, name: &OsStr) -> io::Result<File> {
         leaf(name)?;
-        self.verify_private_parent()?;
         let mut options = OpenOptions::new();
         options.read(true);
         crate::windows_private::read_options(&mut options);
         let file = options.open(self.inner.path.join(name))?;
         let metadata = file.metadata()?;
-        if !metadata.is_file()
-            || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-            || info(&file)?.nNumberOfLinks != 1
-        {
+        if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
             return Err(invalid());
         }
         Ok(file)
     }
-    pub fn validate_regular_entry(&self, name: &OsStr, file: &File) -> io::Result<()> {
+    /// Take an advisory lock on `name` through a fresh handle. Contention is
+    /// returned as `WouldBlock`, which the caller maps to its own busy error.
+    pub fn lock(&self, name: &OsStr, options: LockOptions<'_>) -> io::Result<FileLock> {
         leaf(name)?;
-        self.verify_private_parent()?;
-        let current = OpenOptions::new()
-            .access_mode(FILE_READ_ATTRIBUTES)
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-            .open(self.inner.path.join(name))?;
-        let metadata = current.metadata()?;
-        if !metadata.is_file()
-            || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-            || info(&current)?.nNumberOfLinks != 1
-            || !same(file, &current)?
-        {
-            return Err(invalid());
-        }
-        self.verify_private_parent()
-    }
-    /// Multiple processes may open this stable leaf; fs2 owns the advisory lock.
-    /// Retaining the handle still prevents deletion or replacement of the leaf.
-    pub fn open_lock(&self, name: &OsStr) -> io::Result<File> {
-        leaf(name)?;
-        self.verify_private_parent()?;
         let path = self.inner.path.join(name);
-        let mut options = OpenOptions::new();
-        options
+        let mut opener = OpenOptions::new();
+        opener
             .read(true)
-            .write(true)
+            .write(options.create || options.write)
             .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-        let file = match options.create_new(true).open(&path) {
-            Ok(file) => {
-                crate::windows_private::protect(&path)?;
-                file
+        let file = if options.create {
+            match opener.create_new(true).open(&path) {
+                Ok(file) => {
+                    crate::windows_private::protect(&path)?;
+                    file
+                }
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                    opener.create_new(false).open(&path)?
+                }
+                Err(e) => return Err(e),
             }
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                options.create_new(false).open(&path)?
-            }
-            Err(e) => return Err(e),
+        } else {
+            opener.open(&path)?
         };
-        self.validate_regular_entry(name, &file)?;
-        crate::windows_private::validate(&file, true)?;
-        Ok(file)
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(invalid());
+        }
+        acquire(file, options.shared, options.wait)
     }
     pub fn entry_exists(&self, name: &OsStr) -> io::Result<bool> {
         leaf(name)?;
-        self.verify_private_parent()?;
         match fs::symlink_metadata(self.inner.path.join(name)) {
             Ok(_) => Ok(true),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
             Err(e) => Err(e),
         }
+    }
+    pub fn read_whole(&self, name: &OsStr) -> io::Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        self.open_regular_read(name)?.read_to_end(&mut bytes)?;
+        Ok(bytes)
     }
     pub fn read_regular(&self, name: &OsStr, maximum: u64) -> io::Result<Vec<u8>> {
         let file = self.open_regular_read(name)?;
@@ -232,7 +211,6 @@ impl Directory {
     }
     pub fn publish_new(&self, name: &OsStr, bytes: &[u8]) -> io::Result<()> {
         leaf(name)?;
-        self.verify_private_parent()?;
         crate::write_atomic(&self.inner.path.join(name), bytes, true)
     }
 }
@@ -245,7 +223,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let dir = Directory::open(temp.path(), false).unwrap();
         fs::write(temp.path().join("data"), b"training").unwrap();
-        let file = dir.open_regular_read(OsStr::new("data")).unwrap();
+        let _file = dir.open_regular_read(OsStr::new("data")).unwrap();
         assert!(
             OpenOptions::new()
                 .write(true)
@@ -253,8 +231,6 @@ mod tests {
                 .is_err()
         );
         assert!(fs::rename(temp.path().join("data"), temp.path().join("replaced")).is_err());
-        dir.validate_regular_entry(OsStr::new("data"), &file)
-            .unwrap();
         for name in ["../bad", "data:stream", "CON", "NUL.txt", "tail."] {
             assert!(dir.open_regular_read(OsStr::new(name)).is_err());
         }
@@ -263,14 +239,18 @@ mod tests {
     fn independent_lock_handles_preserve_exclusion_and_leaf_identity() {
         let temp = tempfile::tempdir().unwrap();
         let dir = Directory::open(temp.path(), false).unwrap();
-        let first = dir.open_lock(OsStr::new(".dispatch.lock")).unwrap();
-        let second = dir.open_lock(OsStr::new(".dispatch.lock")).unwrap();
-        fs2::FileExt::try_lock_exclusive(&first).unwrap();
-        assert!(fs2::FileExt::try_lock_exclusive(&second).is_err());
+        let name = OsStr::new(".dispatch.lock");
+        let options = LockOptions {
+            create: true,
+            ..Default::default()
+        };
+        let first = dir.lock(name, options).unwrap();
+        assert_eq!(
+            dir.lock(name, options).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
         assert!(fs::rename(temp.path().join(".dispatch.lock"), temp.path().join("old")).is_err());
-        dir.validate_regular_entry(OsStr::new(".dispatch.lock"), &first)
-            .unwrap();
-        fs2::FileExt::unlock(&first).unwrap();
-        fs2::FileExt::try_lock_exclusive(&second).unwrap();
+        drop(first);
+        assert!(dir.lock(name, options).is_ok());
     }
 }

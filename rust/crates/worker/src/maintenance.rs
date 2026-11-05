@@ -2,7 +2,7 @@
 //! active managed-worker lock is held; exact target directories are quarantined
 //! before deleting regular leaves. Receipts survive alongside process metadata.
 use ml_exp_core::maintenance::Plan;
-use ml_exp_io::directory::Directory;
+use ml_exp_io::directory::{Directory, LockOptions};
 use serde::{Deserialize, Serialize};
 use std::{ffi::OsStr, io};
 fn invalid() -> io::Error {
@@ -56,8 +56,7 @@ fn remove(root: &Directory, depth: usize, budget: &mut usize) -> io::Result<()> 
             remove(&directory, depth + 1, budget)?;
             root.remove_staged_empty_child(&directory)?;
         } else {
-            let file = root.open_regular_read(&name)?;
-            root.remove_staged_regular(&name, &file)?;
+            root.remove_staged_regular(&name)?;
         }
     }
     Ok(())
@@ -65,11 +64,16 @@ fn remove(root: &Directory, depth: usize, budget: &mut usize) -> io::Result<()> 
 pub fn run(plan: &Plan) -> io::Result<serde_json::Value> {
     plan.validate().map_err(|_| invalid())?;
     let worker = Directory::open(&plan.config.attempt_root, false)?;
-    worker.verify_private_parent()?;
     let root = Directory::open(&plan.storage_root(), false)?;
-    root.verify_private_parent()?;
-    let lock = worker.open_existing_lock_rw(OsStr::new(".managed-launch.lock"))?;
-    fs2::FileExt::try_lock_exclusive(&lock)?;
+    // The phase ledger: it is never created here, because a recreated ledger
+    // reads as unstarted and could re-run training.
+    let _lock = worker.lock(
+        OsStr::new(".managed-launch.lock"),
+        LockOptions {
+            write: true,
+            ..Default::default()
+        },
+    )?;
     let manifest = worker.read_regular(
         OsStr::new("launch-manifest.json"),
         ml_exp_core::launch::MAX_BYTES as u64,
@@ -190,6 +194,5 @@ pub fn run(plan: &Plan) -> io::Result<serde_json::Value> {
     }
     saved.complete = true;
     store.replace_regular(OsStr::new(&name), &serde_json::to_vec(&saved)?)?;
-    worker.validate_regular_entry(OsStr::new(".managed-launch.lock"), &lock)?;
     plan.receipt().map_err(|_| invalid())
 }

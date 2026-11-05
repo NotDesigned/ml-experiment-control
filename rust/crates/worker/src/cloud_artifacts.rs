@@ -4,6 +4,7 @@ use crate::{
     cloud,
     managed::{self, Error, Result},
 };
+use ml_exp_core::multipart::{MAX_PARTS, PART_BYTES};
 use ml_exp_core::{
     artifacts::{self, publication::Bundle},
     cloud::{
@@ -12,14 +13,13 @@ use ml_exp_core::{
     },
     slurm::helper,
 };
-use ml_exp_io::directory::Directory;
+use ml_exp_io::directory::{Directory, LockOptions};
 use serde_json::{Value, json};
 use std::{
     ffi::OsStr,
     io::{Read, Seek, SeekFrom},
     time::Duration,
 };
-const PART_BYTES: u64 = 16 * 1024 * 1024;
 fn client() -> Result<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
         .no_proxy()
@@ -112,10 +112,21 @@ pub fn publish(package: &Package) -> Result<()> {
         dir.publish_new(OsStr::new("owner"), package_sha.as_bytes())
             .map_err(|_| Error::Storage)?;
     }
-    let lock = dir
-        .open_lock(OsStr::new(".lock"))
-        .map_err(|_| Error::Storage)?;
-    fs2::FileExt::try_lock_exclusive(&lock).map_err(|_| Error::Uncertain)?;
+    let _lock = dir
+        .lock(
+            OsStr::new(".lock"),
+            LockOptions {
+                create: true,
+                ..Default::default()
+            },
+        )
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::WouldBlock {
+                Error::Uncertain
+            } else {
+                Error::Storage
+            }
+        })?;
     let bundle: Bundle = if dir
         .entry_exists(OsStr::new("bundle.json"))
         .map_err(|_| Error::Storage)?
@@ -132,10 +143,7 @@ pub fn publish(package: &Package) -> Result<()> {
             .entry_exists(OsStr::new("archive.tar"))
             .map_err(|_| Error::Storage)?
         {
-            let file = dir
-                .open_regular_read(OsStr::new("archive.tar"))
-                .map_err(|_| Error::Storage)?;
-            dir.remove_staged_regular(OsStr::new("archive.tar"), &file)
+            dir.remove_staged_regular(OsStr::new("archive.tar"))
                 .map_err(|_| Error::Storage)?;
         }
         let outputs =
@@ -152,8 +160,7 @@ pub fn publish(package: &Package) -> Result<()> {
         let (sha256, bytes, files) =
             ml_exp_io::artifacts::pack(&outputs, &mut file, &policy).map_err(|_| Error::Storage)?;
         file.sync_all().map_err(|_| Error::Storage)?;
-        dir.seal_regular(OsStr::new("archive.tar"), &file, false)
-            .map_err(|_| Error::Storage)?;
+        ml_exp_io::directory::seal_regular(&file, false).map_err(|_| Error::Storage)?;
         let id = &package.manifest.identity;
         let bundle = Bundle {
             contract: artifacts::publication::CONTRACT.into(),
@@ -195,7 +202,8 @@ pub fn publish(package: &Package) -> Result<()> {
         },
     )?;
     let count = bundle.archive.bytes.div_ceil(PART_BYTES);
-    if prepared["part_count"] != count || prepared["part_bytes"] != PART_BYTES || count > 65536 {
+    if prepared["part_count"] != count || prepared["part_bytes"] != PART_BYTES || count > MAX_PARTS
+    {
         return Err(Error::Binding);
     }
     if prepared["published"] != true {
@@ -252,12 +260,8 @@ pub fn publish(package: &Package) -> Result<()> {
         .entry_exists(OsStr::new("archive.tar"))
         .map_err(|_| Error::Storage)?
     {
-        let file = dir
-            .open_regular_read(OsStr::new("archive.tar"))
-            .map_err(|_| Error::Storage)?;
-        dir.remove_staged_regular(OsStr::new("archive.tar"), &file)
+        dir.remove_staged_regular(OsStr::new("archive.tar"))
             .map_err(|_| Error::Storage)?;
     }
-    dir.verify_private_parent().map_err(|_| Error::Storage)?;
     Ok(())
 }

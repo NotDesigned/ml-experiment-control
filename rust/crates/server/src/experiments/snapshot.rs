@@ -1,4 +1,4 @@
-//! Bounded evidence reads. Only fixed names below an exact manifested Attempt
+//! Evidence reads. Only fixed names below an exact manifested Attempt
 //! are opened. File mtime is provenance, never a daemon heartbeat or freshness.
 use super::{Document, Error, Format, Provenance, parse_mapping};
 use ml_exp_io::directory::Directory;
@@ -11,8 +11,6 @@ use std::{
     time::UNIX_EPOCH,
 };
 
-pub(super) const MAX_ATTEMPTS: usize = 256;
-const MAX_METADATA_TOTAL: u64 = 32 * 1024 * 1024;
 const MAX_TAIL_BYTES: u64 = 1024 * 1024;
 const MAX_TAIL_LINES: usize = 10_000;
 
@@ -22,8 +20,6 @@ pub enum EvidenceProblem {
     Io,
     InvalidJson,
     IdentityConflict,
-    TooLarge,
-    BudgetExceeded,
     Truncated,
     PartialFinalLine,
     InvalidUtf8,
@@ -111,27 +107,9 @@ pub struct Snapshot {
     pub diagnostics: Vec<Diagnostic>,
 }
 
-pub(super) struct Budget {
-    remaining: u64,
-}
-impl Budget {
-    pub(super) fn new() -> Self {
-        Self {
-            remaining: MAX_METADATA_TOTAL,
-        }
-    }
-    fn reserve(&mut self, bytes: u64) -> Result<(), EvidenceProblem> {
-        self.remaining = self
-            .remaining
-            .checked_sub(bytes)
-            .ok_or(EvidenceProblem::BudgetExceeded)?;
-        Ok(())
-    }
-}
 pub(super) fn manifest(
     directory: &Directory,
     sources: &[super::ManifestSource],
-    budget: &mut Budget,
 ) -> Result<Document, Error> {
     for source in sources {
         let name = OsStr::new(source.filename());
@@ -140,13 +118,8 @@ pub(super) fn manifest(
         }
         let mut file = directory.open_regular_read(name)?;
         let length = file.metadata()?.len();
-        if length > super::domain::MAX_BYTES as u64 {
-            return Err(Error::Document(super::DocumentError::TooLarge));
-        }
-        budget.reserve(length).map_err(|_| Error::SnapshotLimit)?;
         let mut bytes = Vec::new();
         (&mut file).take(length + 1).read_to_end(&mut bytes)?;
-        directory.validate_regular_entry(name, &file)?;
         if bytes.len() as u64 != length {
             return Err(Error::BytesChanged);
         }
@@ -201,7 +174,6 @@ pub(super) fn evidence(
     project: &str,
     run: &str,
     attempt: Option<&str>,
-    budget: &mut Budget,
 ) -> EvidenceDocument {
     match directory.entry_exists(OsStr::new(filename)) {
         Ok(false) => return EvidenceDocument::Missing,
@@ -211,24 +183,18 @@ pub(super) fn evidence(
     let result = (|| {
         let mut file = directory
             .open_regular_read(OsStr::new(filename))
-            .map_err(|_| EvidenceProblem::Io)?;
-        let before = file.metadata().map_err(|_| EvidenceProblem::Io)?;
-        if before.len() > super::domain::MAX_BYTES as u64 {
-            return Err(EvidenceProblem::TooLarge);
-        }
-        budget.reserve(before.len())?;
+            .map_err(why!(EvidenceProblem::Io))?;
+        let before = file.metadata().map_err(why!(EvidenceProblem::Io))?;
         let mut bytes = Vec::new();
         (&mut file)
             .take(before.len() + 1)
             .read_to_end(&mut bytes)
-            .map_err(|_| EvidenceProblem::Io)?;
-        directory
-            .validate_regular_entry(OsStr::new(filename), &file)
-            .map_err(|_| EvidenceProblem::Io)?;
+            .map_err(why!(EvidenceProblem::Io))?;
         if bytes.len() as u64 != before.len() {
             return Err(EvidenceProblem::Io);
         }
-        let map = parse_mapping(&bytes, Format::Json).map_err(|_| EvidenceProblem::InvalidJson)?;
+        let map =
+            parse_mapping(&bytes, Format::Json).map_err(why!(EvidenceProblem::InvalidJson))?;
         if identity_conflict(&map, project, run, attempt) {
             return Err(EvidenceProblem::IdentityConflict);
         }
@@ -344,22 +310,19 @@ fn tail_bytes(
 ) -> Result<TailBytes, EvidenceProblem> {
     let mut file = directory
         .open_regular_read(OsStr::new(filename))
-        .map_err(|_| EvidenceProblem::Io)?;
-    let before = file.metadata().map_err(|_| EvidenceProblem::Io)?;
+        .map_err(why!(EvidenceProblem::Io))?;
+    let before = file.metadata().map_err(why!(EvidenceProblem::Io))?;
     let start = before.len().saturating_sub(MAX_TAIL_BYTES);
     // Retain a preceding full separator so an aligned UTF-8 boundary or CRLF
     // does not discard its following complete line.
     let window = start.saturating_sub(if text { 3 } else { 1 });
     file.seek(SeekFrom::Start(window))
-        .map_err(|_| EvidenceProblem::Io)?;
+        .map_err(why!(EvidenceProblem::Io))?;
     let mut bytes = Vec::new();
     (&mut file)
         .take(before.len() - window)
         .read_to_end(&mut bytes)
-        .map_err(|_| EvidenceProblem::Io)?;
-    directory
-        .validate_regular_entry(OsStr::new(filename), &file)
-        .map_err(|_| EvidenceProblem::Io)?;
+        .map_err(why!(EvidenceProblem::Io))?;
     if bytes.len() as u64 != before.len() - window {
         return Err(EvidenceProblem::Io);
     }

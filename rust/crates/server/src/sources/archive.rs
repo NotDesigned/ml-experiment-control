@@ -40,7 +40,6 @@ pub(super) fn directory(root: &Directory, path: &str, create: bool) -> Result<Di
     if !path.is_empty() {
         for part in path.split('/') {
             current = current.child(OsStr::new(part), create)?;
-            current.verify_private_parent()?;
         }
     }
     Ok(current)
@@ -64,7 +63,7 @@ fn extension<R: Read>(entry: &mut tar::Entry<'_, R>, limit: usize) -> Result<Vec
 pub(super) fn extract(file: &mut File, tree: &Directory, policy: &Policy) -> Result<(), Error> {
     let mut magic = [0u8; 2];
     file.seek(SeekFrom::Start(0))?;
-    file.read_exact(&mut magic).map_err(|_| Error::Archive)?;
+    file.read_exact(&mut magic).map_err(why!(Error::Archive))?;
     file.seek(SeekFrom::Start(0))?;
     let expanded: Box<dyn Read + '_> = if magic == [0x1f, 0x8b] {
         Box::new(MultiGzDecoder::new(file))
@@ -80,8 +79,8 @@ pub(super) fn extract(file: &mut File, tree: &Directory, policy: &Policy) -> Res
     let mut pending_path = None::<String>;
     let mut pending_size = None::<u64>;
     let mut headers = 0usize;
-    for entry in archive.entries().map_err(|_| Error::Archive)?.raw(true) {
-        let mut entry = entry.map_err(|_| Error::Archive)?;
+    for entry in archive.entries().map_err(why!(Error::Archive))?.raw(true) {
+        let mut entry = entry.map_err(why!(Error::Archive))?;
         headers = headers.checked_add(1).ok_or(Error::Limit)?;
         if headers > policy.max_source_files.saturating_mul(3).saturating_add(16) {
             return Err(Error::Limit);
@@ -91,9 +90,9 @@ pub(super) fn extract(file: &mut File, tree: &Directory, policy: &Policy) -> Res
             let bytes = extension(&mut entry, MAX_METADATA_BYTES)?;
             let mut values = BTreeMap::new();
             for item in tar::PaxExtensions::new(&bytes) {
-                let item = item.map_err(|_| Error::Archive)?;
-                let key = item.key().map_err(|_| Error::Archive)?;
-                let value = item.value().map_err(|_| Error::Archive)?;
+                let item = item.map_err(why!(Error::Archive))?;
+                let key = item.key().map_err(why!(Error::Archive))?;
+                let value = item.value().map_err(why!(Error::Archive))?;
                 if values.insert(key.to_owned(), value.to_owned()).is_some() {
                     return Err(Error::Archive);
                 }
@@ -107,7 +106,7 @@ pub(super) fn extract(file: &mut File, tree: &Directory, policy: &Policy) -> Res
                     }
                     "size" => {
                         if pending_size
-                            .replace(value.parse().map_err(|_| Error::Archive)?)
+                            .replace(value.parse().map_err(why!(Error::Archive))?)
                             .is_some()
                         {
                             return Err(Error::Archive);
@@ -125,7 +124,7 @@ pub(super) fn extract(file: &mut File, tree: &Directory, policy: &Policy) -> Res
             if bytes.last() == Some(&0) {
                 bytes.pop();
             }
-            let path = String::from_utf8(bytes).map_err(|_| Error::Archive)?;
+            let path = String::from_utf8(bytes).map_err(why!(Error::Archive))?;
             if pending_path.replace(path).is_some() {
                 return Err(Error::Archive);
             }
@@ -140,7 +139,7 @@ pub(super) fn extract(file: &mut File, tree: &Directory, policy: &Policy) -> Res
         };
         let raw = pending_path.take().unwrap_or(
             std::str::from_utf8(&entry.path_bytes())
-                .map_err(|_| Error::Archive)?
+                .map_err(why!(Error::Archive))?
                 .to_owned(),
         );
         let size = entry.size();
@@ -168,7 +167,7 @@ pub(super) fn extract(file: &mut File, tree: &Directory, policy: &Policy) -> Res
             let maximum = buffer.len().min(remaining as usize);
             let n = entry
                 .read(&mut buffer[..maximum])
-                .map_err(|_| Error::Archive)?;
+                .map_err(why!(Error::Archive))?;
             if n == 0 {
                 return Err(Error::Archive);
             }
@@ -178,8 +177,8 @@ pub(super) fn extract(file: &mut File, tree: &Directory, policy: &Policy) -> Res
         if output.metadata()?.len() != size {
             return Err(Error::Archive);
         }
-        let executable = entry.header().mode().map_err(|_| Error::Archive)? & 0o111 != 0;
-        parent.seal_regular(OsStr::new(name), &output, executable)?;
+        let executable = entry.header().mode().map_err(why!(Error::Archive))? & 0o111 != 0;
+        ml_exp_io::directory::seal_regular(&output, executable)?;
     }
     if pending_path.is_some() || pending_size.is_some() {
         return Err(Error::Archive);
@@ -190,7 +189,7 @@ pub(super) fn extract(file: &mut File, tree: &Directory, policy: &Policy) -> Res
     let mut reader = archive.into_inner();
     let mut buffer = [0u8; 8192];
     loop {
-        let n = reader.read(&mut buffer).map_err(|_| Error::Archive)?;
+        let n = reader.read(&mut buffer).map_err(why!(Error::Archive))?;
         if n == 0 {
             break;
         }
@@ -198,6 +197,5 @@ pub(super) fn extract(file: &mut File, tree: &Directory, policy: &Policy) -> Res
             return Err(Error::Archive);
         }
     }
-    tree.verify_private_parent()?;
     Ok(())
 }

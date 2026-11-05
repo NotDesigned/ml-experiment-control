@@ -8,7 +8,6 @@ use crate::{
     operations::{self, ClaimContext, Execute},
     projects, read_api, read_config, sources,
 };
-use fs2::FileExt;
 use ml_exp_core::{
     canonical,
     cloud::{
@@ -19,13 +18,12 @@ use ml_exp_core::{
     operations::{FrozenFiles, Policy},
     slurm::helper,
 };
-use ml_exp_io::directory::Directory;
+use ml_exp_io::directory::{Directory, FileLock, LockOptions};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     ffi::OsStr,
-    fs::File,
     path::Path,
     sync::{Arc, atomic::AtomicBool},
     time::Duration,
@@ -50,7 +48,6 @@ pub struct Service {
     workspace: String,
     pub(super) directory: Directory,
     pub(super) slots: Directory,
-    anchor: File,
     pub(super) actions: operations::Store,
     pub(super) outbox: Outbox,
     sync_outbox: Outbox,
@@ -68,30 +65,6 @@ pub struct Service {
     debug: Option<debug::Runtime>,
     pub(super) polling: ml_exp_core::polling::Policy,
 }
-struct Lock<'a> {
-    service: &'a Service,
-    file: File,
-}
-impl Lock<'_> {
-    fn validate(&self) -> cloud::Result<()> {
-        self.service
-            .directory
-            .verify_private_parent()
-            .map_err(|_| cloud::Error::evidence())?;
-        for file in [&self.file, &self.service.anchor] {
-            self.service
-                .directory
-                .validate_regular_entry(OsStr::new(LOCK), file)
-                .map_err(|_| cloud::Error::evidence())?;
-        }
-        Ok(())
-    }
-}
-impl Drop for Lock<'_> {
-    fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.file);
-    }
-}
 pub(super) fn op(error: operations::Error) -> cloud::Error {
     if matches!(error, operations::Error::NotFound) {
         return missing();
@@ -106,14 +79,13 @@ pub(super) fn io(_: std::io::Error) -> cloud::Error {
     cloud::Error::evidence()
 }
 fn encode(value: &impl Serialize) -> cloud::Result<Vec<u8>> {
-    serde_json::to_vec(value).map_err(|_| cloud::Error::evidence())
+    serde_json::to_vec(value).map_err(why!(cloud::Error::evidence()))
 }
 pub(super) fn read(dir: &Directory, name: &str) -> cloud::Result<Value> {
-    let bytes = dir
-        .read_regular(OsStr::new(name), 8 * 1024 * 1024)
-        .map_err(io)?;
-    let value =
-        Value::Object(ml_exp_core::json::mapping(&bytes).map_err(|_| cloud::Error::evidence())?);
+    let bytes = dir.read_whole(OsStr::new(name)).map_err(io)?;
+    let value = Value::Object(
+        ml_exp_core::json::own_mapping(&bytes).map_err(why!(cloud::Error::evidence()))?,
+    );
     if encode(&value)? != bytes {
         return Err(cloud::Error::evidence());
     }
@@ -134,9 +106,9 @@ impl Service {
     pub fn initialize(settings: &read_config::Settings) -> cloud::Result<()> {
         settings
             .validate()
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
         let (root, _) = read_config::workspace(&settings.registry_root)
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
         let directory = root.create_new_child(OsStr::new(NAME)).map_err(io)?;
         directory
             .create_new_child(OsStr::new("slots"))
@@ -146,10 +118,9 @@ impl Service {
             .map_err(io)?
             .sync_all()
             .map_err(io)?;
-        let outbox = directory
+        directory
             .create_new_child(OsStr::new("effects"))
             .map_err(io)?;
-        outbox.verify_private_parent().map_err(io)?;
         Outbox::initialize(&settings.registry_root.join(NAME).join("effects"))?;
         directory
             .create_new_child(OsStr::new("sync-effects"))
@@ -157,7 +128,7 @@ impl Service {
         Outbox::initialize(&settings.registry_root.join(NAME).join("sync-effects"))?;
         operations::Store::open(settings.registry_root.join("actions")).map_err(op)?;
         crate::checkpoints::Store::open(&settings.registry_root)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         Ok(())
     }
     pub fn open(
@@ -169,9 +140,9 @@ impl Service {
     ) -> cloud::Result<Self> {
         settings
             .validate()
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
         let (root, workspace) = read_config::workspace(&settings.registry_root)
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
         let files = settings
             .projects
             .iter()
@@ -186,9 +157,8 @@ impl Service {
             return Err(cloud::Error::configuration());
         }
         let directory = root.child(OsStr::new(NAME), false).map_err(io)?;
-        directory.verify_private_parent().map_err(io)?;
         let slots = directory.child(OsStr::new("slots"), false).map_err(io)?;
-        let anchor = directory.open_existing_lock(OsStr::new(LOCK)).map_err(io)?;
+        directory.open_regular_read(OsStr::new(LOCK)).map_err(io)?;
         let mut backends = BTreeMap::new();
         for definition in config.backends {
             definition.validate()?;
@@ -269,7 +239,6 @@ impl Service {
             workspace,
             directory,
             slots,
-            anchor,
             actions,
             outbox,
             sync_outbox,
@@ -313,30 +282,22 @@ impl Service {
     pub fn has_collectors(&self) -> bool {
         self.exchange.is_some() && self.backends.values().any(|b| b.collector.is_some())
     }
-    fn lock(&self) -> cloud::Result<Lock<'_>> {
+    fn lock(&self) -> cloud::Result<FileLock> {
         self.directory
-            .validate_regular_entry(OsStr::new(LOCK), &self.anchor)
-            .map_err(io)?;
-        let file = self
-            .directory
-            .open_existing_lock(OsStr::new(LOCK))
-            .map_err(io)?;
-        file.try_lock_exclusive().map_err(|_| cloud::Error {
-            code: "CLOUD_RUN_BUSY".into(),
-            http_status: Some(503),
-            uncertain: false,
-        })?;
-        let lock = Lock {
-            service: self,
-            file,
-        };
-        lock.validate()?;
-        Ok(lock)
+            .lock(OsStr::new(LOCK), LockOptions::default())
+            .map_err(why_lock!(
+                cloud::Error {
+                    code: "CLOUD_RUN_BUSY".into(),
+                    http_status: Some(503),
+                    uncertain: false,
+                },
+                cloud::Error::evidence()
+            ))
     }
     fn attempt_slot(project: &str, run: &str, attempt: &str) -> cloud::Result<String> {
         Ok(format!(
             "{}.json",
-            native::attempt_slot(project, run, attempt).map_err(|_| cloud::Error::evidence())?
+            native::attempt_slot(project, run, attempt).map_err(why!(cloud::Error::evidence()))?
         ))
     }
     fn current_attempt(&self, project: &str, run: &str) -> cloud::Result<String> {
@@ -352,7 +313,7 @@ impl Service {
             .as_str()
             .ok_or_else(cloud::Error::evidence)?;
         ml_exp_core::first_submission::native::retry::number(attempt)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         Ok(attempt.into())
     }
     fn saved(&self, project: &str, run: &str) -> cloud::Result<Option<Prepared>> {
@@ -369,9 +330,9 @@ impl Service {
             return Ok(None);
         }
         let prepared: Prepared = serde_json::from_value(read(&self.slots, &name)?)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         action::validate(&prepared.plan, &prepared.execution)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         if prepared.execution.binding.project != project
             || prepared.execution.binding.run_id != run
             || prepared.execution.binding.attempt_id != attempt
@@ -396,7 +357,7 @@ impl Service {
             .as_str()
             .ok_or_else(cloud::Error::evidence)?;
         let archived =
-            ml_exp_core::renewal::archive(action).map_err(|_| cloud::Error::evidence())?;
+            ml_exp_core::renewal::archive(action).map_err(why!(cloud::Error::evidence()))?;
         let prepared = match crate::renewal::read(&self.slots, &archived).map_err(io)? {
             Some(value) => value,
             None => self
@@ -406,7 +367,12 @@ impl Service {
         if prepared.plan["action_id"] != action {
             return Err(cloud::Error::evidence());
         }
-        self.check(&prepared)?;
+        self.require_live(
+            &prepared.execution.job.project,
+            &prepared.execution.job.run_id,
+        )?;
+        action::validate(&prepared.plan, &prepared.execution)
+            .map_err(why!(cloud::Error::evidence()))?;
         Ok(prepared)
     }
 }
@@ -420,8 +386,10 @@ pub(super) fn check_configuration(config: Settings) -> cloud::Result<()> {
         uncertain: false,
     };
     for definition in config.backends {
-        let credentials = Credentials::load(&definition.credentials_file)
-            .map_err(|_| invalid("CLOUD_PROVIDER_CREDENTIALS_INVALID"))?;
+        let credentials = Credentials::load(&definition.credentials_file).map_err(why!(
+            invalid("CLOUD_PROVIDER_CREDENTIALS_INVALID"),
+            "provider credentials invalid"
+        ))?;
         if !credentials.matches_profile(&definition.profile) {
             return Err(invalid("CLOUD_PROVIDER_CREDENTIALS_INVALID"));
         }
@@ -430,27 +398,28 @@ pub(super) fn check_configuration(config: Settings) -> cloud::Result<()> {
             Duration::from_secs(definition.timeout_seconds.into()),
         )?;
         if let Some(path) = &definition.registry_auth_file {
-            client = client
-                .with_registry_auth(path)
-                .map_err(|_| invalid("CLOUD_REGISTRY_AUTH_INVALID"))?;
+            client = client.with_registry_auth(path).map_err(why!(
+                invalid("CLOUD_REGISTRY_AUTH_INVALID"),
+                "registry credentials invalid"
+            ))?;
         }
         drop(client);
     }
     if let Some(exchange) = config.exchange {
         exchange::Authority::load(exchange)
-            .map_err(|_| invalid("CLOUD_EXCHANGE_CONFIGURATION_INVALID"))?;
+            .map_err(why!(invalid("CLOUD_EXCHANGE_CONFIGURATION_INVALID")))?;
     }
     if let Some(objects) = config.artifacts {
         crate::objects::Store::open(objects)
-            .map_err(|_| invalid("CLOUD_OBJECTS_CONFIGURATION_INVALID"))?;
+            .map_err(why!(invalid("CLOUD_OBJECTS_CONFIGURATION_INVALID")))?;
     }
     if let Some(builds) = config.builds {
         builds
             .validate()
-            .map_err(|_| invalid("CLOUD_BUILDER_CONFIGURATION_INVALID"))?;
+            .map_err(why!(invalid("CLOUD_BUILDER_CONFIGURATION_INVALID")))?;
     }
     if let Some(debug) = config.debug {
-        debug::Runtime::open(debug).map_err(|_| invalid("CLOUD_DEBUG_CONFIGURATION_INVALID"))?;
+        debug::Runtime::open(debug).map_err(why!(invalid("CLOUD_DEBUG_CONFIGURATION_INVALID")))?;
     }
     Ok(())
 }

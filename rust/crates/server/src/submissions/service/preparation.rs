@@ -1,49 +1,11 @@
 //! Bounded immutable preparation slots and at-most-once admission publication.
 use super::*;
 
-pub(super) struct PreparationLock<'a> {
-    service: &'a Service,
-    file: File,
-}
-impl PreparationLock<'_> {
-    pub(super) fn validate(&self) -> Result<()> {
-        self.service
-            .directory
-            .validate_regular_entry(OsStr::new(LOCK), &self.service.lock_anchor)
-            .map_err(|_| Error::Authority)?;
-        self.service
-            .directory
-            .validate_regular_entry(OsStr::new(LOCK), &self.file)
-            .map_err(|_| Error::Authority)
-    }
-}
-impl Drop for PreparationLock<'_> {
-    fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.file);
-    }
-}
 impl Service {
-    pub(super) fn lock(&self) -> Result<PreparationLock<'_>> {
+    pub(super) fn lock(&self) -> Result<FileLock> {
         self.directory
-            .validate_regular_entry(OsStr::new(LOCK), &self.lock_anchor)
-            .map_err(|_| Error::Authority)?;
-        let file = self
-            .directory
-            .open_existing_lock(OsStr::new(LOCK))
-            .map_err(|_| Error::Authority)?;
-        file.try_lock_exclusive().map_err(|error| {
-            if error.kind() == std::io::ErrorKind::WouldBlock {
-                Error::Busy
-            } else {
-                Error::Authority
-            }
-        })?;
-        let lock = PreparationLock {
-            service: self,
-            file,
-        };
-        lock.validate()?;
-        Ok(lock)
+            .lock(OsStr::new(LOCK), LockOptions::default())
+            .map_err(why_lock!(Error::Busy, Error::Authority))
     }
     pub(super) fn slot_name(project: &str, run: &str, attempt: &str) -> Result<String> {
         Ok(format!(
@@ -58,7 +20,7 @@ impl Service {
         if !self
             .slots
             .entry_exists(OsStr::new(&original))
-            .map_err(|_| Error::Authority)?
+            .map_err(why!(Error::Authority))?
         {
             return Ok(None);
         }
@@ -66,7 +28,7 @@ impl Service {
         let snapshot = self
             .evidence
             .snapshot_metadata(&reference)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         let attempt = snapshot
             .current_attempt_id
             .as_deref()
@@ -83,7 +45,7 @@ impl Service {
         match self
             .slots
             .regular_identity(OsStr::new(&name))
-            .map_err(|_| Error::Authority)?
+            .map_err(why!(Error::Authority))?
         {
             None => return Ok(None),
             Some(identity)
@@ -93,10 +55,10 @@ impl Service {
         let value: Prepared = serde_json::from_slice(
             &self
                 .slots
-                .read_regular(OsStr::new(&name), MAX_SLOT_BYTES)
-                .map_err(|_| Error::Authority)?,
+                .read_whole(OsStr::new(&name))
+                .map_err(why!(Error::Authority))?,
         )
-        .map_err(|_| Error::Authority)?;
+        .map_err(why!(Error::Authority))?;
         value.validate()?;
         if value.binding.project != project
             || value.binding.run_id != run
@@ -118,8 +80,8 @@ impl Service {
         let _guard = self
             .fence
             .existing_observation_guard(project, run)
-            .map_err(|_| Error::Authority)?;
-        let lock = self.lock()?;
+            .map_err(why!(Error::Authority))?;
+        let _lock = self.lock()?;
         let facts = self.facts(project, run)?;
         let backend = &self.backends[&facts.backend];
         let definition = native::definition(
@@ -153,7 +115,7 @@ impl Service {
                 return Err(Error::Conflict);
             }
             let mut token = [0u8; 16];
-            getrandom::fill(&mut token).map_err(|_| Error::Configuration)?;
+            getrandom::fill(&mut token).map_err(why!(Error::Configuration))?;
             let token = format!("{:032x}", u128::from_be_bytes(token));
             let prepared = native::prepare(
                 &facts.run,
@@ -166,17 +128,13 @@ impl Service {
                 context.now,
                 context.expires,
             )?;
-            lock.validate()?;
-            let bytes = serde_json::to_vec(&prepared).map_err(|_| Error::Configuration)?;
-            if bytes.len() as u64 > MAX_SLOT_BYTES {
-                return Err(Error::Configuration);
-            }
+            let bytes = serde_json::to_vec(&prepared).map_err(why!(Error::Configuration))?;
             self.slots
                 .publish_new(
                     OsStr::new(&Self::slot_name(project, run, &facts.binding.attempt_id)?),
                     &bytes,
                 )
-                .map_err(|_| Error::Uncertain)?;
+                .map_err(why!(Error::Uncertain))?;
             prepared
         };
         self.check(&prepared)?;
@@ -187,8 +145,6 @@ impl Service {
             snapshot["action_id"].as_str().ok_or(Error::Authority)?,
             &prepared.request,
         )?;
-        lock.validate().map_err(|_| Error::Uncertain)?;
-        self.check(&prepared).map_err(|_| Error::Uncertain)?;
         let mut view = self.public(snapshot, context.now)?;
         view["reused"] = json!(reused);
         Ok(view)

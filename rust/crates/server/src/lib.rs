@@ -1,4 +1,7 @@
 //! Native HTTP boundary with isolated storage and explicitly configured effects.
+#[macro_use]
+mod why;
+
 pub mod administration;
 mod administration_http;
 pub mod backends;
@@ -47,14 +50,21 @@ pub struct Auth {
 }
 impl Auth {
     pub fn load(path: &Path) -> Result<Self, &'static str> {
-        let bytes =
-            read_private(path, 4096, true).map_err(|_| "invalid private daemon token file")?;
+        let bytes = read_private(path, 4096, true).map_err(why!(
+            "invalid private daemon token file",
+            "daemon token file unreadable"
+        ))?;
         let token = String::from_utf8(bytes)
-            .map_err(|_| "invalid daemon token encoding")?
+            .map_err(why!(
+                "invalid daemon token encoding",
+                "daemon token encoding invalid"
+            ))?
             .trim()
             .to_owned();
-        ml_exp_core::auth::validate_bearer(&token, 32, 4096)
-            .map_err(|_| "daemon token needs 32..4096 header-safe ASCII characters")?;
+        ml_exp_core::auth::validate_bearer(&token, 32, 4096).map_err(why!(
+            "daemon token needs 32..4096 header-safe ASCII characters",
+            "daemon token format invalid"
+        ))?;
         Ok(Self { token })
     }
 }
@@ -598,10 +608,10 @@ fn schema_document() -> serde_json::Value {
         json!({"type":"object","additionalProperties":false,"required":["object_key","sha256","archive_bytes"],"properties":{"object_key":{"type":"string","maxLength":1024},"sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"},"archive_bytes":{"type":"integer","minimum":1}}}),data_parameters()));
     let mut data_part = post(
         "Persist one exact zero-based part on the gateway; fixed 16 MiB maximum; no API disk spool",
-        json!({"type":"string","format":"binary","maxLength":16777216}),
+        json!({"type":"string","format":"binary","maxLength":ml_exp_core::multipart::PART_BYTES}),
         {
             let mut p = data_asset_parameters();
-            p.push(json!({"in":"path","name":"number","required":true,"schema":{"type":"integer","minimum":0,"maximum":65535}}));
+            p.push(json!({"in":"path","name":"number","required":true,"schema":{"type":"integer","minimum":0,"maximum":ml_exp_core::multipart::MAX_PARTS - 1}}));
             p.push(json!({"in":"path","name":"sha256","required":true,"schema":{"type":"string"}}));
             p
         },
@@ -611,7 +621,7 @@ fn schema_document() -> serde_json::Value {
         .expect("operation object")
         .remove("post")
         .expect("post operation");
-    part_operation["requestBody"]["content"] = json!({"application/octet-stream":{"schema":{"type":"string","format":"binary","maxLength":16777216}}});
+    part_operation["requestBody"]["content"] = json!({"application/octet-stream":{"schema":{"type":"string","format":"binary","maxLength":ml_exp_core::multipart::PART_BYTES}}});
     data_part["put"] = part_operation;
     paths.insert(
         "/api/projects/{project}/datasets/{executor}/{asset}/parts/{number}/{sha256}".into(),

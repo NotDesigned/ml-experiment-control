@@ -34,7 +34,7 @@ impl Service {
                     .cloned()
                     .map(serde_json::from_value)
                     .transpose()
-                    .map_err(|_| cloud::Error::evidence())?
+                    .map_err(why!(cloud::Error::evidence()))?
             } else {
                 None
             }
@@ -74,7 +74,7 @@ impl Service {
                 .map_err(io)?,
             "request.json",
         )?)
-        .map_err(|_| cloud::Error::evidence())?;
+        .map_err(why!(cloud::Error::evidence()))?;
         let backend = self
             .backends
             .get(&execution.backend_id)
@@ -87,18 +87,8 @@ impl Service {
         }
         backend.adapter.with_profile(profile)
     }
-    pub(super) fn authority(&self, project: &str, run: &str) -> cloud::Result<Directory> {
-        ml_exp_core::identity::validate_id(project)
-            .and_then(|_| ml_exp_core::identity::validate_id(run))
-            .map_err(|_| cloud::Error::configuration())?;
-        let (_, workspace) = read_config::workspace(&self.settings.registry_root)
-            .map_err(|_| cloud::Error::evidence())?;
-        if workspace != self.workspace {
-            return Err(cloud::Error::evidence());
-        }
-        self.fence
-            .existing_observation_guard(project, run)
-            .map_err(|_| cloud::Error::evidence())?;
+    /// The project lifecycle gate. An archived project takes no further effect.
+    fn require_active(&self, project: &str) -> cloud::Result<()> {
         if self
             .lifecycle
             .as_ref()
@@ -106,22 +96,53 @@ impl Service {
         {
             return Err(cloud::Error::evidence());
         }
+        Ok(())
+    }
+    /// Fence and lifecycle at acquisition: the Run has no tombstone and its project
+    /// is active. These stay enforced on every operation, unlike `check`.
+    pub(super) fn require_live(&self, project: &str, run: &str) -> cloud::Result<()> {
+        let _guard = self
+            .fence
+            .existing_observation_guard(project, run)
+            .map_err(why!(cloud::Error::evidence()))?;
+        self.require_active(project)
+    }
+    /// The same two gates under a guard already held across an effect.
+    pub(super) fn still_live(
+        &self,
+        guard: &crate::deletion::Guard<'_>,
+        project: &str,
+        run: &str,
+    ) -> cloud::Result<()> {
+        guard
+            .require_observed_live(project, run)
+            .map_err(why!(cloud::Error::evidence()))?;
+        self.require_active(project)
+    }
+    pub(super) fn authority(&self, project: &str, run: &str) -> cloud::Result<Directory> {
+        ml_exp_core::identity::validate_id(project)
+            .and_then(|_| ml_exp_core::identity::validate_id(run))
+            .map_err(why!(cloud::Error::configuration()))?;
+        let (_, workspace) = read_config::workspace(&self.settings.registry_root)
+            .map_err(why!(cloud::Error::evidence()))?;
+        if workspace != self.workspace {
+            return Err(cloud::Error::evidence());
+        }
+        self.require_live(project, run)?;
         let project = self
             .settings
             .projects
             .iter()
             .find(|p| p.project == project && p.discovery_enabled() && p.run_roots.len() == 1)
             .ok_or_else(cloud::Error::configuration)?;
-        let root = Directory::open(&project.run_roots[0], false).map_err(io)?;
-        root.verify_private_parent().map_err(io)?;
-        Ok(root)
+        Directory::open(&project.run_roots[0], false).map_err(io)
     }
     pub(super) fn project_hash(&self, project: &str) -> cloud::Result<String> {
         experiments::Store::open(self.settings.bindings(), self.fence.clone())
-            .map_err(|_| cloud::Error::evidence())?
+            .map_err(why!(cloud::Error::evidence()))?
             .project(project, None)
             .map(|p| p.raw_sha256)
-            .map_err(|_| cloud::Error::evidence())
+            .map_err(why!(cloud::Error::evidence()))
     }
     pub(super) fn documents(
         &self,
@@ -151,7 +172,7 @@ impl Service {
         let source = self
             .sources
             .read(project, &runtime.source_id)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         let target = backend.definition.target()?;
         let data_root = backend.definition.data_root()?;
         let datasets = request
@@ -231,7 +252,7 @@ impl Service {
             run::Authority {
                 project_sha256: &self.project_hash(project)?,
                 source_receipt_sha256: &canonical::protocol_identity(&source)
-                    .map_err(|_| cloud::Error::evidence())?,
+                    .map_err(why!(cloud::Error::evidence()))?,
                 profile_sha256: &profile.digest()?,
                 tracking_route: route,
                 target: &target,
@@ -242,7 +263,7 @@ impl Service {
             },
             now,
         )
-        .map_err(|_| cloud::Error::evidence())?;
+        .map_err(why!(cloud::Error::evidence()))?;
         let storage = backend.definition.storage_layout()?;
         if request.data_preparation.is_some() {
             if !runtime.worker_features.contains("script-preparation.v1") {
@@ -304,7 +325,7 @@ impl Service {
         let run = read(&directory, "manifest.json")?;
         let original = read(&directory, "request.json")?;
         let request: run::Create =
-            serde_json::from_value(original.clone()).map_err(|_| cloud::Error::evidence())?;
+            serde_json::from_value(original.clone()).map_err(why!(cloud::Error::evidence()))?;
         let attempt = read(
             &directory
                 .child(OsStr::new("attempts"), false)
@@ -362,13 +383,15 @@ impl Service {
             channel,
         )
         .map_err(launch_error)?;
-        let mut package = execution.package().map_err(|_| cloud::Error::evidence())?;
+        let mut package = execution
+            .package()
+            .map_err(why!(cloud::Error::evidence()))?;
         package.storage = run["native_cloud"]
             .get("storage")
             .cloned()
             .map(serde_json::from_value)
             .transpose()
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         package.result_upload = self.objects.is_some();
         let mut materialized = std::collections::BTreeSet::new();
         for mount in &package.config.datasets {
@@ -439,7 +462,12 @@ impl Service {
         }
         Ok(execution)
     }
-    pub(in crate::cloud_runs) fn check(&self, prepared: &Prepared) -> cloud::Result<()> {
+    /// The first-spend gate: the Attempt about to be spent still matches its frozen
+    /// Run, source and profile. It runs before reuse, authorization and the claim,
+    /// never afterwards, and before a retry publishes the Attempt that would be spent
+    /// next. A running Attempt stays readable and cancellable after an edit; a drifted
+    /// one that has not started stays unspendable, and the remedy is a new Run.
+    pub(super) fn check(&self, prepared: &Prepared) -> cloud::Result<()> {
         let mut current = self.current_execution(
             &prepared.execution.job.project,
             &prepared.execution.job.run_id,
@@ -454,6 +482,7 @@ impl Service {
         if current != prepared.execution {
             return Err(cloud::Error::evidence());
         }
-        action::validate(&prepared.plan, &prepared.execution).map_err(|_| cloud::Error::evidence())
+        action::validate(&prepared.plan, &prepared.execution)
+            .map_err(why!(cloud::Error::evidence()))
     }
 }

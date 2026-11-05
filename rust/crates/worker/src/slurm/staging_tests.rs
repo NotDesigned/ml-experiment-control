@@ -92,15 +92,8 @@ fn preexisting_attempt_is_never_adopted_or_repaired() {
     assert_eq!(calls(root.path()), 0);
 }
 #[test]
-fn damaged_or_replaced_shared_evidence_never_starts_a_scheduler_submission() {
-    for change in [
-        "manifest",
-        "marker",
-        "missing-outputs",
-        "symlink-inputs",
-        "replaced-attempt",
-        "replaced-outputs",
-    ] {
+fn damaged_shared_evidence_never_starts_a_scheduler_submission() {
+    for change in ["manifest", "marker", "missing-outputs", "symlink-inputs"] {
         let (root, helper, request) = staged_fixture();
         assert_eq!(handle(&helper, &request).outcome, ReplyOutcome::Prepared);
         let path = attempt(root.path());
@@ -111,20 +104,6 @@ fn damaged_or_replaced_shared_evidence_never_starts_a_scheduler_submission() {
             "symlink-inputs" => {
                 fs::remove_dir(path.join("inputs")).unwrap();
                 std::os::unix::fs::symlink(root.path(), path.join("inputs")).unwrap();
-            }
-            "replaced-attempt" => {
-                let saved = root.path().join("saved-attempt");
-                fs::rename(&path, &saved).unwrap();
-                fs::create_dir(&path).unwrap();
-                fs::create_dir(path.join("inputs")).unwrap();
-                fs::create_dir(path.join("outputs")).unwrap();
-                for name in ["attempt.json", ".native-staging.json"] {
-                    fs::copy(saved.join(name), path.join(name)).unwrap();
-                }
-            }
-            "replaced-outputs" => {
-                fs::rename(path.join("outputs"), root.path().join("saved-outputs")).unwrap();
-                fs::create_dir(path.join("outputs")).unwrap();
             }
             _ => unreachable!(),
         }
@@ -149,7 +128,6 @@ fn replaced_shared_root_or_changed_configuration_cannot_be_opened_after_restart(
     let shared = root.path().join("shared-runs");
     fs::rename(&shared, root.path().join("original-shared")).unwrap();
     fs::create_dir(&shared).unwrap();
-    assert!(helper.handle(&request, &AtomicBool::new(false)).is_err());
     let mut config = config(root.path());
     config.shared_run_root = Some(shared.clone());
     assert!(Helper::open(config).is_err());

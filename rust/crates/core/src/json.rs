@@ -1,6 +1,10 @@
 //! Strict JSON remains JSON: YAML style and scalar resolution are irrelevant.
-const MAX_DEPTH: usize = 64;
-const MAX_NODES: usize = 100_000;
+pub const MAX_DEPTH: usize = 64;
+/// An edge bounds bytes, and parsing multiplies them: 8 MiB of `[0,0,...]` is four
+/// million values, reached before any token check on the exchange routes. This
+/// stays above the largest valid message, about 530,000 nodes in a READY dataset
+/// State at `datasets::MAX_METADATA`, so a size check decides that case first.
+const MAX_NODES: usize = 600_000;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
     #[error("JSON is malformed or not one mapping")]
@@ -16,12 +20,17 @@ use serde::de::{self, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Value, value::RawValue};
 use std::fmt;
 
+/// One mapping from anywhere outside this service's own state.
 pub fn mapping(bytes: &[u8]) -> Result<Map<String, Value>, Error> {
-    if bytes.len() > 4 * 1024 * 1024 {
-        return Err(Error::Complexity);
-    }
+    parse(bytes, MAX_NODES)
+}
+/// One mapping from a file this service wrote and reads with `read_whole`. It has
+/// no node budget because a refusal here would strand a record already committed.
+pub fn own_mapping(bytes: &[u8]) -> Result<Map<String, Value>, Error> {
+    parse(bytes, usize::MAX)
+}
+fn parse(bytes: &[u8], mut remaining: usize) -> Result<Map<String, Value>, Error> {
     let text = std::str::from_utf8(bytes).map_err(|_| Error::Malformed)?;
-    let mut remaining = MAX_NODES;
     match value(text, 0, &mut remaining)? {
         Value::Object(map) => Ok(map),
         _ => Err(Error::Malformed),
@@ -102,5 +111,50 @@ impl<'de> Visitor<'de> for Container<'_> {
             result.insert(key, item);
         }
         Ok(Value::Object(result))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    /// The root, its key and the array are three nodes.
+    fn wide(values: usize) -> Vec<u8> {
+        let mut body = b"{\"a\":[0".to_vec();
+        for _ in 1..values {
+            body.extend_from_slice(b",0");
+        }
+        body.extend_from_slice(b"]}");
+        body
+    }
+    #[test]
+    fn the_node_budget_bounds_width_that_the_depth_check_does_not() {
+        assert!(mapping(&wide(MAX_NODES - 3)).is_ok());
+        assert_eq!(mapping(&wide(MAX_NODES - 2)), Err(Error::Complexity));
+        // The 8 MiB an edge admits, as small numbers.
+        assert_eq!(mapping(&wide(4 * 1024 * 1024)), Err(Error::Complexity));
+    }
+    #[test]
+    fn the_budget_counts_mapping_keys_and_values() {
+        let mut body = b"{\"a\":0".to_vec();
+        for key in 1..MAX_NODES / 2 {
+            body.extend_from_slice(format!(",\"{key}\":0").as_bytes());
+        }
+        body.push(b'}');
+        assert_eq!(mapping(&body), Err(Error::Complexity));
+        assert_eq!(own_mapping(&body).unwrap().len(), MAX_NODES / 2);
+    }
+    #[test]
+    fn an_own_record_has_no_budget_and_keeps_every_other_refusal() {
+        let map = own_mapping(&wide(MAX_NODES)).unwrap();
+        assert_eq!(map["a"].as_array().unwrap().len(), MAX_NODES);
+        assert_eq!(own_mapping(b"[]"), Err(Error::Malformed));
+        assert_eq!(own_mapping(br#"{"a":1,"a":2}"#), Err(Error::MappingKey));
+        assert_eq!(own_mapping(br#"{"a":1e999}"#), Err(Error::Number));
+        let deep = format!(
+            "{{\"a\":{}{}}}",
+            "[".repeat(MAX_DEPTH + 1),
+            "]".repeat(MAX_DEPTH + 1)
+        );
+        assert_eq!(own_mapping(deep.as_bytes()), Err(Error::Complexity));
     }
 }

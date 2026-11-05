@@ -6,7 +6,7 @@ use ml_exp_core::{cloud::Job, data_preparation};
 fn view(project: &str, run_id: &str, status: Value) -> cloud::Result<Value> {
     let observation: Option<ml_exp_core::cloud::JobObservation> =
         serde_json::from_value(status["observation"].clone())
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
     let state = data_preparation::job_status(
         observation.as_ref().map(|o| o.state),
         status["retry_safe"] != true,
@@ -40,9 +40,11 @@ impl Service {
             run_id,
             run["native_creation"]
         ]))
-        .map_err(|_| cloud::Error::evidence())?;
+        .map_err(why!(cloud::Error::evidence()))?;
         let execution = self.current_execution(project, run_id, "attempt-001", &token[..32])?;
-        let package = execution.package().map_err(|_| cloud::Error::evidence())?;
+        let package = execution
+            .package()
+            .map_err(why!(cloud::Error::evidence()))?;
         let plan = package
             .config
             .data_preparation
@@ -74,7 +76,7 @@ impl Service {
             runtime.worker_path,
             "script-prepare".into(),
             "--plan-json".into(),
-            serde_json::to_string(plan).map_err(|_| cloud::Error::evidence())?,
+            serde_json::to_string(plan).map_err(why!(cloud::Error::evidence()))?,
         ];
         match &copier.profile {
             cloud::adapter::Profile::Pai(p) => {
@@ -82,7 +84,7 @@ impl Service {
             }
             cloud::adapter::Profile::Sensecore(p) => p.create(&job),
         }
-        .map_err(|_| cloud::Error::configuration())?;
+        .map_err(why!(cloud::Error::configuration()))?;
         Ok(Some((execution.backend_id, job)))
     }
     /// Read only retained job evidence. This never creates an outbox entry,

@@ -11,9 +11,9 @@ use std::{
     path::Path,
 };
 
-pub const MAX_ARCHIVE_BYTES: u64 = 64 * 1024 * 1024;
-pub const MAX_SOURCE_BYTES: u64 = 256 * 1024 * 1024;
-pub const MAX_SOURCE_NODES: usize = 20_000;
+fn policy() -> source_contract::Policy {
+    source_contract::Policy::default()
+}
 
 /// An anonymous temporary archive, rewound to byte zero. It contains no token.
 pub struct PreparedArchive {
@@ -45,7 +45,7 @@ fn invalid() -> Error {
 }
 fn packing() -> Error {
     Error::Observation(
-        "cannot pack source: use a stable regular directory without links, special files, credential-looking paths, or unsafe permissions, within the source limits",
+        "cannot pack source: use a stable regular directory without symlinks, special files or credential-looking paths, within the source limits",
     )
 }
 fn sha256(value: &str) -> bool {
@@ -57,7 +57,7 @@ fn source_digest(source_id: &str) -> Result<&str, Error> {
 }
 pub fn plan_archive(project: &str, digest: &str, bytes: u64) -> Result<ArchivePlan, Error> {
     identity::validate_id(project).map_err(|_| invalid())?;
-    if !sha256(digest) || bytes == 0 || bytes > MAX_ARCHIVE_BYTES {
+    if !sha256(digest) || bytes == 0 || bytes > policy().max_archive_bytes {
         return Err(invalid());
     }
     Ok(ArchivePlan {
@@ -211,7 +211,7 @@ pub fn lookup_archive(
 /// Anonymous prepared files have link count zero, so no pathname is consulted.
 pub fn inspect_archive(mut file: File) -> Result<PreparedArchive, Error> {
     let before = file.metadata().map_err(|_| packing())?;
-    if !before.is_file() || before.len() == 0 || before.len() > MAX_ARCHIVE_BYTES {
+    if !before.is_file() || before.len() == 0 || before.len() > policy().max_archive_bytes {
         return Err(packing());
     }
     file.seek(SeekFrom::Start(0)).map_err(|_| packing())?;
@@ -248,7 +248,6 @@ fn same_metadata(before: &std::fs::Metadata, after: &std::fs::Metadata) -> bool 
         base && before.dev() == after.dev()
             && before.ino() == after.ino()
             && before.mode() == after.mode()
-            && before.nlink() == after.nlink()
             && before.uid() == after.uid()
             && before.ctime() == after.ctime()
             && before.ctime_nsec() == after.ctime_nsec()
@@ -298,7 +297,7 @@ impl Write for BoundedWriter {
         if self
             .bytes
             .checked_add(bytes.len() as u64)
-            .is_none_or(|length| length > MAX_ARCHIVE_BYTES)
+            .is_none_or(|length| length > policy().max_archive_bytes)
         {
             return Err(std::io::Error::other("source archive exceeds limit"));
         }
@@ -313,16 +312,13 @@ impl Write for BoundedWriter {
 
 /// Pack regular files only, with stable order, gzip mtime zero and normalized
 /// tar ownership/timestamps. Executable intent is retained; repository code is
-/// never run. The initial names, file metadata, and directory attachment are
-/// rechecked before success. This is not an atomic snapshot against root or a
-/// hostile process with the same UID changing and restoring the source tree.
+/// never run. The initial names and file metadata are rechecked before success,
+/// so an edit during packing fails rather than producing a torn archive.
 pub fn pack_directory(path: &Path) -> Result<PreparedArchive, Error> {
     use ml_exp_io::directory::Directory;
     #[cfg(unix)]
     use std::os::unix::fs::MetadataExt;
     use std::{ffi::OsString, path::Component};
-    const MAX_DIRECTORIES: usize = 1024;
-    const MAX_DEPTH: usize = 32;
     struct Entry {
         parent: Directory,
         name: OsString,
@@ -349,23 +345,19 @@ pub fn pack_directory(path: &Path) -> Result<PreparedArchive, Error> {
         }
     }
     let root = Directory::open(&normalized, false).map_err(|_| packing())?;
-    root.verify_private_parent().map_err(|_| packing())?;
-    let mut stack = vec![(root, String::new(), 0)];
+    let limits = policy();
+    let mut stack = vec![(root, String::new())];
     let mut entries = Vec::new();
     let mut observed = Vec::new();
     let mut expanded = 0_u64;
     let mut nodes = 0_usize;
     let mut path_bytes = 0_usize;
-    while let Some((directory, relative, depth)) = stack.pop() {
-        if depth > MAX_DEPTH || observed.len() >= MAX_DIRECTORIES {
-            return Err(packing());
-        }
-        directory.verify_private_parent().map_err(|_| packing())?;
+    while let Some((directory, relative)) = stack.pop() {
         let names = directory
-            .entry_names_limited(MAX_SOURCE_NODES.saturating_sub(nodes))
+            .entry_names_limited(limits.max_source_files.saturating_sub(nodes))
             .map_err(|_| packing())?;
         nodes += names.len();
-        if nodes > MAX_SOURCE_NODES {
+        if nodes > limits.max_source_files {
             return Err(packing());
         }
         for name in &names {
@@ -385,15 +377,12 @@ pub fn pack_directory(path: &Path) -> Result<PreparedArchive, Error> {
                 return Err(packing());
             }
             if let Ok(child) = directory.child(name, false) {
-                if stack.len() + observed.len() >= MAX_DIRECTORIES {
-                    return Err(packing());
-                }
-                stack.push((child, path, depth + 1));
+                stack.push((child, path));
             } else {
                 let file = directory.open_regular_read(name).map_err(|_| packing())?;
                 let metadata = file.metadata().map_err(|_| packing())?;
                 expanded = expanded.checked_add(metadata.len()).ok_or_else(packing)?;
-                if expanded > MAX_SOURCE_BYTES {
+                if expanded > limits.max_source_bytes {
                     return Err(packing());
                 }
                 entries.push(Entry {
@@ -450,10 +439,6 @@ pub fn pack_directory(path: &Path) -> Result<PreparedArchive, Error> {
         {
             return Err(packing());
         }
-        entry
-            .parent
-            .validate_regular_entry(&entry.name, &file)
-            .map_err(|_| packing())?;
     }
     let writer = archive
         .into_inner()
@@ -470,13 +455,9 @@ pub fn pack_directory(path: &Path) -> Result<PreparedArchive, Error> {
         }
     }
     for proof in observed {
-        proof
-            .parent
-            .verify_private_parent()
-            .map_err(|_| packing())?;
         if proof
             .parent
-            .entry_names_limited(MAX_SOURCE_NODES)
+            .entry_names_limited(limits.max_source_files)
             .map_err(|_| packing())?
             != proof.names
         {

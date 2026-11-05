@@ -28,18 +28,17 @@ impl Observer {
         let handle = thread::Builder::new()
             .name("native-observer".into())
             .spawn(move || {
+                // Moved in by name: the flock must live as long as this thread.
+                let _leader = leader;
                 let start = Instant::now();
                 let mut schedule = Schedule::default();
                 let mut candidates = Default::default();
                 let mut discover_at = 0;
                 let _ = service.background_report(None, None, Ok(()));
                 while !flag.load(Ordering::Relaxed) {
-                    if service.validate_background_leader(&leader).is_err() {
-                        break;
-                    }
                     let elapsed = start.elapsed().as_secs();
                     if elapsed >= discover_at {
-                        match service.background_candidates(policy.max_candidates) {
+                        match service.background_candidates() {
                             Ok(found) => {
                                 candidates = found;
                                 if candidates.is_empty() {
@@ -88,7 +87,7 @@ impl Observer {
                 }
                 let _ = service.background_stopped();
             })
-            .map_err(|_| Error::Configuration)?;
+            .map_err(why!(Error::Configuration))?;
         Ok(Self {
             stop,
             wake,

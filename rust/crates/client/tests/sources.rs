@@ -138,7 +138,11 @@ fn pure_identity_rules_keep_archive_sha_separate_from_the_source_tree() {
         ("demo", "A".repeat(64), 10),
         ("demo", "a".repeat(63), 10),
         ("demo", "a".repeat(64), 0),
-        ("demo", "a".repeat(64), sources::MAX_ARCHIVE_BYTES + 1),
+        (
+            "demo",
+            "a".repeat(64),
+            ml_exp_core::sources::Policy::default().max_archive_bytes + 1,
+        ),
     ] {
         assert!(sources::plan_archive(project, &digest, bytes).is_err());
     }
@@ -356,6 +360,27 @@ fn invalid_health_or_changed_local_archive_never_sends_upload() {
 
 #[cfg(unix)]
 #[test]
+fn group_writable_directories_in_a_users_tree_pack_the_same_as_private_ones() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let nested = temp.path().join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    std::fs::write(nested.join("train.py"), "print('not executed')\n").unwrap();
+    for mode in [0o775, 0o777] {
+        std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(mode)).unwrap();
+        std::fs::set_permissions(&nested, std::fs::Permissions::from_mode(mode)).unwrap();
+        let writable = sources::pack_directory(temp.path()).unwrap();
+        std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(&nested, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            writable.sha256,
+            sources::pack_directory(temp.path()).unwrap().sha256
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn packs_deterministic_regular_files_and_preserves_only_executable_intent() {
     use std::os::unix::fs::PermissionsExt;
     let temp = tempfile::tempdir().unwrap();
@@ -468,13 +493,14 @@ fn source_filename_choices_are_allowed_but_aliases_and_size_limits_remain() {
             "expanded" => {
                 File::create(temp.path().join("large.bin"))
                     .unwrap()
-                    .set_len(sources::MAX_SOURCE_BYTES + 1)
+                    .set_len(ml_exp_core::sources::Policy::default().max_source_bytes + 1)
                     .unwrap();
             }
             _ => unreachable!(),
         }
-        // A hard link in the user's own tree packs as ordinary hashed content.
-        if matches!(case, "secret" | "nested-secret" | "hardlink") {
+        // A hard link or a group-writable file in the user's own tree packs as
+        // ordinary hashed content, with its mode normalized in the archive.
+        if matches!(case, "secret" | "nested-secret" | "hardlink" | "writable") {
             assert!(sources::pack_directory(temp.path()).is_ok(), "{case}");
             continue;
         }
@@ -488,7 +514,8 @@ fn source_filename_choices_are_allowed_but_aliases_and_size_limits_remain() {
     symlink(&real, temp.path().join("alias")).unwrap();
     assert!(sources::pack_directory(&temp.path().join("alias")).is_err());
     let huge = tempfile::tempfile().unwrap();
-    huge.set_len(sources::MAX_ARCHIVE_BYTES + 1).unwrap();
+    huge.set_len(ml_exp_core::sources::Policy::default().max_archive_bytes + 1)
+        .unwrap();
     assert!(sources::inspect_archive(huge).is_err());
 }
 

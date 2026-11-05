@@ -34,7 +34,6 @@ impl Service {
             else {
                 continue;
             };
-            self.check(&prepared)?;
             let Some(saved) = self.artifact_saved(&prepared)? else {
                 continue;
             };
@@ -43,7 +42,7 @@ impl Service {
             }
             if let Some(state) = saved.state {
                 crate::read_model::project_artifacts(snapshot, &prepared.execution.binding, &state)
-                    .map_err(|_| cloud::Error::evidence())?;
+                    .map_err(why!(cloud::Error::evidence()))?;
             }
         }
         Ok(())
@@ -65,9 +64,9 @@ impl Service {
         let package = prepared
             .execution
             .package()
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         let sha = helper::sha256_bytes(&encode(&package)?);
-        bundle.validate().map_err(|_| cloud::Error::evidence())?;
+        bundle.validate().map_err(why!(cloud::Error::evidence()))?;
         let archive = &bundle.archive;
         let job = &prepared.execution.job;
         if bundle.intent_sha256 != sha
@@ -84,7 +83,7 @@ impl Service {
             .artifacts
             .unwrap_or_default()
             .check(&archive.files)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         Ok(sha)
     }
     pub(super) fn artifact_saved(&self, prepared: &Prepared) -> cloud::Result<Option<Saved>> {
@@ -93,14 +92,14 @@ impl Service {
             return Ok(None);
         }
         let saved: Saved = serde_json::from_value(read(&self.slots, &name)?)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         if self.artifact_binding(prepared, &saved.bundle)? != saved.package_sha256
             || saved.released_parts > crate::objects::parts(&saved.bundle.archive).map_err(io)?
         {
             return Err(cloud::Error::evidence());
         }
         if let Some(state) = &saved.state {
-            state.validate().map_err(|_| cloud::Error::evidence())?;
+            state.validate().map_err(why!(cloud::Error::evidence()))?;
             if state.bundle != saved.bundle
                 || saved.released_parts > 0
                     && state.retention.status == artifacts::RetentionStatus::Keep
@@ -114,14 +113,13 @@ impl Service {
         Ok(Some(saved))
     }
     pub(super) fn artifact_save(&self, prepared: &Prepared, saved: &Saved) -> cloud::Result<()> {
-        self.check(prepared)?;
         self.slots
             .replace_regular(OsStr::new(&Self::artifact_name(prepared)?), &encode(saved)?)
-            .map_err(|_| cloud::Error {
+            .map_err(why!(cloud::Error {
                 code: "CLOUD_ARTIFACT_COMMIT_UNCERTAIN".into(),
                 http_status: None,
                 uncertain: true,
-            })
+            }))
     }
     pub(super) fn worker_authority(
         &self,
@@ -146,7 +144,7 @@ impl Service {
         if !bool::from(channel.token.as_bytes().ct_eq(token.as_bytes())) {
             return Err(denied());
         }
-        self.check(&prepared)?;
+        self.require_live(project, run)?;
         if self
             .actions
             .observe(
@@ -170,7 +168,7 @@ impl Service {
         request: ArtifactRequest,
         now: &str,
     ) -> cloud::Result<Value> {
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         let prepared = self.worker_authority(project, run, attempt, token)?;
         let objects = self
             .objects
@@ -179,7 +177,7 @@ impl Service {
         let package = prepared
             .execution
             .package()
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         if request.package_sha256 != helper::sha256_bytes(&encode(&package)?) {
             return Err(cloud::Error::evidence());
         }
@@ -226,7 +224,7 @@ impl Service {
         let published = saved.state.is_some();
         match request.operation {
             ArtifactOperation::Prepare { .. } => Ok(
-                json!({"published":published,"released":saved.state.as_ref().is_some_and(|s|s.retention.status!=artifacts::RetentionStatus::Keep),"part_bytes":crate::objects::PART_BYTES,"part_count":crate::objects::parts(&saved.bundle.archive).map_err(io)?}),
+                json!({"published":published,"released":saved.state.as_ref().is_some_and(|s|s.retention.status!=artifacts::RetentionStatus::Keep),"part_bytes":ml_exp_core::multipart::PART_BYTES,"part_count":crate::objects::parts(&saved.bundle.archive).map_err(io)?}),
             ),
             ArtifactOperation::Ticket { part } => {
                 if published {
@@ -236,7 +234,7 @@ impl Service {
                     now,
                     &time::format_description::well_known::Rfc3339,
                 )
-                .map_err(|_| cloud::Error::configuration())?
+                .map_err(why!(cloud::Error::configuration()))?
                 .unix_timestamp();
                 objects
                     .ticket(&saved.bundle.archive, part, true, now)
@@ -245,10 +243,8 @@ impl Service {
             ArtifactOperation::Complete => {
                 if !published {
                     objects.verify(&saved.bundle.archive).map_err(io)?;
-                    lock.validate()?;
-                    self.check(&prepared)?;
                     saved.state = Some(
-                        State::new(saved.bundle.clone()).map_err(|_| cloud::Error::evidence())?,
+                        State::new(saved.bundle.clone()).map_err(why!(cloud::Error::evidence()))?,
                     );
                     self.artifact_save(&prepared, &saved)?;
                 }
@@ -275,8 +271,8 @@ impl Service {
         }
         let state = saved.state.ok_or_else(unpublished)?;
         Ok(
-            json!({"submission_id":action,"state":state,"download_available":state.available().map_err(|_|cloud::Error::evidence())?,"scheduler_mutation_performed":false,
-            "download":{"kind":"oss-parts","part_bytes":crate::objects::PART_BYTES,"part_count":crate::objects::parts(&state.bundle.archive).map_err(io)?},"verification":"SERVER_VERIFIED"}),
+            json!({"submission_id":action,"state":state,"download_available":state.available().map_err(why!(cloud::Error::evidence()))?,"scheduler_mutation_performed":false,
+            "download":{"kind":"oss-parts","part_bytes":ml_exp_core::multipart::PART_BYTES,"part_count":crate::objects::parts(&state.bundle.archive).map_err(io)?},"verification":"SERVER_VERIFIED"}),
         )
     }
     pub fn download_ticket(&self, action: &str, part: u64, now: &str) -> cloud::Result<Value> {
@@ -290,12 +286,12 @@ impl Service {
             });
         }
         let state = saved.state.ok_or_else(missing)?;
-        if !state.available().map_err(|_| cloud::Error::evidence())? {
+        if !state.available().map_err(why!(cloud::Error::evidence()))? {
             return Err(missing());
         }
         let timestamp =
             time::OffsetDateTime::parse(now, &time::format_description::well_known::Rfc3339)
-                .map_err(|_| cloud::Error::configuration())?
+                .map_err(why!(cloud::Error::configuration()))?
                 .unix_timestamp();
         self.objects
             .as_ref()
@@ -316,7 +312,7 @@ impl Service {
             }
         }
         let id = canonical::digest(&json!(["native-cloud-collect.v1", action]))
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         let request = ml_exp_core::cloud::exchange::Sync {
             request_id: id[..32].into(),
             confirmation: format!("SYNC {action}"),
@@ -348,7 +344,7 @@ impl Service {
             .as_ref()
             .ok_or_else(missing)?
             .acknowledge(proof, now, release)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         saved.state = Some(state);
         self.artifact_save(&prepared, &saved)?;
         if release
@@ -357,15 +353,13 @@ impl Service {
         {
             let state = saved.state.as_mut().ok_or_else(missing)?;
             state.retention = artifacts::begin_release(&state.bundle.archive, &state.retention)
-                .map_err(|_| cloud::Error::evidence())?;
+                .map_err(why!(cloud::Error::evidence()))?;
             self.artifact_save(&prepared, &saved)?;
             let total = crate::objects::parts(&saved.bundle.archive).map_err(io)?;
             // Bounded work per call; repeated identical ACKs continue the same
             // cursor, including after a lost response or process restart.
             let end = total.min(saved.released_parts.saturating_add(64));
             while saved.released_parts < end {
-                lock.validate()?;
-                self.check(&prepared)?;
                 self.objects
                     .as_ref()
                     .ok_or_else(cloud::Error::configuration)?
@@ -378,7 +372,7 @@ impl Service {
                 let state = saved.state.as_mut().ok_or_else(missing)?;
                 state.retention =
                     artifacts::finish_release(&state.bundle.archive, &state.retention, now)
-                        .map_err(|_| cloud::Error::evidence())?;
+                        .map_err(why!(cloud::Error::evidence()))?;
                 self.artifact_save(&prepared, &saved)?;
             }
         }

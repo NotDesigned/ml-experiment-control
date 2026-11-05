@@ -34,7 +34,6 @@ pub fn window(directory: &Directory, name: &str) -> Window {
         (&mut file)
             .take((WINDOW_BYTES + 1) as u64)
             .read_to_end(&mut bytes)?;
-        directory.validate_regular_entry(OsStr::new(name), &file)?;
         if bytes.len() as u64 != before.len() - offset || changed(&before, &file.metadata()?) {
             return Ok(Window::unavailable(Problem::Changed));
         }
@@ -88,8 +87,7 @@ pub fn history(
     let mut file = directory.open_regular_read(OsStr::new("metrics.jsonl"))?;
     let before = file.metadata()?;
     let offset = start.map_or(0, |c| c.offset_bytes);
-    if before.len() > history::MAX_FILE_BYTES
-        || offset > before.len()
+    if offset > before.len()
         || start.is_some_and(|c| c.device != before.dev() || c.inode != before.ino())
     {
         return Err(io::Error::other("metrics file identity changed"));
@@ -110,7 +108,6 @@ pub fn history(
     let mut bytes = vec![0; count];
     file.read_exact(&mut bytes)?;
     hash.update(&bytes);
-    directory.validate_regular_entry(OsStr::new("metrics.jsonl"), &file)?;
     if changed(&before, &file.metadata()?) {
         return Err(io::Error::other("metrics changed while sampling"));
     }

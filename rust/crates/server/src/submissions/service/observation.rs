@@ -29,28 +29,28 @@ impl Service {
         if !self
             .slots
             .entry_exists(OsStr::new(&name))
-            .map_err(|_| Error::Authority)?
+            .map_err(why!(Error::Authority))?
         {
             return Ok(None);
         }
         let identity = self
             .slots
             .regular_identity(OsStr::new(&name))
-            .map_err(|_| Error::Authority)?
+            .map_err(why!(Error::Authority))?
             .ok_or(Error::Authority)?;
         if !identity.is_private_for(effective_uid()) || identity.mode & 0o077 != 0 {
             return Err(Error::Authority);
         }
         let bytes = self
             .slots
-            .read_regular(OsStr::new(&name), helper::MAX_METADATA_BYTES as u64)
-            .map_err(|_| Error::Authority)?;
-        let saved: Saved = serde_json::from_slice(&bytes).map_err(|_| Error::Authority)?;
+            .read_whole(OsStr::new(&name))
+            .map_err(why!(Error::Authority))?;
+        let saved: Saved = serde_json::from_slice(&bytes).map_err(why!(Error::Authority))?;
         if saved.request_sha256
             != prepared
                 .request
                 .identity()
-                .map_err(|_| Error::Authority)?
+                .map_err(why!(Error::Authority))?
                 .request_sha256
         {
             return Err(Error::Authority);
@@ -59,7 +59,7 @@ impl Service {
             &saved.observed_at,
             &time::format_description::well_known::Rfc3339,
         )
-        .map_err(|_| Error::Authority)?;
+        .map_err(why!(Error::Authority))?;
         self.validate_observation(prepared, &saved.evidence)?;
         Ok(Some(saved))
     }
@@ -77,19 +77,19 @@ impl Service {
         }
         evidence
             .validate_scope(&prepared.request.intent().scope, job)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         let (manifest, _) = prepared
             .request
             .prepared_content()
             .ok_or(Error::Authority)?;
         let plan =
             ml_exp_core::slurm::staging::plan(prepared.request.intent(), manifest.as_bytes())
-                .map_err(|_| Error::Authority)?
+                .map_err(why!(Error::Authority))?
                 .ok_or(Error::Authority)?;
         let package = plan.managed.ok_or(Error::Authority)?;
         evidence
             .validate_config(&package.config)
-            .map_err(|_| Error::Authority)
+            .map_err(why!(Error::Authority))
     }
     /// Refresh the already-owned exact job. No prepare, submit, cancel, claim,
     /// Action recovery or reconciliation is reachable from this operation.
@@ -104,13 +104,13 @@ impl Service {
         limit: Option<std::time::Duration>,
     ) -> Result<Value> {
         time::OffsetDateTime::parse(now, &time::format_description::well_known::Rfc3339)
-            .map_err(|_| Error::Configuration)?;
-        let lock = self.lock()?;
+            .map_err(why!(Error::Configuration))?;
+        let _lock = self.lock()?;
         let prepared = self.load(action)?;
         let guard = self
             .fence
             .existing_observation_guard(&prepared.binding.project, &prepared.binding.run_id)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         let snapshot = self.actions.observe(action)?;
         if snapshot["execution"]["status"] != "VERIFIED" {
             return Err(Error::Conflict);
@@ -120,18 +120,17 @@ impl Service {
             .ok_or(Error::Authority)?;
         let request =
             helper::Request::observe_worker(prepared.request.intent().clone(), job.into())
-                .map_err(|_| Error::Authority)?;
+                .map_err(why!(Error::Authority))?;
         let backend = self
             .backends
             .values()
             .find(|b| b.profile.target == request.intent().target)
             .ok_or(Error::Authority)?;
         let outcome = call(&Self::observation_ssh(backend, limit), &request, cancelled)
-            .map_err(|_| Error::ObservationUnavailable)?;
+            .map_err(why!(Error::ObservationUnavailable))?;
         guard
             .require_observed_live(&prepared.binding.project, &prepared.binding.run_id)
-            .map_err(|_| Error::Authority)?;
-        self.check(&prepared)?;
+            .map_err(why!(Error::Authority))?;
         let CallOutcome::Receipt { reply, .. } = outcome else {
             return Err(Error::ObservationUnavailable);
         };
@@ -142,41 +141,36 @@ impl Service {
         if let Some(previous) = self.observation(&prepared)? {
             evidence
                 .follows(&previous.evidence)
-                .map_err(|_| Error::ObservationConflict)?;
+                .map_err(why!(Error::ObservationConflict))?;
             evidence.retain_windows(&previous.evidence);
         }
         let saved = Saved {
             request_sha256: prepared
                 .request
                 .identity()
-                .map_err(|_| Error::Authority)?
+                .map_err(why!(Error::Authority))?
                 .request_sha256,
             observed_at: now.into(),
             evidence: *evidence,
         };
-        let bytes = serde_json::to_vec(&saved).map_err(|_| Error::Authority)?;
-        if bytes.len() > helper::MAX_METADATA_BYTES {
-            return Err(Error::Authority);
-        }
+        let bytes = serde_json::to_vec(&saved).map_err(why!(Error::Authority))?;
         let name = Self::observation_name(&prepared)?;
-        lock.validate()?;
         if self
             .slots
             .entry_exists(OsStr::new(&name))
-            .map_err(|_| Error::Authority)?
+            .map_err(why!(Error::Authority))?
         {
             self.slots
                 .replace_regular(OsStr::new(&name), &bytes)
-                .map_err(|_| Error::Uncertain)?;
+                .map_err(why!(Error::Uncertain))?;
         } else {
             self.slots
                 .publish_new(OsStr::new(&name), &bytes)
-                .map_err(|_| Error::Uncertain)?;
+                .map_err(why!(Error::Uncertain))?;
         }
         guard
             .require_observed_live(&prepared.binding.project, &prepared.binding.run_id)
-            .map_err(|_| Error::Authority)?;
-        lock.validate()?;
+            .map_err(why!(Error::Authority))?;
         self.journal_lifecycle(
             &prepared,
             json!({"phase":saved.evidence.worker.phase,"state":match saved.evidence.worker.phase {
@@ -218,7 +212,7 @@ impl Service {
                     .ok_or(Error::Authority)?,
                 &saved.observed_at,
             )
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         }
         Ok(())
     }

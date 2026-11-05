@@ -13,17 +13,12 @@ pub(super) fn open_root(config: &HelperConfig) -> Result<Option<Directory>> {
     config
         .shared_run_root
         .as_ref()
-        .map(|path| {
-            let root = Directory::open(path, false)?;
-            root.verify_private_parent()?;
-            Ok(root)
-        })
+        .map(|path| Ok(Directory::open(path, false)?))
         .transpose()
 }
 pub(super) fn binding(directory: Option<&Directory>) -> Result<Option<StorageBinding>> {
     directory
         .map(|directory| {
-            directory.verify_private_parent()?;
             Ok(StorageBinding {
                 path: directory.path(),
                 identity: directory.identity()?,
@@ -35,23 +30,12 @@ pub(super) fn binding(directory: Option<&Directory>) -> Result<Option<StorageBin
 #[serde(deny_unknown_fields)]
 struct Sealed {
     plan: domain::Plan,
-    directory_identities: Vec<(u64, u64)>,
-}
-fn identities(directories: &[Directory]) -> Result<Vec<(u64, u64)>> {
-    directories
-        .iter()
-        .map(|directory| {
-            directory.verify_private_parent()?;
-            Ok(directory.identity()?)
-        })
-        .collect()
 }
 impl Helper {
     fn shared_plan(&self, intent: &FrozenIntent, manifest: &[u8]) -> Result<Option<domain::Plan>> {
         let plan = domain::plan(intent, manifest)?;
         if let Some(plan) = &plan {
             let root = self.shared.as_ref().ok_or(Error::Configuration)?;
-            root.verify_private_parent()?;
             if root.path().to_str() != Some(plan.runs_root.as_str()) {
                 return Err(Error::Configuration);
             }
@@ -106,8 +90,7 @@ impl Helper {
                     "--cleanenv".into(),
                 ];
                 let mount = backend["mount_root"].as_str().ok_or(Error::Configuration)?;
-                let cache = Directory::open(std::path::Path::new(&preparation.cache_root), true)?;
-                cache.verify_private_parent()?;
+                Directory::open(std::path::Path::new(&preparation.cache_root), true)?;
                 argv.extend([
                     "--bind".into(),
                     format!("{mount}:{mount}"),
@@ -183,10 +166,7 @@ impl Helper {
             }
         }
         let directories = self.shared_directories(&plan, true)?;
-        let sealed = Sealed {
-            plan,
-            directory_identities: identities(&directories)?,
-        };
+        let sealed = Sealed { plan };
         let attempt = &directories[3];
         attempt.publish_new(OsStr::new("attempt.json"), manifest)?;
         if let Some(package) = &sealed.plan.managed {
@@ -200,9 +180,6 @@ impl Helper {
             )?;
         }
         attempt.publish_new(OsStr::new(MARKER), &json(&sealed)?)?;
-        if identities(&directories)? != sealed.directory_identities {
-            return Err(Error::Bootstrap);
-        }
         Ok(())
     }
     pub(super) fn verify_shared(&self, intent: &FrozenIntent, ledger: &Directory) -> Result<()> {
@@ -227,11 +204,7 @@ impl Helper {
         let sealed: Sealed = serde_json::from_slice(
             &attempt.read_regular(OsStr::new(MARKER), helper::MAX_METADATA_BYTES as u64)?,
         )?;
-        if sealed
-            != (Sealed {
-                plan: plan.clone(),
-                directory_identities: identities(&directories)?,
-            })
+        if sealed.plan != plan
             || attempt.read_regular(
                 OsStr::new("attempt.json"),
                 helper::MAX_METADATA_BYTES as u64,

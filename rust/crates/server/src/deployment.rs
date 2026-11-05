@@ -91,31 +91,32 @@ impl Settings {
         if bytes.len() > 64 * 1024 {
             return Err(crate::read_config::Error.into());
         }
-        let mapping = ml_exp_core::json::mapping(bytes).map_err(|_| crate::read_config::Error)?;
+        let mapping = ml_exp_core::json::mapping(bytes).map_err(why!(crate::read_config::Error))?;
         if mapping.contains_key(RETIRED_HISTORY_KEY) {
             return Err(LoadError::RetiredKey(RETIRED_HISTORY_KEY));
         }
         let value: Self = serde_json::from_value(serde_json::Value::Object(mapping))
-            .map_err(|_| crate::read_config::Error)?;
+            .map_err(why!(crate::read_config::Error))?;
         value.validate()?;
         Ok(value)
     }
     pub fn load(path: &Path) -> Result<Self, LoadError> {
         Self::from_json(
             &ml_exp_io::read_private(path, 64 * 1024, true)
-                .map_err(|_| crate::read_config::Error)?,
+                .map_err(why!(crate::read_config::Error))?,
         )
     }
 
     /// Read private dependencies before any SDK/provider or initialization
     /// effects. Passing this check makes no claim about a remote connection.
     pub fn check(&self) -> Result<Check, Error> {
-        self.validate().map_err(|_| at("deployment"))?;
+        self.validate().map_err(why!(at("deployment")))?;
         if !self.bind.ip().is_loopback() {
             return Err(at("loopback_bind"));
         }
-        crate::Auth::load(&self.token_file).map_err(|_| at("api_token"))?;
-        let reads = crate::read_config::load(&self.read_config).map_err(|_| at("read_config"))?;
+        crate::Auth::load(&self.token_file)
+            .map_err(why!(at("api_token"), "daemon token invalid"))?;
+        let reads = crate::read_config::load(&self.read_config).map_err(why!(at("read_config")))?;
         for project in &reads.projects {
             let parent = ml_exp_io::directory::Directory::open(
                 project
@@ -124,7 +125,7 @@ impl Settings {
                     .ok_or_else(|| at("project_definition"))?,
                 false,
             )
-            .map_err(|_| at("project_definition"))?;
+            .map_err(why!(at("project_definition")))?;
             let bytes = parent
                 .read_regular(
                     project
@@ -133,14 +134,14 @@ impl Settings {
                         .ok_or_else(|| at("project_definition"))?,
                     4 * 1024 * 1024,
                 )
-                .map_err(|_| at("project_definition"))?;
+                .map_err(why!(at("project_definition")))?;
             let mapping =
                 crate::experiments::parse_mapping(&bytes, crate::experiments::Format::Yaml)
-                    .map_err(|_| at("project_definition"))?;
+                    .map_err(why!(at("project_definition")))?;
             let definition = ml_exp_core::projects::ProjectDefinition::from_value(
                 &serde_json::Value::Object(mapping),
             )
-            .map_err(|_| at("project_definition"))?;
+            .map_err(why!(at("project_definition")))?;
             if definition.project() != project.project
                 || self.project_lifecycle && definition.campaign_files().next().is_some()
             {
@@ -148,24 +149,25 @@ impl Settings {
             }
             for root in &project.run_roots {
                 ml_exp_io::directory::Directory::open(root, false)
-                    .map_err(|_| at("project_run_root"))?;
+                    .map_err(why!(at("project_run_root")))?;
             }
         }
         let mut executors = BTreeSet::new();
         if let Some(path) = &self.submission_config {
-            let slurm = crate::submissions::config::load(path).map_err(|_| at("slurm_config"))?;
+            let slurm = crate::submissions::config::load(path).map_err(why!(at("slurm_config")))?;
             for backend in slurm.backends {
                 if !executors.insert(backend.profile.target.backend_id.clone()) {
                     return Err(at("duplicate_executor"));
                 }
                 for path in [&backend.ssh.config_file, &backend.ssh.known_hosts_file] {
                     ml_exp_io::read_private(path, 1024 * 1024, true)
-                        .map_err(|_| at("slurm_ssh"))?;
+                        .map_err(why!(at("slurm_ssh")))?;
                 }
             }
         }
         if let Some(path) = &self.cloud_config {
-            let cloud = crate::cloud_runs::Settings::load(path).map_err(|_| at("cloud_config"))?;
+            let cloud =
+                crate::cloud_runs::Settings::load(path).map_err(why!(at("cloud_config")))?;
             for backend in &cloud.backends {
                 if !executors.insert(backend.executor.clone()) {
                     return Err(at("duplicate_executor"));
@@ -202,7 +204,7 @@ impl Settings {
                 .ok_or_else(|| at("registry_parent"))?,
             false,
         )
-        .map_err(|_| at("registry_parent"))?;
+        .map_err(why!(at("registry_parent")))?;
         let exists = parent
             .entry_exists(
                 reads
@@ -210,7 +212,7 @@ impl Settings {
                     .file_name()
                     .ok_or_else(|| at("registry_parent"))?,
             )
-            .map_err(|_| at("registry_parent"))?;
+            .map_err(why!(at("registry_parent")))?;
         let registry_initialized =
             exists && crate::read_config::workspace(&reads.registry_root).is_ok();
         if exists && !registry_initialized {
@@ -233,31 +235,32 @@ impl Settings {
         if checked.registry_initialized {
             return Err(at("registry_already_exists"));
         }
-        let reads = crate::read_config::load(&self.read_config).map_err(|_| at("read_config"))?;
+        let reads = crate::read_config::load(&self.read_config).map_err(why!(at("read_config")))?;
         let workspace = crate::read_config::initialize(&reads.registry_root)
-            .map_err(|_| at("registry_creation"))?;
+            .map_err(why!(at("registry_creation")))?;
         let mut stores = vec!["registry"];
         if self.project_lifecycle {
             let (now, identity) =
-                crate::projects::transition_context().map_err(|_| at("project_lifecycle"))?;
+                crate::projects::transition_context().map_err(why!(at("project_lifecycle")))?;
             crate::projects::Service::initialize(&reads, &now, &identity)
-                .map_err(|_| at("project_lifecycle"))?;
+                .map_err(why!(at("project_lifecycle")))?;
             stores.push("project_lifecycle");
         }
         if self.source_archives {
-            crate::sources::Service::initialize(&reads).map_err(|_| at("source_archives"))?;
+            crate::sources::Service::initialize(&reads).map_err(why!(at("source_archives")))?;
             stores.push("source_archives");
         }
         if self.submission_config.is_some() {
-            crate::submissions::Service::initialize(&reads).map_err(|_| at("slurm_namespace"))?;
+            crate::submissions::Service::initialize(&reads).map_err(why!(at("slurm_namespace")))?;
             stores.push("slurm");
         }
         if self.cloud_config.is_some() {
-            crate::cloud_runs::Service::initialize(&reads).map_err(|_| at("cloud_namespace"))?;
+            crate::cloud_runs::Service::initialize(&reads).map_err(why!(at("cloud_namespace")))?;
             stores.push("cloud");
         }
         if self.administration {
-            crate::administration::Service::initialize(&reads).map_err(|_| at("administration"))?;
+            crate::administration::Service::initialize(&reads)
+                .map_err(why!(at("administration")))?;
             stores.push("administration");
         }
         Ok(

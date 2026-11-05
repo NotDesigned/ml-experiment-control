@@ -14,7 +14,7 @@ impl Service {
             prepared.request.intent(),
             manifest.as_bytes(),
         )
-        .map_err(|_| Error::CheckpointConflict)
+        .map_err(why!(Error::CheckpointConflict))
     }
     pub fn checkpoints(
         &self,
@@ -26,20 +26,20 @@ impl Service {
         let prepared = self
             .saved_attempt(project, run, attempt)?
             .ok_or(Error::Missing)?;
-        self.check(&prepared)?;
+        self.require_live(project, run)?;
         if prepared.binding.attempt_id != attempt {
             return Err(Error::CheckpointMissing);
         }
         let context = self.checkpoint_context(&prepared)?;
         let store = crate::checkpoints::Store::open_existing(&self.settings.registry_root)
-            .map_err(|_| Error::CheckpointConflict)?;
+            .map_err(why!(Error::CheckpointConflict))?;
         match id {
             Some(id) => store
                 .read(&context, id)
-                .map_err(|_| Error::CheckpointConflict)?
+                .map_err(why!(Error::CheckpointConflict))?
                 .ok_or(Error::CheckpointMissing),
             None => Ok(
-                json!({"project":project,"run_id":run,"attempt_id":attempt,"checkpoints":store.list(&context).map_err(|_|Error::CheckpointConflict)?}),
+                json!({"project":project,"run_id":run,"attempt_id":attempt,"checkpoints":store.list(&context).map_err(why!(Error::CheckpointConflict))?}),
             ),
         }
     }
@@ -49,12 +49,12 @@ impl Service {
         now: &str,
         cancelled: &AtomicBool,
     ) -> Result<Value> {
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         let prepared = self.load(action)?;
         let guard = self
             .fence
             .existing_observation_guard(&prepared.binding.project, &prepared.binding.run_id)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         let snapshot = self.actions.observe(action)?;
         if snapshot["execution"]["status"] != "VERIFIED" {
             return Err(Error::Conflict);
@@ -64,19 +64,17 @@ impl Service {
             .ok_or(Error::Authority)?;
         let request =
             helper::Request::observe_checkpoint(prepared.request.intent().clone(), job.into())
-                .map_err(|_| Error::Authority)?;
+                .map_err(why!(Error::Authority))?;
         let backend = self
             .backends
             .values()
             .find(|b| b.profile.target == request.intent().target)
             .ok_or(Error::Authority)?;
         let outcome =
-            call(&backend.ssh, &request, cancelled).map_err(|_| Error::CheckpointUnavailable)?;
+            call(&backend.ssh, &request, cancelled).map_err(why!(Error::CheckpointUnavailable))?;
         guard
             .require_observed_live(&prepared.binding.project, &prepared.binding.run_id)
-            .map_err(|_| Error::Authority)?;
-        self.check(&prepared)?;
-        lock.validate()?;
+            .map_err(why!(Error::Authority))?;
         let CallOutcome::Receipt { reply, .. } = outcome else {
             return Err(Error::CheckpointUnavailable);
         };
@@ -85,16 +83,16 @@ impl Service {
         };
         let context = self.checkpoint_context(&prepared)?;
         let (_, manifest) = checkpoints::validate_document(&document, Some(&context), None)
-            .map_err(|_| Error::CheckpointConflict)?;
+            .map_err(why!(Error::CheckpointConflict))?;
         let ready = json!({"step":manifest.step,"files":document["files"]});
         let store = crate::checkpoints::Store::open_existing(&self.settings.registry_root)
-            .map_err(|_| Error::CheckpointConflict)?;
+            .map_err(why!(Error::CheckpointConflict))?;
         let registered = store
             .register(&context, &ready, now)
-            .map_err(|_| Error::CheckpointConflict)?;
+            .map_err(why!(Error::CheckpointConflict))?;
         guard
             .require_observed_live(&prepared.binding.project, &prepared.binding.run_id)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         Ok(
             json!({"submission_id":action,"checkpoint":registered,"scheduler_mutation_performed":false}),
         )

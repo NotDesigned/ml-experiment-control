@@ -2,7 +2,10 @@
 //! the API retains receipts only, never payload files or full archive buffers.
 use base64::{Engine, engine::general_purpose::STANDARD};
 use hmac::{Hmac, Mac};
-use ml_exp_core::artifacts::ArchiveReceipt;
+use ml_exp_core::{
+    artifacts::ArchiveReceipt,
+    multipart::{MAX_PARTS, PART_BYTES},
+};
 use serde::Deserialize;
 use sha1::Sha1;
 use std::{
@@ -11,8 +14,6 @@ use std::{
     path::Path,
     time::Duration,
 };
-pub const PART_BYTES: u64 = 16 * 1024 * 1024;
-pub const MAX_PARTS: u64 = 65536;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
@@ -52,7 +53,7 @@ pub fn parts(archive: &ArchiveReceipt) -> io::Result<u64> {
 }
 impl Store {
     pub fn validate_import(&self, request: &ml_exp_core::datasets::oss::Import) -> io::Result<()> {
-        request.bind(&self.settings.prefix).map_err(|_| invalid())
+        request.bind(&self.settings.prefix).map_err(why!(invalid()))
     }
     pub fn open_import(
         &self,
@@ -68,7 +69,7 @@ impl Store {
             )?)
             .timeout(Duration::from_secs(1200))
             .send()
-            .map_err(|_| invalid())?;
+            .map_err(why_chain!(invalid()))?;
         if response.status() != 200 || response.content_length() != Some(request.archive_bytes) {
             return Err(invalid());
         }
@@ -83,16 +84,16 @@ impl Store {
             &request.sha256,
             request.archive_bytes,
         )
-        .map_err(|_| {
+        .map_err(why!({
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 "dataset archive verification failed",
             )
-        })
+        }))
     }
     pub fn open(settings: Settings) -> io::Result<Self> {
         let expected = format!("https://{}.{}", settings.bucket, settings.endpoint);
-        let url = url::Url::parse(&expected).map_err(|_| invalid())?;
+        let url = url::Url::parse(&expected).map_err(why!(invalid()))?;
         if !settings.endpoint.starts_with("oss-")
             || !settings.endpoint.ends_with(".aliyuncs.com")
             || !settings
@@ -114,9 +115,12 @@ impl Store {
         }
         let bytes = ml_exp_io::read_private(Path::new(&settings.credentials_file), 16384, true)?;
         let credentials: Credentials = serde_json::from_value(serde_json::Value::Object(
-            ml_exp_core::json::mapping(&bytes).map_err(|_| invalid())?,
+            ml_exp_core::json::mapping(&bytes).map_err(why!(
+                invalid(),
+                "object store credentials are not one mapping"
+            ))?,
         ))
-        .map_err(|_| invalid())?;
+        .map_err(why!(invalid(), "object store credentials schema invalid"))?;
         if credentials.access_key_id.is_empty()
             || credentials.access_key_secret.is_empty()
             || [&credentials.access_key_id, &credentials.access_key_secret]
@@ -136,7 +140,7 @@ impl Store {
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(300))
             .build()
-            .map_err(|_| invalid())?;
+            .map_err(why!(invalid()))?;
         Ok(Self {
             settings,
             credentials,
@@ -144,7 +148,7 @@ impl Store {
         })
     }
     fn key(&self, archive: &ArchiveReceipt, part: u64) -> io::Result<String> {
-        ml_exp_core::artifacts::validate_receipt(archive).map_err(|_| invalid())?;
+        ml_exp_core::artifacts::validate_receipt(archive).map_err(why!(invalid()))?;
         if part >= parts(archive)? {
             return Err(invalid());
         }
@@ -187,7 +191,7 @@ impl Store {
         };
         let canonical = format!("{method}\n\n\n{expires}\n{headers}{canonical_resource}");
         let mut mac = Hmac::<Sha1>::new_from_slice(self.credentials.access_key_secret.as_bytes())
-            .map_err(|_| invalid())?;
+            .map_err(why!(invalid(), "object store signing key rejected"))?;
         mac.update(canonical.as_bytes());
         query.insert("OSSAccessKeyId", self.credentials.access_key_id.clone());
         query.insert("Expires", expires.to_string());
@@ -196,7 +200,7 @@ impl Store {
             "https://{}.{}/{key}",
             self.settings.bucket, self.settings.endpoint
         ))
-        .map_err(|_| invalid())?;
+        .map_err(why!(invalid()))?;
         url.query_pairs_mut().extend_pairs(query);
         Ok(url.into())
     }
@@ -237,8 +241,8 @@ impl Store {
     ) -> io::Result<String> {
         ml_exp_core::identity::validate_id(project)
             .and_then(|_| ml_exp_core::identity::validate_id(executor))
-            .map_err(|_| invalid())?;
-        if part >= definition.part_count().map_err(|_| invalid())? {
+            .map_err(why!(invalid()))?;
+        if part >= definition.part_count().map_err(why!(invalid()))? {
             return Err(invalid());
         }
         Ok(format!(
@@ -255,7 +259,7 @@ impl Store {
     ) -> io::Result<serde_json::Value> {
         let key = self.data_key(project, executor, definition, part)?;
         Ok(
-            serde_json::json!({"part":part,"bytes":definition.part_size(part).map_err(|_|invalid())?,"url":self.signed_url("GET",&key,time::OffsetDateTime::now_utc().unix_timestamp()+300)?}),
+            serde_json::json!({"part":part,"bytes":definition.part_size(part).map_err(why!(invalid()))?,"url":self.signed_url("GET",&key,time::OffsetDateTime::now_utc().unix_timestamp()+300)?}),
         )
     }
     pub fn put_data(
@@ -268,7 +272,7 @@ impl Store {
         bytes: &[u8],
     ) -> io::Result<()> {
         use sha2::{Digest, Sha256};
-        if definition.part_size(part).map_err(|_| invalid())? != bytes.len() as u64
+        if definition.part_size(part).map_err(why!(invalid()))? != bytes.len() as u64
             || format!("{:x}", Sha256::digest(bytes)) != sha256
         {
             return Err(invalid());
@@ -284,7 +288,7 @@ impl Store {
             .header("x-oss-forbid-overwrite", "true")
             .body(bytes.to_vec())
             .send()
-            .map_err(|_| invalid())?;
+            .map_err(why_chain!(invalid()))?;
         if !matches!(response.status().as_u16(), 200 | 409) {
             return Err(invalid());
         }
@@ -297,7 +301,7 @@ impl Store {
                 time::OffsetDateTime::now_utc().unix_timestamp() + 300,
             )?)
             .send()
-            .map_err(|_| invalid())?;
+            .map_err(why_chain!(invalid()))?;
         if response.status() != 200 || response.content_length() != Some(bytes.len() as u64) {
             return Err(invalid());
         }
@@ -332,7 +336,7 @@ impl Store {
             .http
             .delete(self.url("DELETE", archive, part, expires)?)
             .send()
-            .map_err(|_| invalid())?;
+            .map_err(why_chain!(invalid()))?;
         if !matches!(response.status().as_u16(), 204 | 404) {
             return Err(invalid());
         }
@@ -376,7 +380,7 @@ impl Read for Reader<'_> {
                 .http
                 .get(self.store.url("GET", self.archive, self.part, expires)?)
                 .send()
-                .map_err(|_| invalid())?;
+                .map_err(why_chain!(invalid()))?;
             self.remaining = (self.archive.bytes - self.part * PART_BYTES).min(PART_BYTES);
             if response.status() != 200 || response.content_length() != Some(self.remaining) {
                 return Err(invalid());
@@ -417,7 +421,7 @@ impl Read for DataReader<'_> {
                 }
                 self.current = None;
             }
-            if self.part >= self.definition.part_count().map_err(|_| invalid())? {
+            if self.part >= self.definition.part_count().map_err(why!(invalid()))? {
                 return Ok(0);
             }
             let key =
@@ -432,11 +436,11 @@ impl Read for DataReader<'_> {
                     time::OffsetDateTime::now_utc().unix_timestamp() + 300,
                 )?)
                 .send()
-                .map_err(|_| invalid())?;
+                .map_err(why_chain!(invalid()))?;
             self.remaining = self
                 .definition
                 .part_size(self.part)
-                .map_err(|_| invalid())?;
+                .map_err(why!(invalid()))?;
             if response.status() != 200 || response.content_length() != Some(self.remaining) {
                 return Err(invalid());
             }

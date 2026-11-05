@@ -47,10 +47,10 @@ impl Helper {
                 code: Rejection::UnsupportedOperation,
             });
         };
-        self.check_job_authority(request, &snapshot, lock)?;
+        self.check_job_authority(request, lock)?;
         let deadline = Instant::now() + self.config.execution_timeout;
         if request.operation() == OperationTag::ObserveJob {
-            return self.observe_job(request, &snapshot, lock, tools, deadline, cancelled);
+            return self.observe_job(request, lock, tools, deadline, cancelled);
         }
         let identity = CancelIdentity {
             target: TargetIdentity {
@@ -87,7 +87,7 @@ impl Helper {
         if let CancelDecision::AlreadyVerified { result } = initial {
             return checked_terminal(request, result);
         }
-        let before = self.observe_job(request, &snapshot, lock, tools, deadline, cancelled)?;
+        let before = self.observe_job(request, lock, tools, deadline, cancelled)?;
         let ReplyOutcome::JobObserved { observation } = before else {
             return Ok(if has_start { pending(receipt) } else { before });
         };
@@ -121,10 +121,8 @@ impl Helper {
                 // REQUESTED is durable first. A lost response, failure or timeout
                 // never authorizes a second scancel, even if it never spawned.
                 let argv = vec![tools.scancel_program.display().to_string(), issue_job_id];
-                let _ =
-                    self.scheduler_command(request, &snapshot, lock, &argv, deadline, cancelled)?;
-                let after =
-                    self.observe_job(request, &snapshot, lock, tools, deadline, cancelled)?;
+                let _ = self.scheduler_command(request, lock, &argv, deadline, cancelled)?;
+                let after = self.observe_job(request, lock, tools, deadline, cancelled)?;
                 if let ReplyOutcome::JobObserved { observation } = after {
                     let result = serde_json::to_value(&observation)?;
                     let status = CancelStatus::Exact {
@@ -154,14 +152,8 @@ impl Helper {
         }
     }
 
-    fn check_job_authority(
-        &self,
-        request: &Request,
-        snapshot: &Snapshot,
-        lock: &Lock,
-    ) -> Result<()> {
-        self.verify_issued(request.intent(), &snapshot.directory)?;
-        lock.validate()?;
+    fn check_job_authority(&self, request: &Request, _lock: &Lock) -> Result<()> {
+        self.verify_issued(request.intent())?;
         match self.read_ledger(request.intent())? {
             ReadLedger::Found(current)
                 if current
@@ -182,7 +174,7 @@ impl Helper {
         intent: Value,
         new: bool,
     ) -> Result<()> {
-        self.check_job_authority(request, snapshot, lock)?;
+        self.check_job_authority(request, lock)?;
         let record = json(&CancelRecord {
             version: helper::PROTOCOL_VERSION,
             intent_sha256: request.intent().digest()?,
@@ -204,18 +196,17 @@ impl Helper {
                 .directory
                 .replace_regular(OsStr::new(CANCEL_STATE), &record)?;
         }
-        self.check_job_authority(request, snapshot, lock)
+        self.check_job_authority(request, lock)
     }
     fn scheduler_command(
         &self,
         request: &Request,
-        snapshot: &Snapshot,
         lock: &Lock,
         argv: &[String],
         deadline: Instant,
         cancelled: &AtomicBool,
     ) -> Result<Option<String>> {
-        self.check_job_authority(request, snapshot, lock)?;
+        self.check_job_authority(request, lock)?;
         if Instant::now() >= deadline || cancelled.load(Ordering::Relaxed) {
             return Ok(None);
         }
@@ -231,7 +222,7 @@ impl Helper {
             drain_grace: Duration::from_millis(100),
             cancelled,
         })?;
-        self.check_job_authority(request, snapshot, lock)?;
+        self.check_job_authority(request, lock)?;
         if local.exit_code != Some(0)
             || local.timed_out
             || local.cancelled
@@ -246,7 +237,6 @@ impl Helper {
     fn observe_job(
         &self,
         request: &Request,
-        snapshot: &Snapshot,
         lock: &Lock,
         tools: &SchedulerTools,
         deadline: Instant,
@@ -261,7 +251,6 @@ impl Helper {
         };
         let acct = self.scheduler_command(
             request,
-            snapshot,
             lock,
             &[
                 tools.sacct_program.display().to_string(),
@@ -293,7 +282,6 @@ impl Helper {
         {
             Some(self.scheduler_command(
                 request,
-                snapshot,
                 lock,
                 &[
                     tools.squeue_program.display().to_string(),
@@ -332,7 +320,6 @@ impl Helper {
             if let Some(program) = &tools.scontrol_program {
                 let control = self.scheduler_command(
                     request,
-                    snapshot,
                     lock,
                     &[
                         program.display().to_string(),

@@ -35,7 +35,7 @@ impl Service {
     ) -> cloud::Result<()> {
         let run = request
             .resolve(project, worker)
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
         if let Some(backend) = self.backends.get(&run.executor) {
             if matches!(
                 backend.adapter.profile,
@@ -92,11 +92,11 @@ impl Service {
                 ),
                 cloud::adapter::Profile::Sensecore(p) => p.create(&job),
             }
-            .map_err(|_| cloud::Error {
+            .map_err(why!(cloud::Error {
                 code: "INVALID_CLOUD_REQUEST".into(),
                 http_status: Some(422),
                 uncertain: false,
-            })?;
+            }))?;
             for input in &run.data {
                 if backend
                     .definition
@@ -138,12 +138,12 @@ impl Service {
             return Err(missing());
         }
         let saved: Saved = serde_json::from_value(read(&self.slots, &slot)?)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         if saved.project != project
             || saved
                 .request
                 .id(project)
-                .map_err(|_| cloud::Error::evidence())?
+                .map_err(why!(cloud::Error::evidence()))?
                 != id
         {
             return Err(cloud::Error::evidence());
@@ -154,11 +154,11 @@ impl Service {
         let id = saved
             .request
             .id(&saved.project)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         let run = saved
             .request
             .resolve(&saved.project, &saved.worker_sha256)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         let runtime = if saved.request.runtime.is_some() {
             self.runtime_status(&saved.project, &run.runtime_id)?
         } else {
@@ -193,10 +193,10 @@ impl Service {
     ) -> cloud::Result<Value> {
         request
             .validate(project)
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
         let id = request
             .id(project)
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
         self.project_hash(project)?;
         // Reserve the deterministic request slot before any build effect. A
         // repeated request ID with another payload is always a conflict.
@@ -223,7 +223,7 @@ impl Service {
         if let Some(definition) = &request.runtime {
             self.prepare_runtime(project, definition.clone())?;
         }
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         if self
             .slots
             .entry_exists(OsStr::new(&name(&id)?))
@@ -242,7 +242,6 @@ impl Service {
             started: false,
             submission: None,
         };
-        lock.validate()?;
         write(&self.slots, &name(&id)?, &saved)?;
         self.setup_view(&saved)
     }
@@ -253,10 +252,10 @@ impl Service {
     pub fn experiment_for_run(&self, project: &str, run: &str) -> cloud::Result<Option<Value>> {
         ml_exp_core::identity::validate_id(project)
             .and_then(|_| ml_exp_core::identity::validate_id(run))
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
         self.project_hash(project)?;
         let mut found = None;
-        for slot in self.slots.entry_names_limited(32768).map_err(io)? {
+        for slot in self.slots.entry_names().map_err(io)? {
             let Some(id) = slot.to_str().and_then(|s| s.strip_suffix(".setup.json")) else {
                 continue;
             };
@@ -292,13 +291,12 @@ impl Service {
             return Err(cloud::Error::configuration());
         }
         let mut saved = {
-            let lock = self.lock()?;
+            let _lock = self.lock()?;
             let mut saved = self.setup_load(project, id)?;
             if saved.submission.is_some() {
                 return self.setup_view(&saved);
             }
             saved.started = true;
-            lock.validate()?;
             self.slots
                 .replace_regular(OsStr::new(&name(id)?), &encode(&saved)?)
                 .map_err(io)?;
@@ -307,7 +305,7 @@ impl Service {
         let run = saved
             .request
             .resolve(project, &saved.worker_sha256)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         self.setup_preflight(
             project,
             &saved.request,
@@ -340,7 +338,7 @@ impl Service {
                     {
                         let request_id = data_saved.copy_request_id.unwrap_or(
                             canonical::digest(&json!([id, &input.asset_id]))
-                                .map_err(|_| cloud::Error::evidence())?[..32]
+                                .map_err(why!(cloud::Error::evidence()))?[..32]
                                 .to_owned(),
                         );
                         let data = self.publish_dataset(
@@ -375,7 +373,7 @@ impl Service {
             let slurm = slurm.ok_or_else(cloud::Error::configuration)?;
             slurm
                 .create_run(project, run.clone(), now)
-                .map_err(|_| cloud::Error::evidence())?;
+                .map_err(why!(cloud::Error::evidence()))?;
             slurm
                 .prepare(
                     project,
@@ -387,9 +385,9 @@ impl Service {
                         transition_id: transition,
                     },
                 )
-                .map_err(|_| cloud::Error::evidence())?
+                .map_err(why!(cloud::Error::evidence()))?
         };
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         saved = self.setup_load(project, id)?;
         if saved
             .submission
@@ -399,7 +397,6 @@ impl Service {
             return Err(cloud::Error::evidence());
         }
         saved.submission = Some(submission);
-        lock.validate()?;
         self.slots
             .replace_regular(OsStr::new(&name(id)?), &encode(&saved)?)
             .map_err(io)?;

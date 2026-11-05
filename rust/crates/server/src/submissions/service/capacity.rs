@@ -14,36 +14,41 @@ impl Service {
         let backend = self.backends.get(executor).ok_or(Error::Configuration)?;
         let name = format!("capacity-{executor}.json");
         let _effect = if refresh {
-            let file = self
-                .slots
-                .open_lock(OsStr::new(&format!("capacity-{executor}.lock")))
-                .map_err(|_| Error::Authority)?;
-            fs2::FileExt::try_lock_exclusive(&file).map_err(|_| Error::Authority)?;
-            Some(file)
+            Some(
+                self.slots
+                    .lock(
+                        OsStr::new(&format!("capacity-{executor}.lock")),
+                        LockOptions {
+                            create: true,
+                            ..Default::default()
+                        },
+                    )
+                    .map_err(why_lock!(Error::Authority))?,
+            )
         } else {
             None
         };
         let old = if self
             .slots
             .entry_exists(OsStr::new(&name))
-            .map_err(|_| Error::Authority)?
+            .map_err(why!(Error::Authority))?
         {
             serde_json::from_slice::<Observation>(
                 &self
                     .slots
-                    .read_regular(OsStr::new(&name), 4 * 1024 * 1024)
-                    .map_err(|_| Error::Authority)?,
+                    .read_whole(OsStr::new(&name))
+                    .map_err(why!(Error::Authority))?,
             )
-            .map_err(|_| Error::Authority)?
+            .map_err(why!(Error::Authority))?
         } else {
-            capacity::unknown(executor).map_err(|_| Error::Configuration)?
+            capacity::unknown(executor).map_err(why!(Error::Configuration))?
         };
         if old.executor_id != executor {
             return Err(Error::Authority);
         }
         if !refresh {
             return Ok(json!(
-                capacity::view(old, now).map_err(|_| Error::Authority)?
+                capacity::view(old, now).map_err(why!(Error::Authority))?
             ));
         }
         let data = (|| {
@@ -55,7 +60,7 @@ impl Service {
                 },
                 &backend.profile.partition,
             )
-            .map_err(|_| Error::Configuration)?;
+            .map_err(why!(Error::Configuration))?;
             let mut argv = backend.ssh.argv();
             let at = argv
                 .iter()
@@ -76,7 +81,7 @@ impl Service {
                 drain_grace: std::time::Duration::from_secs(2),
                 cancelled: &std::sync::atomic::AtomicBool::new(false),
             })
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
             if result.exit_code != Some(0)
                 || result.timed_out
                 || result.cancelled
@@ -86,9 +91,10 @@ impl Service {
             {
                 return Err(Error::Authority);
             }
-            let output = std::str::from_utf8(&result.stdout.bytes).map_err(|_| Error::Authority)?;
+            let output =
+                std::str::from_utf8(&result.stdout.bytes).map_err(why!(Error::Authority))?;
             let snapshot = ml_exp_core::slurm::parse_allocation(output, &backend.profile.partition)
-                .map_err(|_| Error::Authority)?;
+                .map_err(why!(Error::Authority))?;
             let mut value = json!(snapshot);
             value["source"] = json!("slurm");
             value["scope"] = json!("partition");
@@ -96,13 +102,13 @@ impl Service {
             Ok(value)
         })();
         let next = capacity::refresh(old, data.map_err(|_: Error| "unavailable"), now)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         self.slots
             .replace_regular(
                 OsStr::new(&name),
-                &serde_json::to_vec(&next).map_err(|_| Error::Authority)?,
+                &serde_json::to_vec(&next).map_err(why!(Error::Authority))?,
             )
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         Ok(json!(next))
     }
 }

@@ -3,10 +3,9 @@
 //! Trusted private configuration fixes the launch digest, identity and paths.
 //! There is no manifest fetch, remote command RPC, provider call or upload in
 //! this slice. Unsupported managed I/O is refused before the durable start.
-use fs2::FileExt;
 pub use ml_exp_core::managed::Config;
 use ml_exp_core::{launch, managed::absolute};
-use ml_exp_io::directory::Directory;
+use ml_exp_io::directory::{Directory, FileLock, LockOptions};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -23,7 +22,6 @@ use std::{
 const LOCK: &str = ".managed-launch.lock";
 const MANIFEST: &str = "launch-manifest.json";
 const RECEIPT: &str = "managed-receipt.json";
-const LEDGER_BYTES: u64 = 16 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -127,7 +125,7 @@ fn hex(value: &str) -> bool {
             .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
 }
 fn private_bytes(root: &Directory, name: &OsStr, maximum: u64) -> Result<Vec<u8>> {
-    root.verify_private_parent().map_err(|_| Error::Storage)?;
+    root.require_private().map_err(|_| Error::Storage)?;
     let mut file = root.open_regular_read(name).map_err(|_| Error::Storage)?;
     let metadata = file.metadata().map_err(|_| Error::Storage)?;
     if metadata.mode() & 0o077 != 0 || metadata.len() > maximum {
@@ -137,8 +135,6 @@ fn private_bytes(root: &Directory, name: &OsStr, maximum: u64) -> Result<Vec<u8>
     (&mut file)
         .take(maximum + 1)
         .read_to_end(&mut bytes)
-        .map_err(|_| Error::Storage)?;
-    root.validate_regular_entry(name, &file)
         .map_err(|_| Error::Storage)?;
     if bytes.len() as u64 != metadata.len() {
         return Err(Error::Storage);
@@ -177,63 +173,48 @@ fn verified(
 struct Held {
     root: Directory,
     file: File,
+    /// None for `sample`, which observes the ledger without taking the lock.
+    _lock: Option<FileLock>,
     binding: String,
-}
-impl Drop for Held {
-    fn drop(&mut self) {
-        // A concurrent Command fork can briefly inherit this open description
-        // before CLOEXEC closes it. Closing only our FD would retain the lock
-        // in that child; explicit unlock releases the owner's completed guard.
-        let _ = FileExt::unlock(&self.file);
-    }
 }
 impl Held {
     fn open(config: &Config, exclusive: bool) -> Result<Self> {
         config.validate()?;
         let root = Directory::open(&config.attempt_root, false).map_err(|_| Error::Storage)?;
-        let file = root
-            .open_existing_lock_rw(OsStr::new(LOCK))
-            .map_err(|_| Error::Storage)?;
-        let result = if exclusive {
-            FileExt::try_lock_exclusive(&file)
-        } else {
-            FileExt::try_lock_shared(&file)
-        };
-        result.map_err(|e| {
-            if e.kind() == std::io::ErrorKind::WouldBlock {
-                Error::Busy
-            } else {
-                Error::Storage
-            }
-        })?;
-        let held = Self {
+        // The phase ledger: it is never created here, because a recreated
+        // ledger reads as unstarted and could re-run training.
+        let lock = root
+            .lock(
+                OsStr::new(LOCK),
+                LockOptions {
+                    shared: !exclusive,
+                    write: true,
+                    ..Default::default()
+                },
+            )
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::WouldBlock {
+                    Error::Busy
+                } else {
+                    Error::Storage
+                }
+            })?;
+        Ok(Self {
             root,
-            file,
+            file: lock.try_clone().map_err(|_| Error::Storage)?,
+            _lock: Some(lock),
             binding: config.digest()?,
-        };
-        held.validate()?;
-        Ok(held)
-    }
-    fn validate(&self) -> Result<()> {
-        self.root
-            .verify_private_parent()
-            .map_err(|_| Error::Storage)?;
-        self.root
-            .validate_regular_entry(OsStr::new(LOCK), &self.file)
-            .map_err(|_| Error::Storage)
+        })
     }
     fn state(&mut self) -> Result<Record> {
-        self.validate()?;
         self.file
             .seek(SeekFrom::Start(0))
             .map_err(|_| Error::Storage)?;
         let mut bytes = Vec::new();
-        (&mut self.file)
-            .take(LEDGER_BYTES + 1)
+        self.file
             .read_to_end(&mut bytes)
             .map_err(|_| Error::Storage)?;
-        self.validate()?;
-        if bytes.len() as u64 > LEDGER_BYTES || !bytes.ends_with(b"\n") {
+        if !bytes.ends_with(b"\n") {
             return Err(Error::Uncertain);
         }
         let lines = bytes[..bytes.len() - 1]
@@ -275,7 +256,6 @@ impl Held {
         receipt: Option<String>,
         runtime_sha256: Option<String>,
     ) -> Result<()> {
-        self.validate()?;
         let record = Record {
             contract: CONTRACT.into(),
             phase,
@@ -286,9 +266,8 @@ impl Held {
         let mut bytes = serde_json::to_vec(&record).map_err(|_| Error::Storage)?;
         bytes.push(b'\n');
         self.root
-            .append_regular(OsStr::new(LOCK), &bytes, LEDGER_BYTES)
-            .map_err(|_| Error::Storage)?;
-        self.validate()
+            .append_regular(OsStr::new(LOCK), &bytes)
+            .map_err(|_| Error::Storage)
     }
     fn runtime(&mut self, config: &Config) -> Result<BTreeMap<String, String>> {
         let record = self.state()?;
@@ -347,7 +326,6 @@ impl Held {
         } else {
             None
         };
-        self.validate()?;
         Ok(Observation {
             contract: CONTRACT.into(),
             identity: target.identity,
@@ -376,10 +354,7 @@ pub fn initialize_with_environment(
     config.validate_runtime(runtime)?;
     let bytes = private_file(&config.manifest_path, launch::MAX_BYTES as u64)?;
     verified(config, &bytes)?;
-    let workdir = Directory::open(&config.workdir, false).map_err(|_| Error::Storage)?;
-    workdir
-        .verify_private_parent()
-        .map_err(|_| Error::Storage)?;
+    Directory::open(&config.workdir, false).map_err(|_| Error::Storage)?;
     let parent = Directory::open(
         config.attempt_root.parent().ok_or(Error::Configuration)?,
         false,
@@ -395,13 +370,25 @@ pub fn initialize_with_environment(
         .map_err(|_| Error::Storage)?;
     root.publish_new(OsStr::new(MANIFEST), &bytes)
         .map_err(|_| Error::Storage)?;
-    let file = root
-        .open_lock(OsStr::new(LOCK))
-        .map_err(|_| Error::Storage)?;
-    FileExt::try_lock_exclusive(&file).map_err(|_| Error::Busy)?;
+    let lock = root
+        .lock(
+            OsStr::new(LOCK),
+            LockOptions {
+                create: true,
+                ..Default::default()
+            },
+        )
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::WouldBlock {
+                Error::Busy
+            } else {
+                Error::Storage
+            }
+        })?;
     let mut held = Held {
         root,
-        file,
+        file: lock.try_clone().map_err(|_| Error::Storage)?,
+        _lock: Some(lock),
         binding: config.digest()?,
     };
     let runtime_sha256 = if config.runtime_environment.is_empty() {
@@ -414,9 +401,6 @@ pub fn initialize_with_environment(
         Some(sha(&bytes))
     };
     held.append(Phase::Prepared, None, runtime_sha256)?;
-    workdir
-        .verify_private_parent()
-        .map_err(|_| Error::Storage)?;
     held.observe(config)
 }
 
@@ -438,6 +422,7 @@ pub fn sample(config: &Config) -> Result<Observation> {
     let mut held = Held {
         root,
         file,
+        _lock: None,
         binding: config.digest()?,
     };
     let before = held.state()?;
@@ -465,9 +450,6 @@ pub fn run(config: &Config, cancelled: &AtomicBool) -> Result<Observation> {
     let output_path = config.output_path();
     let output_parent = Directory::open(output_path.parent().ok_or(Error::Configuration)?, false)
         .map_err(|_| Error::Storage)?;
-    output_parent
-        .verify_private_parent()
-        .map_err(|_| Error::Storage)?;
     if output_parent
         .entry_exists(output_path.file_name().ok_or(Error::Configuration)?)
         .map_err(|_| Error::Storage)?
@@ -478,10 +460,7 @@ pub fn run(config: &Config, cancelled: &AtomicBool) -> Result<Observation> {
     {
         return Err(Error::Uncertain);
     }
-    let workdir = Directory::open(&config.workdir, false).map_err(|_| Error::Storage)?;
-    workdir
-        .verify_private_parent()
-        .map_err(|_| Error::Storage)?;
+    Directory::open(&config.workdir, false).map_err(|_| Error::Storage)?;
     let bytes = private_bytes(&held.root, OsStr::new(MANIFEST), launch::MAX_BYTES as u64)?;
     let (target, manifest, mut environment) = verified(config, &bytes)?;
     if let Some(plan) = &config.data_preparation {
@@ -514,9 +493,6 @@ pub fn run(config: &Config, cancelled: &AtomicBool) -> Result<Observation> {
         None,
         initial.runtime_environment_sha256.clone(),
     )?;
-    output_parent
-        .verify_private_parent()
-        .map_err(|_| Error::Uncertain)?;
     let execution = crate::process::execute_explicit(
         &config.workdir,
         &output_path,
@@ -526,16 +502,7 @@ pub fn run(config: &Config, cancelled: &AtomicBool) -> Result<Observation> {
         &environment,
     )
     .map_err(|_| Error::Uncertain)?;
-    held.validate().map_err(|_| Error::Uncertain)?;
-    output_parent
-        .verify_private_parent()
-        .map_err(|_| Error::Uncertain)?;
-    Directory::open(&output_path, false)
-        .and_then(|outputs| outputs.verify_private_parent())
-        .map_err(|_| Error::Uncertain)?;
-    workdir
-        .verify_private_parent()
-        .map_err(|_| Error::Uncertain)?;
+    Directory::open(&output_path, false).map_err(|_| Error::Uncertain)?;
     let process = ProcessEvidence::from(execution);
     let receipt = Receipt {
         contract: CONTRACT.into(),
@@ -557,30 +524,10 @@ pub fn run(config: &Config, cancelled: &AtomicBool) -> Result<Observation> {
         initial.runtime_environment_sha256,
     )
     .map_err(|_| Error::Uncertain)?;
-    held.observe(config)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn completed_guard_unlocks_even_when_an_inherited_description_remains_open() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = Directory::open(temp.path(), false).unwrap();
-        let file = root.open_lock(OsStr::new(LOCK)).unwrap();
-        FileExt::try_lock_exclusive(&file).unwrap();
-        // try_clone shares the kernel open-file-description, as fork does.
-        let inherited = file.try_clone().unwrap();
-        let held = Held {
-            root: root.clone(),
-            file,
-            binding: "synthetic".into(),
-        };
-        drop(held);
-        let next = root.open_existing_lock_rw(OsStr::new(LOCK)).unwrap();
-        FileExt::try_lock_exclusive(&next).unwrap();
-        FileExt::unlock(&next).unwrap();
-        drop(inherited);
+    // The FINISHED line must read back from the ledger this run has held.
+    let finished = held.observe(config)?;
+    if finished.phase != Phase::Finished {
+        return Err(Error::Uncertain);
     }
+    Ok(finished)
 }

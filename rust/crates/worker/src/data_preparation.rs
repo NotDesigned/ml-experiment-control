@@ -2,7 +2,12 @@
 //! training output; incomplete or failed executions are never silently replayed.
 use crate::managed::{Error, Result};
 use ml_exp_core::{artifacts::FileReceipt, data_preparation::Plan};
-use ml_exp_io::{artifacts, datasets::inventory, directory::Directory, process};
+use ml_exp_io::{
+    artifacts,
+    datasets::inventory,
+    directory::{Directory, LockOptions},
+    process,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -56,19 +61,26 @@ pub fn prepare(plan: &Plan, allow_download: bool, cancelled: &AtomicBool) -> Res
         root = root
             .child(name, true)
             .map_err(|e| failure("CACHE_ROOT", e))?;
-        root.verify_private_parent()
-            .map_err(|e| failure("CACHE_ROOT", e))?;
     }
-    root.verify_private_parent()
-        .map_err(|e| failure("CACHE_ROOT", e))?;
     let cache = root
         .child(OsStr::new("script-preparations"), true)
         .map_err(|e| failure("CACHE_ROOT", e))?;
     let id = plan.id().map_err(|_| Error::Configuration)?;
-    let lock = cache
-        .open_lock(OsStr::new(&format!("{id}.lock")))
-        .map_err(|e| failure("CACHE_LOCK", e))?;
-    fs2::FileExt::try_lock_exclusive(&lock).map_err(|_| Error::Busy)?;
+    let _lock = cache
+        .lock(
+            OsStr::new(&format!("{id}.lock")),
+            LockOptions {
+                create: true,
+                ..Default::default()
+            },
+        )
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::WouldBlock {
+                Error::Busy
+            } else {
+                failure("CACHE_LOCK", e)
+            }
+        })?;
     let existing = cache
         .entry_exists(OsStr::new(&id))
         .map_err(|e| failure("CACHE_LOOKUP", e))?;
@@ -214,9 +226,6 @@ pub fn prepare(plan: &Plan, allow_download: bool, cancelled: &AtomicBool) -> Res
     }
     slot.publish_new(OsStr::new("receipt.json"), &bytes)
         .map_err(|e| failure("DATA_RECEIPT", e))?;
-    cache
-        .validate_regular_entry(OsStr::new(&format!("{id}.lock")), &lock)
-        .map_err(|e| failure("CACHE_LOCK", e))?;
     println!("ML_EXPD_DATA_PREPARATION=READY {id} reused=false");
     plan.tree().map_err(|_| Error::Configuration)
 }

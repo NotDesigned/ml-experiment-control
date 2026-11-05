@@ -34,14 +34,14 @@ impl Profile {
             Self::Pai(p) => p.validate(),
             Self::Sensecore(p) => p.validate(),
         }
-        .map_err(|_| Error::configuration())
+        .map_err(why!(Error::configuration()))
     }
     pub fn digest(&self) -> Result<String> {
         self.validate()?;
         ml_exp_core::canonical::protocol_identity(
-            &serde_json::to_value(self).map_err(|_| Error::configuration())?,
+            &serde_json::to_value(self).map_err(why!(Error::configuration()))?,
         )
-        .map_err(|_| Error::configuration())
+        .map_err(why!(Error::configuration()))
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,11 +53,11 @@ pub struct Handle {
     pub provider_uid: Option<String>,
 }
 pub fn job_digest(job: &Job) -> Result<String> {
-    job.validate().map_err(|_| Error::evidence())?;
+    job.validate().map_err(why!(Error::evidence()))?;
     ml_exp_core::canonical::protocol_identity(
-        &serde_json::to_value(job).map_err(|_| Error::evidence())?,
+        &serde_json::to_value(job).map_err(why!(Error::evidence()))?,
     )
-    .map_err(|_| Error::evidence())
+    .map_err(why!(Error::evidence()))
 }
 impl Handle {
     pub fn validate(&self, profile: &Profile, job: &Job) -> Result<()> {
@@ -74,7 +74,7 @@ impl Handle {
                 }
             }
             Profile::Sensecore(_) => {
-                if self.job_id != job.name().map_err(|_| Error::evidence())?
+                if self.job_id != job.name().map_err(why!(Error::evidence()))?
                     || self
                         .provider_uid
                         .as_deref()
@@ -101,18 +101,18 @@ impl<T: Transport> Adapter<T> {
     }
     fn call(&self, request: cloud::Result<Request>, cancelled: &AtomicBool) -> Result<Value> {
         self.transport
-            .request(&request.map_err(|_| Error::configuration())?, cancelled)
+            .request(&request.map_err(why!(Error::configuration()))?, cancelled)
     }
     fn handle(&self, job: &Job, row: &Value) -> Result<Handle> {
         let (observation, uid) = match &self.profile {
             Profile::Pai(p) => (
                 p.validate_job(row, job, None)
-                    .map_err(|_| Error::evidence())?,
+                    .map_err(why!(Error::evidence()))?,
                 None,
             ),
             Profile::Sensecore(p) => (
                 p.validate_job(row, job, None)
-                    .map_err(|_| Error::evidence())?,
+                    .map_err(why!(Error::evidence()))?,
                 Some(row["uid"].as_str().ok_or_else(Error::evidence)?.into()),
             ),
         };
@@ -190,7 +190,7 @@ impl<T: Transport> Adapter<T> {
             Profile::Pai(p) => {
                 let mut observation = p
                     .validate_job(&row, job, Some(&handle.job_id))
-                    .map_err(|_| Error::evidence())?;
+                    .map_err(why!(Error::evidence()))?;
                 if observation.state == ml_exp_core::state::RunState::Queued {
                     // A separate diagnostic failure cannot erase a known job.
                     if let Ok(queue) = self.call(p.queue(&handle.job_id), cancelled) {
@@ -203,7 +203,7 @@ impl<T: Transport> Adapter<T> {
             }
             Profile::Sensecore(p) => p
                 .validate_job(&row, job, handle.provider_uid.as_deref())
-                .map_err(|_| Error::evidence()),
+                .map_err(why!(Error::evidence())),
         }
     }
     /// Positive absence requires complete, stable and duplicate-free pages.
@@ -221,7 +221,7 @@ impl<T: Transport> Adapter<T> {
             }
             let page = match &self.profile {
                 Profile::Pai(p) => {
-                    let page = token.parse().map_err(|_| Error::evidence())?;
+                    let page = token.parse().map_err(why!(Error::evidence()))?;
                     let value = self.call(p.list(job, page), cancelled)?;
                     Page::pai(&value, "Jobs", page, 100)
                 }
@@ -230,7 +230,7 @@ impl<T: Transport> Adapter<T> {
                     Page::sensecore(&value, "training_jobs", &token)
                 }
             }
-            .map_err(|_| Error::evidence())?;
+            .map_err(why!(Error::evidence()))?;
             if total.is_some_and(|previous| page.total != Some(previous)) {
                 return Err(Error::evidence());
             }
@@ -301,7 +301,7 @@ impl<T: Transport> Adapter<T> {
         };
         let value = self.raw_job(&handle.job_id, cancelled)?;
         p.validate_job(&value, job, Some(&handle.job_id))
-            .map_err(|_| Error::evidence())?;
+            .map_err(why!(Error::evidence()))?;
         let pods = value["Pods"].as_array().ok_or_else(Error::evidence)?;
         let mut logs = Vec::new();
         for pod in pods {
@@ -325,7 +325,7 @@ impl<T: Transport> Adapter<T> {
         };
         let row = self.raw_job(&handle.job_id, cancelled)?;
         p.validate_job(&row, job, Some(&handle.job_id))
-            .map_err(|_| Error::evidence())?;
+            .map_err(why!(Error::evidence()))?;
         let failure = |error: Error| json!({"code":error.code,"http_status":error.http_status});
         let all = row["Pods"].as_array().cloned().unwrap_or_default();
         let mut pods = Vec::new();
@@ -364,7 +364,7 @@ impl<T: Transport> Adapter<T> {
         };
         let row = self.raw_job(&handle.job_id, cancelled)?;
         p.validate_job(&row, job, Some(&handle.job_id))
-            .map_err(|_| Error::evidence())?;
+            .map_err(why!(Error::evidence()))?;
         let pods = row["Pods"].as_array().ok_or_else(Error::evidence)?;
         if pods.iter().filter(|p| p["PodId"] == pod).count() != 1 {
             return Err(Error::evidence());
@@ -390,7 +390,7 @@ impl<T: Transport> Adapter<T> {
                 return Err(Error::evidence());
             }
             let value = self.call(make(&token), cancelled)?;
-            let page = Page::sensecore(&value, field, &token).map_err(|_| Error::evidence())?;
+            let page = Page::sensecore(&value, field, &token).map_err(why!(Error::evidence()))?;
             if total.is_some_and(|n| page.total != Some(n)) {
                 return Err(Error::evidence());
             }
@@ -421,7 +421,7 @@ impl<T: Transport> Adapter<T> {
                 }
                 token = (token
                     .parse::<u32>()
-                    .map_err(|_| Error::evidence())?
+                    .map_err(why!(Error::evidence()))?
                     .checked_add(1)
                     .ok_or_else(Error::evidence)?)
                 .to_string();
@@ -447,13 +447,16 @@ impl<T: Transport> Adapter<T> {
             let name = row["name"].as_str().ok_or_else(Error::evidence)?;
             // This profile only authorizes its zone; other-zone pools are not
             // queried or considered as implicit cross-zone storage fallback.
-            let expected = p.scope.path("aec2s", name).map_err(|_| Error::evidence())?;
+            let expected = p
+                .scope
+                .path("aec2s", name)
+                .map_err(why!(Error::evidence()))?;
             if row["id"] != expected {
                 continue;
             }
             let specs =
                 self.sense_pages("resource_specs", |token| p.specs(name, token), cancelled)?;
-            result.push(sensecore::cluster(p, &row, &specs).map_err(|_| Error::evidence())?);
+            result.push(sensecore::cluster(p, &row, &specs).map_err(why!(Error::evidence()))?);
         }
         Ok(result)
     }
@@ -466,7 +469,7 @@ impl<T: Transport> Adapter<T> {
             return Err(Error::configuration());
         };
         sensecore::highest_spot(p, &self.sensecore_clusters(cancelled)?, allowed)
-            .map_err(|_| Error::evidence())
+            .map_err(why!(Error::evidence()))
     }
     pub fn sensecore_workers(
         &self,
@@ -498,7 +501,7 @@ impl<T: Transport> Adapter<T> {
         };
         let row = self.raw_job(&handle.job_id, cancelled)?;
         p.validate_job(&row, job, handle.provider_uid.as_deref())
-            .map_err(|_| Error::evidence())?;
+            .map_err(why!(Error::evidence()))?;
         let start = row["create_time"]
             .as_str()
             .and_then(|s| {
@@ -526,7 +529,7 @@ impl<T: Transport> Adapter<T> {
         }
         let workspaces = self.sense_pages("resources", |token| p.workspaces(token), cancelled)?;
         let workspace_id =
-            sensecore::log_workspace_id(p, &workspaces).map_err(|_| Error::evidence())?;
+            sensecore::log_workspace_id(p, &workspaces).map_err(why!(Error::evidence()))?;
         let workers = self.sensecore_workers(job, handle, cancelled)?;
         let worker = workers.first().ok_or_else(Error::evidence)?;
         let name = worker["name"].as_str().ok_or_else(Error::evidence)?;
@@ -558,12 +561,12 @@ impl<T: Transport> Adapter<T> {
             end_unix_seconds,
             tail,
         )
-        .map_err(|_| Error::evidence())
+        .map_err(why!(Error::evidence()))
     }
 }
 
 /// Exact normalized observations can be cached independently of frozen Actions.
 pub fn observation_document(observation: &JobObservation) -> Result<BTreeMap<String, Value>> {
-    serde_json::from_value(serde_json::to_value(observation).map_err(|_| Error::evidence())?)
-        .map_err(|_| Error::evidence())
+    serde_json::from_value(serde_json::to_value(observation).map_err(why!(Error::evidence()))?)
+        .map_err(why!(Error::evidence()))
 }

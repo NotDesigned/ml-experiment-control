@@ -1,5 +1,5 @@
 use super::domain::{self, Document, DocumentError, ManifestSource, Provenance};
-use crate::deletion::{Guard, RunFence};
+use crate::deletion::RunFence;
 use ml_exp_core::identity;
 use ml_exp_io::directory::Directory;
 use std::{
@@ -18,8 +18,6 @@ pub enum Error {
     Missing,
     #[error("frozen manifest bytes changed during observation or differ from the expected SHA256")]
     BytesChanged,
-    #[error("experiment snapshot exceeds its bounded metadata or Attempt limit")]
-    SnapshotLimit,
     #[error(transparent)]
     Document(#[from] DocumentError),
     #[error(transparent)]
@@ -85,18 +83,8 @@ fn check_sha(document: &Document, expected: Option<&str>) -> Result<()> {
     }
     Ok(())
 }
-fn same(first: &Document, second: &Document) -> Result<()> {
-    if first.source == second.source && first.raw_sha256 == second.raw_sha256 {
-        Ok(())
-    } else {
-        Err(Error::BytesChanged)
-    }
-}
 fn read(directory: &Directory, name: &OsStr, source: ManifestSource) -> Result<Document> {
-    Ok(Document::decode(
-        &directory.read_regular(name, domain::MAX_BYTES as u64)?,
-        source,
-    )?)
+    Ok(Document::decode(&directory.read_whole(name)?, source)?)
 }
 fn read_first(directory: &Directory, sources: &[ManifestSource]) -> Result<Document> {
     for source in sources {
@@ -114,23 +102,15 @@ const ATTEMPT_SOURCES: &[ManifestSource] =
     &[ManifestSource::AttemptYaml, ManifestSource::AttemptJson];
 
 impl ProjectAnchor {
-    fn validate(&self) -> Result<()> {
-        self.parent.verify_private_parent()?;
-        for root in &self.roots {
-            root.verify_private_parent()?;
-        }
-        Ok(())
-    }
     fn project(&self, identity: &str) -> Result<Document> {
-        self.validate()?;
         let document = read(&self.parent, &self.filename, ManifestSource::ProjectYaml)?;
         domain::validate_project(&document.metadata, identity)?;
         Ok(document)
     }
     fn run_directory(&self, reference: &RunRef) -> Result<Directory> {
-        identity::validate_id(&reference.project).map_err(|_| Error::Binding)?;
-        identity::validate_observation_id(&reference.run_id).map_err(|_| Error::Binding)?;
-        if reference.relative_components.len() > 32 {
+        identity::validate_id(&reference.project).map_err(why!(Error::Binding))?;
+        identity::validate_observation_id(&reference.run_id).map_err(why!(Error::Binding))?;
+        if reference.relative_components.len() > super::scanner::MAX_DEPTH {
             return Err(Error::Binding);
         }
         let mut directory = self
@@ -139,26 +119,10 @@ impl ProjectAnchor {
             .ok_or(Error::Binding)?
             .clone();
         for name in &reference.relative_components {
-            identity::validate_observation_id(name).map_err(|_| Error::Binding)?;
+            identity::validate_observation_id(name).map_err(why!(Error::Binding))?;
             directory = directory.child(OsStr::new(name), false)?;
         }
-        directory.verify_private_parent()?;
         Ok(directory)
-    }
-    fn verify_snapshot(
-        &self,
-        project: &Document,
-        run: &Document,
-        directory: &Directory,
-        reference: &RunRef,
-        guard: &Guard<'_>,
-    ) -> Result<()> {
-        same(project, &self.project(&reference.project)?)?;
-        same(run, &read_first(directory, RUN_SOURCES)?)?;
-        self.validate()?;
-        directory.verify_private_parent()?;
-        guard.require_observed_live(&reference.project, &reference.run_id)?;
-        Ok(())
     }
 }
 
@@ -168,7 +132,6 @@ impl Store {
     pub fn discover(
         &self,
         project: &str,
-        limits: &super::scanner::DiscoveryLimits,
     ) -> std::result::Result<super::scanner::Discovery, super::scanner::DiscoveryError> {
         let anchor = self
             .projects
@@ -180,7 +143,6 @@ impl Store {
             &anchor.filename,
             &anchor.roots,
             &self.fence,
-            limits,
             RUN_SOURCES,
         )
     }
@@ -191,7 +153,7 @@ impl Store {
         let guard = fence.shared_existing()?;
         let mut projects = BTreeMap::new();
         for binding in bindings {
-            identity::validate_id(&binding.project).map_err(|_| Error::Binding)?;
+            identity::validate_id(&binding.project).map_err(why!(Error::Binding))?;
             if projects.contains_key(&binding.project)
                 || !binding.project_file.is_absolute()
                 || binding.run_roots.is_empty()
@@ -217,35 +179,29 @@ impl Store {
             anchor.project(&binding.project)?;
             projects.insert(binding.project, anchor);
         }
-        guard.validate()?;
         drop(guard);
         Ok(Self { fence, projects })
     }
     fn project_anchor(&self, project: &str) -> Result<&ProjectAnchor> {
-        identity::validate_id(project).map_err(|_| Error::Binding)?;
+        identity::validate_id(project).map_err(why!(Error::Binding))?;
         self.projects.get(project).ok_or(Error::UnknownProject)
     }
     pub fn project(&self, project: &str, expected_raw_sha256: Option<&str>) -> Result<Document> {
-        let guard = self.fence.shared_existing()?;
+        let _guard = self.fence.shared_existing()?;
         let anchor = self.project_anchor(project)?;
         let document = anchor.project(project)?;
         check_sha(&document, expected_raw_sha256)?;
-        same(&document, &anchor.project(project)?)?;
-        anchor.validate()?;
-        guard.validate()?;
         Ok(document)
     }
     pub fn run(&self, reference: &RunRef, expected_raw_sha256: Option<&str>) -> Result<Document> {
-        let guard = self
+        let _guard = self
             .fence
             .existing_observation_guard(&reference.project, &reference.run_id)?;
         let anchor = self.project_anchor(&reference.project)?;
-        let project = anchor.project(&reference.project)?;
         let directory = anchor.run_directory(reference)?;
         let document = read_first(&directory, RUN_SOURCES)?;
         domain::validate_run(&document.metadata, &reference.project, &reference.run_id)?;
         check_sha(&document, expected_raw_sha256)?;
-        anchor.verify_snapshot(&project, &document, &directory, reference, &guard)?;
         Ok(document)
     }
     pub fn attempt(
@@ -254,19 +210,17 @@ impl Store {
         attempt_id: &str,
         expected: &ExpectedHashes,
     ) -> Result<AttemptRecord> {
-        identity::validate_id(attempt_id).map_err(|_| Error::Binding)?;
-        let guard = self
+        identity::validate_id(attempt_id).map_err(why!(Error::Binding))?;
+        let _guard = self
             .fence
             .existing_observation_guard(&reference.project, &reference.run_id)?;
         let anchor = self.project_anchor(&reference.project)?;
-        let project = anchor.project(&reference.project)?;
         let directory = anchor.run_directory(reference)?;
         let run = read_first(&directory, RUN_SOURCES)?;
         domain::validate_run(&run.metadata, &reference.project, &reference.run_id)?;
         check_sha(&run, expected.run.as_deref())?;
         let attempts = directory.child(OsStr::new("attempts"), false)?;
         let attempt_directory = attempts.child(OsStr::new(attempt_id), false)?;
-        attempt_directory.verify_private_parent()?;
         let attempt = read_first(&attempt_directory, ATTEMPT_SOURCES)?;
         check_sha(&attempt, expected.attempt.as_deref())?;
         let provenance = domain::validate_attempt(
@@ -276,9 +230,6 @@ impl Store {
             &reference.run_id,
             attempt_id,
         )?;
-        same(&attempt, &read_first(&attempt_directory, ATTEMPT_SOURCES)?)?;
-        attempt_directory.verify_private_parent()?;
-        anchor.verify_snapshot(&project, &run, &directory, reference, &guard)?;
         Ok(AttemptRecord {
             run,
             attempt,
@@ -305,7 +256,7 @@ impl Store {
         reference: &RunRef,
         attempt_id: &str,
     ) -> Result<super::Snapshot> {
-        identity::validate_id(attempt_id).map_err(|_| Error::Binding)?;
+        identity::validate_id(attempt_id).map_err(why!(Error::Binding))?;
         self.snapshot_selected(reference, Some(attempt_id), true)
     }
 
@@ -316,14 +267,12 @@ impl Store {
         load_heavy: bool,
     ) -> Result<super::Snapshot> {
         use super::snapshot::{self, AttemptSnapshot, Snapshot};
-        let guard = self
+        let _guard = self
             .fence
             .existing_observation_guard(&reference.project, &reference.run_id)?;
         let anchor = self.project_anchor(&reference.project)?;
-        let project = anchor.project(&reference.project)?;
         let directory = anchor.run_directory(reference)?;
-        let mut budget = snapshot::Budget::new();
-        let run = snapshot::manifest(&directory, RUN_SOURCES, &mut budget)?;
+        let run = snapshot::manifest(&directory, RUN_SOURCES)?;
         domain::validate_run(&run.metadata, &reference.project, &reference.run_id)?;
         let current_status = snapshot::evidence(
             &directory,
@@ -332,7 +281,6 @@ impl Store {
             &reference.project,
             &reference.run_id,
             None,
-            &mut budget,
         );
         let current_collection = snapshot::evidence(
             &directory,
@@ -341,7 +289,6 @@ impl Store {
             &reference.project,
             &reference.run_id,
             None,
-            &mut budget,
         );
         let current_decision = snapshot::evidence(
             &directory,
@@ -350,7 +297,6 @@ impl Store {
             &reference.project,
             &reference.run_id,
             None,
-            &mut budget,
         );
         let attempts_directory = if directory.entry_exists(OsStr::new("attempts"))? {
             Some(directory.child(OsStr::new("attempts"), false)?)
@@ -367,7 +313,7 @@ impl Store {
             (None, Some(_)) => return Err(Error::Missing),
             (None, None) => Vec::new(),
             (Some(root), None) => root
-                .entry_names_limited(snapshot::MAX_ATTEMPTS)?
+                .entry_names()?
                 .into_iter()
                 .filter_map(|name| {
                     name.to_str()
@@ -376,20 +322,15 @@ impl Store {
                 })
                 .collect(),
         };
-        if names.len() > snapshot::MAX_ATTEMPTS {
-            return Err(Error::SnapshotLimit);
-        }
         let (current_attempt_id, current_selection_source, diagnostics) = snapshot::current(
             &[&current_status, &current_collection, &current_decision],
             &names,
         );
         let mut attempts = Vec::new();
-        let mut retained = Vec::new();
         for attempt_id in names {
             let root = attempts_directory.as_ref().ok_or(Error::Missing)?;
             let attempt_directory = root.child(OsStr::new(&attempt_id), false)?;
-            attempt_directory.verify_private_parent()?;
-            let manifest = snapshot::manifest(&attempt_directory, ATTEMPT_SOURCES, &mut budget)?;
+            let manifest = snapshot::manifest(&attempt_directory, ATTEMPT_SOURCES)?;
             let provenance = domain::validate_attempt(
                 &run,
                 &manifest,
@@ -398,7 +339,7 @@ impl Store {
                 &attempt_id,
             )?;
             let prefix = format!("attempts/{attempt_id}");
-            let mut evidence = |name: &str| {
+            let evidence = |name: &str| {
                 snapshot::evidence(
                     &attempt_directory,
                     name,
@@ -406,7 +347,6 @@ impl Store {
                     &reference.project,
                     &reference.run_id,
                     Some(&attempt_id),
-                    &mut budget,
                 )
             };
             let status = evidence("status.json");
@@ -426,7 +366,6 @@ impl Store {
             } else {
                 snapshot::unloaded(&attempt_id)
             };
-            retained.push(attempt_directory);
             attempts.push(AttemptSnapshot {
                 attempt_id,
                 manifest,
@@ -441,14 +380,6 @@ impl Store {
                 metrics,
             });
         }
-        for (attempt, root) in attempts.iter().zip(&retained) {
-            same(&attempt.manifest, &read_first(root, ATTEMPT_SOURCES)?)?;
-            root.verify_private_parent()?;
-        }
-        if let Some(root) = attempts_directory {
-            root.verify_private_parent()?;
-        }
-        anchor.verify_snapshot(&project, &run, &directory, reference, &guard)?;
         Ok(Snapshot {
             project: reference.project.clone(),
             run_id: reference.run_id.clone(),

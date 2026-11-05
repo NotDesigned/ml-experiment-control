@@ -59,7 +59,8 @@ impl Read for Parts<'_> {
                 .client
                 .send_artifact(&request)
                 .map_err(|_| stream_error())?;
-            let bytes = (self.bytes - self.number * 16 * 1024 * 1024).min(16 * 1024 * 1024);
+            let bytes =
+                (self.bytes - self.number * multipart::PART_BYTES).min(multipart::PART_BYTES);
             if ticket["part"] != self.number
                 || ticket["bytes"] != bytes
                 || ticket["headers"] != json!({})
@@ -125,10 +126,10 @@ pub fn download(
         let mut temporary = tempfile::NamedTempFile::new_in(output.parent().ok_or_else(invalid)?)
             .map_err(|_| invalid())?;
         if value["download"]["kind"] == "oss-parts" {
-            let count = receipt.bytes.div_ceil(16 * 1024 * 1024);
+            let count = receipt.bytes.div_ceil(multipart::PART_BYTES);
             if count == 0
-                || count > 65536
-                || value["download"]["part_bytes"] != 16 * 1024 * 1024u64
+                || count > multipart::MAX_PARTS
+                || value["download"]["part_bytes"] != multipart::PART_BYTES
                 || value["download"]["part_count"] != count
             {
                 return Err(Error::Response);

@@ -42,7 +42,7 @@ impl Materializer {
         };
         value
             .validate()
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
         Ok(value)
     }
 }
@@ -140,7 +140,7 @@ impl Service {
     pub fn runtimes(&self, project: &str) -> cloud::Result<Value> {
         self.project_hash(project)?;
         let mut rows = Vec::new();
-        for name in self.slots.entry_names_limited(32768).map_err(io)? {
+        for name in self.slots.entry_names().map_err(io)? {
             let Some(id) = name.to_str().and_then(|s| s.strip_suffix(".runtime.json")) else {
                 continue;
             };
@@ -156,27 +156,27 @@ impl Service {
     }
     fn build_record(&self, project: &str, id: &str) -> cloud::Result<Record> {
         let record: Record = serde_json::from_value(read(&self.slots, &name(id)?)?)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         if record.project != project
             || record.runtime_id != id
             || record
                 .definition
                 .id(project, &record.worker_sha256)
-                .map_err(|_| cloud::Error::evidence())?
+                .map_err(why!(cloud::Error::evidence()))?
                 != id
             || canonical::protocol_identity(
                 &self
                     .sources
                     .read(project, &record.definition.source_id)
-                    .map_err(|_| cloud::Error::evidence())?,
+                    .map_err(why!(cloud::Error::evidence()))?,
             )
-            .map_err(|_| cloud::Error::evidence())?
+            .map_err(why!(cloud::Error::evidence()))?
                 != record.source_receipt_sha256
         {
             return Err(cloud::Error::evidence());
         }
         if let Some(runtime) = &record.runtime {
-            runtime.validate().map_err(|_| cloud::Error::evidence())?;
+            runtime.validate().map_err(why!(cloud::Error::evidence()))?;
             if runtime.runtime_id != id
                 || runtime.source_id != record.definition.source_id
                 || runtime.worker_sha256 != record.worker_sha256
@@ -211,14 +211,14 @@ impl Service {
         record.runtime.ok_or_else(cloud::Error::evidence)
     }
     pub fn prepare_runtime(&self, project: &str, definition: Definition) -> cloud::Result<Value> {
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         let settings = self
             .builds
             .as_ref()
             .ok_or_else(cloud::Error::configuration)?;
         definition
             .validate()
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
         if !(self.accepts(&definition.executor)
             || settings.slurm.contains_key(&definition.executor))
         {
@@ -227,10 +227,10 @@ impl Service {
         let source = self
             .sources
             .read(project, &definition.source_id)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         let id = definition
             .id(project, &settings.worker_sha256)
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
         if self
             .slots
             .entry_exists(OsStr::new(&name(&id)?))
@@ -243,14 +243,13 @@ impl Service {
             runtime_id: id,
             definition,
             source_receipt_sha256: canonical::protocol_identity(&source)
-                .map_err(|_| cloud::Error::evidence())?,
+                .map_err(why!(cloud::Error::evidence()))?,
             worker_sha256: settings.worker_sha256.clone(),
             started: false,
             slurm_runtime: None,
             runtime: None,
             diagnostic: None,
         };
-        lock.validate()?;
         write(&self.slots, &name(&record.runtime_id)?, &record)?;
         Ok(self.build_view(&record))
     }
@@ -295,15 +294,15 @@ impl Service {
             uncertain: error.may_have_sent,
         })?;
         let value = Value::Object(
-            ml_exp_core::json::mapping(&bytes).map_err(|_| cloud::Error::evidence())?,
+            ml_exp_core::json::mapping(&bytes).map_err(why!(cloud::Error::evidence()))?,
         );
         Ok((status, value))
     }
     fn accept_build(&self, record: &mut Record, status: u16, result: Value) -> cloud::Result<()> {
         if status == 200 {
             let runtime: Runtime = serde_json::from_value(result["runtime"].clone())
-                .map_err(|_| cloud::Error::evidence())?;
-            runtime.validate().map_err(|_| cloud::Error::evidence())?;
+                .map_err(why!(cloud::Error::evidence()))?;
+            runtime.validate().map_err(why!(cloud::Error::evidence()))?;
             if result["runtime_id"] != record.runtime_id
                 || result["project"] != record.project
                 || result["source_id"] != record.definition.source_id
@@ -389,7 +388,6 @@ impl Service {
         self.slots
             .replace_regular(OsStr::new(&name(id)?), &encode(&record)?)
             .map_err(io)?;
-        lock.validate()?;
         drop(lock);
         let response = json!({"project":record.project,"runtime_id":record.runtime_id,"status":"EXECUTING","scheduler_submitted":false,"retry_safe":false});
         let service = Arc::clone(self);
@@ -448,11 +446,11 @@ impl Service {
                     let _ = service.materialize_runtime(&project, &id, true);
                 }
             })
-            .map_err(|_| cloud::Error {
+            .map_err(why!(cloud::Error {
                 code: "BUILD_DISPATCH_UNCERTAIN".into(),
                 http_status: None,
                 uncertain: true,
-            })?;
+            }))?;
         Ok(response)
     }
     pub fn reconcile_runtime(&self, project: &str, id: &str) -> cloud::Result<Value> {
@@ -463,7 +461,7 @@ impl Service {
         if record.runtime.is_none() && record.started {
             let observed = encode(&record)?;
             let (status, value) = self.builder_call(&record, "reconcile")?;
-            let lock = self.lock()?;
+            let _lock = self.lock()?;
             record = self.build_record(project, id)?;
             if encode(&record)? != observed
                 || self.active_builds.lock().is_ok_and(|s| s.contains(id))
@@ -471,7 +469,6 @@ impl Service {
                 return Ok(self.build_view(&record));
             }
             self.accept_build(&mut record, status, value)?;
-            lock.validate()?;
         }
         if self
             .builds
@@ -492,7 +489,7 @@ impl Service {
             return Err(cloud::Error::evidence());
         }
         let text = experiment_redact::redact_line(&value.to_string());
-        serde_json::from_str(&text).map_err(|_| cloud::Error::evidence())
+        serde_json::from_str(&text).map_err(why!(cloud::Error::evidence()))
     }
 }
 
@@ -532,7 +529,7 @@ impl Service {
         };
         request
             .validate()
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
         if !build {
             ssh.budget.timeout = Duration::from_secs(90);
         }
@@ -566,13 +563,12 @@ impl Service {
             || !result.stdout.complete
             || result.stdout.truncated
         {
-            let lock = self.lock()?;
+            let _lock = self.lock()?;
             let mut current = self.build_record(project, id)?;
             if current.slurm_runtime.is_none() {
                 current.diagnostic = Some(json!({"code":"OCI_TO_SIF_UNCONFIRMED",
                     "phase":"OCI_TO_SIF","scheduler_submitted":false,
                     "process":result.diagnostic()}));
-                lock.validate()?;
                 self.slots
                     .replace_regular(OsStr::new(&name(id)?), &encode(&current)?)
                     .map_err(io)?;
@@ -585,11 +581,11 @@ impl Service {
         }
         let value = Value::Object(
             ml_exp_core::json::mapping(&result.stdout.bytes)
-                .map_err(|_| cloud::Error::evidence())?,
+                .map_err(why!(cloud::Error::evidence()))?,
         );
         let runtime: ml_exp_core::first_submission::native::Runtime =
             serde_json::from_value(value["runtime"].clone())
-                .map_err(|_| cloud::Error::evidence())?;
+                .map_err(why!(cloud::Error::evidence()))?;
         let expected = record.runtime.as_ref().ok_or_else(cloud::Error::evidence)?;
         if runtime.runtime_id != id
             || runtime.source_id != expected.source_id
@@ -606,7 +602,7 @@ impl Service {
         {
             return Err(cloud::Error::evidence());
         }
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         let mut current = self.build_record(project, id)?;
         if current
             .slurm_runtime
@@ -617,7 +613,6 @@ impl Service {
         }
         current.slurm_runtime = Some(runtime);
         current.diagnostic = None;
-        lock.validate()?;
         self.slots
             .replace_regular(OsStr::new(&name(id)?), &encode(&current)?)
             .map_err(io)?;

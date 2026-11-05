@@ -5,7 +5,6 @@ use crate::slurm::helper::{self, valid_digest};
 use serde::{Deserialize, Serialize};
 
 pub const PAGE_BYTES: usize = 128 * 1024;
-pub const MAX_FILE_BYTES: u64 = 128 * 1024 * 1024;
 pub const CONTRACT: &str = "managed-metric-history.v1";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -17,7 +16,7 @@ pub struct Cursor {
 }
 impl Cursor {
     pub fn validate(&self) -> helper::Result<()> {
-        if self.offset_bytes > MAX_FILE_BYTES || !valid_digest(&self.prefix_sha256) {
+        if !valid_digest(&self.prefix_sha256) {
             return Err(helper::Error::Metadata);
         }
         Ok(())
@@ -55,9 +54,8 @@ impl Page {
             || !valid_digest(&self.config_sha256)
             || self.start.as_ref() != start
             || self.bytes.len() > PAGE_BYTES
-            || self.next.offset_bytes != offset + self.bytes.len() as u64
+            || offset.checked_add(self.bytes.len() as u64) != Some(self.next.offset_bytes)
             || self.next.offset_bytes > self.total_bytes
-            || self.total_bytes > MAX_FILE_BYTES
             || self.missing_after_finish
                 && (!self.process_finished
                     || self.total_bytes != 0

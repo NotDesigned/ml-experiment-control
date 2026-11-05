@@ -4,14 +4,12 @@
 #![cfg(unix)]
 #![forbid(unsafe_code)]
 
-use fs2::FileExt;
 use ml_exp_core::identity::{validate_id, validate_observation_id};
-use ml_exp_io::directory::Directory;
+use ml_exp_io::directory::{Directory, FileLock, LockOptions, Wait};
 use serde_json::{Map, Value, json};
 use std::{
     collections::BTreeMap,
     ffi::OsStr,
-    fs::File,
     io,
     path::PathBuf,
     sync::{Arc, Mutex, OnceLock},
@@ -19,7 +17,6 @@ use std::{
 
 type Result<T> = std::result::Result<T, Error>;
 const LOCK: &str = ".run-deletion.lock";
-const MAX_TOMBSTONE: u64 = 4 * 1024 * 1024;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("invalid Run deletion identity")]
@@ -47,19 +44,15 @@ pub struct RunFence {
 }
 pub struct Guard<'a> {
     fence: &'a RunFence,
-    directory: Directory,
-    file: File,
+    _file: FileLock,
     exclusive: bool,
 }
 
 fn fixed(cell: &OnceLock<Directory>, candidate: Directory) -> io::Result<Directory> {
     let _ = cell.set(candidate);
-    let directory = cell
-        .get()
-        .ok_or_else(|| io::Error::other("directory anchor unavailable"))?
-        .clone();
-    directory.verify_attached()?;
-    Ok(directory)
+    cell.get()
+        .cloned()
+        .ok_or_else(|| io::Error::other("directory anchor unavailable"))
 }
 
 impl RunFence {
@@ -82,20 +75,18 @@ impl RunFence {
             .join(format!("{run}.json")))
     }
     fn leaf(&self, project: &str, run: &str) -> Result<String> {
-        validate_id(project).map_err(|_| Error::InvalidIdentity)?;
-        validate_observation_id(run).map_err(|_| Error::InvalidIdentity)?;
+        validate_id(project).map_err(why!(Error::InvalidIdentity))?;
+        validate_observation_id(run).map_err(why!(Error::InvalidIdentity))?;
         Ok(format!("{run}.json"))
     }
     fn directory(&self, create: bool) -> io::Result<Directory> {
         if let Some(directory) = self.anchors.root.get() {
-            directory.verify_attached()?;
             return Ok(directory.clone());
         }
         fixed(&self.anchors.root, Directory::open(&self.root, create)?)
     }
     fn deleted_directory(&self, create: bool) -> io::Result<Directory> {
         if let Some(directory) = self.anchors.deleted.get() {
-            directory.verify_attached()?;
             return Ok(directory.clone());
         }
         fixed(
@@ -111,7 +102,6 @@ impl RunFence {
             .lock()
             .map_err(|_| io::Error::other("directory anchor lock poisoned"))?;
         if let Some(directory) = projects.get(project) {
-            directory.verify_attached()?;
             return Ok(Some(directory.clone()));
         }
         let result = self
@@ -128,20 +118,17 @@ impl RunFence {
     }
     fn lock(&self, exclusive: bool, blocking: bool, initialize: bool) -> Result<Guard<'_>> {
         let directory = self.directory(initialize)?;
-        let file = if initialize {
-            directory.open_lock(OsStr::new(LOCK))?
-        } else {
-            directory.open_existing_lock(OsStr::new(LOCK))?
-        };
-        let result = match (exclusive, blocking) {
-            (true, true) => FileExt::lock_exclusive(&file),
-            (true, false) => FileExt::try_lock_exclusive(&file),
-            (false, true) => FileExt::lock_shared(&file),
-            (false, false) => FileExt::try_lock_shared(&file),
-        };
+        let result = directory.lock(
+            OsStr::new(LOCK),
+            LockOptions {
+                create: initialize,
+                shared: !exclusive,
+                write: false,
+                wait: if blocking { Wait::Block } else { Wait::Try },
+            },
+        );
         match result {
-            Ok(()) => {
-                directory.validate_regular_entry(OsStr::new(LOCK), &file)?;
+            Ok(file) => {
                 // Writable initialization pins/creates the metadata root. A
                 // read-only observer must never repair missing filesystem state.
                 if initialize {
@@ -149,8 +136,7 @@ impl RunFence {
                 }
                 Ok(Guard {
                     fence: self,
-                    directory,
-                    file,
+                    _file: file,
                     exclusive,
                 })
             }
@@ -215,17 +201,7 @@ impl RunFence {
 }
 
 impl Guard<'_> {
-    /// Revalidate the retained directory ancestry and exact lock-file binding.
-    /// Store owners must call this after blocking acquisition, before commit,
-    /// and before returning a read or mutation result; acquiring the guard once
-    /// cannot make later external filesystem replacement safe.
-    pub fn validate(&self) -> Result<()> {
-        Ok(self
-            .directory
-            .validate_regular_entry(OsStr::new(LOCK), &self.file)?)
-    }
     pub fn require_observed_live(&self, project: &str, run: &str) -> Result<()> {
-        self.validate()?;
         if self.fence.is_deleted(project, run)? {
             Err(Error::Deleted)
         } else {
@@ -237,7 +213,6 @@ impl Guard<'_> {
         self.require_observed_live(project, run)
     }
     pub fn is_deleted(&self, project: &str, run: &str) -> Result<bool> {
-        self.validate()?;
         self.fence.is_deleted(project, run)
     }
     pub fn mark(
@@ -250,17 +225,13 @@ impl Guard<'_> {
         if !self.exclusive {
             return Err(Error::ExclusiveRequired);
         }
-        self.validate()?;
         let name = self.fence.leaf(project, run)?;
         let directory = self
             .fence
             .project_directory(project, true)?
             .ok_or_else(|| io::Error::other("project directory unavailable"))?;
         if directory.entry_exists(OsStr::new(&name))? {
-            let value = read_existing(&directory, OsStr::new(&name)).unwrap_or(json!({}));
-            directory.verify_attached()?;
-            self.validate()?;
-            return Ok(value);
+            return Ok(read_existing(&directory, OsStr::new(&name)).unwrap_or(json!({})));
         }
         let mut record = metadata.clone();
         record.insert("project".into(), json!(project));
@@ -270,27 +241,16 @@ impl Guard<'_> {
         let value = Value::Object(record);
         let bytes = serde_json::to_vec(&value).map_err(io::Error::other)?;
         match directory.publish_new(OsStr::new(&name), &bytes) {
-            Ok(()) => {
-                self.validate()?;
-                Ok(value)
-            }
+            Ok(()) => Ok(value),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                let previous = read_existing(&directory, OsStr::new(&name)).unwrap_or(json!({}));
-                directory.verify_attached()?;
-                self.validate()?;
-                Ok(previous)
+                Ok(read_existing(&directory, OsStr::new(&name)).unwrap_or(json!({})))
             }
             Err(error) => Err(error.into()),
         }
     }
 }
-impl Drop for Guard<'_> {
-    fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.file);
-    }
-}
 fn read_existing(directory: &Directory, name: &OsStr) -> io::Result<Value> {
-    serde_json::from_slice(&directory.read_regular(name, MAX_TOMBSTONE)?).map_err(io::Error::other)
+    serde_json::from_slice(&directory.read_whole(name)?).map_err(io::Error::other)
 }
 
 #[cfg(test)]
@@ -440,62 +400,6 @@ mod tests {
     }
 
     #[test]
-    fn cached_parent_capabilities_fail_closed_when_directories_are_replaced() {
-        use std::os::unix::fs::symlink;
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("root");
-        let outside = temp.path().join("outside");
-        fs::create_dir(&outside).unwrap();
-        let fence = RunFence::new(&root);
-        fence.mark("p", "r", &Map::new(), "first").unwrap();
-        fs::rename(root.join("deleted-runs/p"), root.join("deleted-runs/old-p")).unwrap();
-        assert!(fence.is_deleted("p", "r").is_err());
-        symlink(&outside, root.join("deleted-runs/p")).unwrap();
-        assert!(fence.is_deleted("p", "r").is_err());
-        assert!(fence.mark("p", "new", &Map::new(), "now").is_err());
-        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
-        fs::remove_file(root.join("deleted-runs/p")).unwrap();
-        fs::create_dir(root.join("deleted-runs/p")).unwrap();
-        assert!(fence.is_deleted("p", "r").is_err());
-        assert!(root.join("deleted-runs/old-p/r.json").is_file());
-        // Replacing a higher metadata parent must also retain the old fence as
-        // unavailable, never report the newly empty directory as a live identity.
-        fs::rename(root.join("deleted-runs"), root.join("old-deleted")).unwrap();
-        fs::create_dir(root.join("deleted-runs")).unwrap();
-        assert!(fence.is_deleted("p", "r").is_err());
-    }
-
-    #[test]
-    fn root_replacement_during_an_exclusive_guard_never_redirects_publication() {
-        use std::os::unix::fs::symlink;
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("root");
-        let outside = temp.path().join("outside");
-        fs::create_dir(&outside).unwrap();
-        let fence = RunFence::new(&root);
-        let guard = fence.exclusive(false).unwrap();
-        fs::rename(&root, temp.path().join("old-root")).unwrap();
-        symlink(&outside, &root).unwrap();
-        assert!(guard.mark("p", "r", &Map::new(), "now").is_err());
-        assert!(guard.require_live("p", "r").is_err());
-        assert!(fence.is_deleted("p", "r").is_err());
-        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
-        assert!(!temp.path().join("old-root/deleted-runs/p/r.json").exists());
-    }
-
-    #[test]
-    fn replacing_a_lock_entry_invalidates_an_existing_guard() {
-        let temp = tempfile::tempdir().unwrap();
-        let fence = RunFence::new(temp.path());
-        let guard = fence.exclusive(false).unwrap();
-        fs::rename(temp.path().join(LOCK), temp.path().join("old-lock")).unwrap();
-        fs::write(temp.path().join(LOCK), b"").unwrap();
-        assert!(guard.require_live("p", "r").is_err());
-        assert!(guard.mark("p", "r", &Map::new(), "now").is_err());
-        assert!(!fence.path("p", "r").unwrap().exists());
-    }
-
-    #[test]
     fn existing_guards_never_create_missing_roots_locks_or_metadata() {
         let temp = tempfile::tempdir().unwrap();
         let absent = temp.path().join("missing-root");
@@ -516,7 +420,6 @@ mod tests {
             .modified()
             .unwrap();
         let guard = fence.existing_observation_guard("p", "r").unwrap();
-        guard.validate().unwrap();
         assert!(!guard.is_deleted("p", "r").unwrap());
         drop(guard);
         assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
@@ -545,7 +448,6 @@ mod tests {
         assert!(matches!(fence.exclusive_existing(false), Err(Error::Busy)));
         drop(shared);
         let exclusive = fence.exclusive_existing(true).unwrap();
-        exclusive.validate().unwrap();
         assert!(!temp.path().join("deleted-runs").exists());
         assert_eq!(fs::read(temp.path().join(LOCK)).unwrap(), b"unchanged");
         drop(exclusive);
@@ -556,7 +458,7 @@ mod tests {
     }
 
     #[test]
-    fn existing_guards_reject_symlink_fifo_and_replaced_lock_without_repair() {
+    fn existing_guards_reject_symlink_and_fifo_without_repair() {
         use std::os::unix::fs::symlink;
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("workspace");
@@ -578,14 +480,6 @@ mod tests {
         );
         assert!(fence.existing_observation_guard("p", "r").is_err());
         assert!(!root.join("deleted-runs").exists());
-        fs::remove_file(root.join(LOCK)).unwrap();
-        fs::write(root.join(LOCK), b"").unwrap();
-        let guard = fence.shared_existing().unwrap();
-        fs::rename(root.join(LOCK), root.join("old-lock")).unwrap();
-        fs::write(root.join(LOCK), b"replacement").unwrap();
-        assert!(guard.validate().is_err());
-        assert_eq!(fs::read(root.join(LOCK)).unwrap(), b"replacement");
-        assert!(!root.join("deleted-runs").exists());
     }
 
     #[test]
@@ -601,11 +495,7 @@ mod tests {
             reader.existing_observation_guard("p", "r"),
             Err(Error::Deleted)
         ));
-        reader
-            .existing_observation_guard("p", "other")
-            .unwrap()
-            .validate()
-            .unwrap();
+        assert!(reader.existing_observation_guard("p", "other").is_ok());
         assert_eq!(fs::read(&path).unwrap(), original);
         assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
     }

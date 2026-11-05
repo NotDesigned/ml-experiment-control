@@ -42,7 +42,6 @@ pub fn prepare(
             .join(directory)
     };
     let root = ml_exp_io::directory::Directory::open(&absolute, true).map_err(|_| invalid())?;
-    root.verify_private_parent().map_err(|_| invalid())?;
     let manifest = json!({"contract":"native-batch.v1","server":client.base_url(),"project":project,"batch":batch});
     let file = std::ffi::OsStr::new("batch.json");
     let bytes = serde_json::to_vec(&manifest).map_err(|_| invalid())?;
@@ -137,10 +136,15 @@ pub fn dispatch(
     };
     let directory_cap =
         ml_exp_io::directory::Directory::open(&root, false).map_err(|_| invalid())?;
-    let lock = directory_cap
-        .open_lock(std::ffi::OsStr::new(".dispatch.lock"))
+    let _lock = directory_cap
+        .lock(
+            std::ffi::OsStr::new(".dispatch.lock"),
+            ml_exp_io::directory::LockOptions {
+                create: true,
+                ..Default::default()
+            },
+        )
         .map_err(|_| invalid())?;
-    fs2::FileExt::try_lock_exclusive(&lock).map_err(|_| invalid())?;
     let value = Value::Object(
         ml_exp_core::json::mapping(
             &directory_cap

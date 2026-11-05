@@ -68,8 +68,6 @@ enum Reader {
         http: reqwest::blocking::Client,
     },
     File {
-        parent: Directory,
-        name: std::ffi::OsString,
         file: File,
         size: u64,
     },
@@ -104,12 +102,7 @@ impl Reader {
                 if size != config.definition.archive_bytes {
                     return Err(failed("SOURCE_SIZE_MISMATCH"));
                 }
-                Ok(Self::File {
-                    parent,
-                    name,
-                    file,
-                    size,
-                })
+                Ok(Self::File { file, size })
             }
             Source::Https { url, .. } => {
                 let http = reqwest::blocking::Client::builder()
@@ -152,8 +145,8 @@ impl Reader {
         }
         match self {
             Self::Parts { url, token, http } => {
-                if offset % datasets::PART_BYTES != 0
-                    || count as u64 != datasets::PART_BYTES.min(total - offset)
+                if offset % ml_exp_core::multipart::PART_BYTES != 0
+                    || count as u64 != ml_exp_core::multipart::PART_BYTES.min(total - offset)
                 {
                     return Err(failed("PART_RANGE_INVALID"));
                 }
@@ -162,7 +155,10 @@ impl Reader {
                     .ok_or_else(|| failed("DOWNLOAD_TIMEOUT"))?
                     .min(Duration::from_secs(120));
                 let response = http
-                    .post(format!("{url}/{}", offset / datasets::PART_BYTES))
+                    .post(format!(
+                        "{url}/{}",
+                        offset / ml_exp_core::multipart::PART_BYTES
+                    ))
                     .bearer_auth(token)
                     .header(ml_exp_core::CLIENT_PROTOCOL_HEADER, "2")
                     .timeout(remaining)
@@ -195,7 +191,7 @@ impl Reader {
                         .ok_or_else(|| failed("DATA_TICKET_INVALID"))?,
                 )
                 .map_err(|_| failed("DATA_TICKET_INVALID"))?;
-                if ticket["part"] != offset / datasets::PART_BYTES
+                if ticket["part"] != offset / ml_exp_core::multipart::PART_BYTES
                     || ticket["bytes"] != count as u64
                     || uri.scheme() != "https"
                     || uri.port_or_known_default() != Some(443)
@@ -230,21 +226,13 @@ impl Reader {
                 }
                 Ok(bytes)
             }
-            Self::File {
-                parent,
-                name,
-                file,
-                size,
-            } => {
+            Self::File { file, size } => {
                 let before = file.metadata().map_err(io_error)?;
                 if before.len() != *size || *size != total {
                     return Err(failed("SOURCE_CHANGED"));
                 }
                 let mut bytes = vec![0; count];
                 file.read_exact_at(&mut bytes, offset).map_err(io_error)?;
-                parent
-                    .validate_regular_entry(name, file)
-                    .map_err(io_error)?;
                 let after = file.metadata().map_err(io_error)?;
                 if before.len() != after.len()
                     || before.mtime() != after.mtime()
@@ -379,7 +367,7 @@ pub fn materialize(
                     .part_size(number)
                     .map_err(|_| failed("PART_IDENTITY_INVALID"))?;
                 let offset = number
-                    .checked_mul(datasets::PART_BYTES)
+                    .checked_mul(ml_exp_core::multipart::PART_BYTES)
                     .ok_or_else(|| failed("PART_IDENTITY_INVALID"))?;
                 let payload = reader.part(
                     offset,
@@ -491,7 +479,6 @@ pub fn bundle(config: &Config, output: &Path, cancelled: &AtomicBool) -> Result<
         false,
     )
     .map_err(io_error)?;
-    parent.verify_private_parent().map_err(io_error)?;
     let name = output
         .file_name()
         .ok_or_else(|| failed("SOURCE_PATH_INVALID"))?;
@@ -523,7 +510,7 @@ pub fn bundle(config: &Config, output: &Path, cancelled: &AtomicBool) -> Result<
             .map_err(|_| failed("IMPORT_CONFIGURATION_INVALID"))?
         {
             let bytes = source.part(
-                part * datasets::PART_BYTES,
+                part * ml_exp_core::multipart::PART_BYTES,
                 config
                     .definition
                     .part_size(part)
@@ -539,12 +526,12 @@ pub fn bundle(config: &Config, output: &Path, cancelled: &AtomicBool) -> Result<
         ml_exp_io::artifacts::verify_data_stream(&mut file, &config.definition)
             .map_err(io_error)?;
         parent
-            .publish_regular_as(&temporary, name, &file)
+            .publish_regular_as(&temporary, name)
             .map_err(io_error)?;
         Ok(())
     })();
     if result.is_err() {
-        let _ = parent.remove_staged_regular(&temporary, &file);
+        let _ = parent.remove_staged_regular(&temporary);
     }
     result
 }

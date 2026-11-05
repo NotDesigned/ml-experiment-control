@@ -395,7 +395,7 @@ fn a_durable_job_receipt_with_foreign_scheduler_state_is_not_verified() {
 }
 #[test]
 fn missing_corrupt_or_unsafe_private_frame_cannot_be_repaired_after_claim() {
-    for mutation in ["missing", "corrupt", "readable", "symlink", "hardlink"] {
+    for mutation in ["missing", "corrupt", "readable", "symlink"] {
         let (root, ssh, store, prepare, plan) = fixture("ledger-lost-submit");
         let action = plan["action_id"].as_str().unwrap();
         let confirmation = format!("EXECUTE {action}");
@@ -430,7 +430,6 @@ fn missing_corrupt_or_unsafe_private_frame_cannot_be_repaired_after_claim() {
                 fs::remove_file(&frame).unwrap();
                 std::os::unix::fs::symlink(foreign, &frame).unwrap();
             }
-            "hardlink" => fs::hard_link(&frame, root.path().join("other-frame")).unwrap(),
             _ => unreachable!(),
         }
         let before = calls(root.path());

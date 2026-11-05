@@ -165,7 +165,7 @@ fn same_or_new(
             .map_err(|error| startup(stage, error))?;
     }
     directory
-        .verify_private_parent()
+        .require_private()
         .map_err(|_| managed::Error::Storage)
 }
 fn child(directory: &Directory, name: &str) -> managed::Result<Directory> {
@@ -179,7 +179,7 @@ fn child(directory: &Directory, name: &str) -> managed::Result<Directory> {
     }
     .map_err(|_| managed::Error::Storage)?;
     result
-        .verify_private_parent()
+        .require_private()
         .map_err(|_| managed::Error::Storage)?;
     Ok(result)
 }
@@ -198,7 +198,7 @@ pub fn prepare(package: &Package, runtime: &BTreeMap<String, String>) -> managed
     crate::cloud_storage::prepare(package)?;
     let binding = package.config.binding()?;
     let root = Directory::open(&package.root, false).map_err(|_| managed::Error::Storage)?;
-    root.verify_private_parent()
+    root.require_private()
         .map_err(|_| managed::Error::Storage)?;
     let project = child(&root, &binding.identity.project)?;
     let run = child(&project, &binding.identity.run_id)?;

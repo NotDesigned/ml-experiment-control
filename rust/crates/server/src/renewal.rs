@@ -16,16 +16,16 @@ pub(crate) fn read<T: DeserializeOwned>(slots: &Directory, name: &str) -> io::Re
     if !slots.entry_exists(OsStr::new(name))? {
         return Ok(None);
     }
-    let bytes = slots.read_regular(OsStr::new(name), 32 * 1024 * 1024)?;
-    let value = ml_exp_core::json::mapping(&bytes).map_err(|_| invalid())?;
+    let bytes = slots.read_whole(OsStr::new(name))?;
+    let value = ml_exp_core::json::own_mapping(&bytes).map_err(why!(invalid()))?;
     serde_json::from_value(serde_json::Value::Object(value))
         .map(Some)
-        .map_err(|_| invalid())
+        .map_err(why!(invalid()))
 }
 pub(crate) fn retain(slots: &Directory, name: &str, value: &impl Serialize) -> io::Result<()> {
     let bytes = serde_json::to_vec(value)?;
     if slots.entry_exists(OsStr::new(name))? {
-        if slots.read_regular(OsStr::new(name), 32 * 1024 * 1024)? != bytes {
+        if slots.read_whole(OsStr::new(name))? != bytes {
             return Err(invalid());
         }
     } else {
@@ -40,10 +40,10 @@ pub(crate) fn expiry(now: &str) -> Result<String, crate::read_api::Error> {
         detail: "submission renewal time is invalid",
     };
     let start = time::OffsetDateTime::parse(now, &time::format_description::well_known::Rfc3339)
-        .map_err(|_| invalid())?;
+        .map_err(why!(invalid()))?;
     (start + time::Duration::minutes(30))
         .format(&time::format_description::well_known::Rfc3339)
-        .map_err(|_| invalid())
+        .map_err(why!(invalid()))
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -58,8 +58,8 @@ pub(crate) fn link(
     replacement: &str,
     request: &ml_exp_core::renewal::Request,
 ) -> io::Result<()> {
-    request.validate(original).map_err(|_| invalid())?;
-    ml_exp_core::operations::validate_submission_id(replacement).map_err(|_| invalid())?;
+    request.validate(original).map_err(why!(invalid()))?;
+    ml_exp_core::operations::validate_submission_id(replacement).map_err(why!(invalid()))?;
     let value = Link {
         original: original.into(),
         replacement: replacement.into(),
@@ -76,7 +76,7 @@ pub(crate) fn decorate(
         .as_str()
         .ok_or_else(invalid)?
         .to_owned();
-    ml_exp_core::operations::validate_submission_id(&action).map_err(|_| invalid())?;
+    ml_exp_core::operations::validate_submission_id(&action).map_err(why!(invalid()))?;
     for (side, key) in [
         ("origin", "renewed_from"),
         ("next", "replacement_submission_id"),
@@ -87,9 +87,9 @@ pub(crate) fn decorate(
                 confirmation: format!("RENEW {}", link.original),
             }
             .validate(&link.original)
-            .map_err(|_| invalid())?;
+            .map_err(why!(invalid()))?;
             ml_exp_core::operations::validate_submission_id(&link.replacement)
-                .map_err(|_| invalid())?;
+                .map_err(why!(invalid()))?;
             if side == "origin" && link.replacement != action
                 || side == "next" && link.original != action
             {

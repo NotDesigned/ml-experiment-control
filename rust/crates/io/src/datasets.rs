@@ -2,7 +2,7 @@
 //! fixed; dataset identity and completeness rules live in the pure core.
 use crate::{
     artifacts::{self, Kind},
-    directory::Directory,
+    directory::{Directory, require_sealed, seal_regular},
 };
 use ml_exp_core::{artifacts::FileReceipt, datasets::Definition};
 use std::{
@@ -31,10 +31,9 @@ pub fn verify_inventory(root: &Directory, files: &[FileReceipt], sealed: bool) -
         return Err(invalid());
     }
     for record in files {
-        let (parent, mut file) = artifacts::open(root, &record.path, Kind::Data)?;
-        let name = OsStr::new(record.path.rsplit('/').next().ok_or_else(invalid)?);
+        let mut file = artifacts::open(root, &record.path, Kind::Data)?;
         if sealed {
-            parent.validate_immutable_regular_entry(name, &file)?;
+            require_sealed(&file)?;
         }
         let before = file.metadata()?;
         let (digest, size) = artifacts::hash(&mut file)?;
@@ -49,9 +48,8 @@ pub fn verify_inventory(root: &Directory, files: &[FileReceipt], sealed: bool) -
         {
             return Err(invalid());
         }
-        parent.validate_regular_entry(name, &file)?;
     }
-    root.verify_private_parent()
+    Ok(())
 }
 fn verify_sealed_directories(root: &Directory, depth: usize, budget: &mut usize) -> io::Result<()> {
     if depth > 128 || root.mode()? & 0o222 != 0 {
@@ -66,7 +64,7 @@ fn verify_sealed_directories(root: &Directory, depth: usize, budget: &mut usize)
             verify_sealed_directories(&child, depth + 1, budget)?;
         }
     }
-    root.verify_private_parent()
+    Ok(())
 }
 fn parent(root: &Directory, path: &str) -> io::Result<(Directory, String)> {
     let mut parts = path.split('/').collect::<Vec<_>>();
@@ -113,7 +111,7 @@ pub fn extract(file: &mut File, root: &Directory, definition: &Definition) -> io
             output.write_all(&buffer[..count])?;
             remaining -= count as u64;
         }
-        parent.seal_regular(OsStr::new(&name), &output, false)?;
+        seal_regular(&output, false)?;
     }
     let tail = archive.into_inner();
     let mut buffer = [0u8; 65536];
@@ -156,9 +154,9 @@ fn seal_tree(root: &Directory, generated: bool) -> io::Result<()> {
             } else {
                 let file = directory.open_regular_read(&name)?;
                 if generated {
-                    directory.seal_regular(&name, &file, false)?;
+                    seal_regular(&file, false)?;
                 } else {
-                    directory.validate_immutable_regular_entry(&name, &file)?;
+                    require_sealed(&file)?;
                 }
             }
         }
@@ -187,8 +185,7 @@ pub fn remove_staging(parent: &Directory, tree: &Directory) -> io::Result<()> {
             if let Ok(child) = tree.child(&name, false) {
                 visit(tree, &child, depth + 1, budget)?;
             } else {
-                let file = tree.open_regular_read(&name)?;
-                tree.remove_staged_regular(&name, &file)?;
+                tree.remove_staged_regular(&name)?;
             }
         }
         parent.remove_staged_empty_child(tree)
@@ -205,7 +202,7 @@ pub fn inventory(tree: &Directory) -> std::io::Result<Vec<FileReceipt>> {
     }
     let mut files = Vec::new();
     for path in paths {
-        let (parent, mut file) = artifacts::open(tree, &path, artifacts::Kind::Data)?;
+        let mut file = artifacts::open(tree, &path, artifacts::Kind::Data)?;
         let before = file.metadata()?;
         let (sha256, bytes) = artifacts::hash(&mut file)?;
         let after = file.metadata()?;
@@ -216,14 +213,6 @@ pub fn inventory(tree: &Directory) -> std::io::Result<Vec<FileReceipt>> {
         {
             return Err(std::io::Error::other("prepared data changed"));
         }
-        parent.validate_regular_entry(
-            OsStr::new(
-                path.rsplit('/')
-                    .next()
-                    .ok_or_else(|| std::io::Error::other("data path"))?,
-            ),
-            &file,
-        )?;
         files.push(FileReceipt {
             path,
             bytes,

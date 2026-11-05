@@ -72,14 +72,14 @@ impl Project {
 impl Settings {
     pub fn identity(&self) -> Result<String, Error> {
         self.validate()?;
-        ml_exp_core::canonical::protocol_identity(&serde_json::to_value(self).map_err(|_| Error)?)
-            .map_err(|_| Error)
+        ml_exp_core::canonical::protocol_identity(&serde_json::to_value(self).map_err(why!(Error))?)
+            .map_err(why!(Error))
     }
     pub fn from_json(bytes: &[u8]) -> Result<Self, Error> {
         if bytes.len() > 1024 * 1024 {
             return Err(Error);
         }
-        let settings: Self = serde_json::from_slice(bytes).map_err(|_| Error)?;
+        let settings: Self = serde_json::from_slice(bytes).map_err(why!(Error))?;
         settings.validate()?;
         Ok(settings)
     }
@@ -97,7 +97,7 @@ impl Settings {
         let mut projects = BTreeSet::new();
         let mut run_count = 0usize;
         for project in &self.projects {
-            validate_id(&project.project).map_err(|_| Error)?;
+            validate_id(&project.project).map_err(why!(Error))?;
             if !projects.insert(&project.project)
                 || !absolute(&project.project_file)
                 || project.run_roots.is_empty()
@@ -111,7 +111,7 @@ impl Settings {
             let mut locations = BTreeSet::new();
             for run in &project.runs {
                 run_count = run_count.checked_add(1).ok_or(Error)?;
-                validate_observation_id(&run.run_id).map_err(|_| Error)?;
+                validate_observation_id(&run.run_id).map_err(why!(Error))?;
                 if run_count > 4096
                     || !runs.insert(&run.run_id)
                     || run.root_index >= project.run_roots.len()
@@ -121,7 +121,7 @@ impl Settings {
                     return Err(Error);
                 }
                 for part in &run.relative_components {
-                    validate_observation_id(part).map_err(|_| Error)?;
+                    validate_observation_id(part).map_err(why!(Error))?;
                 }
             }
         }
@@ -153,7 +153,7 @@ impl Settings {
 }
 
 pub fn load(path: &Path) -> Result<Settings, Error> {
-    Settings::from_json(&ml_exp_io::read_private(path, 1024 * 1024, true).map_err(|_| Error)?)
+    Settings::from_json(&ml_exp_io::read_private(path, 1024 * 1024, true).map_err(why!(Error))?)
 }
 
 /// Only an explicit CLI initialization may create a preview registry. Existing
@@ -162,18 +162,18 @@ pub fn initialize(path: &Path) -> Result<String, Error> {
     if !absolute(path) {
         return Err(Error);
     }
-    let parent = Directory::open(path.parent().ok_or(Error)?, false).map_err(|_| Error)?;
+    let parent = Directory::open(path.parent().ok_or(Error)?, false).map_err(why!(Error))?;
     let leaf = path.file_name().ok_or(Error)?;
-    if parent.entry_exists(leaf).map_err(|_| Error)? {
+    if parent.entry_exists(leaf).map_err(why!(Error))? {
         return Err(Error);
     }
-    let root = parent.create_new_child(leaf).map_err(|_| Error)?;
-    root.verify_private_parent().map_err(|_| Error)?;
-    if !root.entry_names().map_err(|_| Error)?.is_empty() {
+    let root = parent.create_new_child(leaf).map_err(why!(Error))?;
+    root.require_private().map_err(why!(Error))?;
+    if !root.entry_names().map_err(why!(Error))?.is_empty() {
         return Err(Error);
     }
     let mut random = [0u8; 16];
-    getrandom::fill(&mut random).map_err(|_| Error)?;
+    getrandom::fill(&mut random).map_err(why!(Error))?;
     let workspace_id = format!("rust-preview-{:032x}", u128::from_be_bytes(random));
     let marker = Marker {
         contract: FORMAT.into(),
@@ -181,25 +181,22 @@ pub fn initialize(path: &Path) -> Result<String, Error> {
     };
     root.publish_new(
         OsStr::new(MARKER),
-        &serde_json::to_vec(&marker).map_err(|_| Error)?,
+        &serde_json::to_vec(&marker).map_err(why!(Error))?,
     )
-    .map_err(|_| Error)?;
+    .map_err(why!(Error))?;
     let fence = RunFence::new(path);
-    let guard = fence.shared().map_err(|_| Error)?;
-    guard.validate().map_err(|_| Error)?;
-    root.verify_private_parent().map_err(|_| Error)?;
+    let _guard = fence.shared().map_err(why!(Error))?;
     Ok(workspace_id)
 }
 
 /// Pin the marker and existing deletion lock. The marker explicitly excludes
 /// accidental use of a production/Python registry; ordinary reads create none.
 pub fn workspace(path: &Path) -> Result<(Directory, String), Error> {
-    let root = Directory::open(path, false).map_err(|_| Error)?;
-    root.verify_private_parent().map_err(|_| Error)?;
+    let root = Directory::open(path, false).map_err(why!(Error))?;
     let data = root
         .read_regular(OsStr::new(MARKER), 4096)
-        .map_err(|_| Error)?;
-    let marker: Marker = serde_json::from_slice(&data).map_err(|_| Error)?;
+        .map_err(why!(Error))?;
+    let marker: Marker = serde_json::from_slice(&data).map_err(why!(Error))?;
     let suffix = marker
         .workspace_id
         .strip_prefix("rust-preview-")
@@ -213,9 +210,7 @@ pub fn workspace(path: &Path) -> Result<(Directory, String), Error> {
         return Err(Error);
     }
     let fence = RunFence::new(path);
-    let guard = fence.shared_existing().map_err(|_| Error)?;
-    guard.validate().map_err(|_| Error)?;
-    root.verify_private_parent().map_err(|_| Error)?;
+    let _guard = fence.shared_existing().map_err(why!(Error))?;
     Ok((root, marker.workspace_id))
 }
 

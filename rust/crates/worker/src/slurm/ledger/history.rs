@@ -14,7 +14,7 @@ impl Helper {
         &self,
         request: &Request,
         snapshot: &Snapshot,
-        lock: &Lock,
+        _lock: &Lock,
     ) -> Result<ReplyOutcome> {
         let Some(receipt) = &snapshot.receipt else {
             return Ok(ReplyOutcome::Unknown {
@@ -26,8 +26,7 @@ impl Helper {
                 code: Rejection::IdentityConflict,
             });
         }
-        self.verify_issued(request.intent(), &snapshot.directory)?;
-        lock.validate()?;
+        self.verify_issued(request.intent())?;
         let read = || -> Result<Page> {
             let (plan, directories) = self
                 .observe_shared(request.intent(), &snapshot.directory, false)?
@@ -67,8 +66,7 @@ impl Helper {
             let before = file.metadata()?;
             let start = request.history_cursor();
             let offset = start.map(|v| v.offset_bytes).unwrap_or(0);
-            if before.len() > history::MAX_FILE_BYTES
-                || offset > before.len()
+            if offset > before.len()
                 || start.is_some_and(|c| c.device != before.dev() || c.inode != before.ino())
             {
                 return Err(Error::Metadata);
@@ -91,7 +89,6 @@ impl Helper {
             let mut bytes = vec![0; count];
             file.read_exact(&mut bytes)?;
             hash.update(&bytes);
-            outputs.validate_regular_entry(OsStr::new("metrics.jsonl"), &file)?;
             let after = file.metadata()?;
             if before.len() != after.len()
                 || before.mtime() != after.mtime()
@@ -133,8 +130,7 @@ impl Helper {
                 reason: UnknownReason::StorageUnavailable,
             },
         };
-        self.verify_issued(request.intent(), &snapshot.directory)?;
-        lock.validate()?;
+        self.verify_issued(request.intent())?;
         Ok(result)
     }
 }

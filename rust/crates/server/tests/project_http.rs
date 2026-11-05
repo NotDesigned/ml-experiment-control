@@ -132,7 +132,7 @@ impl Server {
             .arg(&fixture.config)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::inherit());
         if lifecycle {
             command.arg("--project-lifecycle");
         }

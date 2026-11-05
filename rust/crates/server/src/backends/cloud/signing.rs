@@ -54,7 +54,7 @@ pub(super) fn sign(
     date: &str,
     nonce: &str,
 ) -> Result<Signed> {
-    request.validate().map_err(|_| Error::configuration())?;
+    request.validate().map_err(why!(Error::configuration()))?;
     if id.is_empty()
         || id.len() > 256
         || !id
@@ -73,13 +73,13 @@ pub(super) fn sign(
     let host = request
         .endpoint
         .host()
-        .map_err(|_| Error::configuration())?;
+        .map_err(why!(Error::configuration()))?;
     let body = request
         .body
         .as_ref()
         .map(serde_json::to_vec)
         .transpose()
-        .map_err(|_| Error::configuration())?
+        .map_err(why!(Error::configuration()))?
         .unwrap_or_default();
     let query = request
         .query

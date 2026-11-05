@@ -245,15 +245,16 @@ async fn part(
     if let Err(e) = scope(&project, &executor, Some(&asset), raw.as_deref()) {
         return read_http::failure(e);
     }
-    if number >= ml_exp_core::multipart::MAX_MAX_PARTS
+    if number >= ml_exp_core::multipart::MAX_PARTS
         || ml_exp_core::sources::validate_archive_digest(&sha256).is_err()
     {
         return read_http::failure(invalid());
     }
-    let (body, permit) = match ingress(&state, request, datasets::PART_BYTES as usize).await {
-        Ok(v) => v,
-        Err(e) => return read_http::failure(e),
-    };
+    let (body, permit) =
+        match ingress(&state, request, ml_exp_core::multipart::PART_BYTES as usize).await {
+            Ok(v) => v,
+            Err(e) => return read_http::failure(e),
+        };
     let command = Command::Part {
         asset_id: asset,
         number,

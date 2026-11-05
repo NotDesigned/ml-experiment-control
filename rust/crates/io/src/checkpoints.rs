@@ -14,7 +14,7 @@ use std::{
     os::unix::fs::MetadataExt,
 };
 
-use crate::directory::Directory;
+use crate::directory::{Directory, require_sealed, seal_regular};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -65,32 +65,30 @@ fn walk(
         if let Ok(child) = directory.child(OsStr::new(name), false) {
             walk(&child, &path, found, entries)?;
         } else {
-            let file = directory.open_regular_read(OsStr::new(name))?;
+            directory.open_regular_read(OsStr::new(name))?;
             if !found.insert(path) {
                 return Err(Error::FileSet);
             }
             if found.len() > checkpoints::MAX_FILES {
                 return Err(Error::FileSet);
             }
-            directory.validate_regular_entry(OsStr::new(name), &file)?;
         }
     }
     Ok(())
 }
 
-fn open_file(root: &Directory, path: &str) -> Result<(Directory, File)> {
+fn open_file(root: &Directory, path: &str) -> Result<File> {
     let mut parts: Vec<_> = path.split('/').collect();
     let name = parts.pop().ok_or(Error::UnsafeTree)?;
     let mut directory = root.clone();
     for part in parts {
         directory = directory.child(OsStr::new(part), false)?;
     }
-    let file = directory.open_regular_read(OsStr::new(name))?;
-    Ok((directory, file))
+    Ok(directory.open_regular_read(OsStr::new(name))?)
 }
 
 fn verify_file(root: &Directory, record: &FileRecord) -> Result<()> {
-    let (parent, mut file) = open_file(root, &record.path)?;
+    let mut file = open_file(root, &record.path)?;
     let before = file.metadata()?;
     if !before.is_file() {
         return Err(Error::UnsafeTree);
@@ -119,10 +117,6 @@ fn verify_file(root: &Directory, record: &FileRecord) -> Result<()> {
     {
         return Err(Error::Changed);
     }
-    parent.validate_regular_entry(
-        OsStr::new(record.path.rsplit('/').next().ok_or(Error::UnsafeTree)?),
-        &file,
-    )?;
     Ok(())
 }
 
@@ -147,13 +141,7 @@ fn seal_directories(directory: &Directory, depth: usize, budget: &mut usize) -> 
 /// Checking those permissions again catches accidental writable replacements.
 pub fn verify_sealed(root: &Directory, manifest: &Manifest) -> Result<Verified> {
     for record in &manifest.files {
-        let (parent, file) = open_file(root, &record.path)?;
-        parent
-            .validate_immutable_regular_entry(
-                OsStr::new(record.path.rsplit('/').next().ok_or(Error::UnsafeTree)?),
-                &file,
-            )
-            .map_err(|_| Error::UnsafeTree)?;
+        require_sealed(&open_file(root, &record.path)?).map_err(|_| Error::UnsafeTree)?;
     }
     verify(root, manifest, false)
 }
@@ -182,12 +170,7 @@ pub fn verify(root: &Directory, manifest: &Manifest, seal: bool) -> Result<Verif
     }
     if seal {
         for record in &manifest.files {
-            let (parent, file) = open_file(root, &record.path)?;
-            parent.seal_regular(
-                OsStr::new(record.path.rsplit('/').next().ok_or(Error::UnsafeTree)?),
-                &file,
-                false,
-            )?;
+            seal_regular(&open_file(root, &record.path)?, false)?;
         }
         seal_directories(&generation, 0, &mut 0)?;
     }
@@ -206,7 +189,6 @@ pub fn verify(root: &Directory, manifest: &Manifest, seal: bool) -> Result<Verif
     for record in &manifest.files {
         verify_file(root, record)?;
     }
-    generation.verify_private_parent()?;
     Ok(Verified {
         manifest: manifest.clone(),
         generation: manifest.generation.clone(),
@@ -239,9 +221,7 @@ mod tests {
         use std::io::Write;
         (&file).write_all(b"weights").unwrap();
         file.sync_all().unwrap();
-        generation
-            .seal_regular(OsStr::new("model.bin"), &file, false)
-            .unwrap();
+        seal_regular(&file, false).unwrap();
         root.publish_new(
             OsStr::new("checkpoint.ready.json"),
             serde_json::to_vec(&ready()).unwrap().as_slice(),
@@ -277,9 +257,7 @@ mod tests {
         use std::io::Write;
         (&file).write_all(b"weights").unwrap();
         file.sync_all().unwrap();
-        generation
-            .seal_regular(OsStr::new("model.bin"), &file, false)
-            .unwrap();
+        seal_regular(&file, false).unwrap();
         let extra = generation
             .create_new_regular(OsStr::new("extra.bin"))
             .unwrap();
@@ -288,6 +266,27 @@ mod tests {
         assert!(matches!(
             verify(&root, &checkpoints::manifest(&ready()).unwrap(), false),
             Err(Error::FileSet)
+        ));
+    }
+
+    #[test]
+    fn rejects_a_fifo_in_a_generation_rather_than_reading_it_as_empty() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Directory::open(temp.path(), false).unwrap();
+        let checkpoints_dir = root.child(OsStr::new("checkpoints"), true).unwrap();
+        checkpoints_dir
+            .child(OsStr::new("step-0004"), true)
+            .unwrap();
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(temp.path().join("checkpoints/step-0004/model.bin"))
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(matches!(
+            verify(&root, &checkpoints::manifest(&ready()).unwrap(), false),
+            Err(Error::Io(_))
         ));
     }
 

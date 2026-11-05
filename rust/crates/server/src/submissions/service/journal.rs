@@ -43,28 +43,28 @@ impl Service {
             .cloned()
             .unwrap_or_else(|| json!({"enabled":false,"reason":"NATIVE_LOCAL_ONLY"}));
         let root =
-            Directory::open(&self.settings.registry_root, false).map_err(|_| Error::Authority)?;
+            Directory::open(&self.settings.registry_root, false).map_err(why!(Error::Authority))?;
         if !root
             .entry_exists(OsStr::new("tracking"))
-            .map_err(|_| Error::Authority)?
+            .map_err(why!(Error::Authority))?
         {
             return Ok(
                 json!({"project":project,"run_id":run,"wandb":route,"scopes":[],"status":"NOT_STARTED"}),
             );
         }
         let store = crate::records::Store::read_only(&self.settings.registry_root);
-        let guard = store.guard(project, run).map_err(|_| Error::Authority)?;
-        let binding = store.binding(&guard).map_err(|_| Error::Authority)?;
+        let guard = store.guard(project, run).map_err(why!(Error::Authority))?;
+        let binding = store.binding(&guard).map_err(why!(Error::Authority))?;
         let snapshot = self
             .evidence
             .snapshot_metadata(&facts.reference)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         if let Some(binding) = &binding {
             if !crate::read_api::journal_binding_matches(&snapshot, Some(binding)) {
                 return Err(Error::ObservationConflict);
             }
         }
-        let mut scopes = store.run_scopes(&guard).map_err(|_| Error::Authority)?;
+        let mut scopes = store.run_scopes(&guard).map_err(why!(Error::Authority))?;
         let frozen = binding
             .as_ref()
             .map(|b| b["route"].clone())
@@ -94,27 +94,22 @@ impl Service {
                 .strip_prefix("rust-preview-")
                 .ok_or(Error::Authority)?,
         )
-        .map_err(|_| Error::ObservationConflict)
+        .map_err(why!(Error::ObservationConflict))
     }
     pub fn tracking_journal(&self, project: &str, run: &str) -> Result<crate::records::Store> {
         self.validate_workspace(project, run)?;
         self.journal(&self.saved(project, run)?.ok_or(Error::Missing)?)
     }
-    pub fn publisher_leader(&self) -> Result<File> {
-        let file = self
-            .directory
-            .open_lock(OsStr::new(".publisher.lock"))
-            .map_err(|_| Error::Authority)?;
-        file.try_lock_exclusive().map_err(|_| Error::Busy)?;
+    pub fn publisher_leader(&self) -> Result<FileLock> {
         self.directory
-            .validate_regular_entry(OsStr::new(".publisher.lock"), &file)
-            .map_err(|_| Error::Authority)?;
-        Ok(file)
-    }
-    pub fn validate_publisher_leader(&self, file: &File) -> Result<()> {
-        self.directory
-            .validate_regular_entry(OsStr::new(".publisher.lock"), file)
-            .map_err(|_| Error::Authority)
+            .lock(
+                OsStr::new(".publisher.lock"),
+                LockOptions {
+                    create: true,
+                    ..Default::default()
+                },
+            )
+            .map_err(why_lock!(Error::Busy, Error::Authority))
     }
     pub(super) fn journal(&self, prepared: &Prepared) -> Result<crate::records::Store> {
         let seed = self
@@ -122,11 +117,15 @@ impl Service {
             .strip_prefix("rust-preview-")
             .ok_or(Error::Authority)?;
         let records = crate::records::Store::open(&self.settings.registry_root, seed)
-            .map_err(|_| Error::ObservationConflict)?;
+            .map_err(why!(Error::ObservationConflict))?;
         let guard = records
             .guard(&prepared.binding.project, &prepared.binding.run_id)
-            .map_err(|_| Error::Authority)?;
-        if records.workspace_id(&guard).map_err(|_| Error::Authority)? != seed {
+            .map_err(why!(Error::Authority))?;
+        if records
+            .workspace_id(&guard)
+            .map_err(why!(Error::Authority))?
+            != seed
+        {
             return Err(Error::Authority);
         }
         let facts = self.facts_for(
@@ -136,21 +135,21 @@ impl Service {
         )?;
         if records
             .binding(&guard)
-            .map_err(|_| Error::Authority)?
+            .map_err(why!(Error::Authority))?
             .is_none()
         {
             let binding =
                 ml_exp_core::records::observed_binding(&facts.run, &facts.binding.run_sha256)
-                    .map_err(|_| Error::Authority)?;
+                    .map_err(why!(Error::Authority))?;
             records
                 .bind(&guard, &binding["route"], &binding["config"])
-                .map_err(|_| Error::ObservationConflict)?;
+                .map_err(why!(Error::ObservationConflict))?;
         }
         let snapshot = self
             .evidence
             .snapshot_metadata(&facts.reference)
-            .map_err(|_| Error::Authority)?;
-        let binding = records.binding(&guard).map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
+        let binding = records.binding(&guard).map_err(why!(Error::Authority))?;
         if !crate::read_api::journal_binding_matches(&snapshot, binding.as_ref()) {
             return Err(Error::ObservationConflict);
         }
@@ -161,21 +160,21 @@ impl Service {
         let records = self.journal(prepared)?;
         let guard = records
             .guard(&prepared.binding.project, &prepared.binding.run_id)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         let scope = records
             .scope(&guard, &prepared.binding.attempt_id)
-            .map_err(|_| Error::ObservationConflict)?;
+            .map_err(why!(Error::ObservationConflict))?;
         let payload = json!({"kind":"lifecycle","data":data});
         let event = ml_exp_core::records::Event {
             event_id: format!(
                 "native.{}",
-                canonical::digest(&payload).map_err(|_| Error::Authority)?
+                canonical::digest(&payload).map_err(why!(Error::Authority))?
             ),
             payload,
         };
         records
             .append(&guard, &scope, &[event])
-            .map_err(|_| Error::ObservationConflict)?;
+            .map_err(why!(Error::ObservationConflict))?;
         Ok(())
     }
 }

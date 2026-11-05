@@ -663,7 +663,6 @@ fn storage_corruption_and_frozen_authority_changes_prevent_dispatch() {
         "ssh",
         "permissions",
         "symlink",
-        "hardlink",
         "corrupt",
         "deleted",
         "disabled",
@@ -717,7 +716,6 @@ fn storage_corruption_and_frozen_authority_changes_prevent_dispatch() {
                 fs::rename(f.slot(), &saved).unwrap();
                 std::os::unix::fs::symlink(saved, f.slot()).unwrap();
             }
-            "hardlink" => fs::hard_link(f.slot(), root.join("slot-link")).unwrap(),
             "corrupt" => fs::write(f.slot(), b"{").unwrap(),
             "deleted" => {
                 crate::deletion::RunFence::new(&f.settings.registry_root)
@@ -744,6 +742,131 @@ fn storage_corruption_and_frozen_authority_changes_prevent_dispatch() {
         );
         assert!(!root.join("calls").exists(), "{change}");
     }
+}
+
+fn edit_project_file(f: &Fixture) {
+    let path = f.root.path().join("project/project.json");
+    let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    value["title"] = json!("Edited after submission");
+    write(&path, &value);
+}
+
+#[test]
+fn prepared_submission_is_not_reused_or_authorized_after_a_project_edit() {
+    let f = Fixture::new();
+    let service = f.service("ledger", true);
+    let prepared = service
+        .prepare("demo", "train", approval(), context(1))
+        .unwrap();
+    let id = prepared["submission_id"].as_str().unwrap();
+    edit_project_file(&f);
+    assert!(matches!(
+        service.prepare("demo", "train", approval(), context(2)),
+        Err(ServiceError::Conflict)
+    ));
+    assert!(matches!(
+        service.authorize(id, "actor:fixture", "reviewed", context(2)),
+        Err(ServiceError::Conflict)
+    ));
+    assert_eq!(service.get(id, NOW).unwrap()["status"], "PREPARED");
+    assert!(!f.root.path().join("calls").exists());
+}
+
+#[test]
+fn project_edit_leaves_a_running_attempt_observable_and_cancellable() {
+    let mut f = Fixture::new();
+    let workdir = f.root.path().join("code");
+    f.runtime.worker = Some(ml_exp_core::slurm::managed::Runtime {
+        program: "/opt/ml-expd/bin/ml-exp-worker-rs".into(),
+        base_environment: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
+        runtime_environment: Vec::new(),
+    });
+    for filename in ["manifest.yaml", "attempts/attempt-001/attempt.yaml"] {
+        let path = f.root.path().join("project/runs/train").join(filename);
+        let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        value["execution"]["workdir"] = json!(workdir);
+        value["command"] = json!(["/bin/sh", "-c", "printf 'training started\\n'"]);
+        write(&path, &value);
+    }
+    let service = f.service("ledger", true);
+    let initial = service
+        .prepare("demo", "train", approval(), context(1))
+        .unwrap();
+    let id = initial["submission_id"].as_str().unwrap();
+    let prepared = f.prepared();
+    f.tools(&prepared);
+    let scancel = f.root.path().join("scancel");
+    fs::write(
+        &scancel,
+        "#!/bin/sh\n[ \"$#\" = 1 ] && [ \"$1\" = 24827 ] || exit 99; printf 'call\\n' >> \"$CANCEL_CALLS\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&scancel, fs::Permissions::from_mode(0o700)).unwrap();
+    service.authorize(id, "test", "", context(2)).unwrap();
+    let submit = format!("EXECUTE {id}");
+    service
+        .execute(id, &submit, context(3), &AtomicBool::new(false))
+        .unwrap();
+    let plan = ml_exp_core::slurm::staging::plan(
+        prepared.request.intent(),
+        prepared.request.prepared_content().unwrap().0.as_bytes(),
+    )
+    .unwrap()
+    .unwrap();
+    let config = plan.managed.unwrap().config;
+    ml_exp_worker::managed::initialize(&config).unwrap();
+    ml_exp_worker::managed::run(&config, &AtomicBool::new(false)).unwrap();
+
+    edit_project_file(&f);
+    let flag = AtomicBool::new(false);
+    assert_eq!(service.get(id, NOW).unwrap()["status"], "VERIFIED");
+    assert_eq!(
+        service.for_run("demo", "train", NOW).unwrap()["submission_id"],
+        id
+    );
+    let observed = service.refresh(id, NOW, &flag).unwrap();
+    assert_eq!(observed["worker_observation"]["status"], "OBSERVED");
+    let scheduled = service.refresh_scheduler(id, NOW, &flag).unwrap();
+    assert_eq!(
+        scheduled["scheduler_observation"]["status"]["job_id"],
+        "24827"
+    );
+    assert_eq!(
+        service.reconcile(id, NOW, &flag).unwrap()["status"],
+        "VERIFIED"
+    );
+    let cancelling = service
+        .cancel(id, &format!("CANCEL {id}"), NOW, &flag)
+        .unwrap();
+    assert_eq!(cancelling["cancellation"]["job_id"], "24827");
+    let cancels = f.root.path().join("cancel-calls");
+    assert_eq!(fs::read_to_string(&cancels).unwrap(), "call\n");
+
+    // A repeated submit is refused by the first-spend gate. Nothing is replayed.
+    assert!(matches!(
+        service.execute(id, &submit, context(3), &flag),
+        Err(ServiceError::Conflict)
+    ));
+    let submissions = f.root.path().join("sbatch-calls");
+    assert_eq!(fs::read_to_string(&submissions).unwrap(), "call\n");
+
+    // Deleting the Run still stops service to a running Attempt.
+    crate::deletion::RunFence::new(&f.settings.registry_root)
+        .mark("demo", "train", &serde_json::Map::new(), NOW)
+        .unwrap();
+    assert!(service.get(id, NOW).is_err());
+    assert!(service.refresh(id, NOW, &flag).is_err());
+    assert!(
+        service
+            .cancel(id, &format!("CANCEL {id}"), NOW, &flag)
+            .is_err()
+    );
+    assert!(
+        service
+            .checkpoints("demo", "train", "attempt-001", None)
+            .is_err()
+    );
+    assert_eq!(fs::read_to_string(&cancels).unwrap(), "call\n");
 }
 
 #[test]
@@ -1206,7 +1329,7 @@ fn newly_materialized_image_keeps_its_source_directory_through_the_launch_packag
     assert!(!f.root.path().join("sbatch-calls").exists());
 }
 #[test]
-fn creation_refuses_partial_corrupt_and_replaced_authority_without_repair() {
+fn creation_refuses_partial_and_corrupt_authority_without_repair() {
     let f = Fixture::new();
     let service = f.service("ledger", true).with_run_creation(true).unwrap();
     let mut request = creation_request(&f);
@@ -1231,15 +1354,6 @@ fn creation_refuses_partial_corrupt_and_replaced_authority_without_repair() {
             .is_err()
     );
     assert!(!directory.join("attempts/attempt-001/attempt.json").exists());
-    let root = f.root.path().join("project/runs");
-    fs::rename(&root, f.root.path().join("old-runs")).unwrap();
-    fs::create_dir(&root).unwrap();
-    assert!(
-        service
-            .create_run("demo", creation_request(&f), NOW)
-            .is_err()
-    );
-    assert!(fs::read_dir(root).unwrap().next().is_none());
 }
 #[test]
 fn creation_refuses_reformatted_original_files_without_replacing_them() {
@@ -1729,7 +1843,7 @@ fn exact_worker_refresh_survives_restart_and_never_changes_submission_or_retrain
     )
     .unwrap();
     let reference = evidence
-        .discover("demo", &crate::experiments::DiscoveryLimits::default())
+        .discover("demo")
         .unwrap()
         .runs
         .into_iter()

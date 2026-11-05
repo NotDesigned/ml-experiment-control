@@ -18,7 +18,6 @@ fn window(directory: &Directory, name: &str) -> Window {
         (&mut file)
             .take((WINDOW_BYTES + 1) as u64)
             .read_to_end(&mut bytes)?;
-        directory.validate_regular_entry(OsStr::new(name), &file)?;
         let after = file.metadata()?;
         if bytes.len() as u64 != before.len() - offset
             || before.len() != after.len()
@@ -62,7 +61,7 @@ impl Helper {
         &self,
         request: &Request,
         snapshot: &Snapshot,
-        lock: &Lock,
+        _lock: &Lock,
     ) -> Result<ReplyOutcome> {
         let Some(receipt) = &snapshot.receipt else {
             return Ok(ReplyOutcome::Unknown {
@@ -74,8 +73,7 @@ impl Helper {
                 code: Rejection::IdentityConflict,
             });
         }
-        self.verify_issued(request.intent(), &snapshot.directory)?;
-        lock.validate()?;
+        self.verify_issued(request.intent())?;
         let read = || -> Result<Evidence> {
             let (plan, directories) = self
                 .observe_shared(request.intent(), &snapshot.directory, false)?
@@ -84,15 +82,11 @@ impl Helper {
             let worker = crate::managed::sample(&package.config).map_err(|_| Error::Metadata)?;
             let outputs = directories[5].child(OsStr::new("payload"), false);
             let (mut stdout, mut stderr, metrics) = match outputs {
-                Ok(outputs) => {
-                    let result = (
-                        window(&outputs, "stdout.log"),
-                        window(&outputs, "stderr.log"),
-                        window(&outputs, "metrics.jsonl"),
-                    );
-                    outputs.verify_private_parent()?;
-                    result
-                }
+                Ok(outputs) => (
+                    window(&outputs, "stdout.log"),
+                    window(&outputs, "stderr.log"),
+                    window(&outputs, "metrics.jsonl"),
+                ),
                 Err(_) => (
                     Window::unavailable(Problem::Missing),
                     Window::unavailable(Problem::Missing),
@@ -141,8 +135,7 @@ impl Helper {
                 reason: UnknownReason::StorageUnavailable,
             },
         };
-        self.verify_issued(request.intent(), &snapshot.directory)?;
-        lock.validate()?;
+        self.verify_issued(request.intent())?;
         Ok(outcome)
     }
 }

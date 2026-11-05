@@ -171,7 +171,7 @@ fn clock(now: f64) -> Result<()> {
 
 fn checked(snapshot: &Snapshot) -> Result<()> {
     crate::experiments::validate_run(&snapshot.run.metadata, &snapshot.project, &snapshot.run_id)
-        .map_err(|_| Error::Identity)?;
+        .map_err(why!(Error::Identity))?;
     let mut attempts = BTreeSet::new();
     for attempt in &snapshot.attempts {
         if !attempts.insert(attempt.attempt_id.as_str()) {
@@ -184,7 +184,7 @@ fn checked(snapshot: &Snapshot) -> Result<()> {
             &snapshot.run_id,
             &attempt.attempt_id,
         )
-        .map_err(|_| Error::Identity)?;
+        .map_err(why!(Error::Identity))?;
         for document in [
             &attempt.status,
             &attempt.backend,
@@ -1043,15 +1043,15 @@ pub fn attempt_collection(snapshot: &Snapshot, attempt_id: &str, now_unix: f64) 
     value["evidence"]["model"]["detail"] = detail;
     if let Some(native) = map(collection(snapshot, attempt)).get("native_artifacts") {
         let state: ml_exp_core::artifacts::publication::State =
-            serde_json::from_value(native.clone()).map_err(|_| Error::Evidence)?;
-        state.validate().map_err(|_| Error::Identity)?;
+            serde_json::from_value(native.clone()).map_err(why!(Error::Evidence))?;
+        state.validate().map_err(why!(Error::Identity))?;
         if state.bundle.archive.project != snapshot.project
             || state.bundle.archive.run_id != snapshot.run_id
             || state.bundle.archive.attempt_id != attempt_id
         {
             return Err(Error::Identity);
         }
-        let available = state.available().map_err(|_| Error::Identity)?;
+        let available = state.available().map_err(why!(Error::Identity))?;
         let status = if available {
             "AVAILABLE"
         } else if state.retention.status == ml_exp_core::artifacts::RetentionStatus::Released {
@@ -1093,7 +1093,7 @@ pub fn run_summary(snapshot: &Snapshot, now_unix: f64) -> Result<Value> {
 /// Collector errors must be supplied explicitly once the native collector is
 /// migrated; this read service has no collector and makes no such observations.
 pub fn project_summary(project: &str, title: &str, rows: &[Value]) -> Result<Value> {
-    ml_exp_core::identity::validate_id(project).map_err(|_| Error::Identity)?;
+    ml_exp_core::identity::validate_id(project).map_err(why!(Error::Identity))?;
     if title.chars().count() > 2000 {
         return Err(Error::OutputLimit);
     }

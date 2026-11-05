@@ -73,8 +73,7 @@ pub struct Publisher {
 /// Publication depends on frozen Run authority and a local journal, never on
 /// a particular scheduler or a worker's ability to reach W&B directly.
 pub trait Source: Send + Sync {
-    fn publisher_leader(&self) -> Result<std::fs::File>;
-    fn validate_publisher_leader(&self, file: &std::fs::File) -> Result<()>;
+    fn publisher_leader(&self) -> Result<ml_exp_io::directory::FileLock>;
     fn publisher_store(&self) -> Result<Store>;
     fn tracking_journal(&self, project: &str, run: &str) -> Result<Store>;
     fn publication_scopes(&self, store: &Store) -> Result<BTreeSet<String>> {
@@ -82,38 +81,25 @@ pub trait Source: Send + Sync {
     }
 }
 impl Source for crate::submissions::Service {
-    fn publisher_leader(&self) -> Result<std::fs::File> {
-        self.publisher_leader().map_err(|_| Error::Storage)
-    }
-    fn validate_publisher_leader(&self, file: &std::fs::File) -> Result<()> {
-        self.validate_publisher_leader(file)
-            .map_err(|_| Error::Storage)
+    fn publisher_leader(&self) -> Result<ml_exp_io::directory::FileLock> {
+        self.publisher_leader().map_err(why!(Error::Storage))
     }
     fn publisher_store(&self) -> Result<Store> {
-        self.publisher_store().map_err(|_| Error::Storage)
+        self.publisher_store().map_err(why!(Error::Storage))
     }
     fn tracking_journal(&self, project: &str, run: &str) -> Result<Store> {
         self.tracking_journal(project, run)
-            .map_err(|_| Error::Identity)
+            .map_err(why!(Error::Identity))
     }
 }
 impl Source for crate::read_api::Api {
-    fn publisher_leader(&self) -> Result<std::fs::File> {
+    fn publisher_leader(&self) -> Result<ml_exp_io::directory::FileLock> {
         if let Some(service) = self.submissions() {
             Source::publisher_leader(&*service)
         } else if let Some(service) = self.cloud() {
             Source::publisher_leader(&*service)
         } else {
             self.local_publisher_leader()
-        }
-    }
-    fn validate_publisher_leader(&self, file: &std::fs::File) -> Result<()> {
-        if let Some(service) = self.submissions() {
-            Source::validate_publisher_leader(&*service, file)
-        } else if let Some(service) = self.cloud() {
-            Source::validate_publisher_leader(&*service, file)
-        } else {
-            self.validate_local_publisher_leader(file)
         }
     }
     fn publisher_store(&self) -> Result<Store> {
@@ -129,14 +115,14 @@ impl Source for crate::read_api::Api {
         if let Some(service) = self.cloud() {
             if service
                 .handles_run(project, run)
-                .map_err(|_| Error::Identity)?
+                .map_err(why!(Error::Identity))?
             {
                 return Source::tracking_journal(&*service, project, run);
             }
         }
         if let Some(store) = self
             .local_journal(project, run)
-            .map_err(|_| Error::Identity)?
+            .map_err(why!(Error::Identity))?
         {
             return Ok(store);
         }
@@ -150,8 +136,8 @@ impl Publisher {
         if !runtime.config.enabled {
             return Err(Error::Configuration);
         }
-        let leader = service.publisher_leader().map_err(|_| Error::Storage)?;
-        let store = service.publisher_store().map_err(|_| Error::Storage)?;
+        let leader = service.publisher_leader().map_err(why!(Error::Storage))?;
+        let store = service.publisher_store().map_err(why!(Error::Storage))?;
         let stop = Arc::new(AtomicBool::new(false));
         let wake = Arc::new((Mutex::new(()), Condvar::new()));
         let flag = stop.clone();
@@ -159,6 +145,8 @@ impl Publisher {
         let handle = thread::Builder::new()
             .name("native-wandb".into())
             .spawn(move || {
+                // Moved in by name: the flock must live as long as this thread.
+                let _leader = leader;
                 let start = Instant::now();
                 let policy = ml_exp_core::polling::Policy {
                     enabled: true,
@@ -169,9 +157,6 @@ impl Publisher {
                 let mut candidates = BTreeSet::new();
                 let mut discover_at = 0;
                 while !flag.load(Ordering::Relaxed) {
-                    if service.validate_publisher_leader(&leader).is_err() {
-                        break;
-                    }
                     let elapsed = start.elapsed().as_secs();
                     if elapsed >= discover_at {
                         if let Ok(scopes) = service.publication_scopes(&store) {
@@ -182,9 +167,8 @@ impl Publisher {
                     let (next, selected) = schedule.select(&candidates, elapsed, &policy);
                     schedule = next;
                     if let Some((scope, _)) = selected {
-                        let outcome = publish_scope(
-                            &*service, &store, &runtime, &mut sdk, &scope, &flag, &leader,
-                        );
+                        let outcome =
+                            publish_scope(&*service, &store, &runtime, &mut sdk, &scope, &flag);
                         schedule = schedule.outcome(
                             &scope,
                             start.elapsed().as_secs(),
@@ -212,7 +196,7 @@ impl Publisher {
                 }
                 drop(sdk);
             })
-            .map_err(|_| Error::Transport)?;
+            .map_err(why!(Error::Transport))?;
         Ok(Self {
             stop,
             wake,
@@ -233,20 +217,17 @@ impl Drop for Publisher {
 }
 fn candidate_scopes(store: &Store) -> Result<BTreeSet<String>> {
     let mut scopes = BTreeSet::new();
-    for (project, run) in store.publication_runs(4096).map_err(|_| Error::Storage)? {
+    for (project, run) in store.publication_runs().map_err(why!(Error::Storage))? {
         let Ok(guard) = store.guard(&project, &run) else {
             continue;
         };
-        for scope in store.run_scopes(&guard).map_err(|_| Error::Storage)? {
+        for scope in store.run_scopes(&guard).map_err(why!(Error::Storage))? {
             let id = scope["id"].as_str().ok_or(Error::Identity)?;
             let saved = store
                 .publication_state(&guard, id)
-                .map_err(|_| Error::Storage)?;
+                .map_err(why!(Error::Storage))?;
             if !saved.is_some_and(|s| s["remote_finished"] == true) {
                 scopes.insert(id.into());
-            }
-            if scopes.len() > 4096 {
-                return Err(Error::Storage);
             }
         }
     }
@@ -262,11 +243,11 @@ fn record_failure(store: &Store, scope: &str, sdk: &mut Option<Sdk>, error: &Err
     let _ = failure(store, scope, error);
 }
 fn failure(store: &Store, scope: &str, error: &Error) -> Result<()> {
-    let parsed = Scope::parse(scope).map_err(|_| Error::Identity)?;
+    let parsed = Scope::parse(scope).map_err(why!(Error::Identity))?;
     let guard = store
         .guard(&parsed.project, &parsed.run)
-        .map_err(|_| Error::Storage)?;
-    let (at, _) = crate::projects::transition_context().map_err(|_| Error::Storage)?;
+        .map_err(why!(Error::Storage))?;
+    let (at, _) = crate::projects::transition_context().map_err(why!(Error::Storage))?;
     let code = match error {
         Error::SdkMissing => "WANDB_SDK_NOT_INSTALLED",
         Error::Identity => "PUBLICATION_RECONCILE_REQUIRED",
@@ -276,7 +257,7 @@ fn failure(store: &Store, scope: &str, error: &Error) -> Result<()> {
     };
     store
         .publication_failure(&guard, scope, code, &at)
-        .map_err(|_| Error::Storage)
+        .map_err(why!(Error::Storage))
 }
 fn publish_scope(
     service: &dyn Source,
@@ -285,17 +266,12 @@ fn publish_scope(
     sdk: &mut Option<Sdk>,
     scope: &str,
     cancelled: &AtomicBool,
-    leader: &std::fs::File,
 ) -> Result<()> {
-    let parsed = Scope::parse(scope).map_err(|_| Error::Identity)?;
+    let parsed = Scope::parse(scope).map_err(why!(Error::Identity))?;
     let _authority = service
         .tracking_journal(&parsed.project, &parsed.run)
-        .map_err(|_| Error::Publication("JOURNAL_AUTHORITY_UNAVAILABLE"))?;
-    publish_bound(store, runtime, sdk, scope, cancelled, &|| {
-        service
-            .validate_publisher_leader(leader)
-            .map_err(|_| Error::Identity)
-    })
+        .map_err(why!(Error::Publication("JOURNAL_AUTHORITY_UNAVAILABLE")))?;
+    publish_bound(store, runtime, sdk, scope, cancelled)
 }
 fn publish_bound(
     store: &Store,
@@ -303,32 +279,30 @@ fn publish_bound(
     sdk: &mut Option<Sdk>,
     scope: &str,
     cancelled: &AtomicBool,
-    validate: &dyn Fn() -> Result<()>,
 ) -> Result<()> {
-    validate()?;
-    let parsed = Scope::parse(scope).map_err(|_| Error::Identity)?;
+    let parsed = Scope::parse(scope).map_err(why!(Error::Identity))?;
     let guard = store
         .guard(&parsed.project, &parsed.run)
-        .map_err(|_| Error::Storage)?;
+        .map_err(why!(Error::Storage))?;
     let binding = store
         .binding(&guard)
-        .map_err(|_| Error::Storage)?
+        .map_err(why!(Error::Storage))?
         .ok_or(Error::Identity)?;
     if binding["route"]["enabled"] != true {
         return Err(Error::Identity);
     }
     let status = store
         .scope_status(&guard, scope)
-        .map_err(|_| Error::Storage)?
+        .map_err(why!(Error::Storage))?
         .ok_or(Error::Identity)?;
     let confirmed = status["confirmed"].as_i64().ok_or(Error::Identity)?;
-    let total = store.total(&guard, scope).map_err(|_| Error::Storage)?;
+    let total = store.total(&guard, scope).map_err(why!(Error::Storage))?;
     let mut saved: Saved = store
         .publication_state(&guard, scope)
-        .map_err(|_| Error::Storage)?
+        .map_err(why!(Error::Storage))?
         .map(serde_json::from_value)
         .transpose()
-        .map_err(|_| Error::Identity)?
+        .map_err(why!(Error::Identity))?
         .unwrap_or_default();
     if saved.remote_finished {
         return Ok(());
@@ -343,12 +317,12 @@ fn publish_bound(
     saved.state.sent.retain(|sequence, _| *sequence > confirmed);
     let mut events = store
         .events(&guard, scope, confirmed, 128)
-        .map_err(|_| Error::Storage)?;
+        .map_err(why!(Error::Storage))?;
     let mut bytes = 0;
     let mut count = 0;
     for event in &events {
         let size = serde_json::to_vec(&event.document())
-            .map_err(|_| Error::Identity)?
+            .map_err(why!(Error::Identity))?
             .len();
         if bytes + size > 2 * 1024 * 1024 {
             break;
@@ -363,7 +337,7 @@ fn publish_bound(
     let through = events.last().map_or(confirmed, |e| e.seq);
     let lifecycle = store
         .latest_lifecycle(&guard, scope)
-        .map_err(|_| Error::Storage)?;
+        .map_err(why!(Error::Storage))?;
     let terminal = lifecycle["phase"] == "METRICS_DRAINED"
         && matches!(
             lifecycle["state"].as_str(),
@@ -379,12 +353,11 @@ fn publish_bound(
         .as_mut()
         .ok_or(Error::Transport)?
         .call(&job, cancelled)?;
-    validate()?;
     if remote["wandb_id"] != status["wandb_id"] || remote["route"] != binding["route"] {
         return Err(Error::Publication("REMOTE_RUN_IDENTITY_MISMATCH"));
     }
     let evidence: RemoteEvidence = serde_json::from_value(remote["evidence"].clone())
-        .map_err(|_| Error::Publication("REMOTE_HISTORY_EVIDENCE_INVALID"))?;
+        .map_err(why!(Error::Publication("REMOTE_HISTORY_EVIDENCE_INVALID")))?;
     let local: Vec<_> = events
         .iter()
         .map(|event| HistoryEvent {
@@ -394,7 +367,7 @@ fn publish_bound(
         .collect();
     let expected = store
         .event_id(&guard, scope, confirmed)
-        .map_err(|_| Error::Storage)?;
+        .map_err(why!(Error::Storage))?;
     let plan = publication::plan(
         &saved.state,
         &evidence,
@@ -403,7 +376,7 @@ fn publish_bound(
         terminal,
         display_version,
     )
-    .map_err(|_| Error::Publication("PUBLICATION_PLAN_INVALID"))?;
+    .map_err(why!(Error::Publication("PUBLICATION_PLAN_INVALID")))?;
     match &plan.status {
         PublicationStatus::ReconcileRequired { .. } => {
             return Err(Error::Publication("REMOTE_HISTORY_RECONCILE_REQUIRED"));
@@ -413,7 +386,7 @@ fn publish_bound(
         }
         _ => {}
     }
-    let (at, _) = crate::projects::transition_context().map_err(|_| Error::Storage)?;
+    let (at, _) = crate::projects::transition_context().map_err(why!(Error::Storage))?;
     let display_ack = evidence.display_version == Some(display_version)
         && evidence.display_through == Some(plan.state.confirmed)
         && plan.state.confirmed == through;
@@ -438,7 +411,7 @@ fn publish_bound(
     if plan.state.confirmed > confirmed || display_ack {
         store
             .confirm_publication(&guard, scope, &proof, None, &at)
-            .map_err(|_| Error::Publication("PUBLICATION_ACK_EVIDENCE_INVALID"))?;
+            .map_err(why!(Error::Publication("PUBLICATION_ACK_EVIDENCE_INVALID")))?;
     }
     saved.ever_opened = true;
     saved.state = plan.state;
@@ -485,7 +458,6 @@ fn publish_bound(
         _ => ("ACK_PENDING", Some("REMOTE_ACK_PENDING")),
     };
     if plan.actions.is_empty() {
-        validate()?;
         return save(store, &guard, scope, &saved, phase, error, &at);
     }
     let display = store
@@ -497,25 +469,24 @@ fn publish_bound(
             _ => Error::Storage,
         })?;
     let keys: Vec<String> =
-        serde_json::from_value(remote["summary_keys"].clone()).map_err(|_| Error::Identity)?;
+        serde_json::from_value(remote["summary_keys"].clone()).map_err(why!(Error::Identity))?;
     let mut effects = Vec::new();
     for action in plan.actions {
         effects.push(match action {
             PublicationAction::EmitHistory{sequence,event_id}=>{
                 let event=events.iter().find(|event|event.seq==sequence&&event.event_id==event_id).ok_or(Error::Identity)?;
-                json!({"operation":"history","sequence":sequence,"record":tracking::history_record(&event.document(),&display).map_err(|_|Error::Publication("JOURNAL_HISTORY_PROJECTION_INVALID"))?})
+                json!({"operation":"history","sequence":sequence,"record":tracking::history_record(&event.document(),&display).map_err(why!(Error::Publication("JOURNAL_HISTORY_PROJECTION_INVALID")))?})
             },
-            PublicationAction::PublishDisplay{..}=>json!({"operation":"display","patch":tracking::summary_patch(&display,&keys,terminal,"worker JSONL; accepted observations").map_err(|_|Error::Identity)?}),
+            PublicationAction::PublishDisplay{..}=>json!({"operation":"display","patch":tracking::summary_patch(&display,&keys,terminal,"worker JSONL; accepted observations").map_err(why!(Error::Identity))?}),
             PublicationAction::Finish{..}=>json!({"operation":"finish","exit_code":exit_code}),
         });
     }
     job["operation"] = json!("apply");
     job["physical_next_step"] = remote["physical_next_step"].clone();
     job["resume"] = json!("must");
-    job["definitions"] = json!(
-        tracking::definition_specs(&display)
-            .map_err(|_| Error::Publication("JOURNAL_METRIC_DEFINITIONS_INVALID"))?
-    );
+    job["definitions"] = json!(tracking::definition_specs(&display).map_err(why!(
+        Error::Publication("JOURNAL_METRIC_DEFINITIONS_INVALID")
+    ))?);
     job["effects"] = json!(effects);
     // Reject an oversized/invalid effect before reserving any new sequence.
     // Transport loss after the durable reservation still requires remote ACK.
@@ -523,9 +494,7 @@ fn publish_bound(
     if cancelled.load(Ordering::Relaxed) {
         return Err(Error::Transport);
     }
-    validate()?;
     save(store, &guard, scope, &saved, phase, error, &at)?;
-    validate()?;
     let applied = sdk
         .as_mut()
         .ok_or(Error::Transport)?
@@ -548,12 +517,12 @@ fn save(
         .save_publication_state(
             guard,
             scope,
-            &serde_json::to_value(saved).map_err(|_| Error::Identity)?,
+            &serde_json::to_value(saved).map_err(why!(Error::Identity))?,
             status,
             error,
             at,
         )
-        .map_err(|_| Error::Storage)
+        .map_err(why!(Error::Storage))
 }
 
 #[cfg(test)]

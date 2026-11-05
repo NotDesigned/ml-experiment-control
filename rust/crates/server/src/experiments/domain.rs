@@ -1,4 +1,4 @@
-use ml_exp_core::{identity, observation::python_equal};
+use ml_exp_core::{identity, json::MAX_DEPTH, observation::python_equal};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Number, Value};
@@ -8,10 +8,6 @@ use yaml_rust2::{
     parser::{Event, Parser},
     scanner::TScalarStyle,
 };
-
-pub const MAX_BYTES: usize = 4 * 1024 * 1024;
-const MAX_DEPTH: usize = 64;
-const MAX_NODES: usize = 100_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -75,8 +71,6 @@ impl Document {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum DocumentError {
-    #[error("metadata exceeds the bounded document limit")]
-    TooLarge,
     #[error("metadata is malformed or not one mapping document")]
     Malformed,
     #[error("metadata uses unsupported YAML references, tags or ambiguous plain scalars")]
@@ -180,13 +174,10 @@ fn scalar(value: String, style: TScalarStyle) -> Result<Value, DocumentError> {
     Ok(Value::String(value))
 }
 
-/// Accepted YAML is a bounded JSON-compatible subset with quoted ambiguous
+/// Accepted YAML is a JSON-compatible subset with quoted ambiguous
 /// scalars. No alias expansion, tags, merge keys, duplicate keys or streams.
 /// This is not a complete PyYAML 1.1 deserializer or scientific hash codec.
 pub fn parse_mapping(bytes: &[u8], format: Format) -> Result<Map<String, Value>, DocumentError> {
-    if bytes.len() > MAX_BYTES {
-        return Err(DocumentError::TooLarge);
-    }
     if format == Format::Json {
         return ml_exp_core::json::mapping(bytes).map_err(|error| match error {
             ml_exp_core::json::Error::Malformed => DocumentError::Malformed,
@@ -199,10 +190,7 @@ pub fn parse_mapping(bytes: &[u8], format: Format) -> Result<Map<String, Value>,
 }
 
 fn parse_yaml(bytes: &[u8]) -> Result<Map<String, Value>, DocumentError> {
-    if bytes.len() > MAX_BYTES {
-        return Err(DocumentError::TooLarge);
-    }
-    let text = std::str::from_utf8(bytes).map_err(|_| DocumentError::Malformed)?;
+    let text = std::str::from_utf8(bytes).map_err(why!(DocumentError::Malformed))?;
     // YAML 1.1 treats these raw characters as line breaks, while YAML 1.2
     // treats them as string characters. Escaped literals remain supported.
     if text.contains(['\u{85}', '\u{2028}', '\u{2029}']) {
@@ -212,11 +200,10 @@ fn parse_yaml(bytes: &[u8]) -> Result<Map<String, Value>, DocumentError> {
     let mut stack = Vec::new();
     let mut root = None;
     let mut documents = 0;
-    for count in 0..=MAX_NODES {
-        if count == MAX_NODES {
-            return Err(DocumentError::Complexity);
-        }
-        let (event, _) = parser.next_token().map_err(|_| DocumentError::Malformed)?;
+    loop {
+        let (event, _) = parser
+            .next_token()
+            .map_err(why!(DocumentError::Malformed))?;
         match event {
             Event::StreamStart | Event::DocumentEnd => {}
             Event::DocumentStart => {
@@ -296,7 +283,7 @@ fn version(map: &Map<String, Value>) -> Result<(), DocumentError> {
     Ok(())
 }
 pub fn validate_project(map: &Map<String, Value>, project: &str) -> Result<(), DocumentError> {
-    identity::validate_id(project).map_err(|_| DocumentError::Identity)?;
+    identity::validate_id(project).map_err(why!(DocumentError::Identity))?;
     version(map)?;
     exact(map, "project", project)
 }
@@ -305,7 +292,7 @@ pub fn validate_run(
     project: &str,
     run: &str,
 ) -> Result<(), DocumentError> {
-    identity::validate_observation_id(run).map_err(|_| DocumentError::Identity)?;
+    identity::validate_observation_id(run).map_err(why!(DocumentError::Identity))?;
     validate_project(map, project)?;
     exact(map, "run_id", run)
 }
@@ -325,7 +312,7 @@ pub fn validate_attempt(
     run_id: &str,
     attempt_id: &str,
 ) -> Result<Provenance, DocumentError> {
-    identity::validate_id(attempt_id).map_err(|_| DocumentError::Identity)?;
+    identity::validate_id(attempt_id).map_err(why!(DocumentError::Identity))?;
     validate_run(&run.metadata, project, run_id)?;
     version(&attempt.metadata)?;
     let inherited = run.source == ManifestSource::RunJson

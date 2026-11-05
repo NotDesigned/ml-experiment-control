@@ -98,7 +98,7 @@ fn start(config: &Path) -> (Running, String) {
             .arg("--config")
             .arg(config)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::inherit())
             .spawn()
             .unwrap(),
     );

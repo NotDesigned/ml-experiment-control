@@ -28,11 +28,19 @@ fn uncertain_repair_is_observed_without_resending_or_clearing_original_reservati
 fn exercise_gap_repair(uncertain: bool, missing_sequence: i64, version: i64) {
     struct FixtureSource(std::path::PathBuf);
     impl Source for FixtureSource {
-        fn publisher_leader(&self) -> Result<std::fs::File> {
-            fs::File::create(self.0.join("leader")).map_err(|_| Error::Storage)
-        }
-        fn validate_publisher_leader(&self, _: &std::fs::File) -> Result<()> {
-            Ok(())
+        fn publisher_leader(&self) -> Result<ml_exp_io::directory::FileLock> {
+            ml_exp_io::directory::Directory::open(&self.0, false)
+                .and_then(|directory| {
+                    directory.lock(
+                        std::ffi::OsStr::new("leader"),
+                        ml_exp_io::directory::LockOptions {
+                            create: true,
+                            shared: true,
+                            ..Default::default()
+                        },
+                    )
+                })
+                .map_err(|_| Error::Storage)
         }
         fn publisher_store(&self) -> Result<Store> {
             Store::open(&self.0, "0123456789abcdef0123456789abcdef").map_err(|_| Error::Storage)
@@ -99,7 +107,7 @@ fn exercise_gap_repair(uncertain: bool, missing_sequence: i64, version: i64) {
         .unwrap();
     let flag = AtomicBool::new(false);
     let mut sdk = None;
-    publish_bound(&store, &runtime, &mut sdk, &scope, &flag, &|| Ok(())).unwrap();
+    publish_bound(&store, &runtime, &mut sdk, &scope, &flag).unwrap();
     let status = store.scope_status(&guard, &scope).unwrap().unwrap();
     let id = status["wandb_id"].as_str().unwrap().to_owned();
     sdk.as_mut().unwrap().shutdown().unwrap();
@@ -167,8 +175,8 @@ fn exercise_gap_repair(uncertain: bool, missing_sequence: i64, version: i64) {
     assert_eq!(repeated["writes"], 0);
     let guard = store.guard("demo", "train").unwrap();
     store.append(&guard, &scope, &[metric(5)]).unwrap();
-    publish_bound(&store, &runtime, &mut sdk, &scope, &flag, &|| Ok(())).unwrap();
-    publish_bound(&store, &runtime, &mut sdk, &scope, &flag, &|| Ok(())).unwrap();
+    publish_bound(&store, &runtime, &mut sdk, &scope, &flag).unwrap();
+    publish_bound(&store, &runtime, &mut sdk, &scope, &flag).unwrap();
     assert_eq!(
         store.scope_status(&guard, &scope).unwrap().unwrap()["confirmed"],
         5
@@ -326,8 +334,7 @@ fn exercise_delayed_publication(version: i64) {
         .unwrap();
     let flag = AtomicBool::new(false);
     let mut sdk = None;
-    let cycle =
-        |sdk: &mut Option<Sdk>| publish_bound(&store, &runtime, sdk, &scope, &flag, &|| Ok(()));
+    let cycle = |sdk: &mut Option<Sdk>| publish_bound(&store, &runtime, sdk, &scope, &flag);
     let read_cloud = || serde_json::from_slice::<Value>(&fs::read(&cloud).unwrap()).unwrap();
     cycle(&mut sdk).unwrap();
     let saved = store.publication_state(&guard, &scope).unwrap().unwrap();

@@ -289,7 +289,7 @@ pub fn validate_journal_observations(records: &[Value], contract: &Value) -> Res
             error: None,
         }
         .validate()
-        .map_err(|_| Error::Evidence)?;
+        .map_err(why!(Error::Evidence))?;
         let normalized = observations(
             record,
             &schema,

@@ -17,7 +17,7 @@ impl Service {
             .as_str()
             .ok_or(Error::Authority)?;
         helper::Request::cancel_job(prepared.request.intent().clone(), job.into())
-            .map_err(|_| Error::Authority)
+            .map_err(why!(Error::Authority))
     }
     fn cancellation_name(prepared: &Prepared) -> Result<String> {
         Ok(format!(
@@ -34,20 +34,20 @@ impl Service {
         if !self
             .slots
             .entry_exists(OsStr::new(&name))
-            .map_err(|_| Error::Authority)?
+            .map_err(why!(Error::Authority))?
         {
             return Ok(None);
         }
         let bytes = self
             .slots
-            .read_regular(OsStr::new(&name), 65536)
-            .map_err(|_| Error::Authority)?;
-        let mapping = ml_exp_core::json::mapping(&bytes).map_err(|_| Error::Authority)?;
+            .read_whole(OsStr::new(&name))
+            .map_err(why!(Error::Authority))?;
+        let mapping = ml_exp_core::json::own_mapping(&bytes).map_err(why!(Error::Authority))?;
         let value: State =
-            serde_json::from_value(Value::Object(mapping)).map_err(|_| Error::Authority)?;
+            serde_json::from_value(Value::Object(mapping)).map_err(why!(Error::Authority))?;
         value
             .bind(&self.cancellation_request(prepared)?)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         Ok(Some(value))
     }
     pub fn cancel(
@@ -65,16 +65,15 @@ impl Service {
         }
         let _lock = self.lock()?;
         let prepared = self.load(action)?;
-        self.check(&prepared)?;
         let guard = self
             .fence
             .existing_observation_guard(&prepared.binding.project, &prepared.binding.run_id)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         let request = self.cancellation_request(&prepared)?;
         let state = self
             .cancellation_state(&prepared)?
             .map(Ok)
-            .unwrap_or_else(|| State::new(&request, now).map_err(|_| Error::Authority))?;
+            .unwrap_or_else(|| State::new(&request, now).map_err(why!(Error::Authority)))?;
         if state.termination_verified {
             return self.get(action, now);
         }
@@ -82,9 +81,9 @@ impl Service {
         self.slots
             .replace_regular(
                 OsStr::new(&name),
-                &serde_json::to_vec(&state).map_err(|_| Error::Authority)?,
+                &serde_json::to_vec(&state).map_err(why!(Error::Authority))?,
             )
-            .map_err(|_| Error::Uncertain)?;
+            .map_err(why!(Error::Uncertain))?;
         let backend = self
             .backends
             .values()
@@ -92,24 +91,22 @@ impl Service {
             .ok_or(Error::Authority)?;
         guard
             .require_observed_live(&prepared.binding.project, &prepared.binding.run_id)
-            .map_err(|_| Error::Authority)?;
-        self.check(&prepared)?;
+            .map_err(why!(Error::Authority))?;
         let outcome =
-            call(&backend.control_ssh(), &request, cancelled).map_err(|_| Error::Uncertain)?;
+            call(&backend.control_ssh(), &request, cancelled).map_err(why!(Error::Uncertain))?;
         guard
             .require_observed_live(&prepared.binding.project, &prepared.binding.run_id)
-            .map_err(|_| Error::Uncertain)?;
-        self.check(&prepared).map_err(|_| Error::Uncertain)?;
+            .map_err(why!(Error::Uncertain))?;
         if let CallOutcome::Receipt { reply, .. } = outcome {
             let next = state
                 .observed(&request, &reply)
-                .map_err(|_| Error::Uncertain)?;
+                .map_err(why!(Error::Uncertain))?;
             self.slots
                 .replace_regular(
                     OsStr::new(&name),
-                    &serde_json::to_vec(&next).map_err(|_| Error::Uncertain)?,
+                    &serde_json::to_vec(&next).map_err(why!(Error::Uncertain))?,
                 )
-                .map_err(|_| Error::Uncertain)?;
+                .map_err(why!(Error::Uncertain))?;
         }
         // An uncertain response retains REQUESTED; never invent CANCELLED.
         self.get(action, now)

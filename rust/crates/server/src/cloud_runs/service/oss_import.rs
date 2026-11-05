@@ -22,16 +22,16 @@ impl Service {
             .ok_or_else(cloud::Error::configuration)?;
         objects
             .validate_import(&request)
-            .map_err(|_| cloud::Error {
+            .map_err(why!(cloud::Error {
                 code: "OSS_DATASET_SCOPE_DENIED".into(),
                 http_status: Some(422),
                 uncertain: false,
-            })?;
+            }))?;
         let asset = request.asset_id();
         let definition = if let Some(saved) = self.data_saved(project, executor, &asset)? {
             request
                 .matches(&saved.state.definition)
-                .map_err(|_| cloud::Error::evidence())?;
+                .map_err(why!(cloud::Error::evidence()))?;
             if saved
                 .import_source
                 .as_ref()
@@ -68,7 +68,7 @@ impl Service {
             definition
         };
         {
-            let lock = self.lock()?;
+            let _lock = self.lock()?;
             let mut saved = self
                 .data_saved(project, executor, &asset)?
                 .ok_or_else(missing)?;
@@ -81,7 +81,6 @@ impl Service {
                 return Err(cloud::Error::evidence());
             }
             saved.import_source = Some(request.clone());
-            lock.validate()?;
             self.slots
                 .replace_regular(
                     OsStr::new(&Self::data_name(project, executor, &asset)?),
@@ -93,11 +92,11 @@ impl Service {
         let mut whole = Sha256::new();
         for number in 0..definition
             .part_count()
-            .map_err(|_| cloud::Error::evidence())?
+            .map_err(why!(cloud::Error::evidence()))?
         {
             let size = definition
                 .part_size(number)
-                .map_err(|_| cloud::Error::evidence())?;
+                .map_err(why!(cloud::Error::evidence()))?;
             let mut payload = vec![0; size as usize];
             source.read_exact(&mut payload).map_err(io)?;
             whole.update(&payload);

@@ -5,17 +5,15 @@ use super::{
     Error, Result,
     adapter::{Adapter, Handle, Profile, Transport, job_digest},
 };
-use fs2::FileExt;
 use ml_exp_core::{
     canonical,
     cloud::{Job, JobObservation, pai::Allocation},
 };
-use ml_exp_io::directory::Directory;
+use ml_exp_io::directory::{Directory, FileLock, LockOptions, Wait};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     ffi::OsStr,
-    fs::File,
     path::Path,
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -55,105 +53,71 @@ impl From<&Error> for ErrorDocument {
 }
 pub struct Outbox {
     directory: Directory,
-    anchor: File,
 }
-struct Guard<'a> {
-    outbox: &'a Outbox,
-    file: File,
-}
-impl Guard<'_> {
-    fn validate(&self) -> Result<()> {
-        self.outbox
-            .directory
-            .verify_private_parent()
-            .map_err(|_| Error::evidence())?;
-        for file in [&self.file, &self.outbox.anchor] {
-            self.outbox
-                .directory
-                .validate_regular_entry(OsStr::new(LOCK), file)
-                .map_err(|_| Error::evidence())?;
-        }
-        Ok(())
-    }
-}
-impl Drop for Guard<'_> {
-    fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.file);
-    }
-}
+/// Proof that the caller holds `.cloud-effects.lock`.
+type Guard = FileLock;
 impl Outbox {
     pub fn initialize(path: &Path) -> Result<()> {
-        let directory = Directory::open(path, false).map_err(|_| Error::configuration())?;
-        directory
-            .verify_private_parent()
-            .map_err(|_| Error::configuration())?;
+        let directory = Directory::open(path, false).map_err(why!(Error::configuration()))?;
         if !directory
             .entry_names()
-            .map_err(|_| Error::configuration())?
+            .map_err(why!(Error::configuration()))?
             .is_empty()
         {
             return Err(Error::configuration());
         }
-        let lock = directory
-            .open_lock(OsStr::new(LOCK))
-            .map_err(|_| Error::configuration())?;
-        lock.lock_exclusive().map_err(|_| Error::configuration())?;
-        directory
-            .validate_regular_entry(OsStr::new(LOCK), &lock)
-            .map_err(|_| Error::configuration())?;
+        let _lock = directory
+            .lock(
+                OsStr::new(LOCK),
+                LockOptions {
+                    create: true,
+                    wait: Wait::Block,
+                    ..Default::default()
+                },
+            )
+            .map_err(why!(Error::configuration()))?;
         directory
             .publish_new(
                 OsStr::new(MARKER),
                 &serde_json::to_vec(&json!({"format":FORMAT}))
-                    .map_err(|_| Error::configuration())?,
+                    .map_err(why!(Error::configuration()))?,
             )
-            .map_err(|_| Error::configuration())?;
+            .map_err(why!(Error::configuration()))?;
         Ok(())
     }
     pub fn open(path: &Path) -> Result<Self> {
-        let directory = Directory::open(path, false).map_err(|_| Error::configuration())?;
-        directory
-            .verify_private_parent()
-            .map_err(|_| Error::configuration())?;
+        let directory = Directory::open(path, false).map_err(why!(Error::configuration()))?;
         let marker = directory
             .read_regular(OsStr::new(MARKER), 1024)
-            .map_err(|_| Error::configuration())?;
-        if Value::Object(ml_exp_core::json::mapping(&marker).map_err(|_| Error::configuration())?)
+            .map_err(why!(Error::configuration()))?;
+        if Value::Object(ml_exp_core::json::mapping(&marker).map_err(why!(Error::configuration()))?)
             != json!({"format":FORMAT})
         {
             return Err(Error::configuration());
         }
-        let anchor = directory
-            .open_existing_lock(OsStr::new(LOCK))
-            .map_err(|_| Error::configuration())?;
         directory
-            .validate_regular_entry(OsStr::new(LOCK), &anchor)
-            .map_err(|_| Error::configuration())?;
-        Ok(Self { directory, anchor })
+            .open_regular_read(OsStr::new(LOCK))
+            .map_err(why!(Error::configuration()))?;
+        Ok(Self { directory })
     }
-    fn lock(&self) -> Result<Guard<'_>> {
+    fn lock(&self) -> Result<Guard> {
         self.directory
-            .validate_regular_entry(OsStr::new(LOCK), &self.anchor)
-            .map_err(|_| Error::evidence())?;
-        let file = self
-            .directory
-            .open_existing_lock(OsStr::new(LOCK))
-            .map_err(|_| Error::evidence())?;
-        file.try_lock_exclusive().map_err(|_| Error {
-            code: "CLOUD_EFFECT_BUSY".into(),
-            http_status: Some(503),
-            uncertain: false,
-        })?;
-        let guard = Guard { outbox: self, file };
-        guard.validate()?;
-        Ok(guard)
+            .lock(OsStr::new(LOCK), LockOptions::default())
+            .map_err(why_lock!(
+                Error {
+                    code: "CLOUD_EFFECT_BUSY".into(),
+                    http_status: Some(503),
+                    uncertain: false,
+                },
+                Error::evidence()
+            ))
     }
     pub fn slot(job: &Job) -> Result<String> {
-        job.validate().map_err(|_| Error::configuration())?;
+        job.validate().map_err(why!(Error::configuration()))?;
         let digest = canonical::protocol_identity(
             &json!({"project":job.project,"run_id":job.run_id,"attempt_id":job.attempt_id}),
         )
-        .map_err(|_| Error::configuration())?;
+        .map_err(why!(Error::configuration()))?;
         Ok(format!(
             "{}.json",
             digest
@@ -165,10 +129,10 @@ impl Outbox {
         let bytes = self
             .directory
             .read_regular(OsStr::new(slot), 2 * 1024 * 1024)
-            .map_err(|_| Error::evidence())?;
+            .map_err(why!(Error::evidence()))?;
         let value =
-            Value::Object(ml_exp_core::json::mapping(&bytes).map_err(|_| Error::evidence())?);
-        let entry: Entry = serde_json::from_value(value).map_err(|_| Error::evidence())?;
+            Value::Object(ml_exp_core::json::mapping(&bytes).map_err(why!(Error::evidence()))?);
+        let entry: Entry = serde_json::from_value(value).map_err(why!(Error::evidence()))?;
         if entry.format != FORMAT
             || Self::slot(&entry.job)? != slot
             || entry.request_sha256 != job_digest(&entry.job)?
@@ -199,14 +163,13 @@ impl Outbox {
         }
         Ok(())
     }
-    fn save(&self, entry: &Entry, lock: &Guard<'_>) -> Result<()> {
-        lock.validate()?;
+    fn save(&self, entry: &Entry, _lock: &Guard) -> Result<()> {
         self.directory
             .replace_regular(
                 OsStr::new(&Self::slot(&entry.job)?),
-                &serde_json::to_vec(entry).map_err(|_| Error::evidence())?,
+                &serde_json::to_vec(entry).map_err(why!(Error::evidence()))?,
             )
-            .map_err(|_| Error::transport(entry.started))
+            .map_err(why!(Error::transport(entry.started)))
     }
     pub fn prepare(
         &self,
@@ -216,26 +179,26 @@ impl Outbox {
         guard: &dyn Fn() -> Result<()>,
     ) -> Result<Value> {
         guard()?;
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         profile.validate()?;
-        job.validate().map_err(|_| Error::configuration())?;
+        job.validate().map_err(why!(Error::configuration()))?;
         match profile {
             Profile::Pai(p) => {
                 p.create(job, allocation)
-                    .map_err(|_| Error::configuration())?;
+                    .map_err(why!(Error::configuration()))?;
             }
             Profile::Sensecore(p) => {
                 if allocation != Allocation::Guaranteed {
                     return Err(Error::configuration());
                 }
-                p.create(job).map_err(|_| Error::configuration())?;
+                p.create(job).map_err(why!(Error::configuration()))?;
             }
         }
         let slot = Self::slot(job)?;
         let entry = if self
             .directory
             .entry_exists(OsStr::new(&slot))
-            .map_err(|_| Error::evidence())?
+            .map_err(why!(Error::evidence()))?
         {
             let entry = self.load(&slot)?;
             if entry.profile_sha256 != profile.digest()?
@@ -260,35 +223,32 @@ impl Outbox {
                 diagnostic: None,
             };
             guard()?;
-            lock.validate()?;
             self.directory
                 .publish_new(
                     OsStr::new(&slot),
-                    &serde_json::to_vec(&entry).map_err(|_| Error::evidence())?,
+                    &serde_json::to_vec(&entry).map_err(why!(Error::evidence()))?,
                 )
-                .map_err(|_| Error::transport(false))?;
+                .map_err(why!(Error::transport(false)))?;
             entry
         };
         guard()?;
-        lock.validate()?;
         self.view(&entry)
     }
     pub fn status(&self, job: &Job) -> Result<Value> {
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         let entry = self.load(&Self::slot(job)?)?;
         if entry.job != *job {
             return Err(Error::evidence());
         }
-        lock.validate()?;
         self.view(&entry)
     }
     pub fn optional_status(&self, job: &Job) -> Result<Option<Value>> {
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         let name = Self::slot(job)?;
         if !self
             .directory
             .entry_exists(OsStr::new(&name))
-            .map_err(|_| Error::evidence())?
+            .map_err(why!(Error::evidence()))?
         {
             return Ok(None);
         }
@@ -296,7 +256,6 @@ impl Outbox {
         if entry.job != *job {
             return Err(Error::evidence());
         }
-        lock.validate()?;
         self.view(&entry).map(Some)
     }
     fn view(&self, entry: &Entry) -> Result<Value> {
@@ -337,10 +296,7 @@ impl Outbox {
         self.save(&entry, &lock)?;
         // From this durable point, failure or interruption is reconciliation,
         // even if the HTTP request may not actually have reached the provider.
-        match guard().and_then(|_| {
-            lock.validate()?;
-            adapter.create(job, allocation, cancelled)
-        }) {
+        match guard().and_then(|_| adapter.create(job, allocation, cancelled)) {
             Ok(handle) => {
                 entry.handle = Some(handle);
                 entry.diagnostic = None;
@@ -431,10 +387,7 @@ impl Outbox {
         guard()?;
         entry.cancellation_started = true;
         self.save(&entry, &lock)?;
-        match guard().and_then(|_| {
-            lock.validate()?;
-            adapter.stop(job, &handle, cancelled)
-        }) {
+        match guard().and_then(|_| adapter.stop(job, &handle, cancelled)) {
             Ok(observation) => {
                 entry.termination_verified = observation.state.is_terminal();
                 entry.observation = Some(observation);

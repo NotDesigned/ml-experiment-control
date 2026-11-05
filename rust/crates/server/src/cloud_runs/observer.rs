@@ -1,7 +1,7 @@
 //! One bounded read-only scheduler poll at a time. Discovery reads original
 //! Actions; neither polling nor restart ever submits a missing cloud job.
 use super::{Service, service::Prepared};
-use fs2::FileExt;
+use ml_exp_io::directory::LockOptions;
 use std::{
     collections::BTreeSet,
     ffi::OsStr,
@@ -21,11 +21,14 @@ impl Observer {
     pub fn start(service: Arc<Service>) -> crate::backends::cloud::Result<Self> {
         let leader = service
             .directory
-            .open_lock(OsStr::new(".observer.lock"))
-            .map_err(super::service::io)?;
-        leader
-            .try_lock_exclusive()
-            .map_err(|_| crate::backends::cloud::Error::evidence())?;
+            .lock(
+                OsStr::new(".observer.lock"),
+                LockOptions {
+                    create: true,
+                    ..Default::default()
+                },
+            )
+            .map_err(why_lock!(crate::backends::cloud::Error::evidence()))?;
         let stop = Arc::new(AtomicBool::new(false));
         let wake = Arc::new((Mutex::new(()), Condvar::new()));
         let flag = stop.clone();
@@ -33,19 +36,14 @@ impl Observer {
         let handle = thread::Builder::new()
             .name("native-cloud-observer".into())
             .spawn(move || {
+                // Moved in by name: the flock must live as long as this thread.
+                let _leader = leader;
                 let start = Instant::now();
                 let mut schedule = ml_exp_core::polling::Schedule::default();
                 let policy = service.polling.clone();
                 let mut candidates = BTreeSet::new();
                 let mut discover_at = 0;
                 while !flag.load(Ordering::Relaxed) {
-                    if service
-                        .directory
-                        .validate_regular_entry(OsStr::new(".observer.lock"), &leader)
-                        .is_err()
-                    {
-                        break;
-                    }
                     let elapsed = start.elapsed().as_secs();
                     if elapsed >= discover_at {
                         if let Ok(found) = service.observer_candidates() {
@@ -60,9 +58,9 @@ impl Observer {
                     schedule = next;
                     if let Some((action, _)) = selected {
                         let result = crate::projects::transition_context()
-                            .map_err(|_| ())
+                            .map_err(why!(()))
                             .and_then(|(now, _)| {
-                                service.refresh(&action, &now, &flag).map_err(|_| ())
+                                service.refresh(&action, &now, &flag).map_err(why!(()))
                             });
                         schedule = schedule.outcome(
                             &action,
@@ -103,11 +101,7 @@ impl Drop for Observer {
 impl Service {
     fn observer_candidates(&self) -> crate::backends::cloud::Result<BTreeSet<String>> {
         let mut result = BTreeSet::new();
-        for name in self
-            .slots
-            .entry_names_limited(16384)
-            .map_err(super::service::io)?
-        {
+        for name in self.slots.entry_names().map_err(super::service::io)? {
             let Some(name) = name.to_str() else {
                 continue;
             };
@@ -121,11 +115,10 @@ impl Service {
             }
             let prepared: Prepared =
                 serde_json::from_value(super::service::read(&self.slots, name)?)
-                    .map_err(|_| crate::backends::cloud::Error::evidence())?;
+                    .map_err(why!(crate::backends::cloud::Error::evidence()))?;
             let action = prepared.plan["action_id"]
                 .as_str()
                 .ok_or_else(crate::backends::cloud::Error::evidence)?;
-            self.check(&prepared)?;
             if self.actions.observe(action).map_err(super::service::op)?["execution"]["status"]
                 != "VERIFIED"
             {
@@ -143,9 +136,6 @@ impl Service {
                 });
             if !terminal {
                 result.insert(action.into());
-            }
-            if result.len() > 4096 {
-                return Err(crate::backends::cloud::Error::evidence());
             }
         }
         Ok(result)

@@ -12,7 +12,7 @@ impl Service {
         if let Some(status) = self.prepare_script(project, run)? {
             return Ok(status);
         }
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         let attempt_id = self.current_attempt(project, run)?;
         let saved = self.saved_attempt(project, run, &attempt_id)?;
         let reused = saved.is_some();
@@ -37,7 +37,7 @@ impl Service {
                 return Err(cloud::Error::evidence());
             }
             let mut token = [0u8; 16];
-            getrandom::fill(&mut token).map_err(|_| cloud::Error::configuration())?;
+            getrandom::fill(&mut token).map_err(why!(cloud::Error::configuration()))?;
             let execution = self.current_execution(
                 project,
                 run,
@@ -68,9 +68,9 @@ impl Service {
                 cloud::adapter::Profile::Pai(p) => p.create(&execution.job, execution.allocation),
                 cloud::adapter::Profile::Sensecore(p) => p.create(&execution.job),
             }
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
             let plan = action::prepare(&execution, &approval, now, expires)
-                .map_err(|_| cloud::Error::evidence())?;
+                .map_err(why!(cloud::Error::evidence()))?;
             let prepared = Prepared {
                 execution,
                 plan,
@@ -83,8 +83,6 @@ impl Service {
             )?;
             prepared
         };
-        lock.validate()?;
-        self.check(&prepared)?;
         let snapshot = self
             .actions
             .save_plan(&prepared.plan, now, transition)
@@ -108,14 +106,13 @@ impl Service {
         now: &str,
         transition: &str,
     ) -> cloud::Result<Value> {
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         let prepared = self.load(action)?;
         self.check(&prepared)?;
         let snapshot = self
             .actions
             .authorize(action, "bearer-client", reason, now, transition)
             .map_err(op)?;
-        lock.validate()?;
         self.view(&prepared, snapshot, now)
     }
     pub fn execute(
@@ -133,7 +130,7 @@ impl Service {
                 uncertain: false,
             });
         }
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         let prepared = self.load(action)?;
         let execution = &prepared.execution;
         let adapter = self.execution_adapter(execution)?;
@@ -166,14 +163,9 @@ impl Service {
         let guard = self
             .fence
             .existing_observation_guard(&execution.job.project, &execution.job.run_id)
-            .map_err(|_| cloud::Error::evidence())?;
-        let check = || {
-            lock.validate()?;
-            guard
-                .require_observed_live(&execution.job.project, &execution.job.run_id)
-                .map_err(|_| cloud::Error::evidence())?;
-            self.check(&prepared)
-        };
+            .map_err(why!(cloud::Error::evidence()))?;
+        self.check(&prepared)?;
+        let check = || self.still_live(&guard, &execution.job.project, &execution.job.run_id);
         let policy = Policy {
             allow_scheduler_mutations: true,
             ..Default::default()
@@ -213,22 +205,24 @@ impl Service {
         transition: &str,
         cancelled: &AtomicBool,
     ) -> cloud::Result<Value> {
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         let prepared = self.load(action)?;
         let snapshot = self.actions.observe(action).map_err(op)?;
         if let Some(transition_value) =
             ml_exp_core::operations::interrupted(&snapshot["execution"], now)
-                .map_err(|_| cloud::Error::evidence())?
+                .map_err(why!(cloud::Error::evidence()))?
         {
             self.actions
                 .commit(action, &transition_value, transition, now)
                 .map_err(op)?;
         }
         let adapter = self.execution_adapter(&prepared.execution)?;
-        let check = || {
-            lock.validate()?;
-            self.check(&prepared)
-        };
+        let job = &prepared.execution.job;
+        let guard = self
+            .fence
+            .existing_observation_guard(&job.project, &job.run_id)
+            .map_err(why!(cloud::Error::evidence()))?;
+        let check = || self.still_live(&guard, &job.project, &job.run_id);
         let snapshot = Runner {
             actions: &self.actions,
             adapter: &adapter,
@@ -243,12 +237,11 @@ impl Service {
         let guard = self
             .fence
             .existing_observation_guard(&execution.job.project, &execution.job.run_id)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         let lock = self.lock()?;
         if self.actions.observe(action).map_err(op)?["execution"]["status"] != "VERIFIED" {
             return Err(cloud::Error::evidence());
         }
-        lock.validate()?;
         // The outbox serializes its own observation commits and the Run fence
         // prevents deletion. A slow provider GET must not hold the global
         // authorship/worker-ingress lock across every other Run.
@@ -257,12 +250,7 @@ impl Service {
             &self.execution_adapter(execution)?,
             &execution.job,
             execution.allocation,
-            &|| {
-                guard
-                    .require_observed_live(&execution.job.project, &execution.job.run_id)
-                    .map_err(|_| cloud::Error::evidence())?;
-                self.check(&prepared)
-            },
+            &|| self.still_live(&guard, &execution.job.project, &execution.job.run_id),
             cancelled,
         )?;
         self.get(action, now)
@@ -277,16 +265,17 @@ impl Service {
         if !self.enabled || confirmation != format!("CANCEL {action}") {
             return Err(cloud::Error::configuration());
         }
-        let lock = self.lock()?;
+        let _lock = self.lock()?;
         let prepared = self.load(action)?;
         let execution = &prepared.execution;
         if self.actions.observe(action).map_err(op)?["execution"]["status"] != "VERIFIED" {
             return Err(cloud::Error::evidence());
         }
-        let check = || {
-            lock.validate()?;
-            self.check(&prepared)
-        };
+        let guard = self
+            .fence
+            .existing_observation_guard(&execution.job.project, &execution.job.run_id)
+            .map_err(why!(cloud::Error::evidence()))?;
+        let check = || self.still_live(&guard, &execution.job.project, &execution.job.run_id);
         let current = self.outbox.status(&execution.job)?;
         if current["cancellation_started"] == true {
             self.outbox.reconcile(

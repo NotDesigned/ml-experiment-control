@@ -65,7 +65,7 @@ impl Definition {
         };
         storage
             .validate()
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
         Ok(storage)
     }
     pub fn target(&self) -> cloud::Result<ml_exp_core::slurm::helper::Target> {
@@ -75,7 +75,7 @@ impl Definition {
             ml_exp_core::canonical::digest(
                 &serde_json::json!({"profile":profile_sha256,"run_root":self.run_root})
             )
-            .map_err(|_| cloud::Error::configuration())?
+            .map_err(why!(cloud::Error::configuration()))?
         );
         Ok(ml_exp_core::slurm::helper::Target {
             backend_id: self.executor.clone(),
@@ -85,7 +85,7 @@ impl Definition {
     }
     pub fn validate(&self) -> cloud::Result<()> {
         ml_exp_core::identity::validate_id(&self.executor)
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
         self.profile.validate()?;
         if let Some(names) = &self.spot_clusters {
             if names.is_empty()
@@ -162,7 +162,7 @@ impl Definition {
         for receipt in &self.datasets {
             receipt
                 .bind(&receipt.project, &target, &data_root)
-                .map_err(|_| cloud::Error::configuration())?;
+                .map_err(why!(cloud::Error::configuration()))?;
             if !identities.insert((&receipt.project, &receipt.asset_id)) {
                 return Err(cloud::Error::configuration());
             }
@@ -173,7 +173,7 @@ impl Definition {
         for import in &self.imports {
             import
                 .validate()
-                .map_err(|_| cloud::Error::configuration())?;
+                .map_err(why!(cloud::Error::configuration()))?;
             if import.root != data_root
                 || import.target != target
                 || !identities.insert((&import.project, &import.definition.sha256))
@@ -184,7 +184,7 @@ impl Definition {
         for (id, runtime) in &self.runtimes {
             runtime
                 .validate()
-                .map_err(|_| cloud::Error::configuration())?;
+                .map_err(why!(cloud::Error::configuration()))?;
             if id != &runtime.runtime_id {
                 return Err(cloud::Error::configuration());
             }
@@ -222,13 +222,13 @@ impl Settings {
     }
     pub fn load(path: &Path) -> cloud::Result<Self> {
         let bytes = ml_exp_io::read_private(path, 4 * 1024 * 1024, true)
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
         Self::from_slice(&bytes)
     }
     pub fn from_slice(bytes: &[u8]) -> cloud::Result<Self> {
         let value = domain_json(bytes)?;
         let settings: Self =
-            serde_json::from_value(value).map_err(|_| cloud::Error::configuration())?;
+            serde_json::from_value(value).map_err(why!(cloud::Error::configuration()))?;
         if settings.schema_version != 1
             || (settings.backends.is_empty()
                 && settings.builds.is_none()
@@ -253,5 +253,5 @@ impl Settings {
 fn domain_json(bytes: &[u8]) -> cloud::Result<serde_json::Value> {
     ml_exp_core::json::mapping(bytes)
         .map(serde_json::Value::Object)
-        .map_err(|_| cloud::Error::configuration())
+        .map_err(why!(cloud::Error::configuration()))
 }

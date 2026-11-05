@@ -34,7 +34,7 @@ impl Saved {
 fn name(lineage: &Value) -> cloud::Result<String> {
     Ok(format!(
         "diagnostic-{}.json",
-        canonical::digest(lineage).map_err(|_| cloud::Error::evidence())?
+        canonical::digest(lineage).map_err(why!(cloud::Error::evidence()))?
     ))
 }
 fn unavailable(code: &str) -> cloud::Error {
@@ -50,7 +50,7 @@ fn compiled(parent: &Job, lineage: &Value, config: &Value, script: &str) -> clou
         lineage,
         parent.submission_token
     ]))
-    .map_err(|_| cloud::Error::evidence())?;
+    .map_err(why!(cloud::Error::evidence()))?;
     let mut job = parent.clone();
     job.run_id = format!("diagnostic-{}", &identity[..32]);
     job.submission_token = identity[..32].into();
@@ -63,9 +63,9 @@ fn compiled(parent: &Job, lineage: &Value, config: &Value, script: &str) -> clou
         "python3".into(),
         "-c".into(),
         script.into(),
-        serde_json::to_string(config).map_err(|_| cloud::Error::evidence())?,
+        serde_json::to_string(config).map_err(why!(cloud::Error::evidence()))?,
     ];
-    job.validate().map_err(|_| cloud::Error::evidence())?;
+    job.validate().map_err(why!(cloud::Error::evidence()))?;
     Ok(job)
 }
 fn report(value: &Value, config: &Value) -> Option<Value> {
@@ -108,7 +108,7 @@ impl Service {
             return Ok(None);
         }
         let saved: Saved = serde_json::from_value(read(&self.slots, &name)?)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         saved.validate(lineage, parent, config)?;
         Ok(Some(saved))
     }
@@ -148,7 +148,7 @@ impl Service {
             )?;
             let evidence: ml_exp_core::cloud::JobObservation =
                 serde_json::from_value(original["observation"].clone())
-                    .map_err(|_| cloud::Error::evidence())?;
+                    .map_err(why!(cloud::Error::evidence()))?;
             if !original["diagnostic"].is_null()
                 || original["handle"]["job_id"] != evidence.job_id
                 || !evidence.state.is_terminal()
@@ -197,7 +197,7 @@ impl Service {
             };
             if saved.report.is_none() && status["handle"].is_object() {
                 let handle = serde_json::from_value(status["handle"].clone())
-                    .map_err(|_| cloud::Error::evidence())?;
+                    .map_err(why!(cloud::Error::evidence()))?;
                 // Delayed offline logs remain pending and can be observed again.
                 match collector.pai_diagnostic_logs(&saved.job, &handle, &AtomicBool::new(false)) {
                     Ok(logs) => {
@@ -234,7 +234,7 @@ impl Service {
         let Some(handle) = handle else {
             return Ok(json!({"diagnostic":"NO_PROVIDER_JOB_RECORDED"}));
         };
-        let handle = serde_json::from_value(handle).map_err(|_| cloud::Error::evidence())?;
+        let handle = serde_json::from_value(handle).map_err(why!(cloud::Error::evidence()))?;
         collector.pai_provider_diagnostics(job, &handle, lines, &AtomicBool::new(false))
     }
     /// The provider's account of a data copy and its read-only diagnostic. These
@@ -248,7 +248,7 @@ impl Service {
         lines: u32,
     ) -> cloud::Result<Value> {
         ml_exp_core::submission::validate_submission_token(request)
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
         let saved = self
             .data_saved(project, executor, asset)?
             .ok_or_else(missing)?;
@@ -275,7 +275,7 @@ impl Service {
         let name = name(&lineage)?;
         if self.slots.entry_exists(OsStr::new(&name)).map_err(io)? {
             let diagnostic: Saved = serde_json::from_value(read(&self.slots, &name)?)
-                .map_err(|_| cloud::Error::evidence())?;
+                .map_err(why!(cloud::Error::evidence()))?;
             if diagnostic.lineage != lineage {
                 return Err(cloud::Error::evidence());
             }
@@ -317,7 +317,7 @@ impl Service {
             result["diagnostic"] = json!("NO_PROVIDER_JOB_RECORDED");
             return Ok(result);
         };
-        let handle = serde_json::from_value(handle).map_err(|_| cloud::Error::evidence())?;
+        let handle = serde_json::from_value(handle).map_err(why!(cloud::Error::evidence()))?;
         let provider = backend.adapter.pai_provider_diagnostics(
             &prepared.execution.job,
             &handle,
@@ -340,10 +340,9 @@ impl Service {
             confirmation: format!("SYNC {action}"),
         }
         .validate(action)
-        .map_err(|_| cloud::Error::configuration())?;
-        let lock = self.lock()?;
+        .map_err(why!(cloud::Error::configuration()))?;
+        let _lock = self.lock()?;
         let prepared = self.load(action)?;
-        self.check(&prepared)?;
         let collector = self.backends[&prepared.execution.backend_id]
             .collector
             .as_ref()
@@ -352,23 +351,17 @@ impl Service {
         let package = prepared
             .execution
             .package()
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         let lineage = json!({"action":action,"request_id":request});
         let config = json!({"contract":"sync-diagnostic.v1","action":action,"request_id":request,
             "channel":package.channel,"package_sha256":helper::sha256_bytes(&encode(&package)?),
             "config_sha256":helper::sha256_bytes(&encode(&package.config)?),
-            "config_binding_sha256":package.config.digest().map_err(|_| cloud::Error::evidence())?,"package":package});
+            "config_binding_sha256":package.config.digest().map_err(why!(cloud::Error::evidence()))?,"package":package});
         let guard = self
             .fence
             .existing_observation_guard(&parent.project, &prepared.execution.job.run_id)
-            .map_err(|_| cloud::Error::evidence())?;
-        let check = || {
-            lock.validate()?;
-            guard
-                .require_observed_live(&parent.project, &prepared.execution.job.run_id)
-                .map_err(|_| cloud::Error::evidence())?;
-            self.check(&prepared)
-        };
+            .map_err(why!(cloud::Error::evidence()))?;
+        let check = || self.still_live(&guard, &parent.project, &prepared.execution.job.run_id);
         self.diagnostic(collector, &parent, lineage, config, execute, now, &check)
     }
     pub fn data_diagnostic(
@@ -381,8 +374,8 @@ impl Service {
         now: &str,
     ) -> cloud::Result<Value> {
         ml_exp_core::submission::validate_submission_token(request)
-            .map_err(|_| cloud::Error::configuration())?;
-        let lock = self.lock()?;
+            .map_err(why!(cloud::Error::configuration()))?;
+        let _lock = self.lock()?;
         let saved = self
             .data_saved(project, executor, asset)?
             .ok_or_else(missing)?;
@@ -392,7 +385,7 @@ impl Service {
         let parent = saved.copy_intent.ok_or_else(cloud::Error::evidence)?;
         let import: ml_exp_core::datasets::import::Config =
             serde_json::from_str(parent.command.get(5).ok_or_else(cloud::Error::evidence)?)
-                .map_err(|_| cloud::Error::evidence())?;
+                .map_err(why!(cloud::Error::evidence()))?;
         let lineage =
             json!({"project":project,"executor":executor,"asset_id":asset,"request_id":request});
         let config = json!({"contract":"data-diagnostic.v1","project":project,"asset_id":asset,"request_id":request,
@@ -402,7 +395,6 @@ impl Service {
             .as_ref()
             .ok_or_else(cloud::Error::configuration)?;
         let check = || {
-            lock.validate()?;
             self.data_saved(project, executor, asset)?
                 .ok_or_else(missing)
                 .map(|_| ())

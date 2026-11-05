@@ -3,6 +3,7 @@
 use crate::{Client, Error, session};
 use ml_exp_core::{
     artifacts::{self, publication::State},
+    multipart,
     operations::validate_submission_id,
 };
 use serde_json::{Value, json};
@@ -175,11 +176,11 @@ pub fn download(
             bytes: receipt.bytes,
         };
         if direct {
-            let part_bytes = 16 * 1024 * 1024u64;
+            let part_bytes = multipart::PART_BYTES;
             let count = receipt.bytes.div_ceil(part_bytes);
             if metadata["download"]["part_bytes"] != part_bytes
                 || metadata["download"]["part_count"] != count
-                || count > 65536
+                || count > multipart::MAX_PARTS
             {
                 return Err(Error::Response);
             }

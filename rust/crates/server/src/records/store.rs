@@ -87,10 +87,9 @@ impl Store {
         };
         let bootstrap = store.fence.shared()?;
         store.database.initialize(
-            || bootstrap.validate().map_err(Error::from),
+            || Ok(()),
             |transaction| initialize_schema(transaction, workspace_seed),
         )?;
-        bootstrap.validate()?;
         drop(bootstrap);
         Ok(store)
     }
@@ -140,7 +139,6 @@ impl Store {
         for name in &names {
             held.require_observed_live(project, name)?;
         }
-        held.validate()?;
         Ok(RecordGuard {
             store: self,
             held,
@@ -150,14 +148,12 @@ impl Store {
         })
     }
     fn require_guard(&self, guard: &RecordGuard<'_>) -> Result<()> {
-        guard.held.validate()?;
         if !std::ptr::eq(self, guard.store) {
             return Err(Error::Guard);
         }
         for name in &guard.names {
             guard.held.require_observed_live(&guard.project, name)?;
         }
-        guard.held.validate()?;
         Ok(())
     }
     fn require_scope(&self, guard: &RecordGuard<'_>, scope: &str) -> Result<()> {
@@ -170,7 +166,6 @@ impl Store {
         if !bound {
             return Err(Error::Scope);
         }
-        guard.held.validate()?;
         Ok(())
     }
     pub fn bind(&self, guard: &RecordGuard<'_>, route: &Value, config: &Value) -> Result<()> {
@@ -467,7 +462,7 @@ impl Store {
             let mut items = Vec::new();
             while let Some(row) = rows.next()? {
                 let size: i64 = row.get(0)?;
-                let size = usize::try_from(size).map_err(|_| Error::Invalid("metric history exceeds read budget"))?;
+                let size = usize::try_from(size).map_err(why!(Error::Invalid("metric history exceeds read budget")))?;
                 bytes = bytes.checked_add(size).filter(|size| *size <= maximum_bytes).ok_or(Error::Invalid("metric history exceeds read budget"))?;
                 let raw: String = row.get(1)?;
                 let value: Value = serde_json::from_str(&raw)?;
@@ -545,11 +540,9 @@ impl Store {
                 at,
             )?;
         }
-        exclusive.validate()?;
         self.database.transaction(
-            || exclusive.validate().map_err(Error::from),
+            || Ok(()),
             |tx| {
-                exclusive.validate()?;
                 let mut scopes = Vec::new();
                 for name in &names {
                     let mut statement =
@@ -575,7 +568,6 @@ impl Store {
                         params![project, name],
                     )?;
                 }
-                exclusive.validate()?;
                 if !exclusive.is_deleted(project, run)? {
                     return Err(Error::DeletionNotStarted);
                 }
@@ -765,7 +757,7 @@ impl Store {
                 .collect::<std::result::Result<_, _>>()?
         };
         let plan = records::confirmation_plan(&state, &route, &events, proof, error)
-            .map_err(|_| Error::Confirmation)?;
+            .map_err(why!(Error::Confirmation))?;
         tx.execute(
             "UPDATE scopes SET confirmed=MAX(confirmed,?),last_confirmed_at=? WHERE id=?",
             params![plan.confirmed, at, scope],

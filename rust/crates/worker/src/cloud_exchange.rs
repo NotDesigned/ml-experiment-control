@@ -1,7 +1,6 @@
 //! Metadata transport is independent from training. Persist one exact pending
 //! packet before sending; acknowledge it before advancing the history cursor.
 use crate::managed::{self, Error, Result};
-use fs2::FileExt;
 use ml_exp_core::{
     cloud::{
         exchange::{self, Ack, Packet},
@@ -13,7 +12,10 @@ use ml_exp_core::{
         remote::{Evidence, OBSERVATION_CONTRACT, Problem},
     },
 };
-use ml_exp_io::{directory::Directory, observations};
+use ml_exp_io::{
+    directory::{Directory, LockOptions},
+    observations,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     ffi::OsStr,
@@ -44,28 +46,22 @@ fn packet(package: &Package, state: &State) -> Result<Packet> {
     );
     let outputs = Directory::open(&config.output_path(), false).map_err(|_| Error::Storage);
     let (mut stdout, mut stderr, metrics, history) = match outputs {
-        Ok(outputs) => {
-            let value = (
-                observations::window(&outputs, "stdout.log"),
-                observations::window(&outputs, "stderr.log"),
-                observations::window(&outputs, "metrics.jsonl"),
-                if state.complete {
-                    None
-                } else {
-                    observations::history(
-                        &outputs,
-                        state.cursor.as_ref(),
-                        worker.phase == Phase::Finished,
-                        &config_sha256,
-                    )
-                    .map_err(|_| Error::Storage)?
-                },
-            );
-            outputs
-                .verify_private_parent()
-                .map_err(|_| Error::Storage)?;
-            value
-        }
+        Ok(outputs) => (
+            observations::window(&outputs, "stdout.log"),
+            observations::window(&outputs, "stderr.log"),
+            observations::window(&outputs, "metrics.jsonl"),
+            if state.complete {
+                None
+            } else {
+                observations::history(
+                    &outputs,
+                    state.cursor.as_ref(),
+                    worker.phase == Phase::Finished,
+                    &config_sha256,
+                )
+                .map_err(|_| Error::Storage)?
+            },
+        ),
         Err(_) if worker.phase == Phase::Prepared && state.cursor.is_none() => (
             ml_exp_core::managed::remote::Window::unavailable(Problem::Missing),
             ml_exp_core::managed::remote::Window::unavailable(Problem::Missing),
@@ -231,11 +227,21 @@ pub fn once(package: &Package, transport: &impl Transport) -> Result<bool> {
     package.validate().map_err(|_| Error::Configuration)?;
     let channel = package.channel.as_ref().ok_or(Error::Configuration)?;
     let root = Directory::open(&package.config.attempt_root, false).map_err(|_| Error::Storage)?;
-    root.verify_private_parent().map_err(|_| Error::Storage)?;
-    let lock = root
-        .open_lock(OsStr::new(".cloud-exchange.lock"))
-        .map_err(|_| Error::Storage)?;
-    lock.try_lock_exclusive().map_err(|_| Error::Busy)?;
+    let _lock = root
+        .lock(
+            OsStr::new(".cloud-exchange.lock"),
+            LockOptions {
+                create: true,
+                ..Default::default()
+            },
+        )
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::WouldBlock {
+                Error::Busy
+            } else {
+                Error::Storage
+            }
+        })?;
     let sha = crate::cloud::package_sha(package)?;
     let mut state: State = if root
         .entry_exists(OsStr::new(STATE))
@@ -292,9 +298,6 @@ pub fn once(package: &Package, transport: &impl Transport) -> Result<bool> {
     state.sequence = ack.sequence;
     state.packet_sha256 = Some(ack.packet_sha256);
     state.pending = None;
-    root.validate_regular_entry(OsStr::new(".cloud-exchange.lock"), &lock)
-        .map_err(|_| Error::Storage)?;
-    root.verify_private_parent().map_err(|_| Error::Storage)?;
     save(&root, &state)?;
     Ok(state.complete)
 }

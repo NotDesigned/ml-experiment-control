@@ -81,7 +81,6 @@ impl Database {
         Self::in_directory(Directory::open(root, true)?)
     }
     pub(crate) fn in_directory(directory: Directory) -> Result<Self> {
-        directory.verify_private_parent()?;
         let sqlite =
             SqliteDatabase::in_directory(directory.clone(), OsStr::new("actions.sqlite3"))?
                 .with_wal();
@@ -92,7 +91,6 @@ impl Database {
         })
     }
     fn root_directory(&self) -> Result<&Directory> {
-        self.directory.verify_private_parent()?;
         Ok(&self.directory)
     }
     pub fn path(&self) -> PathBuf {
@@ -103,7 +101,7 @@ impl Database {
         match directory.regular_identity(OsStr::new(".sqlite-authoritative"))? {
             None => return Ok(false),
             Some(identity) if identity.is_private_for(effective_uid()) => {}
-            Some(_) => return Err(Error::Invalid("single-link authoritative marker required")),
+            Some(_) => return Err(Error::Invalid("private authoritative marker required")),
         }
         match directory.read_regular(OsStr::new(".sqlite-authoritative"), 4096) {
             Ok(_) => Ok(true),
@@ -111,8 +109,7 @@ impl Database {
             Err(error) => Err(error.into()),
         }
     }
-    fn initialize(&self, validate: &dyn Fn() -> Result<()>) -> Result<()> {
-        validate()?;
+    fn initialize(&self) -> Result<()> {
         let directory = self.root_directory()?;
         let marker = self.marker_exists()?;
         if marker
@@ -129,10 +126,7 @@ impl Database {
             return Ok(());
         }
         self.sqlite.initialize(
-            || {
-                validate()?;
-                directory.verify_attached().map_err(Error::Io)
-            },
+            || Ok(()),
             |transaction| {
                 let version: i64 =
                     transaction.query_row("PRAGMA user_version", [], |row| row.get(0))?;
@@ -156,26 +150,13 @@ impl Database {
                 Err(error) => return Err(error.into()),
             }
         }
-        directory.verify_attached()?;
         let _ = self.initialized.set(());
         Ok(())
     }
-    fn transaction<T>(
-        &self,
-        validate: &dyn Fn() -> Result<()>,
-        operation: impl FnOnce(&Transaction<'_>) -> Result<T>,
-    ) -> Result<T> {
-        self.initialize(validate)?;
-        let directory = self.root_directory()?;
+    fn transaction<T>(&self, operation: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
+        self.initialize()?;
         self.sqlite.transaction(
-            || {
-                validate()?;
-                directory.verify_attached()?;
-                if !self.marker_exists()? {
-                    return Err(Error::Invalid("authoritative marker disappeared"));
-                }
-                Ok(())
-            },
+            || Ok(()),
             |transaction| {
                 let version: i64 =
                     transaction.query_row("PRAGMA user_version", [], |row| row.get(0))?;
@@ -218,31 +199,23 @@ impl Database {
         Ok(value)
     }
 
-    pub fn read(&self, validate: &dyn Fn() -> Result<()>, action_id: &str) -> Result<Value> {
+    pub fn read(&self, action_id: &str) -> Result<Value> {
         operations::validate_action_id(action_id)?;
-        self.transaction(validate, |connection| {
-            self.read_transaction(connection, action_id)
-        })
+        self.transaction(|connection| self.read_transaction(connection, action_id))
     }
 
     /// Explicit admission check, not a GET. Bootstrap an empty store if needed
     /// and retain every committed Action identity, including orphaned plans.
-    pub(super) fn admission_action_ids(
-        &self,
-        validate: &dyn Fn() -> Result<()>,
-    ) -> Result<Vec<String>> {
-        self.transaction(validate, |connection| {
-            let mut statement = connection
-                .prepare("SELECT action_id FROM executions ORDER BY action_id LIMIT 4097")?;
+    pub(super) fn admission_action_ids(&self) -> Result<Vec<String>> {
+        self.transaction(|connection| {
+            let mut statement =
+                connection.prepare("SELECT action_id FROM executions ORDER BY action_id")?;
             let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
             let mut ids = Vec::new();
             for row in rows {
                 let id = row?;
                 operations::validate_action_id(&id)?;
                 ids.push(id);
-            }
-            if ids.len() > 4096 {
-                return Err(Error::Invalid("Action admission inventory exceeds limit"));
             }
             Ok(ids)
         })
@@ -251,9 +224,8 @@ impl Database {
     /// Observe an existing execution without initialization, recovery, schema
     /// changes or a write transaction. A plan with no committed execution is
     /// incomplete evidence; a GET must never turn it into PREPARED.
-    pub fn observe(&self, validate: &dyn Fn() -> Result<()>, action_id: &str) -> Result<Value> {
+    pub fn observe(&self, action_id: &str) -> Result<Value> {
         operations::validate_action_id(action_id)?;
-        validate()?;
         if !self.marker_exists()? {
             return Err(Error::MissingAuthoritative);
         }
@@ -268,7 +240,6 @@ impl Database {
             }
             Ok(value)
         })?;
-        validate()?;
         if !self.marker_exists()? {
             return Err(Error::MissingAuthoritative);
         }
@@ -277,7 +248,6 @@ impl Database {
 
     pub fn commit(
         &self,
-        validate: &dyn Fn() -> Result<()>,
         action_id: &str,
         proposed: &Value,
         event: &Value,
@@ -285,7 +255,7 @@ impl Database {
         transition_id: &str,
     ) -> Result<Value> {
         operations::validate_action_id(action_id)?;
-        self.transaction(validate, |connection| {
+        self.transaction(|connection| {
             let current = self.read_transaction(connection,action_id)?;
             let (execution,event) = operations::commit_transition(&current,proposed,event,expected_status,transition_id)?;
             let revision = operations::revision(&execution)?;
@@ -295,18 +265,12 @@ impl Database {
         })
     }
 
-    pub fn append_event(
-        &self,
-        validate: &dyn Fn() -> Result<()>,
-        action_id: &str,
-        event: &Value,
-        event_id: &str,
-    ) -> Result<()> {
+    pub fn append_event(&self, action_id: &str, event: &Value, event_id: &str) -> Result<()> {
         operations::validate_action_id(action_id)?;
         if event_id.is_empty() || event_id.len() > 4096 || event_id.chars().any(char::is_control) {
             return Err(Error::Invalid("event_id"));
         }
-        self.transaction(validate, |connection| {
+        self.transaction(|connection| {
             let current = self.read_transaction(connection, action_id)?;
             let mut record = event
                 .as_object()
@@ -333,17 +297,12 @@ impl Database {
         })
     }
 
-    pub fn journal(
-        &self,
-        validate: &dyn Fn() -> Result<()>,
-        action_id: &str,
-        limit: usize,
-    ) -> Result<Vec<Value>> {
+    pub fn journal(&self, action_id: &str, limit: usize) -> Result<Vec<Value>> {
         operations::validate_action_id(action_id)?;
         let limit: i64 = limit
             .try_into()
-            .map_err(|_| Error::Invalid("journal limit"))?;
-        self.transaction(validate, |connection| {
+            .map_err(why!(Error::Invalid("journal limit")))?;
+        self.transaction(|connection| {
             self.read_transaction(connection, action_id)?;
             let mut statement = connection.prepare(
                 "SELECT payload FROM events WHERE action_id=? ORDER BY seq DESC LIMIT ?",

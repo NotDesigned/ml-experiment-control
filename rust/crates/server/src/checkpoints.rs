@@ -3,15 +3,13 @@
 //! Authentication, worker capability tokens and provider storage remain
 //! outside this module. The registry owns only exact identity binding,
 //! generation uniqueness, immutable JSON receipts and safe reads.
-use fs2::FileExt;
 use ml_exp_core::checkpoints::{self, Context};
-use ml_exp_io::directory::Directory;
+use ml_exp_io::directory::{Directory, FileLock, LockOptions};
 use serde_json::Value;
-use std::{ffi::OsStr, fs::File, path::Path};
+use std::{ffi::OsStr, path::Path};
 
 const NAMESPACE: &str = "persistent-checkpoints";
 const LOCK: &str = ".checkpoints.lock";
-const MAX_DOCUMENT_BYTES: u64 = checkpoints::MANIFEST_LIMIT as u64 * 2;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -26,15 +24,6 @@ pub enum Error {
 }
 pub type Result<T> = std::result::Result<T, Error>;
 
-struct Guard {
-    file: File,
-}
-impl Drop for Guard {
-    fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.file);
-    }
-}
-
 pub struct Store {
     namespace: Directory,
 }
@@ -43,33 +32,32 @@ impl Store {
     pub fn open(registry_root: &Path) -> Result<Self> {
         let root = Directory::open(registry_root, true)?;
         let namespace = root.child(OsStr::new(NAMESPACE), true)?;
-        namespace.open_lock(OsStr::new(LOCK))?;
+        namespace.create_lock_file(OsStr::new(LOCK))?;
         Ok(Self { namespace })
     }
 
     pub fn open_existing(registry_root: &Path) -> Result<Self> {
         let root = Directory::open(registry_root, false)?;
         let namespace = root.child(OsStr::new(NAMESPACE), false)?;
-        namespace.verify_private_parent()?;
-        namespace.open_existing_lock(OsStr::new(LOCK))?;
+        namespace.open_regular_read(OsStr::new(LOCK))?;
         Ok(Self { namespace })
     }
 
-    fn lock(&self) -> Result<Guard> {
-        let file = self.namespace.open_existing_lock(OsStr::new(LOCK))?;
-        file.try_lock_exclusive().map_err(|error| {
-            if error.kind() == std::io::ErrorKind::WouldBlock {
-                Error::Busy
-            } else {
-                Error::Io(error)
-            }
-        })?;
-        Ok(Guard { file })
+    fn lock(&self) -> Result<FileLock> {
+        self.namespace
+            .lock(OsStr::new(LOCK), LockOptions::default())
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::WouldBlock {
+                    Error::Busy
+                } else {
+                    Error::Io(error)
+                }
+            })
     }
 
     fn attempt_directory(&self, context: &Context, create: bool) -> Result<Option<Directory>> {
-        checkpoints::context(&serde_json::to_value(context).map_err(|_| Error::Document)?)
-            .map_err(|_| Error::Document)?;
+        checkpoints::context(&serde_json::to_value(context).map_err(why!(Error::Document))?)
+            .map_err(why!(Error::Document))?;
         let project = match self.namespace.child(OsStr::new(&context.project), create) {
             Ok(directory) => directory,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -88,21 +76,16 @@ impl Store {
     }
 
     fn encode(value: &Value) -> Result<Vec<u8>> {
-        let mut bytes = serde_json::to_vec(value).map_err(|_| Error::Document)?;
+        let mut bytes = serde_json::to_vec(value).map_err(why!(Error::Document))?;
         bytes.push(b'\n');
-        if bytes.len() as u64 > MAX_DOCUMENT_BYTES {
-            return Err(Error::Document);
-        }
         Ok(bytes)
     }
 
     fn read_value(directory: &Directory, name: &OsStr) -> Result<Value> {
         let file = directory.open_regular_read(name)?;
-        directory
-            .validate_immutable_regular_entry(name, &file)
-            .map_err(|_| Error::Document)?;
-        let bytes = directory.read_regular(name, MAX_DOCUMENT_BYTES)?;
-        serde_json::from_slice(&bytes).map_err(|_| Error::Document)
+        ml_exp_io::directory::require_sealed(&file).map_err(|_| Error::Document)?;
+        let bytes = directory.read_whole(name)?;
+        serde_json::from_slice(&bytes).map_err(why!(Error::Document))
     }
 
     fn names(directory: &Directory) -> Result<Vec<std::ffi::OsString>> {
@@ -124,7 +107,7 @@ impl Store {
             return Ok(Vec::new());
         };
         if let Some(checkpoint_id) = checkpoint_id {
-            checkpoints::validate_checkpoint_id(checkpoint_id).map_err(|_| Error::Document)?;
+            checkpoints::validate_checkpoint_id(checkpoint_id).map_err(why!(Error::Document))?;
             let name = OsString::from(format!("{checkpoint_id}.json"));
             if !directory.entry_exists(&name)?
                 || directory.entry_exists(OsStr::new(&format!("withdrawn.{checkpoint_id}.json")))?
@@ -133,7 +116,7 @@ impl Store {
             }
             let value = Self::read_value(&directory, &name)?;
             checkpoints::validate_document(&value, Some(context), Some(checkpoint_id))
-                .map_err(|_| Error::Document)?;
+                .map_err(why!(Error::Document))?;
             return Ok(vec![value]);
         }
         let mut values = Vec::new();
@@ -149,7 +132,7 @@ impl Store {
                 Some(context),
                 name.to_str().and_then(|name| name.strip_suffix(".json")),
             )
-            .map_err(|_| Error::Document)?;
+            .map_err(why!(Error::Document))?;
             values.push(value);
         }
         Ok(values)
@@ -167,7 +150,7 @@ impl Store {
 
     pub fn register(&self, context: &Context, ready: &Value, registered_at: &str) -> Result<Value> {
         let _guard = self.lock()?;
-        let candidate = checkpoints::document(context, ready).map_err(|_| Error::Document)?;
+        let candidate = checkpoints::document(context, ready).map_err(why!(Error::Document))?;
         let checkpoint_id = candidate["checkpoint_id"]
             .as_str()
             .ok_or(Error::Document)?
@@ -189,14 +172,14 @@ impl Store {
             }
         })?;
         let registered =
-            checkpoints::register(&candidate, registered_at).map_err(|_| Error::Document)?;
+            checkpoints::register(&candidate, registered_at).map_err(why!(Error::Document))?;
         let directory = self
             .attempt_directory(context, true)?
             .ok_or(Error::Document)?;
         let name = OsString::from(format!("{checkpoint_id}.json"));
         directory.publish_new(&name, &Self::encode(&registered)?)?;
         let file = directory.open_regular_read(&name)?;
-        directory.seal_regular(&name, &file, false)?;
+        ml_exp_io::directory::seal_regular(&file, false)?;
         Ok(registered)
     }
 }
@@ -205,29 +188,27 @@ use std::ffi::OsString;
 
 impl Store {
     pub fn withdraw(&self, context: &Context, id: &str, plan_id: &str) -> Result<()> {
-        checkpoints::validate_checkpoint_id(id).map_err(|_| Error::Document)?;
-        ml_exp_core::sources::validate_archive_digest(plan_id).map_err(|_| Error::Document)?;
+        checkpoints::validate_checkpoint_id(id).map_err(why!(Error::Document))?;
+        ml_exp_core::sources::validate_archive_digest(plan_id).map_err(why!(Error::Document))?;
         let _guard = self.lock()?;
         let directory = self
             .attempt_directory(context, false)?
             .ok_or(Error::Document)?;
         let original = Self::read_value(&directory, OsStr::new(&format!("{id}.json")))?;
         checkpoints::validate_document(&original, Some(context), Some(id))
-            .map_err(|_| Error::Document)?;
+            .map_err(why!(Error::Document))?;
         let name = format!("withdrawn.{id}.json");
         let value =
             serde_json::json!({"checkpoint_id":id,"plan_id":plan_id,"status":"REMOVAL_REQUESTED"});
         if directory.entry_exists(OsStr::new(&name))? {
-            if directory.read_regular(OsStr::new(&name), MAX_DOCUMENT_BYTES)?
-                != Self::encode(&value)?
-            {
+            if directory.read_whole(OsStr::new(&name))? != Self::encode(&value)? {
                 return Err(Error::Document);
             }
         } else {
             directory.publish_new(OsStr::new(&name), &Self::encode(&value)?)?;
         }
         let file = directory.open_regular_read(OsStr::new(&name))?;
-        directory.seal_regular(OsStr::new(&name), &file, false)?;
+        ml_exp_io::directory::seal_regular(&file, false)?;
         Ok(())
     }
 }

@@ -8,7 +8,7 @@ impl Helper {
         &self,
         request: &Request,
         snapshot: &Snapshot,
-        lock: &Lock,
+        _lock: &Lock,
     ) -> Result<ReplyOutcome> {
         let Some(receipt) = &snapshot.receipt else {
             return Ok(ReplyOutcome::Unknown {
@@ -20,8 +20,7 @@ impl Helper {
                 code: Rejection::IdentityConflict,
             });
         }
-        self.verify_issued(request.intent(), &snapshot.directory)?;
-        lock.validate()?;
+        self.verify_issued(request.intent())?;
         let read = || -> Result<serde_json::Value> {
             let (plan, directories) = self
                 .observe_shared(request.intent(), &snapshot.directory, false)?
@@ -48,7 +47,6 @@ impl Helper {
             {
                 return Err(Error::Metadata);
             }
-            outputs.verify_private_parent()?;
             self.observe_shared(request.intent(), &snapshot.directory, false)?;
             let attempt = snapshot
                 .directory
@@ -65,8 +63,7 @@ impl Helper {
                 reason: UnknownReason::StorageUnavailable,
             },
         };
-        self.verify_issued(request.intent(), &snapshot.directory)?;
-        lock.validate()?;
+        self.verify_issued(request.intent())?;
         Ok(outcome)
     }
 }

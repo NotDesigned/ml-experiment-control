@@ -1,27 +1,21 @@
-use crate::experiments::{Format, parse_mapping};
-use fs2::FileExt;
 use ml_exp_core::{
     canonical::python_json_bytes,
     durable,
     projects::{self, LifecycleRecord, PathEvidence, RegistrationSource, Registry, Seed},
 };
-use ml_exp_io::directory::Directory;
+use ml_exp_io::directory::{Directory, FileLock, LockOptions, Wait};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     ffi::OsStr,
-    fs::File,
     path::{Path, PathBuf},
-    sync::Arc,
     time::{Duration, Instant},
 };
 
 const HEAD: &str = "registry.json";
 const EVENTS: &str = "events.jsonl";
 const LOCK: &str = ".registry.lock";
-const MAX_HEAD: u64 = 4 * 1024 * 1024;
-const MAX_JOURNAL: u64 = 8 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -80,32 +74,12 @@ struct Loaded {
     normalized_journal: Option<Vec<u8>>,
     missing: Option<Value>,
 }
-struct Lock<'a> {
-    store: &'a Store,
-    file: File,
-}
-impl Lock<'_> {
-    fn validate(&self) -> Result<(), Error> {
-        self.store.directory.verify_private_parent()?;
-        self.store
-            .directory
-            .validate_regular_entry(OsStr::new(LOCK), &self.store.anchor)?;
-        self.store
-            .directory
-            .validate_regular_entry(OsStr::new(LOCK), &self.file)?;
-        Ok(())
-    }
-}
-impl Drop for Lock<'_> {
-    fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.file);
-    }
-}
+/// Proof that the caller holds `.registry.lock`.
+type Lock = FileLock;
 
 #[derive(Clone)]
 pub struct Store {
     directory: Directory,
-    anchor: Arc<File>,
 }
 
 /// Stored native paths were already resolved by trusted configuration. Reading
@@ -131,9 +105,9 @@ pub fn canonical_path(path: &str) -> Result<PathEvidence, Error> {
     })
 }
 fn decode(bytes: &[u8]) -> Result<Value, Error> {
-    parse_mapping(bytes, Format::Json)
+    ml_exp_core::json::own_mapping(bytes)
         .map(Value::Object)
-        .map_err(|_| Error::Invalid)
+        .map_err(why!(Error::Invalid))
 }
 fn registry(payload: &Value) -> Result<Registry, Error> {
     let paths = Registry::required_paths(payload)?
@@ -177,7 +151,7 @@ fn journal(bytes: &[u8]) -> Result<(Vec<Value>, Option<Vec<u8>>), Error> {
     }
 }
 fn encoded(value: &Value) -> Result<Vec<u8>, Error> {
-    let mut bytes = python_json_bytes(value).map_err(|_| Error::Invalid)?;
+    let mut bytes = python_json_bytes(value).map_err(why!(Error::Invalid))?;
     bytes.push(b'\n');
     Ok(bytes)
 }
@@ -192,7 +166,7 @@ impl Store {
         let change = projects::bootstrap(None, seeds, now)?;
         if let Some(commit) = &change.commit {
             let empty = durable::Snapshot::from_value(&json!({"schema_version":1,"projects":[]}))?;
-            let plan = durable::commit(
+            durable::commit(
                 &empty,
                 &[],
                 &commit.payload,
@@ -200,11 +174,6 @@ impl Store {
                 Some(0),
                 transition_id,
             )?;
-            if encoded(&plan.head)?.len() as u64 > MAX_HEAD
-                || encoded(&plan.transition)?.len() as u64 > MAX_JOURNAL
-            {
-                return Err(Error::Invalid);
-            }
         }
         let parent = Directory::open(path.parent().ok_or(Error::Invalid)?, false)?;
         let name = path.file_name().ok_or(Error::Invalid)?;
@@ -219,7 +188,6 @@ impl Store {
             }
         })?;
         (|| {
-            directory.verify_private_parent()?;
             directory.publish_new(OsStr::new(LOCK), b"")?;
             directory.publish_new(OsStr::new(EVENTS), b"")?;
             directory.publish_new(
@@ -239,52 +207,44 @@ impl Store {
     }
     pub fn open(path: &Path) -> Result<Self, Error> {
         let directory = Directory::open(path, false)?;
-        directory.verify_private_parent()?;
-        let anchor = Arc::new(directory.open_existing_lock(OsStr::new(LOCK))?);
-        let store = Self { directory, anchor };
+        let store = Self { directory };
         {
             let lock = store.lock(false)?;
             store.load(&lock)?;
         }
         Ok(store)
     }
-    fn lock(&self, exclusive: bool) -> Result<Lock<'_>, Error> {
-        let file = self.directory.open_existing_lock(OsStr::new(LOCK))?;
-        let end = Instant::now() + Duration::from_secs(5);
-        loop {
-            let result = if exclusive {
-                FileExt::try_lock_exclusive(&file)
-            } else {
-                FileExt::try_lock_shared(&file)
-            };
-            match result {
-                Ok(()) => break,
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < end => {
-                    std::thread::sleep(Duration::from_millis(5))
+    fn lock(&self, exclusive: bool) -> Result<Lock, Error> {
+        self.directory
+            .lock(
+                OsStr::new(LOCK),
+                LockOptions {
+                    shared: !exclusive,
+                    wait: Wait::Until {
+                        deadline: Instant::now() + Duration::from_secs(5),
+                        cancelled: None,
+                    },
+                    ..Default::default()
+                },
+            )
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::WouldBlock {
+                    Error::Busy
+                } else {
+                    Error::from(e)
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Err(Error::Busy),
-                Err(e) => return Err(e.into()),
-            }
-        }
-        let lock = Lock { store: self, file };
-        lock.validate()?;
-        Ok(lock)
+            })
     }
-    fn load(&self, lock: &Lock<'_>) -> Result<Loaded, Error> {
-        lock.validate()?;
-        let head = self.directory.read_regular(OsStr::new(HEAD), MAX_HEAD)?;
+    fn load(&self, _lock: &Lock) -> Result<Loaded, Error> {
+        let head = self.directory.read_whole(OsStr::new(HEAD))?;
         let state = durable::Snapshot::from_value(&decode(&head)?)?;
         let registry = registry(&state.value)?;
-        let (events, normalized_journal) = journal(
-            &self
-                .directory
-                .read_regular(OsStr::new(EVENTS), MAX_JOURNAL)?,
-        )?;
+        let (events, normalized_journal) =
+            journal(&self.directory.read_whole(OsStr::new(EVENTS))?)?;
         let missing = durable::missing_transition(&state, &events)?;
-        if self.directory.read_regular(OsStr::new(HEAD), MAX_HEAD)? != head {
+        if self.directory.read_whole(OsStr::new(HEAD))? != head {
             return Err(Error::Invalid);
         }
-        lock.validate()?;
         Ok(Loaded {
             state,
             registry,
@@ -303,24 +263,19 @@ impl Store {
             revision: loaded.state.revision,
             journal_pending: loaded.missing.is_some() || loaded.normalized_journal.is_some(),
         };
-        lock.validate()?;
         Ok(result)
     }
-    fn repair(&self, lock: &Lock<'_>, loaded: Loaded) -> Result<Loaded, Error> {
+    fn repair(&self, lock: &Lock, loaded: Loaded) -> Result<Loaded, Error> {
         if loaded.normalized_journal.is_none() && loaded.missing.is_none() {
             return Ok(loaded);
         }
-        lock.validate()?;
         let result = (|| {
             if let Some(bytes) = loaded.normalized_journal {
                 self.directory.replace_regular(OsStr::new(EVENTS), &bytes)?;
             }
             if let Some(transition) = loaded.missing {
-                self.directory.append_regular(
-                    OsStr::new(EVENTS),
-                    &encoded(&transition)?,
-                    MAX_JOURNAL,
-                )?;
+                self.directory
+                    .append_regular(OsStr::new(EVENTS), &encoded(&transition)?)?;
             }
             let repaired = self.load(lock)?;
             if repaired.normalized_journal.is_some() || repaired.missing.is_some() {
@@ -332,7 +287,7 @@ impl Store {
     }
     fn persist(
         &self,
-        lock: &Lock<'_>,
+        lock: &Lock,
         loaded: Loaded,
         change: projects::Commit,
         expected: Option<u64>,
@@ -353,43 +308,21 @@ impl Store {
         )?;
         let bytes = encoded(&plan.head)?;
         let event = encoded(&plan.transition)?;
-        let mut journal_size = match &loaded.normalized_journal {
-            Some(bytes) => bytes.len() as u64,
-            None => self
-                .directory
-                .open_regular_read(OsStr::new(EVENTS))?
-                .metadata()?
-                .len(),
-        };
-        if let Some(missing) = &loaded.missing {
-            journal_size = journal_size
-                .checked_add(encoded(missing)?.len() as u64)
-                .ok_or(Error::Invalid)?;
-        }
-        if bytes.len() as u64 > MAX_HEAD
-            || journal_size
-                .checked_add(event.len() as u64)
-                .is_none_or(|n| n > MAX_JOURNAL)
-        {
-            return Err(Error::Invalid);
-        }
-        lock.validate()?;
         (|| {
             let repaired = self.repair(lock, loaded)?;
             if repaired.state.revision + 1 != plan.revision {
                 return Err(Error::Invalid);
             }
             self.directory.replace_regular(OsStr::new(HEAD), &bytes)?;
-            if self.directory.read_regular(OsStr::new(HEAD), MAX_HEAD)? != bytes {
+            if self.directory.read_whole(OsStr::new(HEAD))? != bytes {
                 return Err(Error::Invalid);
             }
-            self.directory
-                .append_regular(OsStr::new(EVENTS), &event, MAX_JOURNAL)?;
+            self.directory.append_regular(OsStr::new(EVENTS), &event)?;
             let final_state = self.load(lock)?;
             if final_state.state.revision != plan.revision || final_state.missing.is_some() {
                 return Err(Error::Invalid);
             }
-            lock.validate()
+            Ok(())
         })()
         .map_err(|_: Error| Error::EffectUncertain)
     }
@@ -417,15 +350,11 @@ impl Store {
             return Err(Error::Invalid);
         }
         let (result, change) = plan(&loaded.registry, operation, now)?;
-        let effects =
-            change.is_some() || loaded.missing.is_some() || loaded.normalized_journal.is_some();
         if let Some(change) = change {
             self.persist(&lock, loaded, change, expected_revision, identity)?;
         } else {
             self.repair(&lock, loaded)?;
         }
-        lock.validate()
-            .map_err(|e| if effects { Error::EffectUncertain } else { e })?;
         Ok(result)
     }
 }
@@ -433,7 +362,7 @@ fn converted<T: Serialize>(
     change: projects::Change<T>,
 ) -> Result<(Value, Option<projects::Commit>), Error> {
     Ok((
-        serde_json::to_value(change.result).map_err(|_| Error::Invalid)?,
+        serde_json::to_value(change.result).map_err(why!(Error::Invalid))?,
         change.commit,
     ))
 }

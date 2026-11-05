@@ -1,8 +1,10 @@
 //! Gateway effects for one explicitly initialized dataset root. No scheduler,
 //! credentials or arbitrary executable can be selected by a dataset request.
-use fs2::FileExt;
 use ml_exp_core::datasets::{self, Command, Receipt, Reply, Request, State};
-use ml_exp_io::{datasets as tree, directory::Directory};
+use ml_exp_io::{
+    datasets as tree,
+    directory::{Directory, LockOptions, Wait},
+};
 use serde::{Deserialize, Serialize};
 use std::{
     ffi::OsStr,
@@ -51,7 +53,6 @@ impl Store {
             return Err(invalid());
         }
         let root = Directory::open(&config.root, false)?;
-        root.verify_private_parent()?;
         Ok(Self { config, root })
     }
     fn marker(&self) -> io::Result<Marker> {
@@ -66,7 +67,7 @@ impl Store {
         if !store.root.entry_names_limited(1)?.is_empty() {
             return Err(invalid());
         }
-        store.root.open_lock(OsStr::new(LOCK))?;
+        store.root.create_lock_file(OsStr::new(LOCK))?;
         store
             .root
             .publish_new(OsStr::new(MARKER), &json(&store.marker()?)?)?;
@@ -84,15 +85,15 @@ impl Store {
         let expected = self.marker()?;
         // st_dev identifies a mount in this node's namespace, not a shared
         // filesystem. CPFS/NAS clients can assign different devices to the same
-        // inode. Keep the logical authority and inode binding; Directory
-        // checks the inode on every operation.
+        // inode. Keep the logical authority and inode binding, which refuses
+        // an empty or wrong mount at open.
         if actual.contract != expected.contract
             || actual.target != expected.target
             || actual.identity.1 != expected.identity.1
         {
             return Err(invalid());
         }
-        self.root.verify_private_parent()
+        Ok(())
     }
     fn read(&self, request: &Request) -> io::Result<(Directory, State)> {
         let project = self.root.child(OsStr::new(&request.project), false)?;
@@ -159,7 +160,7 @@ impl Store {
             return Ok(next);
         }
         let capacity = directory.capacity()?;
-        if capacity.insufficient(record.bytes + 16 * 1024 * 1024, 2) {
+        if capacity.insufficient(record.bytes + ml_exp_core::multipart::PART_BYTES, 2) {
             eprintln!(
                 "ML_EXPD_DATA_CAPACITY available_bytes={} available_inodes={:?}",
                 capacity.available_bytes, capacity.available_inodes
@@ -176,17 +177,16 @@ impl Store {
         if sha != record.sha256 || bytes != record.bytes {
             return Err(invalid());
         }
-        parts.seal_regular(OsStr::new(&name), &file, false)?;
+        ml_exp_io::directory::seal_regular(&file, false)?;
         Self::save(directory, &next)?;
         Ok(next)
     }
     fn cleanup(directory: &Directory) -> io::Result<()> {
         if directory.entry_exists(OsStr::new("archive.tar"))? {
-            let file = directory.open_regular_read(OsStr::new("archive.tar"))?;
-            directory.remove_staged_regular(OsStr::new("archive.tar"), &file)?;
+            directory.remove_staged_regular(OsStr::new("archive.tar"))?;
         }
         let parts = directory.child(OsStr::new("parts"), false)?;
-        for name in parts.entry_names_limited(ml_exp_core::multipart::MAX_MAX_PARTS as usize)? {
+        for name in parts.entry_names_limited(ml_exp_core::multipart::MAX_PARTS as usize)? {
             let number = name
                 .to_str()
                 .and_then(|s| s.parse::<u64>().ok())
@@ -194,8 +194,7 @@ impl Store {
             if name != OsStr::new(&number.to_string()) {
                 return Err(invalid());
             }
-            let file = parts.open_regular_read(&name)?;
-            parts.remove_staged_regular(&name, &file)?;
+            parts.remove_staged_regular(&name)?;
         }
         Ok(())
     }
@@ -228,14 +227,13 @@ impl Store {
                 tree::remove_staging(directory, &old)?;
             }
             if directory.entry_exists(OsStr::new("archive.tar"))? {
-                let old = directory.open_regular_read(OsStr::new("archive.tar"))?;
-                directory.remove_staged_regular(OsStr::new("archive.tar"), &old)?;
+                directory.remove_staged_regular(OsStr::new("archive.tar"))?;
             }
             let required = state
                 .definition
                 .archive_bytes
                 .checked_add(state.definition.expanded_bytes().map_err(|_| invalid())?)
-                .and_then(|v| v.checked_add(16 * 1024 * 1024))
+                .and_then(|v| v.checked_add(ml_exp_core::multipart::PART_BYTES))
                 .ok_or_else(invalid)?;
             let capacity = directory.capacity()?;
             if capacity.insufficient(required, (state.definition.files.len() as u64) * 2 + 4) {
@@ -321,22 +319,26 @@ impl Store {
                 }
             }
         }
-        let lock = self.root.open_existing_lock(OsStr::new(LOCK))?;
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            match lock.try_lock_exclusive() {
-                Ok(()) => break,
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    if cancelled.load(Ordering::Relaxed) || Instant::now() >= deadline {
-                        return Err(invalid());
-                    }
-                    std::thread::sleep(Duration::from_millis(10));
+        let _lock = self
+            .root
+            .lock(
+                OsStr::new(LOCK),
+                LockOptions {
+                    wait: Wait::Until {
+                        deadline: Instant::now() + Duration::from_secs(10),
+                        cancelled: Some(cancelled),
+                    },
+                    ..Default::default()
+                },
+            )
+            .map_err(|e| {
+                if e.kind() == io::ErrorKind::WouldBlock {
+                    invalid()
+                } else {
+                    e
                 }
-                Err(e) => return Err(e),
-            }
-        }
+            })?;
         self.verify()?;
-        self.root.validate_regular_entry(OsStr::new(LOCK), &lock)?;
         if cancelled.load(Ordering::Relaxed) {
             return Err(invalid());
         }
@@ -350,7 +352,6 @@ impl Store {
             _ => state,
         };
         self.verify()?;
-        self.root.validate_regular_entry(OsStr::new(LOCK), &lock)?;
         let reply = Reply {
             version: 1,
             request_sha256: request.digest().map_err(|_| invalid())?,

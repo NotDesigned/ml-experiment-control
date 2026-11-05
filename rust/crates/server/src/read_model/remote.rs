@@ -45,7 +45,7 @@ pub(crate) fn project_worker(
     attempt.collection = EvidenceDocument::Present {
         source: source.clone(),
         raw_sha256: helper::sha256_bytes(
-            &serde_json::to_vec(&metadata).map_err(|_| Error::Identity)?,
+            &serde_json::to_vec(&metadata).map_err(why!(Error::Identity))?,
         ),
         metadata: metadata.as_object().ok_or(Error::Identity)?.clone(),
         modified_at_unix: None,
@@ -126,7 +126,7 @@ pub(crate) fn project_artifacts(
     binding: &Binding,
     state: &ml_exp_core::artifacts::publication::State,
 ) -> Result<()> {
-    state.validate().map_err(|_| Error::Identity)?;
+    state.validate().map_err(why!(Error::Identity))?;
     let receipt = &state.bundle.archive;
     if snapshot.project != binding.project
         || snapshot.run_id != binding.run_id
@@ -153,7 +153,7 @@ pub(crate) fn project_artifacts(
     metadata.insert("attempt_id".into(), json!(binding.attempt_id));
     metadata.insert("native_artifacts".into(), json!(state));
     let raw_sha256 =
-        helper::sha256_bytes(&serde_json::to_vec(&metadata).map_err(|_| Error::Identity)?);
+        helper::sha256_bytes(&serde_json::to_vec(&metadata).map_err(why!(Error::Identity))?);
     attempt.collection = EvidenceDocument::Present {
         source: "native-artifact-registry".into(),
         raw_sha256,
