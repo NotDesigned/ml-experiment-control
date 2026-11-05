@@ -5,7 +5,7 @@ import json
 import re
 import subprocess
 
-from .builder_client import IMAGE, BuildTransportError, builder_request
+from .builder_client import IMAGE, BuildTransportError
 from ..data.registry_transport import Registry, MANIFEST, OCI_MANIFEST, digest
 from ..storage import atomic_json
 
@@ -16,23 +16,6 @@ def target_image(delivery):
             or not re.fullmatch(r'[A-Za-z0-9.-]+/[a-z0-9._/-]+:(?:bundle|data)-[0-9a-f]{64}', tag)):
         raise ValueError('invalid frozen image delivery')
     return tag.rsplit(':', 1)[0] + '@' + source.split('@', 1)[1]
-
-
-def ensure_delivery(delivery):
-    target = target_image(delivery)
-    result = builder_request(delivery['builder_socket'], {
-        'operation': 'mirror', 'source_image': delivery['source_image'], 'target_tag': delivery['target_tag']})
-    if result.get('image') != target:
-        raise ValueError('image delivery receipt differs from frozen digest')
-    return target
-
-
-def delivery_for_run(run):
-    value = run['backend'].get('image_delivery')
-    if value is not None and (run['backend']['kind'] != 'sensecore'
-            or value['source_image'] != run['container']['image'] or value['target_tag'] != run['backend']['image']):
-        raise ValueError('frozen backend image delivery differs from Runtime')
-    return value
 
 
 def mirror(builder, request):
