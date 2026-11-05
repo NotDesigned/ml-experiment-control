@@ -8,7 +8,7 @@ impl Service {
     ) -> cloud::Result<Value> {
         request
             .validate(action)
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
         let lock = self.lock()?;
         let original = self.load(action)?;
         let b = &original.execution.binding;
@@ -17,7 +17,7 @@ impl Service {
             .ok_or_else(missing)?;
         let name = request
             .record(action)
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
         let saved: Option<crate::renewal::Record<Prepared>> =
             crate::renewal::read(&self.slots, &name).map_err(io)?;
         let candidate = if let Some(saved) = saved {
@@ -35,14 +35,14 @@ impl Service {
                 return Err(cloud::Error::evidence());
             }
             ml_exp_core::renewal::eligible(&self.actions.observe(action).map_err(op)?, context.now)
-                .map_err(|_| cloud::Error::evidence())?;
+                .map_err(why!(cloud::Error::evidence()))?;
             let plan = action::prepare(
                 &original.execution,
                 &original.approval,
                 context.now,
                 context.expires,
             )
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
             Prepared {
                 execution: original.execution.clone(),
                 approval: original.approval.clone(),
@@ -64,7 +64,7 @@ impl Service {
                 .as_str()
                 .ok_or_else(cloud::Error::evidence)?;
             let archive =
-                ml_exp_core::renewal::archive(id).map_err(|_| cloud::Error::evidence())?;
+                ml_exp_core::renewal::archive(id).map_err(why!(cloud::Error::evidence()))?;
             crate::renewal::retain(&self.slots, &archive, value).map_err(io)?;
         }
         crate::renewal::retain(

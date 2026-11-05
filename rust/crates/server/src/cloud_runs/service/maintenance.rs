@@ -22,14 +22,14 @@ impl Service {
         let package = prepared
             .execution
             .package()
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         let plan = Plan {
             contract: "native-storage-maintenance.v1".into(),
             config: package.config,
             selection,
             request_id,
         };
-        plan.validate().map_err(|_| cloud::Error::evidence())?;
+        plan.validate().map_err(why!(cloud::Error::evidence()))?;
         Ok(plan)
     }
     fn maintenance_original(&self, action: &str, plan: &Plan) -> cloud::Result<Prepared> {
@@ -37,7 +37,7 @@ impl Service {
         let scope = &plan
             .config
             .binding()
-            .map_err(|_| cloud::Error::evidence())?
+            .map_err(why!(cloud::Error::evidence()))?
             .identity;
         let prepared = self
             .saved_attempt(&scope.project, &scope.run_id, &scope.attempt_id)?
@@ -47,7 +47,7 @@ impl Service {
             || prepared
                 .execution
                 .package()
-                .map_err(|_| cloud::Error::evidence())?
+                .map_err(why!(cloud::Error::evidence()))?
                 .config
                 != plan.config
         {
@@ -62,14 +62,16 @@ impl Service {
         }
         let original = self.maintenance_original(action, plan)?;
         let execution = &original.execution;
-        let package = execution.package().map_err(|_| cloud::Error::evidence())?;
+        let package = execution
+            .package()
+            .map_err(why!(cloud::Error::evidence()))?;
         let channel = package.channel.ok_or_else(cloud::Error::configuration)?;
         let collector = self.backends[&execution.backend_id]
             .collector
             .as_ref()
             .ok_or_else(cloud::Error::configuration)?;
         let mut job = execution.job.clone();
-        let id = plan.id().map_err(|_| cloud::Error::evidence())?;
+        let id = plan.id().map_err(why!(cloud::Error::evidence()))?;
         job.submission_token = id[..32].into();
         job.gpus = 0;
         job.cpus = 2;
@@ -85,9 +87,9 @@ impl Service {
             worker.into(),
             "storage-maintain".into(),
             "--plan-json".into(),
-            String::from_utf8(encode(plan)?).map_err(|_| cloud::Error::evidence())?,
+            String::from_utf8(encode(plan)?).map_err(why!(cloud::Error::evidence()))?,
             "--channel-json".into(),
-            String::from_utf8(encode(&channel)?).map_err(|_| cloud::Error::evidence())?,
+            String::from_utf8(encode(&channel)?).map_err(why!(cloud::Error::evidence()))?,
         ];
         let check = || self.maintenance_original(action, plan).map(|_| ());
         self.sync_outbox.prepare(
@@ -144,7 +146,7 @@ impl Service {
         let Some(mut saved) = self.artifact_saved(&prepared)? else {
             return Ok((true, 0));
         };
-        let id = plan.id().map_err(|_| cloud::Error::evidence())?;
+        let id = plan.id().map_err(why!(cloud::Error::evidence()))?;
         if !matches!(plan.selection, Selection::Outputs)
             || saved
                 .administrative_release

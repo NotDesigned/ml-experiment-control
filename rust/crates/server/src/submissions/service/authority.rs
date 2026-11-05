@@ -4,7 +4,7 @@ use super::*;
 impl Service {
     pub(super) fn validate_workspace(&self, project: &str, run: &str) -> Result<()> {
         let (_, workspace) =
-            read_config::workspace(&self.settings.registry_root).map_err(|_| Error::Authority)?;
+            read_config::workspace(&self.settings.registry_root).map_err(why!(Error::Authority))?;
         if workspace != self.workspace {
             return Err(Error::Authority);
         }
@@ -19,11 +19,11 @@ impl Service {
             .map_err(|_| Error::Authority)?;
         self.fence
             .existing_observation_guard(project, run)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         if let Some(lifecycle) = &self.lifecycle {
             if !lifecycle
                 .active_projects()
-                .map_err(|_| Error::Authority)?
+                .map_err(why!(Error::Authority))?
                 .contains(project)
             {
                 return Err(Error::Authority);
@@ -42,7 +42,7 @@ impl Service {
             let discovery = self
                 .evidence
                 .discover(project, &experiments::DiscoveryLimits::default())
-                .map_err(|_| Error::Authority)?;
+                .map_err(why!(Error::Authority))?;
             discovery
                 .runs
                 .into_iter()
@@ -66,11 +66,11 @@ impl Service {
         let project_document = self
             .evidence
             .project(project, None)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         let snapshot = self
             .evidence
             .snapshot_metadata(&reference)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         if snapshot.run.legacy_observation_only
             || snapshot.attempts.is_empty()
             || snapshot.attempts.len() > 256
@@ -126,7 +126,7 @@ impl Service {
         let source_receipt = self
             .sources
             .read(project, source)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         let binding = Binding {
             project: project.into(),
             run_id: run.into(),
@@ -135,7 +135,7 @@ impl Service {
             run_sha256: snapshot.run.raw_sha256,
             attempt_sha256: attempt.manifest.raw_sha256.clone(),
             source_receipt_sha256: canonical::protocol_identity(&source_receipt)
-                .map_err(|_| Error::Authority)?,
+                .map_err(why!(Error::Authority))?,
             backend_config_sha256: self.backends[&backend].fingerprint()?,
         };
         let facts = Facts {
@@ -195,9 +195,9 @@ impl Service {
             let action = prepared.plan["action_id"]
                 .as_str()
                 .ok_or(Error::Authority)?;
-            let name = ml_exp_core::renewal::archive(action).map_err(|_| Error::Authority)?;
+            let name = ml_exp_core::renewal::archive(action).map_err(why!(Error::Authority))?;
             let archived: Prepared = crate::renewal::read(&self.slots, &name)
-                .map_err(|_| Error::Authority)?
+                .map_err(why!(Error::Authority))?
                 .ok_or(Error::Authority)?;
             if archived.plan != prepared.plan
                 || archived.request != prepared.request
@@ -238,9 +238,9 @@ impl Service {
             .ok_or(Error::Authority)?;
         let run = snapshot["run_id"].as_str().ok_or(Error::Authority)?;
         let attempt = snapshot["attempt_id"].as_str().ok_or(Error::Authority)?;
-        let name = ml_exp_core::renewal::archive(action).map_err(|_| Error::Authority)?;
+        let name = ml_exp_core::renewal::archive(action).map_err(why!(Error::Authority))?;
         let prepared =
-            match crate::renewal::read(&self.slots, &name).map_err(|_| Error::Authority)? {
+            match crate::renewal::read(&self.slots, &name).map_err(why!(Error::Authority))? {
                 Some(value) => value,
                 None => self
                     .saved_attempt(project, run, attempt)?

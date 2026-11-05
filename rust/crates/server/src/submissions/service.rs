@@ -124,14 +124,14 @@ struct Facts {
 impl Backend {
     pub(super) fn validate(&self) -> Result<()> {
         self.profile.validate()?;
-        self.ssh.validate().map_err(|_| Error::Configuration)?;
+        self.ssh.validate().map_err(why!(Error::Configuration))?;
         self.control_ssh()
             .validate()
-            .map_err(|_| Error::Configuration)?;
+            .map_err(why!(Error::Configuration))?;
         if let Some(path) = &self.data_helper_config {
             let mut data = self.ssh.clone();
             data.helper_config_path = path.clone();
-            data.validate().map_err(|_| Error::Configuration)?;
+            data.validate().map_err(why!(Error::Configuration))?;
         }
         if self.profile.target != self.ssh.target
             || self.profile.ssh_alias != self.ssh.target_alias
@@ -160,15 +160,15 @@ impl Backend {
     fn fingerprint(&self) -> Result<String> {
         let ssh = &self.ssh;
         let configuration = ml_exp_io::read_private(&ssh.config_file, 1024 * 1024, true)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         let hosts = ml_exp_io::read_private(&ssh.known_hosts_file, 1024 * 1024, true)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         let value = json!({"target":ssh.target,"binary":ssh.ssh_binary,"config_path":ssh.config_file,
             "config_sha256":helper::sha256_bytes(&configuration),"known_hosts_path":ssh.known_hosts_file,"known_hosts_sha256":helper::sha256_bytes(&hosts),
             "alias":ssh.target_alias,"helper":ssh.helper_path,"helper_config":ssh.helper_config_path,"cwd":ssh.local_cwd,"agent":ssh.agent_socket,
             "timeout_nanos":ssh.budget.timeout.as_nanos().to_string(),"connect_timeout":ssh.budget.connect_timeout_seconds,
             "termination_grace_nanos":ssh.budget.termination_grace.as_nanos().to_string(),"drain_grace_nanos":ssh.budget.drain_grace.as_nanos().to_string()});
-        canonical::protocol_identity(&value).map_err(|_| Error::Configuration)
+        canonical::protocol_identity(&value).map_err(why!(Error::Configuration))
     }
 }
 mod artifacts;
@@ -245,22 +245,22 @@ impl Service {
     /// Explicit offline bootstrap only. Existing namespaces are never repaired
     /// or reset. Ordinary open/GET has no initialization side effects.
     pub fn initialize(settings: &read_config::Settings) -> Result<()> {
-        settings.validate().map_err(|_| Error::Configuration)?;
+        settings.validate().map_err(why!(Error::Configuration))?;
         let (root, _) =
-            read_config::workspace(&settings.registry_root).map_err(|_| Error::Configuration)?;
+            read_config::workspace(&settings.registry_root).map_err(why!(Error::Configuration))?;
         let namespace = root
             .create_new_child(OsStr::new(NAMESPACE))
-            .map_err(|_| Error::Configuration)?;
+            .map_err(why!(Error::Configuration))?;
         namespace
             .create_new_child(OsStr::new("slots"))
-            .map_err(|_| Error::Configuration)?;
+            .map_err(why!(Error::Configuration))?;
         let lock = namespace
             .create_new_regular(OsStr::new(LOCK))
-            .map_err(|_| Error::Configuration)?;
-        lock.sync_all().map_err(|_| Error::Configuration)?;
+            .map_err(why!(Error::Configuration))?;
+        lock.sync_all().map_err(why!(Error::Configuration))?;
         operations::Store::open(settings.registry_root.join("actions"))?;
         crate::checkpoints::Store::open(&settings.registry_root)
-            .map_err(|_| Error::Configuration)?;
+            .map_err(why!(Error::Configuration))?;
         namespace
             .verify_private_parent()
             .map_err(|_| Error::Configuration)
@@ -272,9 +272,9 @@ impl Service {
         backends: Vec<Backend>,
         enabled: bool,
     ) -> Result<Self> {
-        settings.validate().map_err(|_| Error::Configuration)?;
+        settings.validate().map_err(why!(Error::Configuration))?;
         let (root, workspace) =
-            read_config::workspace(&settings.registry_root).map_err(|_| Error::Configuration)?;
+            read_config::workspace(&settings.registry_root).map_err(why!(Error::Configuration))?;
         let files = settings
             .projects
             .iter()
@@ -309,22 +309,22 @@ impl Service {
         }
         let directory = root
             .child(OsStr::new(NAMESPACE), false)
-            .map_err(|_| Error::Configuration)?;
+            .map_err(why!(Error::Configuration))?;
         directory
             .verify_private_parent()
             .map_err(|_| Error::Configuration)?;
         let slots = directory
             .child(OsStr::new("slots"), false)
-            .map_err(|_| Error::Configuration)?;
+            .map_err(why!(Error::Configuration))?;
         let lock_anchor = Arc::new(
             directory
                 .open_existing_lock(OsStr::new(LOCK))
-                .map_err(|_| Error::Configuration)?,
+                .map_err(why!(Error::Configuration))?,
         );
         let actions = operations::Store::open_existing(settings.registry_root.join("actions"))?;
         let fence = RunFence::new(&settings.registry_root);
         let evidence = experiments::Store::open(settings.bindings(), fence.clone())
-            .map_err(|_| Error::Configuration)?;
+            .map_err(why!(Error::Configuration))?;
         Ok(Self {
             settings,
             workspace,
@@ -346,7 +346,7 @@ impl Service {
     fn public(&self, snapshot: Value, now: &str) -> Result<Value> {
         let view = ml_exp_core::operations::submission_view(&snapshot, now)
             .map_err(operations::Error::from)?;
-        crate::renewal::decorate(&self.slots, view).map_err(|_| Error::Authority)
+        crate::renewal::decorate(&self.slots, view).map_err(why!(Error::Authority))
     }
     pub fn get(&self, action: &str, now: &str) -> Result<Value> {
         let prepared = self.load(action)?;
@@ -374,7 +374,7 @@ impl Service {
         let _guard = self
             .fence
             .existing_observation_guard(&prepared.binding.project, &prepared.binding.run_id)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         self.check(&prepared)?;
         let snapshot =
             self.actions
@@ -399,7 +399,7 @@ impl Service {
         let guard = self
             .fence
             .existing_observation_guard(&prepared.binding.project, &prepared.binding.run_id)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         if self.actions.observe(action)?["execution"]["status"] == "AUTHORIZED" {
             let facts = self.facts(&prepared.binding.project, &prepared.binding.run_id)?;
             if facts.binding != prepared.binding
@@ -426,7 +426,7 @@ impl Service {
         let check = || {
             guard
                 .require_observed_live(&prepared.binding.project, &prepared.binding.run_id)
-                .map_err(|_| crate::backends::slurm::action::Error::Guard)?;
+                .map_err(why!(crate::backends::slurm::action::Error::Guard))?;
             self.check(&prepared)
                 .map_err(|_| crate::backends::slurm::action::Error::Guard)
         };
@@ -458,7 +458,7 @@ impl Service {
         let prepared = self.load(action)?;
         if self.actions.observe(action)?["execution"]["status"] == "EXECUTING" {
             let mut identity = [0u8; 16];
-            getrandom::fill(&mut identity).map_err(|_| Error::Configuration)?;
+            getrandom::fill(&mut identity).map_err(why!(Error::Configuration))?;
             self.recover_interrupted(
                 action,
                 now,
@@ -468,7 +468,7 @@ impl Service {
         let guard = self
             .fence
             .existing_observation_guard(&prepared.binding.project, &prepared.binding.run_id)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         let backend = self
             .backends
             .values()
@@ -477,7 +477,7 @@ impl Service {
         let check = || {
             guard
                 .require_observed_live(&prepared.binding.project, &prepared.binding.run_id)
-                .map_err(|_| crate::backends::slurm::action::Error::Guard)?;
+                .map_err(why!(crate::backends::slurm::action::Error::Guard))?;
             self.check(&prepared)
                 .map_err(|_| crate::backends::slurm::action::Error::Guard)
         };
@@ -528,7 +528,7 @@ impl Service {
             .as_ref()
             .ok_or(Error::Authority)?
             .slurm_runtime(project, executor, id)
-            .map_err(|_| Error::Authority)
+            .map_err(why!(Error::Authority))
     }
 }
 

@@ -12,7 +12,7 @@ impl Service {
         for name in self
             .slots
             .entry_names_limited(32768)
-            .map_err(|_| Error::DatasetUnavailable)?
+            .map_err(why!(Error::DatasetUnavailable))?
         {
             let Some(name) = name
                 .to_str()
@@ -23,14 +23,15 @@ impl Service {
             let raw = self
                 .slots
                 .read_regular(OsStr::new(name), datasets::MAX_METADATA as u64)
-                .map_err(|_| Error::DatasetUnavailable)?;
+                .map_err(why!(Error::DatasetUnavailable))?;
             bytes = bytes
                 .checked_add(raw.len())
                 .ok_or(Error::DatasetUnavailable)?;
             if bytes > 64 * 1024 * 1024 {
                 return Err(Error::DatasetUnavailable);
             }
-            let value = ml_exp_core::json::mapping(&raw).map_err(|_| Error::DatasetUnavailable)?;
+            let value =
+                ml_exp_core::json::mapping(&raw).map_err(why!(Error::DatasetUnavailable))?;
             if value["project"] != project || value["target"]["backend_id"] != executor {
                 continue;
             }
@@ -45,7 +46,7 @@ impl Service {
                 .ok_or(Error::DatasetMissing)?;
             rows.push(
                 datasets::Summary::from_state(&state, state.ready.is_some())
-                    .map_err(|_| Error::DatasetUnavailable)?,
+                    .map_err(why!(Error::DatasetUnavailable))?,
             );
             if rows.len() > 1024 {
                 return Err(Error::DatasetUnavailable);
@@ -60,12 +61,12 @@ impl Service {
             .any(|backend| backend.data_helper_config.is_some())
     }
     fn dataset_backend(&self, project: &str, executor: &str) -> Result<&Backend> {
-        ml_exp_core::identity::validate_id(project).map_err(|_| Error::Authority)?;
-        ml_exp_core::identity::validate_id(executor).map_err(|_| Error::Authority)?;
+        ml_exp_core::identity::validate_id(project).map_err(why!(Error::Authority))?;
+        ml_exp_core::identity::validate_id(executor).map_err(why!(Error::Authority))?;
         self.validate_workspace(project, "dataset-transfer")?;
         self.evidence
             .project(project, None)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         self.backends
             .get(executor)
             .filter(|b| b.data_helper_config.is_some())
@@ -73,7 +74,7 @@ impl Service {
     }
     fn data_name(project: &str, executor: &str, asset: &str) -> Result<String> {
         let digest = canonical::protocol_identity(&json!([project, executor, asset]))
-            .map_err(|_| Error::Configuration)?;
+            .map_err(why!(Error::Configuration))?;
         Ok(format!("dataset-{}.json", &digest[7..]))
     }
     fn data_read(&self, project: &str, backend: &Backend, asset: &str) -> Result<Option<State>> {
@@ -84,18 +85,19 @@ impl Service {
         if !self
             .slots
             .entry_exists(OsStr::new(&name))
-            .map_err(|_| Error::DatasetUnavailable)?
+            .map_err(why!(Error::DatasetUnavailable))?
         {
             return Ok(None);
         }
         let bytes = self
             .slots
             .read_regular(OsStr::new(&name), datasets::MAX_METADATA as u64)
-            .map_err(|_| Error::DatasetUnavailable)?;
-        let mapping = ml_exp_core::json::mapping(&bytes).map_err(|_| Error::DatasetUnavailable)?;
+            .map_err(why!(Error::DatasetUnavailable))?;
+        let mapping =
+            ml_exp_core::json::mapping(&bytes).map_err(why!(Error::DatasetUnavailable))?;
         let state: State = serde_json::from_value(Value::Object(mapping))
-            .map_err(|_| Error::DatasetUnavailable)?;
-        state.validate().map_err(|_| Error::DatasetUnavailable)?;
+            .map_err(why!(Error::DatasetUnavailable))?;
+        state.validate().map_err(why!(Error::DatasetUnavailable))?;
         if state.project != project
             || state.target != backend.profile.target
             || state.asset_id != asset
@@ -105,7 +107,7 @@ impl Service {
         if let Some(receipt) = &state.ready {
             receipt
                 .bind(project, &backend.profile.target, &backend.profile.data_root)
-                .map_err(|_| Error::DatasetUnavailable)?;
+                .map_err(why!(Error::DatasetUnavailable))?;
         }
         Ok(Some(state))
     }
@@ -130,9 +132,11 @@ impl Service {
             target: backend.profile.target.clone(),
             command,
         };
-        request.validate().map_err(|_| Error::DatasetUnavailable)?;
+        request
+            .validate()
+            .map_err(why!(Error::DatasetUnavailable))?;
         let mut frame =
-            datasets::encode_request(&request).map_err(|_| Error::DatasetUnavailable)?;
+            datasets::encode_request(&request).map_err(why!(Error::DatasetUnavailable))?;
         match &request.command {
             Command::Part { bytes, .. } if *bytes == payload.len() as u64 => {}
             Command::Part { .. } => return Err(Error::DatasetUnavailable),
@@ -151,7 +155,7 @@ impl Service {
             } else {
                 90
             });
-        ssh.validate().map_err(|_| Error::Configuration)?;
+        ssh.validate().map_err(why!(Error::Configuration))?;
         let mut argv = ssh.argv();
         let index = argv
             .iter()
@@ -173,7 +177,7 @@ impl Service {
             drain_grace: ssh.budget.drain_grace,
             cancelled,
         })
-        .map_err(|_| Error::DatasetUnavailable)?;
+        .map_err(why!(Error::DatasetUnavailable))?;
         if outcome.exit_code != Some(0)
             || outcome.timed_out
             || outcome.cancelled
@@ -185,11 +189,11 @@ impl Service {
             return Err(Error::DatasetUnavailable);
         }
         let reply = datasets::decode_reply(&outcome.stdout.bytes, &request)
-            .map_err(|_| Error::DatasetUnavailable)?;
+            .map_err(why!(Error::DatasetUnavailable))?;
         if let Some(receipt) = &reply.state.ready {
             receipt
                 .bind(project, &backend.profile.target, &backend.profile.data_root)
-                .map_err(|_| Error::DatasetUnavailable)?;
+                .map_err(why!(Error::DatasetUnavailable))?;
         }
         self.dataset_backend(project, executor)?;
         if backend.fingerprint()? != fingerprint {
@@ -210,10 +214,10 @@ impl Service {
             reply.state
         };
         let name = Self::data_name(project, executor, &state.asset_id)?;
-        let bytes = serde_json::to_vec(&state).map_err(|_| Error::DatasetUnavailable)?;
+        let bytes = serde_json::to_vec(&state).map_err(why!(Error::DatasetUnavailable))?;
         self.slots
             .replace_regular(OsStr::new(&name), &bytes)
-            .map_err(|_| Error::DatasetUnavailable)?;
+            .map_err(why!(Error::DatasetUnavailable))?;
         Ok(state)
     }
 }

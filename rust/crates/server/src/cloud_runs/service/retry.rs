@@ -11,10 +11,10 @@ impl Service {
         cancelled: &AtomicBool,
     ) -> cloud::Result<Value> {
         let _admission = crate::administration::authorship_guard(&self.settings.registry_root)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         request
             .validate(action)
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
         if !self.creation {
             return Err(cloud::Error {
                 code: "CLOUD_RUN_CREATION_DISABLED".into(),
@@ -27,7 +27,7 @@ impl Service {
         let binding = &parent.execution.binding;
         if request
             .parent()
-            .map_err(|_| cloud::Error::configuration())?
+            .map_err(why!(cloud::Error::configuration()))?
             != (binding.run_id.as_str(), binding.attempt_id.as_str())
         {
             return Err(cloud::Error::evidence());
@@ -37,14 +37,14 @@ impl Service {
         let guard = self
             .fence
             .existing_observation_guard(project, run)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         let directory = self
             .authority(project, run)?
             .child(OsStr::new(run), false)
             .map_err(io)?;
         let manifest = read(&directory, "manifest.json")?;
         let attempts = directory.child(OsStr::new("attempts"), false).map_err(io)?;
-        let next = common::next(&binding.attempt_id).map_err(|_| cloud::Error::evidence())?;
+        let next = common::next(&binding.attempt_id).map_err(why!(cloud::Error::evidence()))?;
         let exists = attempts.entry_exists(OsStr::new(&next)).map_err(io)?;
         let attempt = if exists {
             let saved = read(
@@ -53,7 +53,7 @@ impl Service {
             )?;
             let receipt: retry::Receipt =
                 serde_json::from_value(saved["native_cloud_retry"].clone())
-                    .map_err(|_| cloud::Error::evidence())?;
+                    .map_err(why!(cloud::Error::evidence()))?;
             if receipt.parent_action != action
                 || receipt.parent_binding != *binding
                 || receipt.request != request
@@ -62,7 +62,7 @@ impl Service {
             }
             receipt
                 .validate(&manifest, &next)
-                .map_err(|_| cloud::Error::evidence())?;
+                .map_err(why!(cloud::Error::evidence()))?;
             saved
         } else {
             if self.current_attempt(project, run)? != binding.attempt_id {
@@ -81,7 +81,7 @@ impl Service {
             )?;
             let termination: ml_exp_core::cloud::JobObservation =
                 serde_json::from_value(state["observation"].clone())
-                    .map_err(|_| cloud::Error::evidence())?;
+                    .map_err(why!(cloud::Error::evidence()))?;
             if !state["diagnostic"].is_null()
                 || state["handle"]["job_id"] != termination.job_id
                 || !termination.state.is_terminal()
@@ -103,7 +103,7 @@ impl Service {
                 request: request.clone(),
                 request_sha256: request
                     .identity(action)
-                    .map_err(|_| cloud::Error::evidence())?,
+                    .map_err(why!(cloud::Error::evidence()))?,
                 reserved_gpu_seconds: u64::from(parent.execution.job.gpus)
                     .checked_mul(parent.execution.job.max_time_seconds)
                     .ok_or_else(cloud::Error::evidence)?,
@@ -111,9 +111,9 @@ impl Service {
                 startup_failure: None,
             };
             let attempt = retry::plan(&manifest, receipt, &checkpoint)
-                .map_err(|_| cloud::Error::evidence())?;
+                .map_err(why!(cloud::Error::evidence()))?;
             let (_, random) =
-                projects::transition_context().map_err(|_| cloud::Error::configuration())?;
+                projects::transition_context().map_err(why!(cloud::Error::configuration()))?;
             let stage = self
                 .slots
                 .create_new_child(OsStr::new(&format!("retry-{random}")))
@@ -127,30 +127,30 @@ impl Service {
             self.check(&parent)?;
             guard
                 .require_observed_live(project, run)
-                .map_err(|_| cloud::Error::evidence())?;
+                .map_err(why!(cloud::Error::evidence()))?;
             lock.validate()?;
             stage
                 .publish_directory(&attempts, OsStr::new(&next))
-                .map_err(|_| cloud::Error {
+                .map_err(why!(cloud::Error {
                     code: "CLOUD_RETRY_UNCERTAIN".into(),
                     http_status: None,
                     uncertain: true,
-                })?;
+                }))?;
             attempt
         };
         let mut next_binding = binding.clone();
         next_binding.attempt_id = next.clone();
         next_binding.attempt_sha256 = helper::sha256_bytes(&encode(&attempt)?);
         retry::validate_attempt(&manifest, &attempt, &next_binding)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         lock.validate()?;
         self.check(&parent)?;
         if self.current_attempt(project, run)? == binding.attempt_id {
-            directory.replace_regular(OsStr::new("status.json"),&encode(&json!({"project":project,"run_id":run,"attempt_id":next,"state":"NOT_SUBMITTED","updated_at":attempt["attempt_created_at"]}))?).map_err(|_|cloud::Error{code:"CLOUD_RETRY_UNCERTAIN".into(),http_status:None,uncertain:true})?;
+            directory.replace_regular(OsStr::new("status.json"),&encode(&json!({"project":project,"run_id":run,"attempt_id":next,"state":"NOT_SUBMITTED","updated_at":attempt["attempt_created_at"]}))?).map_err(why!(cloud::Error{code:"CLOUD_RETRY_UNCERTAIN".into(),http_status:None,uncertain:true}))?;
         }
         Ok(
             json!({"project":project,"run_id":run,"attempt_id":next,"parent_submission_id":action,"retry_state":"CREATED","reused":exists,
-            "request_sha256":request.identity(action).map_err(|_|cloud::Error::evidence())?,"run_sha256":binding.run_sha256,"attempt_sha256":next_binding.attempt_sha256,
+            "request_sha256":request.identity(action).map_err(why!(cloud::Error::evidence()))?,"run_sha256":binding.run_sha256,"attempt_sha256":next_binding.attempt_sha256,
             "resume_from":request.resume_from,"restart_from":request.restart_from,"reserved_gpu_seconds":attempt["native_cloud_retry"]["reserved_gpu_seconds"],"max_gpu_hours":request.max_gpu_hours,
             "scheduler_mutation_performed":false,"next_action":"PREPARE_NEW_ACTION"}),
         )

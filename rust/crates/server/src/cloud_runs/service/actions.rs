@@ -37,7 +37,7 @@ impl Service {
                 return Err(cloud::Error::evidence());
             }
             let mut token = [0u8; 16];
-            getrandom::fill(&mut token).map_err(|_| cloud::Error::configuration())?;
+            getrandom::fill(&mut token).map_err(why!(cloud::Error::configuration()))?;
             let execution = self.current_execution(
                 project,
                 run,
@@ -68,9 +68,9 @@ impl Service {
                 cloud::adapter::Profile::Pai(p) => p.create(&execution.job, execution.allocation),
                 cloud::adapter::Profile::Sensecore(p) => p.create(&execution.job),
             }
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
             let plan = action::prepare(&execution, &approval, now, expires)
-                .map_err(|_| cloud::Error::evidence())?;
+                .map_err(why!(cloud::Error::evidence()))?;
             let prepared = Prepared {
                 execution,
                 plan,
@@ -166,12 +166,12 @@ impl Service {
         let guard = self
             .fence
             .existing_observation_guard(&execution.job.project, &execution.job.run_id)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         let check = || {
             lock.validate()?;
             guard
                 .require_observed_live(&execution.job.project, &execution.job.run_id)
-                .map_err(|_| cloud::Error::evidence())?;
+                .map_err(why!(cloud::Error::evidence()))?;
             self.check(&prepared)
         };
         let policy = Policy {
@@ -218,7 +218,7 @@ impl Service {
         let snapshot = self.actions.observe(action).map_err(op)?;
         if let Some(transition_value) =
             ml_exp_core::operations::interrupted(&snapshot["execution"], now)
-                .map_err(|_| cloud::Error::evidence())?
+                .map_err(why!(cloud::Error::evidence()))?
         {
             self.actions
                 .commit(action, &transition_value, transition, now)
@@ -243,7 +243,7 @@ impl Service {
         let guard = self
             .fence
             .existing_observation_guard(&execution.job.project, &execution.job.run_id)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         let lock = self.lock()?;
         if self.actions.observe(action).map_err(op)?["execution"]["status"] != "VERIFIED" {
             return Err(cloud::Error::evidence());
@@ -260,7 +260,7 @@ impl Service {
             &|| {
                 guard
                     .require_observed_live(&execution.job.project, &execution.job.run_id)
-                    .map_err(|_| cloud::Error::evidence())?;
+                    .map_err(why!(cloud::Error::evidence()))?;
                 self.check(&prepared)
             },
             cancelled,

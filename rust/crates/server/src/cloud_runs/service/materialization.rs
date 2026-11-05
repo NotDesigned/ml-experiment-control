@@ -66,7 +66,7 @@ impl Service {
                     ml_exp_core::cloud::data::materialization_job(
                         &runtime, &config, &channel, &storage, request_id,
                     )
-                    .map_err(|_| cloud::Error::evidence())?,
+                    .map_err(why!(cloud::Error::evidence()))?,
                 );
                 saved.copy_runtime = Some(runtime);
                 saved.copy_request_id = Some(request_id.into());

@@ -20,10 +20,10 @@ fn slot(action: &str, request_id: &str) -> cloud::Result<String> {
         confirmation: format!("SYNC {action}"),
     }
     .validate(action)
-    .map_err(|_| cloud::Error::configuration())?;
+    .map_err(why!(cloud::Error::configuration()))?;
     Ok(format!(
         "sync-retry-{}.json",
-        canonical::digest(&json!([action, request_id])).map_err(|_| cloud::Error::evidence())?
+        canonical::digest(&json!([action, request_id])).map_err(why!(cloud::Error::evidence()))?
     ))
 }
 fn failed() -> cloud::Error {
@@ -35,7 +35,7 @@ fn failed() -> cloud::Error {
 }
 fn observation(status: &Value) -> cloud::Result<ml_exp_core::cloud::JobObservation> {
     let evidence: ml_exp_core::cloud::JobObservation =
-        serde_json::from_value(status["observation"].clone()).map_err(|_| failed())?;
+        serde_json::from_value(status["observation"].clone()).map_err(why!(failed()))?;
     if !status["diagnostic"].is_null() || status["handle"]["job_id"] != evidence.job_id {
         return Err(failed());
     }
@@ -56,7 +56,7 @@ impl Service {
             confirmation: format!("SYNC {action}"),
         }
         .job(&prepared.execution.job)
-        .map_err(|_| cloud::Error::evidence())
+        .map_err(why!(cloud::Error::evidence()))
     }
     pub(super) fn sync_recovery_request(
         &self,
@@ -78,11 +78,11 @@ impl Service {
             return Ok(None);
         }
         let saved: Retry = serde_json::from_value(read(&self.slots, &name)?)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         let job = saved
             .request
             .job(action, request_id, &prepared.execution.job)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         if saved.action != action
             || saved.request_id != request_id
             || saved.job != job
@@ -104,10 +104,10 @@ impl Service {
         };
         request
             .validate(action)
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
         let original = request
             .job(&prepared.execution.job)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         let original_status = self
             .sync_outbox
             .optional_status(&original)?
@@ -135,7 +135,7 @@ impl Service {
     ) -> cloud::Result<Value> {
         request
             .validate(action, request_id)
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
         if !self.enabled || self.exchange.is_none() {
             return Err(cloud::Error::configuration());
         }
@@ -154,7 +154,7 @@ impl Service {
                 &prepared.execution.job.project,
                 &prepared.execution.job.run_id,
             )
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         let check = || {
             lock.validate()?;
             guard
@@ -162,13 +162,13 @@ impl Service {
                     &prepared.execution.job.project,
                     &prepared.execution.job.run_id,
                 )
-                .map_err(|_| cloud::Error::evidence())?;
+                .map_err(why!(cloud::Error::evidence()))?;
             self.check(&prepared)
         };
         let allocation = ml_exp_core::cloud::pai::Allocation::Guaranteed;
         let job = request
             .job(action, request_id, &prepared.execution.job)
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
         if let Some(saved) = self.sync_retry_saved(&prepared, action, request_id)? {
             if saved.request != *request {
                 return Err(failed());
@@ -190,7 +190,7 @@ impl Service {
                 confirmation: format!("SYNC {action}"),
             }
             .job(&prepared.execution.job)
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
             if self.sync_outbox.optional_status(&original)?.is_none() {
                 return Err(missing());
             }

@@ -29,24 +29,24 @@ impl Service {
         };
         let old = if self.slots.entry_exists(OsStr::new(&name)).map_err(io)? {
             serde_json::from_value::<Observation>(read(&self.slots, &name)?)
-                .map_err(|_| cloud::Error::evidence())?
+                .map_err(why!(cloud::Error::evidence()))?
         } else {
-            capacity::unknown(executor).map_err(|_| cloud::Error::configuration())?
+            capacity::unknown(executor).map_err(why!(cloud::Error::configuration()))?
         };
         if old.executor_id != executor {
             return Err(cloud::Error::evidence());
         }
         if !refresh {
             return Ok(json!(
-                capacity::view(old, now).map_err(|_| cloud::Error::evidence())?
+                capacity::view(old, now).map_err(why!(cloud::Error::evidence()))?
             ));
         }
         let data=match &backend.adapter.profile {
-            cloud::adapter::Profile::Pai(profile)=>backend.adapter.pai_quota(&AtomicBool::new(false)).and_then(|row|ml_exp_core::cloud::pai::quota_view(profile,&row).map_err(|_|cloud::Error::evidence())),
+            cloud::adapter::Profile::Pai(profile)=>backend.adapter.pai_quota(&AtomicBool::new(false)).and_then(|row|ml_exp_core::cloud::pai::quota_view(profile,&row).map_err(why!(cloud::Error::evidence()))),
             cloud::adapter::Profile::Sensecore(_)=>backend.adapter.sensecore_clusters(&AtomicBool::new(false)).map(|clusters|json!({"source":"sensecore-workspace","scope":"zone","clusters":clusters,"quota_is_free_capacity":false})),
         };
-        let next = capacity::refresh(old, data.map_err(|_| "unavailable"), now)
-            .map_err(|_| cloud::Error::evidence())?;
+        let next = capacity::refresh(old, data.map_err(why!("unavailable")), now)
+            .map_err(why!(cloud::Error::evidence()))?;
         self.slots
             .replace_regular(OsStr::new(&name), &encode(&next)?)
             .map_err(io)?;

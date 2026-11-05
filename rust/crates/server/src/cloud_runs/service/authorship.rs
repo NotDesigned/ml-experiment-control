@@ -7,7 +7,7 @@ impl Service {
         now: &str,
     ) -> cloud::Result<Value> {
         let _admission = crate::administration::authorship_guard(&self.settings.registry_root)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         if !self.creation {
             return Err(cloud::Error {
                 code: "CLOUD_RUN_CREATION_DISABLED".into(),
@@ -65,7 +65,7 @@ impl Service {
                 return Err(cloud::Error::evidence());
             }
             creation::receipt(project, &request, &run, &attempt, reused)
-                .map_err(|_| cloud::Error::evidence())
+                .map_err(why!(cloud::Error::evidence()))
         };
         if exists {
             return checked(
@@ -74,7 +74,7 @@ impl Service {
             );
         }
         let (_, random) =
-            projects::transition_context().map_err(|_| cloud::Error::configuration())?;
+            projects::transition_context().map_err(why!(cloud::Error::configuration()))?;
         let stage = self
             .slots
             .create_new_child(OsStr::new(&format!("run-{random}")))
@@ -96,11 +96,11 @@ impl Service {
         }
         let published = stage
             .publish_directory(&root, OsStr::new(&request.run_id))
-            .map_err(|_| cloud::Error {
+            .map_err(why!(cloud::Error {
                 code: "CLOUD_RUN_CREATION_UNCERTAIN".into(),
                 http_status: None,
                 uncertain: true,
-            })?;
+            }))?;
         checked(&published, false)
     }
 }

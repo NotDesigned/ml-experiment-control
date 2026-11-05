@@ -23,8 +23,10 @@ impl Authority {
         asset: &str,
         access: &str,
     ) -> cloud::Result<ml_exp_core::datasets::import::DataChannel> {
-        let mut mac =
-            Hmac::<Sha256>::new_from_slice(&self.key).map_err(|_| cloud::Error::configuration())?;
+        let mut mac = Hmac::<Sha256>::new_from_slice(&self.key).map_err(why!(
+            cloud::Error::configuration(),
+            "exchange signing key rejected"
+        ))?;
         mac.update(&encode(&json!([
             "native-dataset-exchange.v1",
             workspace,
@@ -60,7 +62,7 @@ impl Authority {
                 run_id: "check".into(),
                 attempt_id: "attempt-001".into(),
             })
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
         Ok(result)
     }
     pub(super) fn channel(&self, workspace: &str, execution: &Execution) -> cloud::Result<Channel> {
@@ -76,8 +78,10 @@ impl Authority {
         binding: &Binding,
         submission_token: &str,
     ) -> cloud::Result<Channel> {
-        let mut mac =
-            Hmac::<Sha256>::new_from_slice(&self.key).map_err(|_| cloud::Error::configuration())?;
+        let mut mac = Hmac::<Sha256>::new_from_slice(&self.key).map_err(why!(
+            cloud::Error::configuration(),
+            "exchange signing key rejected"
+        ))?;
         mac.update(&encode(&json!([
             "native-cloud-exchange.v1",
             workspace,
@@ -119,7 +123,7 @@ impl Service {
     ) -> cloud::Result<Value> {
         request
             .validate(action)
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
         if !self.enabled || self.exchange.is_none() {
             return Err(cloud::Error {
                 code: "CLOUD_SYNC_DISABLED".into(),
@@ -139,19 +143,19 @@ impl Service {
         let guard = self
             .fence
             .existing_observation_guard(&execution.job.project, &execution.job.run_id)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         let collector = self.backends[&execution.backend_id]
             .collector
             .as_ref()
             .ok_or_else(cloud::Error::configuration)?;
         let job = request
             .job(&execution.job)
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
         let check = || {
             lock.validate()?;
             guard
                 .require_observed_live(&execution.job.project, &execution.job.run_id)
-                .map_err(|_| cloud::Error::evidence())?;
+                .map_err(why!(cloud::Error::evidence()))?;
             self.check(&prepared)
         };
         self.sync_outbox.prepare(
@@ -189,7 +193,9 @@ impl Service {
         executor: &str,
         reference: &ml_exp_core::checkpoints::Reference,
     ) -> cloud::Result<Value> {
-        reference.validate().map_err(|_| cloud::Error::evidence())?;
+        reference
+            .validate()
+            .map_err(why!(cloud::Error::evidence()))?;
         let prepared = self
             .saved_attempt(project, &reference.run_id, &reference.attempt_id)?
             .ok_or_else(missing)?;
@@ -209,9 +215,9 @@ impl Service {
         }
         let context = self.checkpoint_context(&prepared)?;
         crate::checkpoints::Store::open_existing(&self.settings.registry_root)
-            .map_err(|_| cloud::Error::evidence())?
+            .map_err(why!(cloud::Error::evidence()))?
             .read(&context, &reference.checkpoint_id)
-            .map_err(|_| cloud::Error::evidence())?
+            .map_err(why!(cloud::Error::evidence()))?
             .ok_or_else(missing)
     }
     pub fn worker_package(
@@ -241,8 +247,8 @@ impl Service {
         let package = prepared
             .execution
             .package()
-            .map_err(|_| cloud::Error::evidence())?;
-        serde_json::to_value(package).map_err(|_| cloud::Error::evidence())
+            .map_err(why!(cloud::Error::evidence()))?;
+        serde_json::to_value(package).map_err(why!(cloud::Error::evidence()))
     }
     pub fn has_exchange(&self) -> bool {
         self.exchange.is_some()
@@ -267,16 +273,16 @@ impl Service {
             .read_regular(OsStr::new(&name), 4 * 1024 * 1024)
             .map_err(io)?;
         let saved: Saved = serde_json::from_value(Value::Object(
-            ml_exp_core::json::mapping(&bytes).map_err(|_| cloud::Error::evidence())?,
+            ml_exp_core::json::mapping(&bytes).map_err(why!(cloud::Error::evidence()))?,
         ))
-        .map_err(|_| cloud::Error::evidence())?;
+        .map_err(why!(cloud::Error::evidence()))?;
         if saved.sequence == 0
             || saved.package_sha256
                 != helper::sha256_bytes(&encode(
                     &prepared
                         .execution
                         .package()
-                        .map_err(|_| cloud::Error::evidence())?,
+                        .map_err(why!(cloud::Error::evidence()))?,
                 )?)
             || !helper::valid_digest(&saved.packet_sha256)
             || saved.complete != saved.importer.is_none()
@@ -290,7 +296,9 @@ impl Service {
         prepared: &Prepared,
     ) -> cloud::Result<ml_exp_core::checkpoints::Context> {
         let execution = &prepared.execution;
-        let package = execution.package().map_err(|_| cloud::Error::evidence())?;
+        let package = execution
+            .package()
+            .map_err(why!(cloud::Error::evidence()))?;
         package
             .checkpoint_context
             .ok_or_else(cloud::Error::evidence)
@@ -304,7 +312,7 @@ impl Service {
             .strip_prefix("rust-preview-")
             .ok_or_else(cloud::Error::evidence)?;
         let store = crate::records::Store::open(&self.settings.registry_root, seed)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         let b = &prepared.execution.binding;
         let root = self
             .authority(&b.project, &b.run_id)?
@@ -312,14 +320,14 @@ impl Service {
             .map_err(io)?;
         let manifest = read(&root, "manifest.json")?;
         let binding = ml_exp_core::records::observed_binding(&manifest, &b.run_sha256)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         let guard = store
             .guard(&b.project, &b.run_id)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         // bind checks equality of an existing route/config; ingress cannot reroute it.
         store
             .bind(&guard, &binding["route"], &binding["config"])
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         drop(guard);
         Ok(store)
     }
@@ -369,28 +377,28 @@ impl Service {
         let guard = self
             .fence
             .existing_observation_guard(project, run)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         let package = prepared
             .execution
             .package()
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         let package_sha256 = helper::sha256_bytes(&encode(&package)?);
         packet
             .validate(&package.config, &package_sha256)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         // The sealed launch hash labels worker evidence, while the provider
         // handle is independently retained in the scheduler outbox.
         if packet.evidence.job_id
             != package
                 .config
                 .binding()
-                .map_err(|_| cloud::Error::evidence())?
+                .map_err(why!(cloud::Error::evidence()))?
                 .sha256
         {
             return Err(cloud::Error::evidence());
         }
         let previous = self.exchange_saved(&prepared)?;
-        let ack = Ack::for_packet(packet).map_err(|_| cloud::Error::evidence())?;
+        let ack = Ack::for_packet(packet).map_err(why!(cloud::Error::evidence()))?;
         if let Some(saved) = &previous {
             if saved.sequence == packet.sequence && saved.packet_sha256 == ack.packet_sha256 {
                 return Ok(ack);
@@ -398,7 +406,7 @@ impl Service {
             packet
                 .evidence
                 .follows(&saved.evidence)
-                .map_err(|_| cloud::Error::evidence())?;
+                .map_err(why!(cloud::Error::evidence()))?;
         }
         packet
             .follows(
@@ -407,31 +415,31 @@ impl Service {
                 previous.as_ref().and_then(|s| s.cursor.as_ref()),
                 previous.as_ref().is_some_and(|s| s.complete),
             )
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         if let Some(document) = &packet.checkpoint {
             let context = self.checkpoint_context(&prepared)?;
             let (_, manifest) =
                 ml_exp_core::checkpoints::validate_document(document, Some(&context), None)
-                    .map_err(|_| cloud::Error::evidence())?;
+                    .map_err(why!(cloud::Error::evidence()))?;
             crate::checkpoints::Store::open_existing(&self.settings.registry_root)
-                .map_err(|_| cloud::Error::evidence())?
+                .map_err(why!(cloud::Error::evidence()))?
                 .register(
                     &context,
                     &json!({"step":manifest.step,"files":document["files"]}),
                     now,
                 )
-                .map_err(|_| cloud::Error::evidence())?;
+                .map_err(why!(cloud::Error::evidence()))?;
         }
         let records = self.exchange_records(&prepared)?;
         let record_guard = records
             .guard(project, run)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         let scope = records
             .scope(&record_guard, attempt)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         let config = records
             .binding(&record_guard)
-            .map_err(|_| cloud::Error::evidence())?
+            .map_err(why!(cloud::Error::evidence()))?
             .ok_or_else(cloud::Error::evidence)?["config"]
             .clone();
         let (mut cursor, mut importer, mut counts, mut complete) = match previous {
@@ -440,7 +448,7 @@ impl Service {
                 None,
                 Some(
                     JsonlImporter::new("metrics.jsonl", config)
-                        .map_err(|_| cloud::Error::evidence())?,
+                        .map_err(why!(cloud::Error::evidence()))?,
                 ),
                 ImportCounts::default(),
                 false,
@@ -449,20 +457,20 @@ impl Service {
         if let Some(page) = &packet.history {
             let mut value = importer.take().ok_or_else(cloud::Error::evidence)?;
             for chunk in page.bytes.chunks(JsonlImporter::INPUT_BOUND) {
-                let (next, emission) = value.feed(chunk).map_err(|_| cloud::Error::evidence())?;
+                let (next, emission) = value.feed(chunk).map_err(why!(cloud::Error::evidence()))?;
                 records
                     .append_import(&record_guard, &scope, &emission)
-                    .map_err(|_| cloud::Error::evidence())?;
+                    .map_err(why!(cloud::Error::evidence()))?;
                 counts = emission.counts;
                 value = next;
             }
             complete = page.complete();
             cursor = Some(page.next.clone());
             importer = if complete {
-                let emission = value.finish().map_err(|_| cloud::Error::evidence())?;
+                let emission = value.finish().map_err(why!(cloud::Error::evidence()))?;
                 records
                     .append_import(&record_guard, &scope, &emission)
-                    .map_err(|_| cloud::Error::evidence())?;
+                    .map_err(why!(cloud::Error::evidence()))?;
                 counts = emission.counts;
                 None
             } else {
@@ -508,7 +516,7 @@ impl Service {
         };
         records
             .append(&record_guard, &scope, &[event])
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         let saved = Saved {
             sequence: packet.sequence,
             packet_sha256: ack.packet_sha256.clone(),
@@ -524,7 +532,7 @@ impl Service {
         };
         guard
             .require_observed_live(project, run)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         self.check(&prepared)?;
         lock.validate()?;
         let bytes = encode(&saved)?;
@@ -533,11 +541,11 @@ impl Service {
         }
         self.slots
             .replace_regular(OsStr::new(&Self::exchange_name(&prepared)?), &bytes)
-            .map_err(|_| cloud::Error {
+            .map_err(why!(cloud::Error {
                 code: "WORKER_RECEIPT_UNCERTAIN".into(),
                 http_status: None,
                 uncertain: true,
-            })?;
+            }))?;
         Ok(ack)
     }
     pub fn checkpoints(
@@ -556,14 +564,14 @@ impl Service {
         }
         let context = self.checkpoint_context(&prepared)?;
         let store = crate::checkpoints::Store::open_existing(&self.settings.registry_root)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         match id {
             Some(id) => store
                 .read(&context, id)
-                .map_err(|_| cloud::Error::evidence())?
+                .map_err(why!(cloud::Error::evidence()))?
                 .ok_or_else(missing),
             None => Ok(
-                json!({"project":project,"run_id":run,"attempt_id":attempt,"checkpoints":store.list(&context).map_err(|_|cloud::Error::evidence())?}),
+                json!({"project":project,"run_id":run,"attempt_id":attempt,"checkpoints":store.list(&context).map_err(why!(cloud::Error::evidence()))?}),
             ),
         }
     }
@@ -573,15 +581,15 @@ impl Service {
         let records = self.exchange_records(&prepared)?;
         let guard = records
             .guard(project, run)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         let binding = records
             .binding(&guard)
-            .map_err(|_| cloud::Error::evidence())?
+            .map_err(why!(cloud::Error::evidence()))?
             .ok_or_else(cloud::Error::evidence)?;
         let route = &binding["route"];
         let mut scopes = records
             .run_scopes(&guard)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         for scope in &mut scopes {
             scope["pending"] = json!(
                 scope["total"].as_i64().ok_or_else(cloud::Error::evidence)?
@@ -622,9 +630,9 @@ impl Service {
         let prepared = self.load(action)?;
         let context = self.checkpoint_context(&prepared)?;
         let mut values = crate::checkpoints::Store::open_existing(&self.settings.registry_root)
-            .map_err(|_| cloud::Error::evidence())?
+            .map_err(why!(cloud::Error::evidence()))?
             .list(&context)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         values.sort_by_key(|v| v["step"].as_u64());
         let checkpoint = values.pop().ok_or_else(missing)?;
         if values
@@ -643,7 +651,7 @@ impl crate::tracking::Source for Service {
         let file = self
             .directory
             .open_lock(OsStr::new(".publisher.lock"))
-            .map_err(|_| crate::tracking::Error::Storage)?;
+            .map_err(why!(crate::tracking::Error::Storage))?;
         file.try_lock_exclusive()
             .map_err(|_| crate::tracking::Error::Storage)?;
         self.directory
@@ -663,7 +671,7 @@ impl crate::tracking::Source for Service {
                 .strip_prefix("rust-preview-")
                 .ok_or(crate::tracking::Error::Storage)?,
         )
-        .map_err(|_| crate::tracking::Error::Storage)
+        .map_err(why!(crate::tracking::Error::Storage))
     }
     fn tracking_journal(
         &self,
@@ -672,11 +680,11 @@ impl crate::tracking::Source for Service {
     ) -> Result<crate::records::Store, crate::tracking::Error> {
         let prepared = self
             .saved(project, run)
-            .map_err(|_| crate::tracking::Error::Identity)?
+            .map_err(why!(crate::tracking::Error::Identity))?
             .ok_or(crate::tracking::Error::Identity)?;
         self.check(&prepared)
             .map_err(|_| crate::tracking::Error::Identity)?;
         self.exchange_records(&prepared)
-            .map_err(|_| crate::tracking::Error::Identity)
+            .map_err(why!(crate::tracking::Error::Identity))
     }
 }

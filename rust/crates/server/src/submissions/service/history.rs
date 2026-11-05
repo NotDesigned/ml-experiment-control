@@ -33,23 +33,23 @@ impl Service {
         if !self
             .slots
             .entry_exists(OsStr::new(&name))
-            .map_err(|_| Error::Authority)?
+            .map_err(why!(Error::Authority))?
         {
             return Ok(false);
         }
         let bytes = self
             .slots
             .read_regular(OsStr::new(&name), 2 * 1024 * 1024)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         let saved: Saved = serde_json::from_value(Value::Object(
-            ml_exp_core::json::mapping(&bytes).map_err(|_| Error::Authority)?,
+            ml_exp_core::json::mapping(&bytes).map_err(why!(Error::Authority))?,
         ))
-        .map_err(|_| Error::Authority)?;
+        .map_err(why!(Error::Authority))?;
         if saved.request_sha256
             != prepared
                 .request
                 .identity()
-                .map_err(|_| Error::Authority)?
+                .map_err(why!(Error::Authority))?
                 .request_sha256
         {
             return Err(Error::Authority);
@@ -70,7 +70,7 @@ impl Service {
         let guard = self
             .fence
             .existing_observation_guard(&prepared.binding.project, &prepared.binding.run_id)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         let snapshot = self.actions.observe(action)?;
         if snapshot["execution"]["status"] != "VERIFIED" {
             return Err(Error::Conflict);
@@ -84,7 +84,7 @@ impl Service {
             .ok_or(Error::Authority)?;
         let plan =
             ml_exp_core::slurm::staging::plan(prepared.request.intent(), manifest.as_bytes())
-                .map_err(|_| Error::Authority)?
+                .map_err(why!(Error::Authority))?
                 .ok_or(Error::Authority)?;
         let package = plan.managed.ok_or(Error::Authority)?;
         let name = format!(
@@ -98,33 +98,33 @@ impl Service {
         let request_sha256 = prepared
             .request
             .identity()
-            .map_err(|_| Error::Authority)?
+            .map_err(why!(Error::Authority))?
             .request_sha256;
         // First use is an explicit metadata mutation in this isolated registry.
         // Existing bindings win: history import cannot enable or reroute W&B.
         let records = self.journal(&prepared)?;
         let journal_guard = records
             .guard(&prepared.binding.project, &prepared.binding.run_id)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         let document = Value::Object(
-            ml_exp_core::json::mapping(manifest.as_bytes()).map_err(|_| Error::Authority)?,
+            ml_exp_core::json::mapping(manifest.as_bytes()).map_err(why!(Error::Authority))?,
         );
         let (scope, config) = records
             .prepare_import(&journal_guard, &prepared.binding.attempt_id, &document)
-            .map_err(|_| Error::ObservationConflict)?;
+            .map_err(why!(Error::ObservationConflict))?;
         let saved = if self
             .slots
             .entry_exists(OsStr::new(&name))
-            .map_err(|_| Error::Authority)?
+            .map_err(why!(Error::Authority))?
         {
             let bytes = self
                 .slots
                 .read_regular(OsStr::new(&name), 2 * 1024 * 1024)
-                .map_err(|_| Error::Authority)?;
+                .map_err(why!(Error::Authority))?;
             let value: Saved = serde_json::from_value(Value::Object(
-                ml_exp_core::json::mapping(&bytes).map_err(|_| Error::Authority)?,
+                ml_exp_core::json::mapping(&bytes).map_err(why!(Error::Authority))?,
             ))
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
             if value.request_sha256 != request_sha256
                 || value.complete != value.importer.is_none()
                 || value.cursor.as_ref().is_none_or(|v| v.validate().is_err())
@@ -142,7 +142,7 @@ impl Service {
                 cursor: None,
                 importer: Some(
                     JsonlImporter::new("metrics.jsonl", config)
-                        .map_err(|_| Error::ObservationConflict)?,
+                        .map_err(why!(Error::ObservationConflict))?,
                 ),
                 counts: ImportCounts::default(),
                 complete: false,
@@ -162,14 +162,14 @@ impl Service {
             job.into(),
             saved.cursor.clone(),
         )
-        .map_err(|_| Error::Authority)?;
+        .map_err(why!(Error::Authority))?;
         let backend = self
             .backends
             .values()
             .find(|v| v.profile.target == request.intent().target)
             .ok_or(Error::Authority)?;
         let outcome = call(&Self::observation_ssh(backend, limit), &request, cancelled)
-            .map_err(|_| Error::ObservationUnavailable)?;
+            .map_err(why!(Error::ObservationUnavailable))?;
         let CallOutcome::Receipt { reply, .. } = outcome else {
             return Err(Error::ObservationUnavailable);
         };
@@ -178,15 +178,15 @@ impl Service {
         };
         let page: Page = *page;
         page.validate(saved.cursor.as_ref())
-            .map_err(|_| Error::ObservationConflict)?;
+            .map_err(why!(Error::ObservationConflict))?;
         if page.config_sha256
-            != helper::sha256_bytes(&package.config_bytes().map_err(|_| Error::Authority)?)
+            != helper::sha256_bytes(&package.config_bytes().map_err(why!(Error::Authority))?)
         {
             return Err(Error::Authority);
         }
         guard
             .require_observed_live(&prepared.binding.project, &prepared.binding.run_id)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         self.check(&prepared)?;
         lock.validate()?;
         let mut importer = saved.importer.ok_or(Error::Authority)?;
@@ -194,19 +194,21 @@ impl Service {
         for chunk in page.bytes.chunks(JsonlImporter::INPUT_BOUND) {
             let (next, emission) = importer
                 .feed(chunk)
-                .map_err(|_| Error::ObservationConflict)?;
+                .map_err(why!(Error::ObservationConflict))?;
             records
                 .append_import(&journal_guard, &scope, &emission)
-                .map_err(|_| Error::ObservationConflict)?;
+                .map_err(why!(Error::ObservationConflict))?;
             counts = emission.counts;
             importer = next;
         }
         let complete = page.complete();
         let importer = if complete {
-            let emission = importer.finish().map_err(|_| Error::ObservationConflict)?;
+            let emission = importer
+                .finish()
+                .map_err(why!(Error::ObservationConflict))?;
             records
                 .append_import(&journal_guard, &scope, &emission)
-                .map_err(|_| Error::ObservationConflict)?;
+                .map_err(why!(Error::ObservationConflict))?;
             counts = emission.counts;
             None
         } else {
@@ -227,17 +229,17 @@ impl Service {
                 }
             }
         }
-        let bytes = serde_json::to_vec(&next).map_err(|_| Error::Authority)?;
+        let bytes = serde_json::to_vec(&next).map_err(why!(Error::Authority))?;
         if bytes.len() > 2 * 1024 * 1024 {
             return Err(Error::Authority);
         }
         guard
             .require_observed_live(&prepared.binding.project, &prepared.binding.run_id)
-            .map_err(|_| Error::Uncertain)?;
+            .map_err(why!(Error::Uncertain))?;
         lock.validate()?;
         self.slots
             .replace_regular(OsStr::new(&name), &bytes)
-            .map_err(|_| Error::Uncertain)?;
+            .map_err(why!(Error::Uncertain))?;
         Ok(history_view(action, &next))
     }
 }

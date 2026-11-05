@@ -60,9 +60,9 @@ impl Settings {
     pub fn from_slice(bytes: &[u8]) -> Result<Self, Error> {
         // The shared parser rejects duplicate keys before typed deserialization.
         let value = crate::experiments::parse_mapping(bytes, crate::experiments::Format::Json)
-            .map_err(|_| Error::Configuration)?;
+            .map_err(why!(Error::Configuration))?;
         let settings: Self = serde_json::from_value(serde_json::Value::Object(value))
-            .map_err(|_| Error::Configuration)?;
+            .map_err(why!(Error::Configuration))?;
         if settings.schema_version != 1
             || !settings.polling.validate()
             || settings.backends.is_empty()
@@ -129,7 +129,7 @@ pub struct Loaded {
 }
 pub fn load(path: &Path) -> Result<Loaded, Error> {
     let bytes =
-        ml_exp_io::read_private(path, 4 * 1024 * 1024, true).map_err(|_| Error::Configuration)?;
+        ml_exp_io::read_private(path, 4 * 1024 * 1024, true).map_err(why!(Error::Configuration))?;
     Settings::from_slice(&bytes)?.into_backends()
 }
 

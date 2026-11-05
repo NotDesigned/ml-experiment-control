@@ -77,7 +77,7 @@ impl Service {
             .definition;
         receipt
             .bind(project, &definition.target()?, &definition.data_root()?)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         if saved.copy_request_id.is_none()
             || saved.copy_runtime.is_none() && (!saved.image_started || saved.image.is_none())
         {
@@ -86,7 +86,7 @@ impl Service {
         saved.state = saved
             .state
             .publish(receipt)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         saved.diagnostic = None;
         lock.validate()?;
         self.slots
@@ -122,7 +122,7 @@ impl Service {
             source,
             timeout_seconds: 1200,
         };
-        let payload = json!({"operation":operation,"data_image_id":recipe.id().map_err(|_|cloud::Error::evidence())?,"recipe":recipe,"download":import});
+        let payload = json!({"operation":operation,"data_image_id":recipe.id().map_err(why!(cloud::Error::evidence()))?,"recipe":recipe,"download":import});
         let (status, bytes) = ml_exp_io::unix_http::request(
             &settings.socket,
             settings.peer_uid,
@@ -133,13 +133,13 @@ impl Service {
                 60
             }),
         )
-        .map_err(|_| cloud::Error {
+        .map_err(why!(cloud::Error {
             code: "DATA_IMAGE_BUILD_UNCERTAIN".into(),
             http_status: None,
             uncertain: true,
-        })?;
+        }))?;
         let value = Value::Object(
-            ml_exp_core::json::mapping(&bytes).map_err(|_| cloud::Error::evidence())?,
+            ml_exp_core::json::mapping(&bytes).map_err(why!(cloud::Error::evidence()))?,
         );
         Ok((status, value))
     }
@@ -161,7 +161,7 @@ impl Service {
             .ok_or_else(cloud::Error::evidence)?;
         if status == 200 {
             let image = value["image"].as_str().ok_or_else(cloud::Error::evidence)?;
-            if value["data_image_id"] != recipe.id().map_err(|_| cloud::Error::evidence())?
+            if value["data_image_id"] != recipe.id().map_err(why!(cloud::Error::evidence()))?
                 || value["recipe"] != json!(recipe)
             {
                 return Err(cloud::Error::evidence());
@@ -181,7 +181,7 @@ impl Service {
                 priority: 5,
                 read_only_storage: false,
             };
-            check.validate().map_err(|_| cloud::Error::evidence())?;
+            check.validate().map_err(why!(cloud::Error::evidence()))?;
             if !image
                 .split('/')
                 .next()
@@ -195,7 +195,7 @@ impl Service {
                 .cloned()
                 .map(serde_json::from_value)
                 .transpose()
-                .map_err(|_| cloud::Error::evidence())?
+                .map_err(why!(cloud::Error::evidence()))?
                 .unwrap_or_default();
             if features.iter().any(|f| {
                 !matches!(
@@ -242,7 +242,7 @@ impl Service {
             .map_err(io)?;
         fs2::FileExt::try_lock_exclusive(&effect).map_err(|_| cloud::Error::evidence())?;
         ml_exp_core::submission::validate_submission_token(request_id)
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
         if !self.enabled {
             return Err(cloud::Error::configuration());
         }
@@ -284,7 +284,7 @@ impl Service {
             };
             recipe
                 .validate()
-                .map_err(|_| cloud::Error::configuration())?;
+                .map_err(why!(cloud::Error::configuration()))?;
             let lock = self.lock()?;
             saved = self
                 .data_saved(project, executor, asset)?
@@ -332,7 +332,7 @@ impl Service {
                         let _ =
                             service.accept_data_build(&project, &executor, &asset, status, value);
                     })
-                    .map_err(|_| cloud::Error::evidence())?;
+                    .map_err(why!(cloud::Error::evidence()))?;
                 return Ok(Self::data_view(saved));
             }
             let (status, value) = self.data_build_call(&recipe, "native-data-get")?;
@@ -350,7 +350,7 @@ impl Service {
                 saved.image_recipe,
                 request_id
             ]))
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
             let config = Config {
                 root: backend.definition.data_root()?,
                 target: backend.definition.target()?,
@@ -370,14 +370,14 @@ impl Service {
                 "/usr/local/bin/ml-exp-worker-rs".into(),
                 "data-copy".into(),
                 "--config-json".into(),
-                String::from_utf8(encode(&config)?).map_err(|_| cloud::Error::evidence())?,
+                String::from_utf8(encode(&config)?).map_err(why!(cloud::Error::evidence()))?,
                 "--channel-json".into(),
-                String::from_utf8(encode(&channel)?).map_err(|_| cloud::Error::evidence())?,
+                String::from_utf8(encode(&channel)?).map_err(why!(cloud::Error::evidence()))?,
             ];
             if let Some(storage) = &saved.copy_storage {
                 command.extend([
                     "--storage-json".into(),
-                    String::from_utf8(encode(storage)?).map_err(|_| cloud::Error::evidence())?,
+                    String::from_utf8(encode(storage)?).map_err(why!(cloud::Error::evidence()))?,
                 ]);
             }
             Ok(Job {

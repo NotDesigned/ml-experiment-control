@@ -26,7 +26,7 @@ fn action_error(_: crate::operations::Error) -> Error {
 }
 impl<T: Transport> Runner<'_, T> {
     fn validate(&self, snapshot: &Value, request: &Execution) -> Result<()> {
-        action::validate(snapshot, request).map_err(|_| Error::evidence())?;
+        action::validate(snapshot, request).map_err(why!(Error::evidence()))?;
         if request.profile_sha256 != self.adapter.profile.digest()? {
             return Err(Error::evidence());
         }
@@ -155,9 +155,9 @@ impl<T: Transport> Runner<'_, T> {
         } else {
             Outcome::Uncertain { job_id }
         };
-        let (now, id) = crate::projects::transition_context().map_err(|_| Error::evidence())?;
+        let (now, id) = crate::projects::transition_context().map_err(why!(Error::evidence()))?;
         let transition =
-            action::finish(snapshot, request, outcome, &now).map_err(|_| Error::evidence())?;
+            action::finish(snapshot, request, outcome, &now).map_err(why!(Error::evidence()))?;
         self.actions
             .commit(
                 snapshot["action_id"].as_str().ok_or_else(Error::evidence)?,

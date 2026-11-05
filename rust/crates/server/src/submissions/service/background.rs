@@ -25,7 +25,7 @@ impl Service {
         let file = self
             .directory
             .open_lock(OsStr::new(".observer.lock"))
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         file.try_lock_exclusive().map_err(|_| Error::Busy)?;
         self.directory
             .validate_regular_entry(OsStr::new(".observer.lock"), &file)
@@ -43,7 +43,7 @@ impl Service {
         phase: Option<Phase>,
         result: std::result::Result<(), &Error>,
     ) -> Result<()> {
-        let (at, _) = crate::projects::transition_context().map_err(|_| Error::Configuration)?;
+        let (at, _) = crate::projects::transition_context().map_err(why!(Error::Configuration))?;
         let code = result.err().map(|error| match error {
             Error::Busy => "BUSY",
             Error::ObservationUnavailable => "OBSERVATION_UNAVAILABLE",
@@ -78,15 +78,15 @@ impl Service {
             self.slots
                 .replace_regular(
                     OsStr::new(&name),
-                    &serde_json::to_vec(&samples).map_err(|_| Error::Configuration)?,
+                    &serde_json::to_vec(&samples).map_err(why!(Error::Configuration))?,
                 )
-                .map_err(|_| Error::Uncertain)?;
+                .map_err(why!(Error::Uncertain))?;
         }
-        self.directory.replace_regular(OsStr::new("observer.json"),&serde_json::to_vec(&json!({"status":if code.is_some(){"RETRY_PENDING"}else if action.is_some(){"OBSERVING"}else{"IDLE"},"at":at,"submission_id":action,"phase":phase.map(|p|format!("{p:?}")),"error":code,"provider_mutations":false,"heartbeat_proven":false})).map_err(|_|Error::Configuration)?).map_err(|_|Error::Uncertain)
+        self.directory.replace_regular(OsStr::new("observer.json"),&serde_json::to_vec(&json!({"status":if code.is_some(){"RETRY_PENDING"}else if action.is_some(){"OBSERVING"}else{"IDLE"},"at":at,"submission_id":action,"phase":phase.map(|p|format!("{p:?}")),"error":code,"provider_mutations":false,"heartbeat_proven":false})).map_err(why!(Error::Configuration))?).map_err(why!(Error::Uncertain))
     }
     pub fn background_stopped(&self) -> Result<()> {
-        let (at, _) = crate::projects::transition_context().map_err(|_| Error::Configuration)?;
-        self.directory.replace_regular(OsStr::new("observer.json"),&serde_json::to_vec(&json!({"status":"STOPPED","at":at,"provider_mutations":false,"heartbeat_proven":false})).map_err(|_|Error::Configuration)?).map_err(|_|Error::Uncertain)
+        let (at, _) = crate::projects::transition_context().map_err(why!(Error::Configuration))?;
+        self.directory.replace_regular(OsStr::new("observer.json"),&serde_json::to_vec(&json!({"status":"STOPPED","at":at,"provider_mutations":false,"heartbeat_proven":false})).map_err(why!(Error::Configuration))?).map_err(why!(Error::Uncertain))
     }
     fn polling_name(prepared: &Prepared) -> Result<String> {
         Ok(format!(
@@ -103,12 +103,12 @@ impl Service {
         let request_sha256 = prepared
             .request
             .identity()
-            .map_err(|_| Error::Authority)?
+            .map_err(why!(Error::Authority))?
             .request_sha256;
         if !self
             .slots
             .entry_exists(OsStr::new(&name))
-            .map_err(|_| Error::Authority)?
+            .map_err(why!(Error::Authority))?
         {
             return Ok(Samples {
                 request_sha256,
@@ -118,11 +118,11 @@ impl Service {
         let bytes = self
             .slots
             .read_regular(OsStr::new(&name), 16384)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         let samples: Samples = serde_json::from_value(Value::Object(
-            ml_exp_core::json::mapping(&bytes).map_err(|_| Error::Authority)?,
+            ml_exp_core::json::mapping(&bytes).map_err(why!(Error::Authority))?,
         ))
-        .map_err(|_| Error::Authority)?;
+        .map_err(why!(Error::Authority))?;
         if samples.request_sha256 != request_sha256
             || samples.phases.len() > 3
             || samples
@@ -142,16 +142,16 @@ impl Service {
         if !self
             .directory
             .entry_exists(name)
-            .map_err(|_| Error::Authority)?
+            .map_err(why!(Error::Authority))?
         {
             return Ok(json!({"status":"NOT_STARTED"}));
         }
         let bytes = self
             .directory
             .read_regular(name, 65536)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         Ok(Value::Object(
-            ml_exp_core::json::mapping(&bytes).map_err(|_| Error::Authority)?,
+            ml_exp_core::json::mapping(&bytes).map_err(why!(Error::Authority))?,
         ))
     }
     pub fn background_candidates(&self, maximum: usize) -> Result<BTreeSet<String>> {
@@ -170,12 +170,12 @@ impl Service {
             let discovery = self
                 .evidence
                 .discover(&project.project, &experiments::DiscoveryLimits::default())
-                .map_err(|_| Error::Authority)?;
+                .map_err(why!(Error::Authority))?;
             for run in discovery.runs {
                 let snapshot = self
                     .evidence
                     .snapshot_metadata(&run.reference)
-                    .map_err(|_| Error::Authority)?;
+                    .map_err(why!(Error::Authority))?;
                 for attempt in snapshot.attempts {
                     let Some(prepared) = self.saved_attempt(
                         &project.project,
@@ -249,7 +249,7 @@ impl Service {
             .ok_or(Error::Authority)?;
         let plan =
             ml_exp_core::slurm::staging::plan(prepared.request.intent(), manifest.as_bytes())
-                .map_err(|_| Error::Authority)?;
+                .map_err(why!(Error::Authority))?;
         Ok(plan.is_some_and(|plan| plan.managed.is_some()))
     }
     pub(super) fn observation_ssh(

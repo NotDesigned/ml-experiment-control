@@ -106,14 +106,14 @@ pub(super) fn io(_: std::io::Error) -> cloud::Error {
     cloud::Error::evidence()
 }
 fn encode(value: &impl Serialize) -> cloud::Result<Vec<u8>> {
-    serde_json::to_vec(value).map_err(|_| cloud::Error::evidence())
+    serde_json::to_vec(value).map_err(why!(cloud::Error::evidence()))
 }
 pub(super) fn read(dir: &Directory, name: &str) -> cloud::Result<Value> {
     let bytes = dir
         .read_regular(OsStr::new(name), 8 * 1024 * 1024)
         .map_err(io)?;
     let value =
-        Value::Object(ml_exp_core::json::mapping(&bytes).map_err(|_| cloud::Error::evidence())?);
+        Value::Object(ml_exp_core::json::mapping(&bytes).map_err(why!(cloud::Error::evidence()))?);
     if encode(&value)? != bytes {
         return Err(cloud::Error::evidence());
     }
@@ -134,9 +134,9 @@ impl Service {
     pub fn initialize(settings: &read_config::Settings) -> cloud::Result<()> {
         settings
             .validate()
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
         let (root, _) = read_config::workspace(&settings.registry_root)
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
         let directory = root.create_new_child(OsStr::new(NAME)).map_err(io)?;
         directory
             .create_new_child(OsStr::new("slots"))
@@ -157,7 +157,7 @@ impl Service {
         Outbox::initialize(&settings.registry_root.join(NAME).join("sync-effects"))?;
         operations::Store::open(settings.registry_root.join("actions")).map_err(op)?;
         crate::checkpoints::Store::open(&settings.registry_root)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         Ok(())
     }
     pub fn open(
@@ -169,9 +169,9 @@ impl Service {
     ) -> cloud::Result<Self> {
         settings
             .validate()
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
         let (root, workspace) = read_config::workspace(&settings.registry_root)
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
         let files = settings
             .projects
             .iter()
@@ -336,7 +336,7 @@ impl Service {
     fn attempt_slot(project: &str, run: &str, attempt: &str) -> cloud::Result<String> {
         Ok(format!(
             "{}.json",
-            native::attempt_slot(project, run, attempt).map_err(|_| cloud::Error::evidence())?
+            native::attempt_slot(project, run, attempt).map_err(why!(cloud::Error::evidence()))?
         ))
     }
     fn current_attempt(&self, project: &str, run: &str) -> cloud::Result<String> {
@@ -352,7 +352,7 @@ impl Service {
             .as_str()
             .ok_or_else(cloud::Error::evidence)?;
         ml_exp_core::first_submission::native::retry::number(attempt)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         Ok(attempt.into())
     }
     fn saved(&self, project: &str, run: &str) -> cloud::Result<Option<Prepared>> {
@@ -369,9 +369,9 @@ impl Service {
             return Ok(None);
         }
         let prepared: Prepared = serde_json::from_value(read(&self.slots, &name)?)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         action::validate(&prepared.plan, &prepared.execution)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         if prepared.execution.binding.project != project
             || prepared.execution.binding.run_id != run
             || prepared.execution.binding.attempt_id != attempt
@@ -396,7 +396,7 @@ impl Service {
             .as_str()
             .ok_or_else(cloud::Error::evidence)?;
         let archived =
-            ml_exp_core::renewal::archive(action).map_err(|_| cloud::Error::evidence())?;
+            ml_exp_core::renewal::archive(action).map_err(why!(cloud::Error::evidence()))?;
         let prepared = match crate::renewal::read(&self.slots, &archived).map_err(io)? {
             Some(value) => value,
             None => self
@@ -420,8 +420,10 @@ pub(super) fn check_configuration(config: Settings) -> cloud::Result<()> {
         uncertain: false,
     };
     for definition in config.backends {
-        let credentials = Credentials::load(&definition.credentials_file)
-            .map_err(|_| invalid("CLOUD_PROVIDER_CREDENTIALS_INVALID"))?;
+        let credentials = Credentials::load(&definition.credentials_file).map_err(why!(
+            invalid("CLOUD_PROVIDER_CREDENTIALS_INVALID"),
+            "provider credentials invalid"
+        ))?;
         if !credentials.matches_profile(&definition.profile) {
             return Err(invalid("CLOUD_PROVIDER_CREDENTIALS_INVALID"));
         }
@@ -430,27 +432,28 @@ pub(super) fn check_configuration(config: Settings) -> cloud::Result<()> {
             Duration::from_secs(definition.timeout_seconds.into()),
         )?;
         if let Some(path) = &definition.registry_auth_file {
-            client = client
-                .with_registry_auth(path)
-                .map_err(|_| invalid("CLOUD_REGISTRY_AUTH_INVALID"))?;
+            client = client.with_registry_auth(path).map_err(why!(
+                invalid("CLOUD_REGISTRY_AUTH_INVALID"),
+                "registry credentials invalid"
+            ))?;
         }
         drop(client);
     }
     if let Some(exchange) = config.exchange {
         exchange::Authority::load(exchange)
-            .map_err(|_| invalid("CLOUD_EXCHANGE_CONFIGURATION_INVALID"))?;
+            .map_err(why!(invalid("CLOUD_EXCHANGE_CONFIGURATION_INVALID")))?;
     }
     if let Some(objects) = config.artifacts {
         crate::objects::Store::open(objects)
-            .map_err(|_| invalid("CLOUD_OBJECTS_CONFIGURATION_INVALID"))?;
+            .map_err(why!(invalid("CLOUD_OBJECTS_CONFIGURATION_INVALID")))?;
     }
     if let Some(builds) = config.builds {
         builds
             .validate()
-            .map_err(|_| invalid("CLOUD_BUILDER_CONFIGURATION_INVALID"))?;
+            .map_err(why!(invalid("CLOUD_BUILDER_CONFIGURATION_INVALID")))?;
     }
     if let Some(debug) = config.debug {
-        debug::Runtime::open(debug).map_err(|_| invalid("CLOUD_DEBUG_CONFIGURATION_INVALID"))?;
+        debug::Runtime::open(debug).map_err(why!(invalid("CLOUD_DEBUG_CONFIGURATION_INVALID")))?;
     }
     Ok(())
 }

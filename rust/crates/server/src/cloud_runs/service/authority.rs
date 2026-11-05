@@ -34,7 +34,7 @@ impl Service {
                     .cloned()
                     .map(serde_json::from_value)
                     .transpose()
-                    .map_err(|_| cloud::Error::evidence())?
+                    .map_err(why!(cloud::Error::evidence()))?
             } else {
                 None
             }
@@ -74,7 +74,7 @@ impl Service {
                 .map_err(io)?,
             "request.json",
         )?)
-        .map_err(|_| cloud::Error::evidence())?;
+        .map_err(why!(cloud::Error::evidence()))?;
         let backend = self
             .backends
             .get(&execution.backend_id)
@@ -90,15 +90,15 @@ impl Service {
     pub(super) fn authority(&self, project: &str, run: &str) -> cloud::Result<Directory> {
         ml_exp_core::identity::validate_id(project)
             .and_then(|_| ml_exp_core::identity::validate_id(run))
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
         let (_, workspace) = read_config::workspace(&self.settings.registry_root)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         if workspace != self.workspace {
             return Err(cloud::Error::evidence());
         }
         self.fence
             .existing_observation_guard(project, run)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         if self
             .lifecycle
             .as_ref()
@@ -118,10 +118,10 @@ impl Service {
     }
     pub(super) fn project_hash(&self, project: &str) -> cloud::Result<String> {
         experiments::Store::open(self.settings.bindings(), self.fence.clone())
-            .map_err(|_| cloud::Error::evidence())?
+            .map_err(why!(cloud::Error::evidence()))?
             .project(project, None)
             .map(|p| p.raw_sha256)
-            .map_err(|_| cloud::Error::evidence())
+            .map_err(why!(cloud::Error::evidence()))
     }
     pub(super) fn documents(
         &self,
@@ -151,7 +151,7 @@ impl Service {
         let source = self
             .sources
             .read(project, &runtime.source_id)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         let target = backend.definition.target()?;
         let data_root = backend.definition.data_root()?;
         let datasets = request
@@ -231,7 +231,7 @@ impl Service {
             run::Authority {
                 project_sha256: &self.project_hash(project)?,
                 source_receipt_sha256: &canonical::protocol_identity(&source)
-                    .map_err(|_| cloud::Error::evidence())?,
+                    .map_err(why!(cloud::Error::evidence()))?,
                 profile_sha256: &profile.digest()?,
                 tracking_route: route,
                 target: &target,
@@ -242,7 +242,7 @@ impl Service {
             },
             now,
         )
-        .map_err(|_| cloud::Error::evidence())?;
+        .map_err(why!(cloud::Error::evidence()))?;
         let storage = backend.definition.storage_layout()?;
         if request.data_preparation.is_some() {
             if !runtime.worker_features.contains("script-preparation.v1") {
@@ -304,7 +304,7 @@ impl Service {
         let run = read(&directory, "manifest.json")?;
         let original = read(&directory, "request.json")?;
         let request: run::Create =
-            serde_json::from_value(original.clone()).map_err(|_| cloud::Error::evidence())?;
+            serde_json::from_value(original.clone()).map_err(why!(cloud::Error::evidence()))?;
         let attempt = read(
             &directory
                 .child(OsStr::new("attempts"), false)
@@ -362,13 +362,15 @@ impl Service {
             channel,
         )
         .map_err(launch_error)?;
-        let mut package = execution.package().map_err(|_| cloud::Error::evidence())?;
+        let mut package = execution
+            .package()
+            .map_err(why!(cloud::Error::evidence()))?;
         package.storage = run["native_cloud"]
             .get("storage")
             .cloned()
             .map(serde_json::from_value)
             .transpose()
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         package.result_upload = self.objects.is_some();
         let mut materialized = std::collections::BTreeSet::new();
         for mount in &package.config.datasets {
@@ -454,6 +456,7 @@ impl Service {
         if current != prepared.execution {
             return Err(cloud::Error::evidence());
         }
-        action::validate(&prepared.plan, &prepared.execution).map_err(|_| cloud::Error::evidence())
+        action::validate(&prepared.plan, &prepared.execution)
+            .map_err(why!(cloud::Error::evidence()))
     }
 }

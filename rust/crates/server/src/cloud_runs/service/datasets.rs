@@ -53,7 +53,7 @@ impl Service {
             if bytes > 64 * 1024 * 1024 {
                 return Err(cloud::Error::evidence());
             }
-            let value = ml_exp_core::json::mapping(&raw).map_err(|_| cloud::Error::evidence())?;
+            let value = ml_exp_core::json::mapping(&raw).map_err(why!(cloud::Error::evidence()))?;
             let state = &value["state"];
             if state["project"] != project || state["target"]["backend_id"] != executor {
                 continue;
@@ -69,7 +69,7 @@ impl Service {
                 .ok_or_else(missing)?;
             rows.push(
                 datasets::Summary::from_state(&saved.state, saved.archive_verified)
-                    .map_err(|_| cloud::Error::evidence())?,
+                    .map_err(why!(cloud::Error::evidence()))?,
             );
             if rows.len() > 1024 {
                 return Err(cloud::Error::evidence());
@@ -84,14 +84,14 @@ impl Service {
     pub(super) fn data_name(project: &str, executor: &str, asset: &str) -> cloud::Result<String> {
         ml_exp_core::identity::validate_id(project)
             .and_then(|_| ml_exp_core::identity::validate_id(executor))
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
         if !datasets::asset_id(asset) {
             return Err(cloud::Error::configuration());
         }
         Ok(format!(
             "dataset-{}.json",
             canonical::digest(&json!([project, executor, asset]))
-                .map_err(|_| cloud::Error::evidence())?
+                .map_err(why!(cloud::Error::evidence()))?
         ))
     }
     pub(super) fn data_saved(
@@ -110,11 +110,11 @@ impl Service {
             return Ok(None);
         }
         let saved: Saved = serde_json::from_value(read(&self.slots, &name)?)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         saved
             .state
             .validate()
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         if saved.state.project != project
             || saved.state.target != backend.definition.target()?
             || saved.state.asset_id != asset
@@ -124,7 +124,7 @@ impl Service {
                         .state
                         .definition
                         .part_count()
-                        .map_err(|_| cloud::Error::evidence())?
+                        .map_err(why!(cloud::Error::evidence()))?
         {
             return Err(cloud::Error::evidence());
         }
@@ -138,7 +138,7 @@ impl Service {
         if let Some(source) = &saved.import_source {
             source
                 .matches(&saved.state.definition)
-                .map_err(|_| cloud::Error::evidence())?;
+                .map_err(why!(cloud::Error::evidence()))?;
             self.objects
                 .as_ref()
                 .ok_or_else(cloud::Error::configuration)?
@@ -146,7 +146,7 @@ impl Service {
                 .map_err(io)?;
         }
         if let Some(runtime) = &saved.copy_runtime {
-            runtime.validate().map_err(|_| cloud::Error::evidence())?;
+            runtime.validate().map_err(why!(cloud::Error::evidence()))?;
             if !matches!(backend.adapter.profile, cloud::adapter::Profile::Pai(_))
                 || saved.image_recipe.is_some()
                 || saved.image_started
@@ -162,10 +162,10 @@ impl Service {
                 .ok_or_else(cloud::Error::evidence)?;
             let config: ml_exp_core::datasets::import::Config =
                 serde_json::from_str(job.command.get(5).ok_or_else(cloud::Error::evidence)?)
-                    .map_err(|_| cloud::Error::evidence())?;
+                    .map_err(why!(cloud::Error::evidence()))?;
             let channel =
                 serde_json::from_str(job.command.get(6).ok_or_else(cloud::Error::evidence)?)
-                    .map_err(|_| cloud::Error::evidence())?;
+                    .map_err(why!(cloud::Error::evidence()))?;
             let storage = saved
                 .copy_storage
                 .as_ref()
@@ -187,7 +187,7 @@ impl Service {
                     .as_deref()
                     .ok_or_else(cloud::Error::evidence)?,
             )
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
             // Launcher bytes and scoped channels belong to the original intent,
             // not the current API executable or current public URL.
             expected.command[3] = job
@@ -276,7 +276,7 @@ impl Service {
         if let Command::Begin { definition } = &command {
             definition
                 .validate()
-                .map_err(|_| cloud::Error::configuration())?;
+                .map_err(why!(cloud::Error::configuration()))?;
             if let Some(saved) = &saved {
                 if saved.state.definition != *definition {
                     return Err(cloud::Error::evidence());
@@ -288,7 +288,7 @@ impl Service {
                         backend.definition.target()?,
                         definition.clone(),
                     )
-                    .map_err(|_| cloud::Error::configuration())?,
+                    .map_err(why!(cloud::Error::configuration()))?,
                     archive_verified: false,
                     image_recipe: None,
                     image_started: false,
@@ -322,7 +322,7 @@ impl Service {
                 let state = saved
                     .state
                     .record_part(number, record.clone())
-                    .map_err(|_| cloud::Error::evidence())?;
+                    .map_err(why!(cloud::Error::evidence()))?;
                 if saved.archive_verified {
                     return Ok(Self::data_view(saved));
                 }
@@ -346,7 +346,7 @@ impl Service {
                 saved.state = saved
                     .state
                     .record_part(number, record)
-                    .map_err(|_| cloud::Error::evidence())?;
+                    .map_err(why!(cloud::Error::evidence()))?;
                 lock.validate()?;
                 self.slots
                     .replace_regular(OsStr::new(&name), &encode(&saved)?)
@@ -360,7 +360,7 @@ impl Service {
                             .state
                             .definition
                             .part_count()
-                            .map_err(|_| cloud::Error::evidence())?
+                            .map_err(why!(cloud::Error::evidence()))?
                 {
                     return Err(cloud::Error::evidence());
                 }
@@ -421,7 +421,7 @@ impl Service {
         let package = prepared
             .execution
             .package()
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         let definition = package
             .config
             .datasets

@@ -30,7 +30,7 @@ impl Service {
         let file = self
             .directory
             .open_existing_lock(OsStr::new(LOCK))
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         file.try_lock_exclusive().map_err(|error| {
             if error.kind() == std::io::ErrorKind::WouldBlock {
                 Error::Busy
@@ -58,7 +58,7 @@ impl Service {
         if !self
             .slots
             .entry_exists(OsStr::new(&original))
-            .map_err(|_| Error::Authority)?
+            .map_err(why!(Error::Authority))?
         {
             return Ok(None);
         }
@@ -66,7 +66,7 @@ impl Service {
         let snapshot = self
             .evidence
             .snapshot_metadata(&reference)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         let attempt = snapshot
             .current_attempt_id
             .as_deref()
@@ -83,7 +83,7 @@ impl Service {
         match self
             .slots
             .regular_identity(OsStr::new(&name))
-            .map_err(|_| Error::Authority)?
+            .map_err(why!(Error::Authority))?
         {
             None => return Ok(None),
             Some(identity)
@@ -94,9 +94,9 @@ impl Service {
             &self
                 .slots
                 .read_regular(OsStr::new(&name), MAX_SLOT_BYTES)
-                .map_err(|_| Error::Authority)?,
+                .map_err(why!(Error::Authority))?,
         )
-        .map_err(|_| Error::Authority)?;
+        .map_err(why!(Error::Authority))?;
         value.validate()?;
         if value.binding.project != project
             || value.binding.run_id != run
@@ -118,7 +118,7 @@ impl Service {
         let _guard = self
             .fence
             .existing_observation_guard(project, run)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         let lock = self.lock()?;
         let facts = self.facts(project, run)?;
         let backend = &self.backends[&facts.backend];
@@ -153,7 +153,7 @@ impl Service {
                 return Err(Error::Conflict);
             }
             let mut token = [0u8; 16];
-            getrandom::fill(&mut token).map_err(|_| Error::Configuration)?;
+            getrandom::fill(&mut token).map_err(why!(Error::Configuration))?;
             let token = format!("{:032x}", u128::from_be_bytes(token));
             let prepared = native::prepare(
                 &facts.run,
@@ -167,7 +167,7 @@ impl Service {
                 context.expires,
             )?;
             lock.validate()?;
-            let bytes = serde_json::to_vec(&prepared).map_err(|_| Error::Configuration)?;
+            let bytes = serde_json::to_vec(&prepared).map_err(why!(Error::Configuration))?;
             if bytes.len() as u64 > MAX_SLOT_BYTES {
                 return Err(Error::Configuration);
             }
@@ -176,7 +176,7 @@ impl Service {
                     OsStr::new(&Self::slot_name(project, run, &facts.binding.attempt_id)?),
                     &bytes,
                 )
-                .map_err(|_| Error::Uncertain)?;
+                .map_err(why!(Error::Uncertain))?;
             prepared
         };
         self.check(&prepared)?;

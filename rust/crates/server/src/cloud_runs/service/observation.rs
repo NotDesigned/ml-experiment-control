@@ -41,7 +41,7 @@ impl Service {
                         .ok_or_else(cloud::Error::evidence)?,
                     &saved.observed_at,
                 )
-                .map_err(|_| cloud::Error::evidence())?;
+                .map_err(why!(cloud::Error::evidence()))?;
             }
         }
         self.apply_artifacts(snapshot)?;
@@ -78,7 +78,7 @@ impl Service {
     ) -> cloud::Result<Value> {
         self.check(prepared)?;
         let mut result = ml_exp_core::operations::submission_view(&snapshot, now)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         if let Some(state) = self.outbox.optional_status(&prepared.execution.job)? {
             result["cloud_observation"] = state;
         }

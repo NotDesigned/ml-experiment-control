@@ -60,9 +60,9 @@ impl Observer {
                     schedule = next;
                     if let Some((action, _)) = selected {
                         let result = crate::projects::transition_context()
-                            .map_err(|_| ())
+                            .map_err(why!(()))
                             .and_then(|(now, _)| {
-                                service.refresh(&action, &now, &flag).map_err(|_| ())
+                                service.refresh(&action, &now, &flag).map_err(why!(()))
                             });
                         schedule = schedule.outcome(
                             &action,
@@ -121,7 +121,7 @@ impl Service {
             }
             let prepared: Prepared =
                 serde_json::from_value(super::service::read(&self.slots, name)?)
-                    .map_err(|_| crate::backends::cloud::Error::evidence())?;
+                    .map_err(why!(crate::backends::cloud::Error::evidence()))?;
             let action = prepared.plan["action_id"]
                 .as_str()
                 .ok_or_else(crate::backends::cloud::Error::evidence)?;

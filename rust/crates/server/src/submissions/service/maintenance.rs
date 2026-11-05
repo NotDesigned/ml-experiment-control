@@ -22,7 +22,7 @@ impl Service {
             .ok_or(Error::Authority)?;
         let shared =
             ml_exp_core::slurm::staging::plan(prepared.request.intent(), manifest.as_bytes())
-                .map_err(|_| Error::Authority)?
+                .map_err(why!(Error::Authority))?
                 .ok_or(Error::Authority)?;
         let package = shared.managed.ok_or(Error::Authority)?;
         let plan = Plan {
@@ -31,7 +31,7 @@ impl Service {
             selection,
             request_id,
         };
-        plan.validate().map_err(|_| Error::Authority)?;
+        plan.validate().map_err(why!(Error::Authority))?;
         Ok(plan)
     }
     pub fn maintenance_execute(&self, action: &str, plan: &Plan) -> Result<Value> {
@@ -43,7 +43,7 @@ impl Service {
         let scope = plan
             .config
             .binding()
-            .map_err(|_| Error::Authority)?
+            .map_err(why!(Error::Authority))?
             .identity;
         let prepared = self
             .saved_attempt(&scope.project, &scope.run_id, &scope.attempt_id)?
@@ -57,7 +57,7 @@ impl Service {
             .ok_or(Error::Authority)?;
         let shared =
             ml_exp_core::slurm::staging::plan(prepared.request.intent(), manifest.as_bytes())
-                .map_err(|_| Error::Authority)?
+                .map_err(why!(Error::Authority))?
                 .ok_or(Error::Authority)?;
         if shared.managed.as_ref().map(|p| &p.config) != Some(&plan.config) {
             return Err(Error::Authority);
@@ -76,7 +76,7 @@ impl Service {
             .ok_or(Error::Authority)?;
         argv[at] = "storage-maintain".into();
         argv.remove(at + 1);
-        let body = serde_json::to_vec(plan).map_err(|_| Error::Authority)?;
+        let body = serde_json::to_vec(plan).map_err(why!(Error::Authority))?;
         let environment = ssh.environment();
         let result = ml_exp_io::process::execute(ml_exp_io::process::Request {
             argv: &argv,
@@ -90,7 +90,7 @@ impl Service {
             drain_grace: ssh.budget.drain_grace,
             cancelled: &AtomicBool::new(false),
         })
-        .map_err(|_| Error::Authority)?;
+        .map_err(why!(Error::Authority))?;
         if result.exit_code != Some(0)
             || result.timed_out
             || result.cancelled
@@ -102,9 +102,9 @@ impl Service {
             return Err(Error::Uncertain);
         }
         let value = Value::Object(
-            ml_exp_core::json::mapping(&result.stdout.bytes).map_err(|_| Error::Authority)?,
+            ml_exp_core::json::mapping(&result.stdout.bytes).map_err(why!(Error::Authority))?,
         );
-        if plan.receipt().map_err(|_| Error::Authority)? != value {
+        if plan.receipt().map_err(why!(Error::Authority))? != value {
             return Err(Error::Authority);
         }
         Ok(value)

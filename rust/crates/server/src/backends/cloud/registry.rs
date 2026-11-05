@@ -13,10 +13,14 @@ pub(super) struct Auth {
 }
 impl Auth {
     pub(super) fn load(path: &Path) -> Result<Self> {
-        let bytes =
-            ml_exp_io::read_private(path, 1024 * 1024, true).map_err(|_| Error::configuration())?;
-        let document =
-            Value::Object(ml_exp_core::json::mapping(&bytes).map_err(|_| Error::configuration())?);
+        let bytes = ml_exp_io::read_private(path, 1024 * 1024, true).map_err(why!(
+            Error::configuration(),
+            "registry credentials unreadable"
+        ))?;
+        let document = Value::Object(ml_exp_core::json::mapping(&bytes).map_err(why!(
+            Error::configuration(),
+            "registry credentials are not one mapping"
+        ))?);
         let auths = document["auths"]
             .as_object()
             .filter(|a| !a.is_empty() && a.len() <= 64)
@@ -39,8 +43,14 @@ impl Auth {
                 .ok_or_else(Error::configuration)?;
             let decoded = base64::engine::general_purpose::STANDARD
                 .decode(auth)
-                .map_err(|_| Error::configuration())?;
-            let text = std::str::from_utf8(&decoded).map_err(|_| Error::configuration())?;
+                .map_err(why!(
+                    Error::configuration(),
+                    "registry credential encoding invalid"
+                ))?;
+            let text = std::str::from_utf8(&decoded).map_err(why!(
+                Error::configuration(),
+                "registry credential encoding invalid"
+            ))?;
             let (username, password) = text.split_once(':').ok_or_else(Error::configuration)?;
             if username.is_empty()
                 || password.is_empty()

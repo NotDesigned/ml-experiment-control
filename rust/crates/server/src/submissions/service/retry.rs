@@ -15,7 +15,7 @@ impl Service {
         cancelled: &AtomicBool,
     ) -> Result<Value> {
         let _admission = crate::administration::authorship_guard(&self.settings.registry_root)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         request.validate(action)?;
         let lock = self.lock()?;
         let parent = self.load(action)?;
@@ -27,7 +27,7 @@ impl Service {
         let guard = self
             .fence
             .existing_observation_guard(project, run)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         let root = self
             .creation_roots
             .get(project)
@@ -38,26 +38,26 @@ impl Service {
         }
         let directory = root
             .child(OsStr::new(run), false)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         let run_document = read_json(&directory, "manifest.json")?;
         if run_document["native_creation"]["format"] != "native-run-creation.v1" {
             return Err(Error::Authority);
         }
         let attempts = directory
             .child(OsStr::new("attempts"), false)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         let next = retry::next(&parent.binding.attempt_id)?;
         let current = self.facts(project, run)?;
         let exists = attempts
             .entry_exists(OsStr::new(&next))
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         let attempt = if exists {
             let target = attempts
                 .child(OsStr::new(&next), false)
-                .map_err(|_| Error::Authority)?;
+                .map_err(why!(Error::Authority))?;
             let attempt = read_json(&target, "attempt.json")?;
             let saved: retry::Receipt = serde_json::from_value(attempt["native_retry"].clone())
-                .map_err(|_| Error::Authority)?;
+                .map_err(why!(Error::Authority))?;
             saved.validate(&run_document, &next)?;
             if saved.parent_action != action
                 || saved.parent_binding != parent.binding
@@ -78,18 +78,18 @@ impl Service {
                 .ok_or(Error::Authority)?;
             let observation =
                 helper::Request::observe_job(parent.request.intent().clone(), job.into())
-                    .map_err(|_| Error::Authority)?;
+                    .map_err(why!(Error::Authority))?;
             let backend = self
                 .backends
                 .values()
                 .find(|b| b.profile.target == observation.intent().target)
                 .ok_or(Error::Authority)?;
             let outcome = call(&backend.ssh, &observation, cancelled)
-                .map_err(|_| Error::ObservationUnavailable)?;
+                .map_err(why!(Error::ObservationUnavailable))?;
             let CallOutcome::Receipt { reply, .. } = outcome else {
                 return Err(Error::ObservationUnavailable);
             };
-            if reply.identity != observation.identity().map_err(|_| Error::Authority)? {
+            if reply.identity != observation.identity().map_err(why!(Error::Authority))? {
                 return Err(Error::Authority);
             }
             let helper::ReplyOutcome::JobObserved {
@@ -124,7 +124,7 @@ impl Service {
             let mut binding = parent.binding.clone();
             binding.attempt_id = next.clone();
             binding.attempt_sha256 = helper::sha256_bytes(
-                &serde_json::to_vec(&attempt).map_err(|_| Error::Configuration)?,
+                &serde_json::to_vec(&attempt).map_err(why!(Error::Configuration))?,
             );
             native::definition(
                 &run_document,
@@ -139,18 +139,18 @@ impl Service {
             )?;
             guard
                 .require_observed_live(project, run)
-                .map_err(|_| Error::Authority)?;
+                .map_err(why!(Error::Authority))?;
             self.check(&parent)?;
             lock.validate()?;
             let mut random = [0u8; 16];
-            getrandom::fill(&mut random).map_err(|_| Error::Configuration)?;
+            getrandom::fill(&mut random).map_err(why!(Error::Configuration))?;
             let stage = self
                 .slots
                 .create_new_child(OsStr::new(&format!(
                     "retry-{:032x}",
                     u128::from_be_bytes(random)
                 )))
-                .map_err(|_| Error::Uncertain)?;
+                .map_err(why!(Error::Uncertain))?;
             let result: Result<()> = (|| {
                 publish_json(&stage, "attempt.json", &attempt)?;
                 publish_json(
@@ -160,14 +160,14 @@ impl Service {
                 )?;
                 stage
                     .publish_directory(&attempts, OsStr::new(&next))
-                    .map_err(|_| Error::Uncertain)?;
+                    .map_err(why!(Error::Uncertain))?;
                 Ok(())
             })();
             if stage.verify_attached().is_ok() {
                 clean_files(&stage, &["attempt.json", "status.json"])?;
                 self.slots
                     .remove_staged_empty_child(&stage)
-                    .map_err(|_| Error::Uncertain)?;
+                    .map_err(why!(Error::Uncertain))?;
             }
             result?;
             attempt
@@ -176,7 +176,7 @@ impl Service {
         self.check(&parent)?;
         guard
             .require_observed_live(project, run)
-            .map_err(|_| Error::Uncertain)?;
+            .map_err(why!(Error::Uncertain))?;
         if current.binding == parent.binding {
             let status = retry_status(
                 project,
@@ -189,9 +189,9 @@ impl Service {
             directory
                 .replace_regular(
                     OsStr::new("status.json"),
-                    &serde_json::to_vec(&status).map_err(|_| Error::Configuration)?,
+                    &serde_json::to_vec(&status).map_err(why!(Error::Configuration))?,
                 )
-                .map_err(|_| Error::Uncertain)?;
+                .map_err(why!(Error::Uncertain))?;
         }
         let binding = self.facts_for(project, run, Some(&next))?.binding;
         retry::validate_attempt(&run_document, &attempt, &binding)?;

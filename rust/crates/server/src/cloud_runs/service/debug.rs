@@ -39,10 +39,10 @@ impl Runtime {
             .into_iter()
             .map(|(name, d)| {
                 ml_exp_core::identity::validate_id(&name)
-                    .map_err(|_| cloud::Error::configuration())?;
+                    .map_err(why!(cloud::Error::configuration()))?;
                 d.profile
                     .validate()
-                    .map_err(|_| cloud::Error::configuration())?;
+                    .map_err(why!(cloud::Error::configuration()))?;
                 let credentials = Credentials::load(&d.credentials_file)?;
                 let provider_matches = matches!(
                     (&credentials, &d.profile),
@@ -152,7 +152,7 @@ impl Service {
     }
     fn debug_load(&self, id: &str) -> cloud::Result<Saved> {
         let saved: Saved = serde_json::from_value(read(&self.slots, &name(id)?)?)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         let runtime = self
             .debug
             .as_ref()
@@ -244,7 +244,7 @@ impl Service {
             .ok_or_else(cloud::Error::configuration)?;
         let recipe = profile
             .recipe(request.clone(), now)
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
         let records = self.debug_records()?;
         if let Some(existing) = records
             .iter()
@@ -304,7 +304,7 @@ impl Service {
     ) -> cloud::Result<Option<Value>> {
         let request = profile
             .get(&saved.recipe, saved.provider_id.as_deref())
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
         let result = client.call(&request, &AtomicBool::new(false));
         let value = match result {
             Ok(v) => v,
@@ -339,17 +339,17 @@ impl Service {
             let value = client.call(
                 &profile
                     .get(&saved.recipe, Some(id))
-                    .map_err(|_| cloud::Error::configuration())?,
+                    .map_err(why!(cloud::Error::configuration()))?,
                 &AtomicBool::new(false),
             )?;
             profile
                 .checked(&saved.recipe, None, &value)
-                .map_err(|_| cloud::Error::evidence())?;
+                .map_err(why!(cloud::Error::evidence()))?;
             return Ok(Some(value));
         }
         profile
             .checked(&saved.recipe, saved.provider_id.as_deref(), &value)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         Ok(Some(value))
     }
     fn debug_call(
@@ -427,7 +427,7 @@ impl Service {
         let (profile, client) = &runtime.profiles[&saved.recipe.request.profile];
         let timestamp =
             time::OffsetDateTime::parse(now, &time::format_description::well_known::Rfc3339)
-                .map_err(|_| cloud::Error::configuration())?
+                .map_err(why!(cloud::Error::configuration()))?
                 .unix_timestamp();
         if timestamp >= saved.recipe.expires_at {
             saved.stop_requested = true;
@@ -459,12 +459,12 @@ impl Service {
                 }
                 let create = profile
                     .create(&saved.recipe)
-                    .map_err(|_| cloud::Error::configuration())?;
+                    .map_err(why!(cloud::Error::configuration()))?;
                 let response = self.debug_effect(&mut saved, "create", client, create)?;
                 if matches!(profile, domain::Profile::PaiDsw { .. }) {
                     if let Some(id) = response.as_ref().and_then(|v| v["InstanceId"].as_str()) {
                         ml_exp_core::identity::validate_id(id)
-                            .map_err(|_| cloud::Error::evidence())?;
+                            .map_err(why!(cloud::Error::evidence()))?;
                         saved.provider_id = Some(id.into());
                         self.debug_save(&saved)?;
                     }
@@ -481,7 +481,7 @@ impl Service {
             saved.provider_id = Some(
                 profile
                     .checked(&saved.recipe, saved.provider_id.as_deref(), &value)
-                    .map_err(|_| cloud::Error::evidence())?,
+                    .map_err(why!(cloud::Error::evidence()))?,
             );
             self.debug_save(&saved)?;
             let provider_id = saved
@@ -492,7 +492,7 @@ impl Service {
             saved.provider_state = Some(
                 profile
                     .provider_state(&value)
-                    .map_err(|_| cloud::Error::evidence())?
+                    .map_err(why!(cloud::Error::evidence()))?
                     .into(),
             );
             if saved.terminal
@@ -519,7 +519,7 @@ impl Service {
                     // Stop is idempotent and always rechecks this exact instance.
                     let request = profile
                         .stop(&saved.recipe, &provider_id, false)
-                        .map_err(|_| cloud::Error::configuration())?;
+                        .map_err(why!(cloud::Error::configuration()))?;
                     self.debug_call(&mut saved, client, &request)?;
                 } else if matches!(profile, domain::Profile::SensecoreCci { .. }) {
                     saved.network_clean =
@@ -533,7 +533,7 @@ impl Service {
                     self.debug_save(&saved)?;
                     let request = profile
                         .stop(&saved.recipe, &provider_id, true)
-                        .map_err(|_| cloud::Error::configuration())?;
+                        .map_err(why!(cloud::Error::configuration()))?;
                     self.debug_call(&mut saved, client, &request)?;
                     if Self::debug_lookup(profile, client, &saved)?.is_none() {
                         saved.deleted = true;
@@ -545,12 +545,12 @@ impl Service {
                         client.call(
                             &profile
                                 .timer(&saved.recipe, &provider_id, timestamp)
-                                .map_err(|_| cloud::Error::configuration())?,
+                                .map_err(why!(cloud::Error::configuration()))?,
                             &AtomicBool::new(false),
                         )?;
                         let mut timer = profile
                             .get(&saved.recipe, Some(&provider_id))
-                            .map_err(|_| cloud::Error::configuration())?;
+                            .map_err(why!(cloud::Error::configuration()))?;
                         timer.path.push_str("/shutdowntimer");
                         timer.action = "GetInstanceShutdownTimer".into();
                         let response = client.call(&timer, &AtomicBool::new(false))?;
@@ -567,7 +567,7 @@ impl Service {
                     domain::Profile::SensecoreCci { network, .. } => {
                         let request = profile
                             .service(&saved.recipe, false)
-                            .map_err(|_| cloud::Error::configuration())?;
+                            .map_err(why!(cloud::Error::configuration()))?;
                         let value = match client.call(&request, &AtomicBool::new(false)) {
                             Ok(v) => Some(v),
                             Err(e) if e.http_status == Some(404) => None,
@@ -585,7 +585,7 @@ impl Service {
                             }
                             let request = profile
                                 .network(&saved.recipe, "get", &provider_id)
-                                .map_err(|_| cloud::Error::configuration())?;
+                                .map_err(why!(cloud::Error::configuration()))?;
                             let row = match client.call(&request, &AtomicBool::new(false)) {
                                 Ok(v) => Some(v),
                                 Err(e) if e.http_status == Some(404) => None,
@@ -594,7 +594,7 @@ impl Service {
                             if let Some(row) = row {
                                 if profile
                                     .check_network(&saved.recipe, &provider_id, &row)
-                                    .map_err(|_| cloud::Error::evidence())?
+                                    .map_err(why!(cloud::Error::evidence()))?
                                 {
                                     saved.connection = Some(
                                         json!({"host":network.external_ip,"port":network.external_port,"user":"root","access":"internet"}),
@@ -607,7 +607,7 @@ impl Service {
                                 {
                                     let mut request = profile
                                         .network(&saved.recipe, "bind", &provider_id)
-                                        .map_err(|_| cloud::Error::configuration())?;
+                                        .map_err(why!(cloud::Error::configuration()))?;
                                     let mut body = row.clone();
                                     body["properties"]["internal_instance_name"] =
                                         json!(provider_id);
@@ -619,13 +619,13 @@ impl Service {
                             } else {
                                 let request = profile
                                     .network(&saved.recipe, "create", &provider_id)
-                                    .map_err(|_| cloud::Error::configuration())?;
+                                    .map_err(why!(cloud::Error::configuration()))?;
                                 self.debug_effect(&mut saved, "dnat-create", client, request)?;
                             }
                         } else {
                             let request = profile
                                 .service(&saved.recipe, true)
-                                .map_err(|_| cloud::Error::configuration())?;
+                                .map_err(why!(cloud::Error::configuration()))?;
                             self.debug_effect(&mut saved, "service", client, request)?;
                         }
                     }
@@ -651,7 +651,7 @@ impl Service {
         }
         let request = profile
             .network(&saved.recipe, "get", id)
-            .map_err(|_| cloud::Error::configuration())?;
+            .map_err(why!(cloud::Error::configuration()))?;
         let row = match client.call(&request, &AtomicBool::new(false)) {
             Ok(v) => v,
             Err(e) if e.http_status == Some(404) => return Ok(true),
@@ -659,7 +659,7 @@ impl Service {
         };
         profile
             .check_network(&saved.recipe, id, &row)
-            .map_err(|_| cloud::Error::evidence())?;
+            .map_err(why!(cloud::Error::evidence()))?;
         let operation = if row["properties"]["internal_instance_name"]
             .as_str()
             .is_some_and(|s| !s.is_empty())
@@ -671,7 +671,7 @@ impl Service {
         client.call(
             &profile
                 .network(&saved.recipe, operation, id)
-                .map_err(|_| cloud::Error::configuration())?,
+                .map_err(why!(cloud::Error::configuration()))?,
             &AtomicBool::new(false),
         )?;
         Ok(false)
@@ -713,7 +713,7 @@ impl Service {
         }
         let timestamp =
             time::OffsetDateTime::parse(now, &time::format_description::well_known::Rfc3339)
-                .map_err(|_| cloud::Error::configuration())?
+                .map_err(why!(cloud::Error::configuration()))?
                 .unix_timestamp();
         for saved in self
             .debug_records()?

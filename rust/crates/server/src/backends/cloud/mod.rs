@@ -65,12 +65,20 @@ pub enum Credentials {
 }
 impl Credentials {
     pub fn load(path: &Path) -> Result<Self> {
-        let bytes =
-            ml_exp_io::read_private(path, 32768, true).map_err(|_| Error::configuration())?;
+        let bytes = ml_exp_io::read_private(path, 32768, true).map_err(why!(
+            Error::configuration(),
+            "provider credentials unreadable"
+        ))?;
         let value: Self = serde_json::from_value(Value::Object(
-            ml_exp_core::json::mapping(&bytes).map_err(|_| Error::configuration())?,
+            ml_exp_core::json::mapping(&bytes).map_err(why!(
+                Error::configuration(),
+                "provider credentials are not one mapping"
+            ))?,
         ))
-        .map_err(|_| Error::configuration())?;
+        .map_err(why!(
+            Error::configuration(),
+            "provider credentials schema invalid"
+        ))?;
         let (id, secret, token) = match &value {
             Self::Pai {
                 access_key_id,
@@ -117,7 +125,7 @@ impl Client {
             .connect_timeout(Duration::from_secs(5))
             .timeout(timeout)
             .build()
-            .map_err(|_| Error::configuration())?;
+            .map_err(why!(Error::configuration()))?;
         Ok(Self {
             credentials,
             http,
@@ -150,7 +158,7 @@ impl Client {
         cancelled: &AtomicBool,
         on_failure: &mut dyn FnMut(FailureEvidence),
     ) -> Result<Value> {
-        request.validate().map_err(|_| Error::configuration())?;
+        request.validate().map_err(why!(Error::configuration()))?;
         let mut private = request.clone();
         if let Some(registry) = &self.registry {
             registry.inject(&mut private)?;
@@ -170,13 +178,13 @@ impl Client {
                 Endpoint::Pai { .. },
             ) => {
                 let mut bytes = [0u8; 16];
-                getrandom::fill(&mut bytes).map_err(|_| Error::configuration())?;
+                getrandom::fill(&mut bytes).map_err(why!(Error::configuration()))?;
                 let nonce = signing::hex(&bytes);
                 let format = time::format_description::parse(
                     "[year]-[month]-[day]T[hour]:[minute]:[second]Z",
                 )
-                .map_err(|_| Error::configuration())?;
-                let date = now.format(&format).map_err(|_| Error::configuration())?;
+                .map_err(why!(Error::configuration()))?;
+                let date = now.format(&format).map_err(why!(Error::configuration()))?;
                 signing::sign(
                     request,
                     access_key_id,
@@ -193,8 +201,8 @@ impl Client {
                 },
                 Endpoint::Sensecore { .. },
             ) => {
-                let format=time::format_description::parse("[weekday repr:short], [day] [month repr:short] [year] [hour]:[minute]:[second] GMT").map_err(|_|Error::configuration())?;
-                let date = now.format(&format).map_err(|_| Error::configuration())?;
+                let format=time::format_description::parse("[weekday repr:short], [day] [month repr:short] [year] [hour]:[minute]:[second] GMT").map_err(why!(Error::configuration()))?;
+                let date = now.format(&format).map_err(why!(Error::configuration()))?;
                 signing::sign(request, access_key_id, access_key_secret, None, &date, "")?
             }
             _ => return Err(Error::configuration()),
@@ -216,24 +224,29 @@ impl Client {
         if cancelled.load(Ordering::Relaxed) {
             return Err(Error::transport(false));
         }
-        let response = builder.send().map_err(|_| Error::transport(mutation))?;
+        let response = builder
+            .send()
+            .map_err(why_chain!(Error::transport(mutation)))?;
         let status = response.status();
         let mut bytes = Vec::new();
         response
             .take(LIMIT + 1)
             .read_to_end(&mut bytes)
-            .map_err(|_| Error::transport(mutation))?;
+            .map_err(why!(Error::transport(mutation)))?;
         if bytes.len() as u64 > LIMIT || cancelled.load(Ordering::Relaxed) {
             return Err(Error::transport(mutation));
         }
         let value = if bytes.is_empty() {
             Value::Object(Default::default())
         } else {
-            Value::Object(ml_exp_core::json::mapping(&bytes).map_err(|_| Error {
-                code: "CLOUD_RESPONSE_INVALID".into(),
-                http_status: Some(status.as_u16()),
-                uncertain: mutation,
-            })?)
+            Value::Object(ml_exp_core::json::mapping(&bytes).map_err(why!(
+                Error {
+                    code: "CLOUD_RESPONSE_INVALID".into(),
+                    http_status: Some(status.as_u16()),
+                    uncertain: mutation,
+                },
+                "provider credentials are not one mapping"
+            ))?)
         };
         let provider_error = match request.endpoint {
             Endpoint::Pai { .. } => {

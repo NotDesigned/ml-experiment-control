@@ -26,18 +26,18 @@ impl Service {
         if !self
             .slots
             .entry_exists(OsStr::new(&name))
-            .map_err(|_| Error::Authority)?
+            .map_err(why!(Error::Authority))?
         {
             return Ok(None);
         }
         let bytes = self
             .slots
             .read_regular(OsStr::new(&name), 65536)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         let saved: Saved = serde_json::from_value(Value::Object(
-            ml_exp_core::json::mapping(&bytes).map_err(|_| Error::Authority)?,
+            ml_exp_core::json::mapping(&bytes).map_err(why!(Error::Authority))?,
         ))
-        .map_err(|_| Error::Authority)?;
+        .map_err(why!(Error::Authority))?;
         let original: JobStatus = serde_json::from_value(
             self.actions.observe(
                 prepared.plan["action_id"]
@@ -46,12 +46,12 @@ impl Service {
             )?["execution"]["result"]["observation"]["status"]
                 .clone(),
         )
-        .map_err(|_| Error::Authority)?;
+        .map_err(why!(Error::Authority))?;
         if saved.request_sha256
             != prepared
                 .request
                 .identity()
-                .map_err(|_| Error::Authority)?
+                .map_err(why!(Error::Authority))?
                 .request_sha256
             || !ml_exp_core::polling::scheduler_follows(&original, &saved.observation)
         {
@@ -79,7 +79,7 @@ impl Service {
         let guard = self
             .fence
             .existing_observation_guard(&prepared.binding.project, &prepared.binding.run_id)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         self.check(&prepared)?;
         let snapshot = self.actions.observe(action)?;
         if snapshot["execution"]["status"] != "VERIFIED" {
@@ -88,23 +88,23 @@ impl Service {
         let original: JobStatus = serde_json::from_value(
             snapshot["execution"]["result"]["observation"]["status"].clone(),
         )
-        .map_err(|_| Error::Authority)?;
+        .map_err(why!(Error::Authority))?;
         let request = helper::Request::observe_job(
             prepared.request.intent().clone(),
             original.job_id.as_str().into(),
         )
-        .map_err(|_| Error::Authority)?;
+        .map_err(why!(Error::Authority))?;
         let backend = self
             .backends
             .values()
             .find(|b| b.profile.target == request.intent().target)
             .ok_or(Error::Authority)?;
         let outcome = call(&Self::observation_ssh(backend, limit), &request, cancelled)
-            .map_err(|_| Error::ObservationUnavailable)?;
+            .map_err(why!(Error::ObservationUnavailable))?;
         let CallOutcome::Receipt { reply, .. } = outcome else {
             return Err(Error::ObservationUnavailable);
         };
-        if reply.identity != request.identity().map_err(|_| Error::Authority)? {
+        if reply.identity != request.identity().map_err(why!(Error::Authority))? {
             return Err(Error::Authority);
         }
         let helper::ReplyOutcome::JobObserved { observation } = reply.outcome else {
@@ -121,23 +121,23 @@ impl Service {
         }
         guard
             .require_observed_live(&prepared.binding.project, &prepared.binding.run_id)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         self.check(&prepared)?;
         lock.validate()?;
         let saved = Saved {
             request_sha256: prepared
                 .request
                 .identity()
-                .map_err(|_| Error::Authority)?
+                .map_err(why!(Error::Authority))?
                 .request_sha256,
             observation: *observation,
         };
         self.slots
             .replace_regular(
                 OsStr::new(&Self::scheduler_name(&prepared)?),
-                &serde_json::to_vec(&saved).map_err(|_| Error::Authority)?,
+                &serde_json::to_vec(&saved).map_err(why!(Error::Authority))?,
             )
-            .map_err(|_| Error::Uncertain)?;
+            .map_err(why!(Error::Uncertain))?;
         Ok(
             json!({"submission_id":action,"scheduler_observation":saved.observation,"scheduler_mutation_performed":false}),
         )

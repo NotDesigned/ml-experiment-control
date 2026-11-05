@@ -23,7 +23,7 @@ impl Service {
             for project in &self.settings.projects {
                 if project.discovery_enabled() && project.run_roots.len() == 1 {
                     let directory = Directory::open(&project.run_roots[0], false)
-                        .map_err(|_| Error::Configuration)?;
+                        .map_err(why!(Error::Configuration))?;
                     directory
                         .verify_private_parent()
                         .map_err(|_| Error::Configuration)?;
@@ -41,7 +41,7 @@ impl Service {
     }
     pub fn create_run(&self, project: &str, request: Request, now: &str) -> Result<Value> {
         let _admission = crate::administration::authorship_guard(&self.settings.registry_root)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         request.validate(project)?;
         let root = self
             .creation_roots
@@ -50,14 +50,14 @@ impl Service {
         let _guard = self
             .fence
             .existing_observation_guard(project, &request.run_id)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         let _lock = self.lock()?;
         self.validate_workspace(project, &request.run_id)?;
         root.verify_private_parent().map_err(|_| Error::Authority)?;
         let project_document = self
             .evidence
             .project(project, None)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         let backend = self
             .backends
             .get(&request.executor)
@@ -69,8 +69,8 @@ impl Service {
         let source = self
             .sources
             .read(project, &runtime.source_id)
-            .map_err(|_| Error::Authority)?;
-        let source_sha = canonical::protocol_identity(&source).map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
+        let source_sha = canonical::protocol_identity(&source).map_err(why!(Error::Authority))?;
         let backend_sha = backend.fingerprint()?;
         let checkpoint = request
             .resume_from
@@ -87,7 +87,7 @@ impl Service {
         let discovery = self
             .evidence
             .discover(project, &experiments::DiscoveryLimits::default())
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         let existing = discovery
             .runs
             .iter()
@@ -100,7 +100,7 @@ impl Service {
             }
             let published = root
                 .child(OsStr::new(&request.run_id), false)
-                .map_err(|_| Error::Authority)?;
+                .map_err(why!(Error::Authority))?;
             read_json(&published, "manifest.json")?
                 .get("tracking_route")
                 .cloned()
@@ -142,56 +142,56 @@ impl Service {
             }
             let published = root
                 .child(OsStr::new(&request.run_id), false)
-                .map_err(|_| Error::Authority)?;
+                .map_err(why!(Error::Authority))?;
             return creation_receipt(project, &request, &published, &documents, true);
         }
         if root
             .entry_exists(OsStr::new(&request.run_id))
-            .map_err(|_| Error::Authority)?
+            .map_err(why!(Error::Authority))?
         {
             return Err(Error::Conflict);
         }
         // The staging parent is outside discovery. The no-replace directory
         // rename publishes all manifests and states together or none of them.
         let mut random = [0u8; 16];
-        getrandom::fill(&mut random).map_err(|_| Error::Configuration)?;
+        getrandom::fill(&mut random).map_err(why!(Error::Configuration))?;
         let stage = self
             .slots
             .create_new_child(OsStr::new(&format!(
                 "run-{:032x}",
                 u128::from_be_bytes(random)
             )))
-            .map_err(|_| Error::Uncertain)?;
+            .map_err(why!(Error::Uncertain))?;
         let result = (|| {
             publish_json(&stage, "manifest.json", &documents.run)?;
             publish_json(&stage, "request.json", &documents.request)?;
             publish_json(&stage, "status.json", &documents.status)?;
             let attempts = stage
                 .create_new_child(OsStr::new("attempts"))
-                .map_err(|_| Error::Uncertain)?;
+                .map_err(why!(Error::Uncertain))?;
             let attempt = attempts
                 .create_new_child(OsStr::new("attempt-001"))
-                .map_err(|_| Error::Uncertain)?;
+                .map_err(why!(Error::Uncertain))?;
             publish_json(&attempt, "attempt.json", &documents.attempt)?;
             publish_json(&attempt, "status.json", &documents.status)?;
             self.validate_workspace(project, &request.run_id)?;
             self.evidence
                 .project(project, Some(&project_document.raw_sha256))
-                .map_err(|_| Error::Authority)?;
+                .map_err(why!(Error::Authority))?;
             if backend.fingerprint()? != backend_sha
                 || self
                     .sources
                     .read(project, &runtime.source_id)
-                    .map_err(|_| Error::Authority)?
+                    .map_err(why!(Error::Authority))?
                     != source
             {
                 return Err(Error::Authority);
             }
             let published = stage
                 .publish_directory(root, OsStr::new(&request.run_id))
-                .map_err(|_| Error::Uncertain)?;
+                .map_err(why!(Error::Uncertain))?;
             self.validate_workspace(project, &request.run_id)
-                .map_err(|_| Error::Uncertain)?;
+                .map_err(why!(Error::Uncertain))?;
             let reference = RunRef {
                 project: project.into(),
                 run_id: request.run_id.clone(),
@@ -201,10 +201,10 @@ impl Service {
             let snapshot = self
                 .evidence
                 .snapshot_metadata(&reference)
-                .map_err(|_| Error::Uncertain)?;
+                .map_err(why!(Error::Uncertain))?;
             if snapshot.run.raw_sha256
                 != helper::sha256_bytes(
-                    &serde_json::to_vec(&documents.run).map_err(|_| Error::Configuration)?,
+                    &serde_json::to_vec(&documents.run).map_err(why!(Error::Configuration))?,
                 )
                 || snapshot.attempts.len() != 1
                 || !snapshot.attempts[0].provenance.compared_fields_complete
@@ -225,20 +225,20 @@ pub(super) fn publish_json(directory: &Directory, name: &str, value: &Value) -> 
     directory
         .publish_new(
             OsStr::new(name),
-            &serde_json::to_vec(value).map_err(|_| Error::Configuration)?,
+            &serde_json::to_vec(value).map_err(why!(Error::Configuration))?,
         )
-        .map_err(|_| Error::Uncertain)
+        .map_err(why!(Error::Uncertain))
 }
 pub(super) fn read_json(directory: &Directory, name: &str) -> Result<Value> {
     let bytes = directory
         .read_regular(OsStr::new(name), creation::MAX_REQUEST_BYTES as u64 * 8)
-        .map_err(|_| Error::Authority)?;
+        .map_err(why!(Error::Authority))?;
     let value = experiments::parse_mapping(&bytes, experiments::Format::Json)
         .map(Value::Object)
-        .map_err(|_| Error::Authority)?;
+        .map_err(why!(Error::Authority))?;
     // These files are our immutable publications. A semantic JSON match alone
     // cannot establish the original byte hash reported by the creation receipt.
-    if serde_json::to_vec(&value).map_err(|_| Error::Authority)? != bytes {
+    if serde_json::to_vec(&value).map_err(why!(Error::Authority))? != bytes {
         return Err(Error::Authority);
     }
     Ok(value)
@@ -253,10 +253,10 @@ fn creation_receipt(
     let run = read_json(directory, "manifest.json")?;
     let attempts = directory
         .child(OsStr::new("attempts"), false)
-        .map_err(|_| Error::Authority)?;
+        .map_err(why!(Error::Authority))?;
     let attempt_dir = attempts
         .child(OsStr::new("attempt-001"), false)
-        .map_err(|_| Error::Authority)?;
+        .map_err(why!(Error::Authority))?;
     let attempt = read_json(&attempt_dir, "attempt.json")?;
     let original = read_json(directory, "request.json")?;
     if !creation::same_creation(expected, &run, &attempt, &original) {
@@ -267,44 +267,44 @@ fn creation_receipt(
 fn cleanup_stage(parent: &Directory, stage: &Directory) -> Result<()> {
     if stage
         .entry_exists(OsStr::new("attempts"))
-        .map_err(|_| Error::Authority)?
+        .map_err(why!(Error::Authority))?
     {
         let attempts = stage
             .child(OsStr::new("attempts"), false)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
         if attempts
             .entry_exists(OsStr::new("attempt-001"))
-            .map_err(|_| Error::Authority)?
+            .map_err(why!(Error::Authority))?
         {
             let child = attempts
                 .child(OsStr::new("attempt-001"), false)
-                .map_err(|_| Error::Authority)?;
+                .map_err(why!(Error::Authority))?;
             clean_files(&child, &["attempt.json", "status.json"])?;
             attempts
                 .remove_staged_empty_child(&child)
-                .map_err(|_| Error::Authority)?;
+                .map_err(why!(Error::Authority))?;
         }
         stage
             .remove_staged_empty_child(&attempts)
-            .map_err(|_| Error::Authority)?;
+            .map_err(why!(Error::Authority))?;
     }
     clean_files(stage, &["manifest.json", "request.json", "status.json"])?;
     parent
         .remove_staged_empty_child(stage)
-        .map_err(|_| Error::Authority)
+        .map_err(why!(Error::Authority))
 }
 pub(super) fn clean_files(directory: &Directory, names: &[&str]) -> Result<()> {
     for name in names {
         if directory
             .entry_exists(OsStr::new(name))
-            .map_err(|_| Error::Authority)?
+            .map_err(why!(Error::Authority))?
         {
             let file = directory
                 .open_regular_read(OsStr::new(name))
-                .map_err(|_| Error::Authority)?;
+                .map_err(why!(Error::Authority))?;
             directory
                 .remove_staged_regular(OsStr::new(name), &file)
-                .map_err(|_| Error::Authority)?;
+                .map_err(why!(Error::Authority))?;
         }
     }
     Ok(())
