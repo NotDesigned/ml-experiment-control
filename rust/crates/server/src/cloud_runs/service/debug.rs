@@ -180,12 +180,9 @@ impl Service {
     }
     fn debug_records(&self) -> cloud::Result<Vec<Saved>> {
         let mut records = Vec::new();
-        for n in self.slots.entry_names_limited(32768).map_err(io)? {
+        for n in self.slots.entry_names().map_err(io)? {
             if let Some(id) = n.to_str().and_then(|s| s.strip_suffix(".debug.json")) {
                 records.push(self.debug_load(id)?);
-            }
-            if records.len() > 4096 {
-                return Err(cloud::Error::evidence());
             }
         }
         Ok(records)

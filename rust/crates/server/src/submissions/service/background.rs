@@ -149,7 +149,7 @@ impl Service {
             ml_exp_core::json::mapping(&bytes).map_err(why!(Error::Authority))?,
         ))
     }
-    pub fn background_candidates(&self, maximum: usize) -> Result<BTreeSet<String>> {
+    pub fn background_candidates(&self) -> Result<BTreeSet<String>> {
         let mut actions = BTreeSet::new();
         for project in &self.settings.projects {
             if !project.discovery_enabled() {
@@ -207,9 +207,6 @@ impl Service {
                         continue;
                     }
                     actions.insert(action.into());
-                    if actions.len() > maximum {
-                        return Err(Error::Configuration);
-                    }
                 }
             }
         }

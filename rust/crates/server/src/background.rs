@@ -38,7 +38,7 @@ impl Observer {
                 while !flag.load(Ordering::Relaxed) {
                     let elapsed = start.elapsed().as_secs();
                     if elapsed >= discover_at {
-                        match service.background_candidates(policy.max_candidates) {
+                        match service.background_candidates() {
                             Ok(found) => {
                                 candidates = found;
                                 if candidates.is_empty() {

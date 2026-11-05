@@ -4,15 +4,11 @@ use super::*;
 use ml_exp_core::tracking;
 
 impl Store {
-    pub fn publication_runs(&self, maximum: usize) -> Result<Vec<(String, String)>> {
-        let rows = self.database.read_only(|connection| -> Result<_> {
-            let mut statement = connection.prepare("SELECT project,run FROM runs WHERE json_extract(route,'$.enabled')=1 ORDER BY project,run LIMIT ?")?;
-            Ok(statement.query_map([maximum as i64 + 1],|row|Ok((row.get(0)?,row.get(1)?)))?.collect::<std::result::Result<Vec<_>,_>>()?)
-        })?;
-        if rows.len() > maximum {
-            return Err(Error::Invalid("publisher Run limit"));
-        }
-        Ok(rows)
+    pub fn publication_runs(&self) -> Result<Vec<(String, String)>> {
+        self.database.read_only(|connection| -> Result<_> {
+            let mut statement = connection.prepare("SELECT project,run FROM runs WHERE json_extract(route,'$.enabled')=1 ORDER BY project,run")?;
+            Ok(statement.query_map([],|row|Ok((row.get(0)?,row.get(1)?)))?.collect::<std::result::Result<Vec<_>,_>>()?)
+        })
     }
     pub fn publication_state(&self, guard: &RecordGuard<'_>, scope: &str) -> Result<Option<Value>> {
         self.require_scope(guard, scope)?;

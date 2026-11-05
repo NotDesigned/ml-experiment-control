@@ -140,7 +140,7 @@ impl Service {
     pub fn runtimes(&self, project: &str) -> cloud::Result<Value> {
         self.project_hash(project)?;
         let mut rows = Vec::new();
-        for name in self.slots.entry_names_limited(32768).map_err(io)? {
+        for name in self.slots.entry_names().map_err(io)? {
             let Some(id) = name.to_str().and_then(|s| s.strip_suffix(".runtime.json")) else {
                 continue;
             };

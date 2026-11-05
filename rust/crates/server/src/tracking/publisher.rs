@@ -217,7 +217,7 @@ impl Drop for Publisher {
 }
 fn candidate_scopes(store: &Store) -> Result<BTreeSet<String>> {
     let mut scopes = BTreeSet::new();
-    for (project, run) in store.publication_runs(4096).map_err(why!(Error::Storage))? {
+    for (project, run) in store.publication_runs().map_err(why!(Error::Storage))? {
         let Ok(guard) = store.guard(&project, &run) else {
             continue;
         };
@@ -228,9 +228,6 @@ fn candidate_scopes(store: &Store) -> Result<BTreeSet<String>> {
                 .map_err(why!(Error::Storage))?;
             if !saved.is_some_and(|s| s["remote_finished"] == true) {
                 scopes.insert(id.into());
-            }
-            if scopes.len() > 4096 {
-                return Err(Error::Storage);
             }
         }
     }

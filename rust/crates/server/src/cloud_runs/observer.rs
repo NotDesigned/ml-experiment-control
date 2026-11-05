@@ -101,11 +101,7 @@ impl Drop for Observer {
 impl Service {
     fn observer_candidates(&self) -> crate::backends::cloud::Result<BTreeSet<String>> {
         let mut result = BTreeSet::new();
-        for name in self
-            .slots
-            .entry_names_limited(16384)
-            .map_err(super::service::io)?
-        {
+        for name in self.slots.entry_names().map_err(super::service::io)? {
             let Some(name) = name.to_str() else {
                 continue;
             };
@@ -140,9 +136,6 @@ impl Service {
                 });
             if !terminal {
                 result.insert(action.into());
-            }
-            if result.len() > 4096 {
-                return Err(crate::backends::cloud::Error::evidence());
             }
         }
         Ok(result)

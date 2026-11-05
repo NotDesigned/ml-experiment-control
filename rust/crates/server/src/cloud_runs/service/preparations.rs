@@ -255,7 +255,7 @@ impl Service {
             .map_err(why!(cloud::Error::configuration()))?;
         self.project_hash(project)?;
         let mut found = None;
-        for slot in self.slots.entry_names_limited(32768).map_err(io)? {
+        for slot in self.slots.entry_names().map_err(io)? {
             let Some(id) = slot.to_str().and_then(|s| s.strip_suffix(".setup.json")) else {
                 continue;
             };

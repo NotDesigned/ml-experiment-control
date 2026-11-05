@@ -202,11 +202,7 @@ impl Service {
         ml_exp_core::submission::validate_submission_token(&request.request_id)
             .map_err(why!(invalid()))?;
         let _lock = self.lock()?;
-        for name in self
-            .directory
-            .entry_names_limited(32768)
-            .map_err(why!(invalid()))?
-        {
+        for name in self.directory.entry_names().map_err(why!(invalid()))? {
             let Some(id) = name.to_str().and_then(|n| n.strip_suffix(".json")) else {
                 continue;
             };
