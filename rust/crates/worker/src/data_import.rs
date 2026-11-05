@@ -34,6 +34,13 @@ fn failed(code: &'static str) -> Error {
     }
 }
 fn io_error(error: io::Error) -> Error {
+    // Storage errors hold no credentials or URLs. A check failure has no errno,
+    // so this line is the only record of which one it was.
+    eprintln!(
+        "ML_EXPD_DATA_IO_ERROR kind={:?} errno={:?} message={error}",
+        error.kind(),
+        error.raw_os_error()
+    );
     Error {
         code: if error.raw_os_error() == Some(libc::ENOSPC) {
             "STORAGE_FULL"

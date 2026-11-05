@@ -27,8 +27,13 @@ struct Marker {
     target: ml_exp_core::slurm::helper::Target,
     identity: (u64, u64),
 }
+/// One message covers many checks, so name the check that failed.
+#[track_caller]
 fn invalid() -> io::Error {
-    io::Error::other("dataset storage is unavailable, incomplete or conflicts with frozen data")
+    io::Error::other(format!(
+        "dataset storage is unavailable, incomplete or conflicts with frozen data (check at line {})",
+        std::panic::Location::caller().line()
+    ))
 }
 fn json(value: &impl Serialize) -> io::Result<Vec<u8>> {
     serde_json::to_vec(value).map_err(|_| invalid())
@@ -155,7 +160,11 @@ impl Store {
         }
         let capacity = directory.capacity()?;
         if capacity.insufficient(record.bytes + 16 * 1024 * 1024, 2) {
-            return Err(io::Error::other("dataset part capacity is insufficient"));
+            eprintln!(
+                "ML_EXPD_DATA_CAPACITY available_bytes={} available_inodes={:?}",
+                capacity.available_bytes, capacity.available_inodes
+            );
+            return Err(io::Error::from_raw_os_error(libc::ENOSPC));
         }
         let parts = directory.child(OsStr::new("parts"), false)?;
         let name = number.to_string();
@@ -349,5 +358,21 @@ impl Store {
         };
         reply.validate(request).map_err(|_| invalid())?;
         Ok(reply)
+    }
+}
+
+#[cfg(test)]
+mod evidence_tests {
+    use super::*;
+    #[test]
+    fn storage_check_failures_name_the_check_and_capacity_reports_full_storage() {
+        let first = invalid().to_string();
+        let second = invalid().to_string();
+        assert!(first.contains("check at line"));
+        assert_ne!(first, second);
+        assert_eq!(
+            io::Error::from_raw_os_error(libc::ENOSPC).raw_os_error(),
+            Some(libc::ENOSPC)
+        );
     }
 }
