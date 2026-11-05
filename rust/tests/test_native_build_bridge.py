@@ -3,6 +3,7 @@
 Run with the existing builder dependencies and candidate Python source on
 PYTHONPATH. All payloads and executable fixtures are test-owned temporary files.
 """
+import base64
 import hashlib
 import fcntl
 import io
@@ -23,6 +24,64 @@ from ml_exp_server.projects.source_revisions import _tree_digest
 
 
 class NativeBridge(unittest.TestCase):
+    def test_docker_hub_login_alias_uses_distribution_host_and_keeps_image_name(self):
+        from ml_exp_server.data.registry_transport import Registry
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'auth.json'
+            login = {'auth': base64.b64encode(b'fixture-user:fixture-secret').decode()}
+            path.write_text(json.dumps({'auths': {'https://index.docker.io/v1/': login}}))
+            registry = Registry('docker.io/team/runtime', path)
+            self.assertEqual(registry.host, 'registry-1.docker.io')
+            self.assertEqual(registry_transport.registry_auth({'docker.io': login}, 'registry-1.docker.io'), login)
+            calls = []
+            manifest = {'schemaVersion': 2, 'mediaType': registry_transport.MANIFEST, 'layers': []}
+            raw = registry_transport.encoded(manifest)
+            def exchange(method, path, headers, body, maximum, **kwargs):
+                calls.append((method, path, kwargs.get('host', registry.host)))
+                if len(calls) == 1:
+                    return 401, {'www-authenticate': 'Bearer realm="https://auth.docker.io/token",service="registry.docker.io"'}, b''
+                if kwargs.get('host') == 'auth.docker.io':
+                    return 200, {}, b'{"token":"fixture-token"}'
+                return (201 if method == 'PUT' else 200), {}, raw
+            with patch.object(registry, '_exchange', side_effect=exchange):
+                self.assertEqual(registry.publish('data-' + 'a' * 64, manifest), 'docker.io/team/runtime@' + registry_transport.digest(raw))
+            self.assertEqual([host for _, _, host in calls], ['registry-1.docker.io', 'auth.docker.io', 'registry-1.docker.io', 'registry-1.docker.io'])
+
+    def test_registry_change_keeps_original_publication_targets_without_mutating_default(self):
+        from ml_exp_server.builds.build_recovery import publication_builder
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            builder = SimpleNamespace(root=root, config={'repository': 'docker.io/team/runtime'})
+            for suffix in ('.dsw.json', '.acr.json'):
+                key = 'a' * 64 if suffix == '.dsw.json' else 'b' * 64
+                path = root / (key + suffix)
+                path.write_text(json.dumps({'repository': 'old.example/team/build', 'phase': 'OBSERVING'}))
+                before = path.read_bytes()
+                self.assertEqual(publication_builder(builder, key).config['repository'], 'old.example/team/build')
+                self.assertEqual(path.read_bytes(), before)
+            self.assertIs(publication_builder(builder, 'c' * 64), builder)
+            self.assertEqual(builder.config['repository'], 'docker.io/team/runtime')
+
+    def test_acr_fallback_for_old_repository_never_redirects_new_docker_hub_build(self):
+        from ml_exp_server.builds import acr_fallback
+        from ml_exp_server.builds.builder_client import BuildTransportError
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            receipt = {'bundle_id': 'a' * 64}
+            builder = SimpleNamespace(root=root, config={'repository': 'docker.io/team/runtime',
+                'acr_fallback': {'prefer': True, 'repository': 'old.example/team/build'}})
+            with patch.object(acr_fallback, 'publish') as acr, \
+                    patch('ml_exp_server.builds.pai_dsw.DswPublisher') as dsw, \
+                    patch('ml_exp_server.builds.pai_build_recovery.observe_dsw_absence') as absence:
+                dsw.return_value.publish.return_value = 'docker.io/team/runtime@sha256:' + 'b' * 64
+                self.assertEqual(acr_fallback.publish_runtime(builder, 'tag', root, receipt), dsw.return_value.publish.return_value)
+                (root / ('a' * 64 + '.dsw.json')).write_text('{"phase":"DELETE_REQUESTED"}')
+                dsw.return_value.publish.side_effect = BuildTransportError('FAILED', {})
+                with self.assertRaises(BuildTransportError):
+                    acr_fallback.publish_runtime(builder, 'tag', root, receipt)
+                acr.assert_not_called()
+                absence.assert_not_called()
+
     def test_preferred_acr_skips_dsw_but_never_overlaps_an_unknown_primary(self):
         from ml_exp_server.builds import acr_fallback
         from ml_exp_server.builds.builder_client import BuildTransportError

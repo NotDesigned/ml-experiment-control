@@ -16,6 +16,14 @@ OCI_MANIFEST = "application/vnd.oci.image.manifest.v1+json"
 INDEX = "application/vnd.oci.image.index.v1+json"
 DOCKER_INDEX = "application/vnd.docker.distribution.manifest.list.v2+json"
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+DOCKER_HUB_HOSTS = {"docker.io", "index.docker.io", "registry-1.docker.io"}
+
+
+def registry_auth(auths, host):
+    names = [host, "https://" + host]
+    if host in DOCKER_HUB_HOSTS:
+        names += [*sorted(DOCKER_HUB_HOSTS), "https://index.docker.io/v1/"]
+    return next((auths[name] for name in names if name in auths), None)
 
 
 def encoded(value):
@@ -37,16 +45,21 @@ class Registry:
         if (not isinstance(repository, str) or not re.fullmatch(r"[A-Za-z0-9.-]+(?::[0-9]+)?/[a-z0-9][a-z0-9._/-]*", repository)
                 or ".." in repository.split("/")):
             raise ValueError("invalid data registry repository")
-        self.host, self.repository = repository.split("/", 1)
+        self.reference = repository
+        host, self.repository = repository.split("/", 1)
+        self.host = "registry-1.docker.io" if host in DOCKER_HUB_HOSTS else host
         self.origin, self.prefix = "https://" + self.host, "/v2/" + self.repository
         self.timeout, self.bearer = timeout, None
         self.blob_hosts = frozenset(blob_hosts)
         self.auth_hosts = frozenset(auth_hosts)
+        if host in DOCKER_HUB_HOSTS:
+            self.auth_hosts |= {"auth.docker.io"}
+            self.blob_hosts |= {"production.cloudfront.docker.com", "production.cloudflare.docker.com"}
         if any(not isinstance(host, str) or not re.fullmatch(r"[A-Za-z0-9.-]+", host)
                for host in self.auth_hosts):
             raise ValueError("invalid registry authentication host allowlist")
         config = json.loads(Path(auth_file).read_text())
-        auth = config.get("auths", {}).get(self.host) or config.get("auths", {}).get(self.origin)
+        auth = registry_auth(config.get("auths", {}), host)
         if not isinstance(auth, dict) or not isinstance(auth.get("auth"), str):
             raise ValueError("data registry credentials are unavailable")
         raw = base64.b64decode(auth["auth"], validate=True)
@@ -215,4 +228,4 @@ class Registry:
         sha = digest(raw)
         if self.manifest(sha) != value:
             raise ValueError("published data image differs")
-        return self.host + "/" + self.repository + "@" + sha
+        return self.reference + "@" + sha

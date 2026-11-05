@@ -40,7 +40,8 @@ def mirror(builder, request):
     source, tag = request['source_image'], request['target_tag']
     policy = builder.config.get('sensecore_mirror', {})
     source_repo, target_repo = source.split('@', 1)[0], tag.rsplit(':', 1)[0]
-    if (source_repo != policy.get('source_repository') or target_repo != policy.get('target_repository')
+    if (source_repo not in {builder.config.get('repository'), policy.get('source_repository')}
+            or target_repo != policy.get('target_repository')
             or source_repo == target_repo):
         raise ValueError('image delivery is outside the exact operator registry policy')
     scope = {**builder.config, 'repository': target_repo,

@@ -1,7 +1,8 @@
 # Runtime image builds
 
-The default publisher builds on a CPU PAI DSW instance and pushes to ACR.
-An optional ACR Git build provides fallback. A local Docker/BuildKit publisher
+The default publisher builds on a CPU PAI DSW instance and pushes to the
+configured registry, such as Docker Hub. An optional ACR Git build provides
+fallback when publishing to ACR. A local Docker/BuildKit publisher
 is also supported; remote Docker engines and SSH desktop tunnels have been
 removed. Building and training are separate: compatible authenticated images
 can be used by any configured training backend.
@@ -87,7 +88,7 @@ Configure the private image builder, not a DLC training executor:
   "publisher": "pai-dsw",
   "allow_dockerfile_builds": true,
   "timeout_seconds": 1200,
-  "repository": "REGISTRY/NAMESPACE/RUNTIME",
+  "repository": "docker.io/YOUR_ACCOUNT/RUNTIME",
   "registry_auth_file": "/etc/ml-expd/build-docker/config.json",
   "pai_dsw": {
     "workspace_id": "WORKSPACE_ID",
@@ -103,6 +104,13 @@ from [image-builder.json](../server/examples/image-builder.json). Omit local
 BuildKit options in DSW mode. PAI API credentials remain private;
 MCP upload/exec uses an isolated CLI profile. Signed REST creates, queries,
 stops and deletes only the owned instance. No public Docker port is exposed.
+
+Log into the target registry on the builder host using the configured auth file.
+Docker Hub accepts both Skopeo's `docker.io` login and Docker's
+`https://index.docker.io/v1/` login entry. Registry requests use Docker Hub's
+distribution endpoint; published image references retain `docker.io/...`.
+Changing `repository` applies to new builds. Existing DSW/ACR publication
+intents retain their recorded repository; READY images retain their digest.
 
 Each build requests 4 CPU, 8 GiB and no GPU. Configure 20 minutes explicitly as
 above; an omitted DSW build timeout currently falls back to 10 minutes. Its
@@ -129,6 +137,7 @@ For an ACR Personal repository bound to a private build GitHub repository, add:
 ```json
 {
   "acr_fallback": {
+    "repository": "YOUR_ACR_HOST/NAMESPACE/RUNTIME",
     "git_repository": "https://github.com/YOUR_ACCOUNT/YOUR_PRIVATE_BUILD_REPO",
     "wait_seconds": 2700,
     "prefer": false
@@ -141,6 +150,10 @@ file `Dockerfile`. The builder host needs authenticated `git`/`gh`. Configure
 exact registry authentication/blob host allowlists as required. ACR Personal
 cannot use third-party private-base credentials through this Git build path;
 choose a compatible pinned base.
+
+The fallback repository must match the main `repository`. A Docker Hub build
+does not trigger the old ACR Git builder. Existing ACR intents can still be
+observed at their original repository after the default changes.
 
 Set `prefer: true` to build new runtime images directly through ACR while the
 DSW Docker engine is unavailable. Existing DSW leases still require confirmed
