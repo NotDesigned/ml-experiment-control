@@ -562,7 +562,7 @@ impl Directory {
     }
 
     /// Publish immutable bytes with a same-directory unpredictable temporary,
-    /// retained file identity, fsync, atomic no-replace publication and directory fsync.
+    /// fsync, atomic no-replace publication and directory fsync.
     /// There is no check-then-replace fallback and no path traversal during I/O.
     pub fn publish_new(&self, name: &OsStr, bytes: &[u8]) -> io::Result<()> {
         leaf(name)?;

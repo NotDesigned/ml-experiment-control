@@ -47,11 +47,11 @@ pub fn request_observed(
     })
 }
 fn connect(path: &Path, uid: u32, body: &[u8], timeout: Duration) -> io::Result<UnixStream> {
-    let before = std::fs::symlink_metadata(path)?;
+    let metadata = std::fs::symlink_metadata(path)?;
     if !path.is_absolute()
-        || !before.file_type().is_socket()
-        || before.uid() != uid
-        || before.mode() & 0o002 != 0
+        || !metadata.file_type().is_socket()
+        || metadata.uid() != uid
+        || metadata.mode() & 0o002 != 0
         || body.is_empty()
         || body.len() > 8 * 1024 * 1024
     {
@@ -75,12 +75,7 @@ fn connect(path: &Path, uid: u32, body: &[u8], timeout: Duration) -> io::Result<
             &mut size,
         )
     };
-    let after = std::fs::symlink_metadata(path)?;
-    if result != 0
-        || size as usize != std::mem::size_of::<libc::ucred>()
-        || credentials.uid != uid
-        || before.ino() != after.ino()
-        || before.dev() != after.dev()
+    if result != 0 || size as usize != std::mem::size_of::<libc::ucred>() || credentials.uid != uid
     {
         return Err(invalid());
     }

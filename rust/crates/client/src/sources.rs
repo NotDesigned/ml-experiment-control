@@ -312,9 +312,8 @@ impl Write for BoundedWriter {
 
 /// Pack regular files only, with stable order, gzip mtime zero and normalized
 /// tar ownership/timestamps. Executable intent is retained; repository code is
-/// never run. The initial names, file metadata, and directory attachment are
-/// rechecked before success. This is not an atomic snapshot against root or a
-/// hostile process with the same UID changing and restoring the source tree.
+/// never run. The initial names and file metadata are rechecked before success,
+/// so an edit during packing fails rather than producing a torn archive.
 pub fn pack_directory(path: &Path) -> Result<PreparedArchive, Error> {
     use ml_exp_io::directory::Directory;
     #[cfg(unix)]

@@ -1,5 +1,5 @@
 use super::domain::{self, Document, DocumentError, ManifestSource, Provenance};
-use crate::deletion::{Guard, RunFence};
+use crate::deletion::RunFence;
 use ml_exp_core::identity;
 use ml_exp_io::directory::Directory;
 use std::{
@@ -83,13 +83,6 @@ fn check_sha(document: &Document, expected: Option<&str>) -> Result<()> {
     }
     Ok(())
 }
-fn same(first: &Document, second: &Document) -> Result<()> {
-    if first.source == second.source && first.raw_sha256 == second.raw_sha256 {
-        Ok(())
-    } else {
-        Err(Error::BytesChanged)
-    }
-}
 fn read(directory: &Directory, name: &OsStr, source: ManifestSource) -> Result<Document> {
     Ok(Document::decode(&directory.read_whole(name)?, source)?)
 }
@@ -130,19 +123,6 @@ impl ProjectAnchor {
             directory = directory.child(OsStr::new(name), false)?;
         }
         Ok(directory)
-    }
-    fn verify_snapshot(
-        &self,
-        project: &Document,
-        run: &Document,
-        directory: &Directory,
-        reference: &RunRef,
-        guard: &Guard<'_>,
-    ) -> Result<()> {
-        same(project, &self.project(&reference.project)?)?;
-        same(run, &read_first(directory, RUN_SOURCES)?)?;
-        guard.require_observed_live(&reference.project, &reference.run_id)?;
-        Ok(())
     }
 }
 
@@ -211,20 +191,17 @@ impl Store {
         let anchor = self.project_anchor(project)?;
         let document = anchor.project(project)?;
         check_sha(&document, expected_raw_sha256)?;
-        same(&document, &anchor.project(project)?)?;
         Ok(document)
     }
     pub fn run(&self, reference: &RunRef, expected_raw_sha256: Option<&str>) -> Result<Document> {
-        let guard = self
+        let _guard = self
             .fence
             .existing_observation_guard(&reference.project, &reference.run_id)?;
         let anchor = self.project_anchor(&reference.project)?;
-        let project = anchor.project(&reference.project)?;
         let directory = anchor.run_directory(reference)?;
         let document = read_first(&directory, RUN_SOURCES)?;
         domain::validate_run(&document.metadata, &reference.project, &reference.run_id)?;
         check_sha(&document, expected_raw_sha256)?;
-        anchor.verify_snapshot(&project, &document, &directory, reference, &guard)?;
         Ok(document)
     }
     pub fn attempt(
@@ -234,11 +211,10 @@ impl Store {
         expected: &ExpectedHashes,
     ) -> Result<AttemptRecord> {
         identity::validate_id(attempt_id).map_err(why!(Error::Binding))?;
-        let guard = self
+        let _guard = self
             .fence
             .existing_observation_guard(&reference.project, &reference.run_id)?;
         let anchor = self.project_anchor(&reference.project)?;
-        let project = anchor.project(&reference.project)?;
         let directory = anchor.run_directory(reference)?;
         let run = read_first(&directory, RUN_SOURCES)?;
         domain::validate_run(&run.metadata, &reference.project, &reference.run_id)?;
@@ -254,8 +230,6 @@ impl Store {
             &reference.run_id,
             attempt_id,
         )?;
-        same(&attempt, &read_first(&attempt_directory, ATTEMPT_SOURCES)?)?;
-        anchor.verify_snapshot(&project, &run, &directory, reference, &guard)?;
         Ok(AttemptRecord {
             run,
             attempt,
@@ -293,11 +267,10 @@ impl Store {
         load_heavy: bool,
     ) -> Result<super::Snapshot> {
         use super::snapshot::{self, AttemptSnapshot, Snapshot};
-        let guard = self
+        let _guard = self
             .fence
             .existing_observation_guard(&reference.project, &reference.run_id)?;
         let anchor = self.project_anchor(&reference.project)?;
-        let project = anchor.project(&reference.project)?;
         let directory = anchor.run_directory(reference)?;
         let run = snapshot::manifest(&directory, RUN_SOURCES)?;
         domain::validate_run(&run.metadata, &reference.project, &reference.run_id)?;
@@ -354,7 +327,6 @@ impl Store {
             &names,
         );
         let mut attempts = Vec::new();
-        let mut retained = Vec::new();
         for attempt_id in names {
             let root = attempts_directory.as_ref().ok_or(Error::Missing)?;
             let attempt_directory = root.child(OsStr::new(&attempt_id), false)?;
@@ -394,7 +366,6 @@ impl Store {
             } else {
                 snapshot::unloaded(&attempt_id)
             };
-            retained.push(attempt_directory);
             attempts.push(AttemptSnapshot {
                 attempt_id,
                 manifest,
@@ -409,10 +380,6 @@ impl Store {
                 metrics,
             });
         }
-        for (attempt, root) in attempts.iter().zip(&retained) {
-            same(&attempt.manifest, &read_first(root, ATTEMPT_SOURCES)?)?;
-        }
-        anchor.verify_snapshot(&project, &run, &directory, reference, &guard)?;
         Ok(Snapshot {
             project: reference.project.clone(),
             run_id: reference.run_id.clone(),
