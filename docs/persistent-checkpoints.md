@@ -3,16 +3,8 @@
 Complete recovery state can include model, optimizer, scheduler, RNG and data
 cursor. Keep it on backend storage; export selected weights/logs as artifacts.
 The platform hashes files but never interprets or unpickles training state.
-Persistence requires a Runtime with `persistent-checkpoints.v1`.
 
 ## Enable and write
-
-```json
-{
-  "checkpoint_persistence": {"interval_seconds": 60},
-  "outputs": ["weights/**", "metrics.jsonl", "summary.json"]
-}
-```
 
 | Variable | Purpose |
 |---|---|
@@ -68,7 +60,7 @@ Create a **new Run** with its exact reference:
 }
 ```
 
-`resume_from` implicitly enables persistence if absent. The worker rehashes the
+The worker rehashes the
 actual generation before training and exposes it through RESUME_DIR. Your code
 restores all scientific state. Missing/corrupt files block training without a
 latest/older fallback. References must belong to the same project/storage scope;

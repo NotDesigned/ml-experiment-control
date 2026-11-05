@@ -6,28 +6,24 @@ SenseCore ACP, PAI DLC, or Slurm.
 
 ## Client workflow
 
-Use the normal `ML_EXPD_API_URL` and `ML_EXPD_API_TOKEN_FILE` settings. No cloud
-access key is sent to the client. Generate a local SSH key if you need one;
-keep its private half on your machine.
+The client uses its normal API settings. No cloud access key is sent to it.
+Generate a local SSH key if you need one; keep its private half on your machine.
+Create a request file with a profile from `debug list`, a new 32-character
+hexadecimal request ID and your public key, as in the
+[native usage guide](../rust/README.md#temporary-ssh-machines).
 
-```bash
-ml-exp debug profiles
-ml-exp debug create --id debug-myproject-001 --profile pai-cpu \
-  --ssh-key ~/.ssh/id_ed25519.pub --duration-seconds 1800
-ml-exp debug refresh --id debug-myproject-001
-ml-exp debug status --id debug-myproject-001
+```sh
 ml-exp debug list
+ml-exp debug create --file ./debug.json
+ml-exp debug refresh "$debug_identity"
+ml-exp debug show "$debug_identity"
 ```
 
-Select a profile returned by `profiles`; CPU, memory, GPU, image, approved storage
-and connection method are controlled by the server operator. The initial
-profiles can be CPU-only. This API does not build an image or submit training.
+CPU, memory, GPU, image, approved storage and connection method are bounded by the
+server operator's profile. This API does not build an image or submit training.
 
-`create` may return `STARTING`. Use `refresh` to observe the original instance
-and finish its access setup. `status`/`list` read the last saved observation;
-they do not make cloud requests. When the status is `RUNNING`, a configured
-route appears in `connection.ssh_command`. Add `-i ~/.ssh/your_private_key` if
-that key is not already in your SSH agent.
+`refresh` checks the provider and `show` reads saved status. An SSH connection is
+returned only after the provider reports Running.
 
 A configured route does not prove reachability from your network. `intranet`
 requires a route into the provider's VPC. The API returns
@@ -36,11 +32,11 @@ trusted channel, or explicitly use your usual SSH first-connection trust
 policy. The client never disables SSH host-key checking.
 
 ```bash
-ml-exp debug stop --id debug-myproject-001
-ml-exp debug refresh --id debug-myproject-001
+ml-exp debug stop "$debug_identity" --confirmation "STOP $debug_identity"
+ml-exp debug refresh "$debug_identity"
 # DSW additionally supports deletion:
-ml-exp debug delete --id debug-myproject-001
-ml-exp debug refresh --id debug-myproject-001
+ml-exp debug delete "$debug_identity" --confirmation "DELETE $debug_identity"
+ml-exp debug refresh "$debug_identity"
 ```
 
 CCI supports create/query/stop; DSW also supports delete. The profile catalog
@@ -53,7 +49,7 @@ The server continues requested cleanup every 20 seconds. A permission denial
 only after the machine is absent. Stopping CCI releases compute and removes its
 session-owned DNAT rule; the stopped CCI and internal Service metadata remain.
 There is no automatic restart. An expired or deleted identity cannot be reused
-for a new machine; choose a new session ID.
+for a new machine; choose a new request ID.
 
 Save work under the approved persistent mount: DSW `/mnt/workspace`, CCI `/data`.
 The container's own filesystem is temporary. Stop/delete never deletes the
@@ -61,9 +57,8 @@ mounted CPFS/NAS contents. They do remove ephemeral instance storage.
 
 ## Lifetimes and uncertainty
 
-Default duration is 30 minutes. The operator default maximum is two hours, with
-a maximum of two concurrently active sessions. Profiles are disabled until the
-operator configures them, and scheduler mutations must also be enabled.
+Each request states its `lease_seconds`, and `max_active` limits concurrently
+active machines. Profiles are disabled until the operator configures them.
 DSW always has a four-hour hard ceiling, even if the shared debug-session maximum
 is configured higher. A shorter operator lease still takes precedence.
 
@@ -76,7 +71,7 @@ is configured higher. A shorter operator lease still takes precedence.
   SSH expires but compute may remain allocated until server recovery or manual
   cleanup. Closing the shell or stopping sshd does not release cloud resources.
 
-A repeated `create` with the identical session ID and request returns the
+A repeated `create` with the identical request ID and request returns the
 existing record. A changed request under the same ID is rejected. If a create
 response is lost, `RECONCILE_REQUIRED` retains ownership and consumes capacity;
 refresh queries the original name/identity and **never repeats that create**.
@@ -89,20 +84,22 @@ All routes use the normal bearer authentication and protocol-2 header.
 
 | Method | Path | Meaning |
 | --- | --- | --- |
-| GET | `/api/debug-session-profiles` | Configured profiles and limits |
-| POST | `/api/debug-sessions` | Create once |
-| GET | `/api/debug-sessions` | Saved session list |
-| GET | `/api/debug-sessions/{id}` | Saved observation |
-| POST | `/api/debug-sessions/{id}/refresh` | Reconcile and finish the same session |
-| POST | `/api/debug-sessions/{id}/stop` | Stop compute |
-| DELETE | `/api/debug-sessions/{id}` | Delete a DSW instance; unsupported for CCI |
+| GET | `/api/debug` | Configured profiles and saved machines |
+| POST | `/api/debug` | Create once |
+| GET | `/api/debug/{identity}` | Saved observation |
+| POST | `/api/debug/{identity}/refresh` | Reconcile the same machine |
+| POST | `/api/debug/{identity}/stop` | Stop compute |
+| POST | `/api/debug/{identity}/delete` | Delete a DSW instance; unsupported for CCI |
 
 ```json
 {
-  "session_id": "debug-myproject-001",
-  "profile": "pai-cpu",
+  "profile": "pai-debug",
+  "request_id": "REPLACE_WITH_32_HEX_CHARACTERS",
   "ssh_public_key": "ssh-ed25519 REPLACE_WITH_REAL_PUBLIC_KEY",
-  "duration_seconds": 1800
+  "lease_seconds": 900,
+  "gpus": 0,
+  "cpus": 2,
+  "memory_gb": 4
 }
 ```
 
@@ -118,19 +115,13 @@ the private record, so changing the catalog cannot redirect cleanup.
 
 ## Operator configuration
 
-Set `debug_sessions.profiles_file` to a private JSON file readable by the API
-service. Optional settings: `max_active`, `max_duration_seconds`. Use a file
-such as `/etc/ml-expd/debug-session-profiles.json` with mode `0640`, owned by
-root and the API service's group. Existing PAI/SenseCore credential files and
-signed REST transports are reused; no `sco` command is invoked.
-
-Profiles can set `enabled: false` and a short `unavailable_reason` to remain
-visible in the catalog while refusing new allocations. Existing records retain
+Configure machines in the cloud configuration's `debug` block: `enabled`,
+`max_active` and `profiles`. Existing PAI/SenseCore credential files and signed
+REST transports are reused; no `sco` command is invoked. Existing records retain
 their frozen profile for cleanup.
 
-The profile file is `{"profiles": {"PROFILE_ID": PROFILE}}`. Each profile has
-`provider` (`pai-dsw` or `sensecore-cci`), `description`, `cpus`, `memory_gib`,
-`gpus` and an operator-owned `native` object.
+The field lists below come from the retained Python profile format. Check the
+native field names against `rust/crates/core/src/cloud/debug.rs` before relying on them.
 
 DSW native fields:
 

@@ -1,5 +1,9 @@
 # Core library integration
 
+> **Retained Python reference.** This describes the Python core library kept for
+> reference. For the default implementation see the
+> [native usage guide](../rust/README.md).
+
 This is an advanced integration path for developers of their own host controller. A client using the
 managed HTTP service needs only [the standalone client](api-quickstart.md),
 without a `ProjectAdapter` or cloud/SSH credentials.

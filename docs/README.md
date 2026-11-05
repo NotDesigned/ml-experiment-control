@@ -1,53 +1,57 @@
 # Documentation
 
-The default implementation on `main` is native Rust, released as `native-v0.1.16`.
-Start with the [native usage guide](../rust/README.md),
-[deployment guide](../rust/README.md#deploying-a-native-service),
-[architecture and acceptance](rust-rewrite.md) and [development](development.md).
-The guides listed below document retained Python reference packages and
-historical contracts; their commands and configuration are not the native API.
-Use the installed native `--help` and `/api/v2/openapi.json` for current contracts.
-
-Start with the guide for your role. These documents describe the repository's
-implemented behavior; `/api/health` and the installed `/api/v2/openapi.json`
-identify what a particular deployment provides. Credentials, site inventories
-and deployment evidence belong in private operator records.
+The default implementation on `main` is native Rust. See the
+[latest release](https://github.com/NotDesigned/ml-experiment-control/releases/latest)
+for the current version. Use the installed `--help` and `/api/v2/openapi.json` for
+exact contracts; `/api/health` identifies what a particular deployment provides.
+Credentials, site inventories and deployment evidence belong in private operator
+records.
 
 ## Use an existing service
 
 1. [Client quickstart](api-quickstart.md): the complete install-to-results path.
-2. [Data](data.md): target-backed uploads, resume, download scripts and limits.
-3. [Persistent checkpoints](persistent-checkpoints.md): complete state and explicit restore.
-4. [Metrics](metrics.md): curves, comparison results, units and protocol identity.
-5. [W&B](wandb.md): optional server publication and per-Run destinations.
-6. [Local metrics](local-metrics.md): attach an existing local JSONL stream through the native client.
-6. [Recovery](recovery.md): failed stages, uncertain requests and output collection.
-7. [Debug sessions](debug-sessions.md): temporary CCI/DSW SSH machines.
-8. [Administrative deletion](resource-deletion.md): reviewed Run and storage removal.
+2. [Native usage guide](../rust/README.md): further commands, configuration shapes and batches.
+3. [Client commands](cli_reference.md): command groups and recovery examples.
+4. [Data](data.md): target-backed uploads, resume, download scripts and limits.
+5. [Persistent checkpoints](persistent-checkpoints.md): complete state and explicit restore.
+6. [Metrics](metrics.md): curves, comparison results, units and protocol identity.
+7. [W&B](wandb.md): optional server publication and per-Run destinations.
+8. [Local metrics](local-metrics.md): attach an existing local JSONL stream through the native client.
+9. [Recovery](recovery.md): failed stages, uncertain requests and output collection.
+10. [Debug sessions](debug-sessions.md): temporary CCI/DSW SSH machines.
+11. [Administrative maintenance](resource-deletion.md): reviewed removal of outputs, state and Run registrations.
 
-The [client package README](../client/README.md) provides a command map and Python
-API. No research-question entity is required; Campaign is optional grouping.
-Scientific evaluation is an ordinary Run with declared inputs and metrics.
+No research-question entity is required. Scientific evaluation is an ordinary Run
+with declared inputs and metrics.
 
 ## Provide the service
 
 - [Operator guide](operator-guide.md): install, configure and verify a release.
-- [Configuration](configuration.md): client settings, credentials and independently enabled backends.
-- [Two-machine example](two-machine-quickstart.md): a basic HTTPS API and separate client without a training backend.
+- [Native deployment guide](../rust/README.md#deploying-a-native-service): configuration shapes and credentials.
+- [Configuration](configuration.md): client settings and independently enabled backends.
 - [Slurm](slurm.md): SSH scheduling, shared storage and offline compute nodes.
 - [PAI](pai.md): DLC training, CPFS/OSS and an optional DSW builder.
 - [SenseCore](sensecore-rest.md): REST, cluster choice and job diagnostics.
 - [Builds](builds.md): Dockerfile rules, publishers, cache and capacity.
-- [Action storage](action-storage.md): persistence, backup and offline migration.
 - [Project lifecycle](project_lifecycle.md): registration, pause and archive.
 
 ## Integrate or develop
 
-- [API resource reference](source-api.md): low-level resources, identities and diagnostic endpoints.
-- [HTTP contract](http_contract.md): auth, protocol 2, asynchronous operations and errors.
+- [API resource reference](source-api.md): resources, identities and diagnostic endpoints.
+- [HTTP contract](http_contract.md): auth, protocol 2 and errors.
 - [Backend capabilities](backends.md): matching and server preparation contracts.
-- [Architecture](architecture.md): packages, module boundaries and execution locations.
-- [Development](development.md): tests, coverage, CI and offline bundles.
-- [Core integration](library-integration.md) and [downstream contract](downstream_contract.md).
+- [Architecture](architecture.md): crates, module boundaries and execution locations.
 - [Compatibility and upgrades](architecture.md#compatibility-and-upgrades).
-- [Generated redactor CLI reference](cli_reference.md).
+- [Acceptance status](rust-rewrite.md): what has and has not passed on real providers.
+- [Platform checks](platform-checks.md): requirements, limits and policies.
+- [Development](development.md): tests, CI and releases.
+
+## Retained Python reference
+
+These describe retained Python packages and migration; their commands and
+configuration are not the native interface.
+
+- [Two-machine example](two-machine-quickstart.md): retired Python API and client install.
+- [Core integration](library-integration.md) and [downstream contract](downstream_contract.md): Python core library.
+- [Action storage](action-storage.md): storage notes and offline migration commands.
+- [Client package README](../client/README.md): retained Python client.

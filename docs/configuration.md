@@ -2,171 +2,122 @@
 
 ## Client: connect to an existing service
 
-Install only `ml-experiment-client` on the researcher's computer. Python 3.10+
-is required; Docker, SSH and cloud SDKs are not. The operator supplies the API
-base URL, client wheel and a private API token.
+Install the standalone `ml-exp` client on the researcher's computer; see the
+[quickstart](api-quickstart.md#install-and-connect). It needs no Python, Docker,
+SSH or cloud SDK. The operator supplies the API base URL and a private API token.
 
-| Setting | Purpose |
-|---|---|
-| Saved `url` | Default HTTPS base URL including any reverse-proxy prefix |
-| Saved `token` or `token_file` | Private token or reference to a private token file, outside uploaded source |
-
-```bash
-ml-exp config set --url 'https://api.example.org/ml-expd'
-# Enter the token at the hidden prompt once.
+```sh
+ml-exp --url https://api.example/ml-expd config set --token-file /private/client.token
+ml-exp config show           # URL, token file path and whether auth is configured
 ml-exp check
-ml-exp run status --project my-project --run trial-001
 ```
 
-Defaults are saved in `~/.config/ml-expd/client.json`, or
-`$XDG_CONFIG_HOME/ml-expd/client.json` when set. On POSIX the file is private
-(0600) and new configuration directories are 0700. The token is stored as plain
-text in that private file; keep it outside Git and uploaded source. No API request
-is made by `config set`, `show` or `clear`.
+`config set` saves the URL and a reference to the token file; the token itself is
+not copied or passed on a command line. `config show` never prints the token and
+neither command contacts the API. On POSIX systems give the token file's directory
+mode 0700 and the file mode 0600. Windows credential files must allow only the
+current user, SYSTEM and local Administrators.
 
-To retain an existing token file instead of storing another copy:
+Settings are saved in `ml-expd-rust/client.json` under `$XDG_CONFIG_HOME`, or under
+`.config` in your home directory (`USERPROFILE` on Windows). Keep this file, token
+files, client state and downloads outside uploaded source.
 
-```bash
-ml-exp config set --url 'https://api.example.org/ml-expd' --token-file /private/client.token
-ml-exp config show           # URL, file path and whether auth is configured; never the token
-ml-exp config set --prompt-token  # rotate the saved token using the hidden prompt
-ml-exp config clear          # remove defaults; referenced token files are retained
-```
+| Setting | Selected by | Precedence |
+|---|---|---|
+| Configuration file | `--config PATH`, `ML_EXPD_CLIENT_CONFIG` | Flag, then environment, then the default path |
+| API URL | `--url`, `ML_EXPD_API_URL`, saved `url` | In that order |
+| Token | `ML_EXPD_API_TOKEN` or `ML_EXPD_API_TOKEN_FILE`, saved token file | Environment overrides saved; setting both variables is an error |
 
-For noninteractive setup use `--token-stdin < /private/client.token`; there is
-no token command-line argument. `--config PATH` or `ML_EXPD_CLIENT_CONFIG`
-selects another private configuration. CLI `--url` overrides `ML_EXPD_API_URL`,
-which overrides the saved URL. Environment authentication overrides saved
-authentication. Saved credentials remain bound to their saved URL: choosing a
-different server requires explicit credentials for that server, before any HTTP
-request. Saved experiment states retain their original server binding as well.
-The `server` in a state file is an identity hint, not an authority to route a
-token. When using environment authentication, first select the API URL with
-`--url`, `ML_EXPD_API_URL` or saved configuration; a state file alone cannot
-choose the credential destination. A state-provided URL without that local
-selection, or a conflict between the two URLs, is rejected before reading a
-token file or sending a request.
+Saved credentials are bound to their normalized URL: selecting a different URL
+without explicit environment credentials fails before any request. A saved state
+file binds recovery to its original server and contains no API token. URLs must be
+HTTPS, or HTTP to loopback; embedded credentials, queries and fragments are
+rejected. The client follows no redirects, ignores ambient proxy settings and does
+not retry requests automatically.
 
-`ml-exp update --check` checks the official GitHub release for a newer client;
-`ml-exp update` downloads and verifies the standalone client wheel against the
-release SHA256SUMS, then updates the current Python environment without installing
-server packages or dependencies. `ml-exp update --version 1.5.1` chooses a stable
-release. It never uses the experiment API token, changes connection defaults, or
-automatically downgrades. An environment containing the server must be upgraded
-through the operator's deployment process; client self-update does not replace a
-server installation. A compatible `pip` or `uv` must already be available.
+`ml-exp update --check` looks for a newer stable native release. `ml-exp update`
+installs the highest one after checking hash, platform and version, and refuses an
+automatic downgrade. `ml-exp update --version X.Y.Z` selects an exact version. An
+update never changes connection defaults or a server installation. Clients through
+0.1.15 need the new installer once; see the
+[native usage guide](../rust/README.md#client-configuration).
 
-`ml-exp check` verifies the basic API and reports optional deployment components.
-An API without a builder or result store is a valid minimal deployment. Before
-using it for new training, run `ml-exp check --training`: it also requires the
-training configuration and a responding private image builder, and returns 2
-with the missing/disabled/unavailable component names when incomplete. This is
-a read-only check; it does not build an image or reserve a GPU. Backend credentials,
-storage access and resource admission still need the experiment's normal preflight.
-Use `check --json` for the full machine-readable response; the default output is
-a short human-readable summary. The [two-machine example](two-machine-quickstart.md)
-includes private CA trust and source import without a builder.
-If training is incomplete, the operator follows
-[the ordered setup checklist](operator-guide.md#enable-training-after-source-import).
-The researcher then uses the normal experiment workflow; no additional client
-credential or command family is needed.
+`ml-exp check` validates the authenticated protocol handshake and returns the
+server's version, capabilities and source limits. `ml-exp backend` lists executors.
+For per-backend submission availability read `ml-exp get /api/readiness`. It makes
+no provider request and starts no job. `training=INCOMPLETE` there is acceptance
+evidence, not a blocker; inspect `submission_available_backends`. If no backend is
+available, the operator follows
+[the setup checklist](operator-guide.md#enable-training-after-source-import).
 
-Provision the token file privately before running this command. On POSIX systems
-give its directory mode 0700 and file mode 0600. `ML_EXPD_API_TOKEN` is an alternative
-for process environments; setting both nonempty token sources is an error, so an
-old shell variable cannot silently shadow a new token file. Environment variables
-remain supported for CI and temporary overrides; they do not change the saved
-file. Remote HTTP, URL-embedded credentials and redirects
-are rejected. Local loopback HTTP is permitted for development.
+Project/Run IDs, source, executor, resources, inputs, metrics and the GPU-hour
+budget belong in the [experiment file](api-quickstart.md#first-experiment).
+`--seconds` bounds client waiting, `walltime_seconds` bounds the remote job. An
+expired client wait does not stop a remote task.
 
-Project/Run IDs, source, Dockerfile, executor, resources, inputs, metrics and the
-GPU-hour budget belong in the [experiment JSON](api-quickstart.md#first-experiment).
-Keep client state and downloads outside source. State binds recovery operations
-to the original server and experiment identities; it contains no API token.
-`--seconds` bounds client waiting, `resources.max_time` bounds the remote job.
-An expired client wait does not stop a remote task.
-
-W&B is optional. Its API key is configured on the server; each experiment chooses
-whether and where to publish. The operator also installs the server's `wandb`
-extra; base-server metrics need no W&B SDK. The service uses a shared API bearer and
-instance-wide W&B credentials, without per-user/project RBAC. Distribute access
-accordingly; see [W&B](wandb.md) and [deletion permissions](resource-deletion.md).
+W&B is optional and configured on the server; each experiment chooses whether and
+where to publish. The service uses one shared API bearer and instance-wide W&B
+credentials, without per-user or per-project RBAC. Distribute access accordingly;
+see [W&B](wandb.md) and [administrative deletion](resource-deletion.md).
 
 ## Connection errors
 
-API connection failures include a stable `error_code` in the existing stderr
-JSON. The client classifies typed errors without printing the raw network/TLS
-exception, certificate names, private endpoints or request credentials.
+Errors are one sanitized line on stderr with a nonzero exit code. They do not print
+tokens, signed URLs or raw TLS or network exceptions.
 
-| Error code | Action |
+| Message begins with | Action |
 |---|---|
-| `TLS_CERTIFICATE_VERIFICATION_FAILED` | Check the server certificate's validity and chain. For an approved private CA, set `SSL_CERT_FILE` to the public CA certificate supplied by the operator. |
-| `TLS_HOSTNAME_MISMATCH` | Use an API hostname/IP present in the server certificate SAN, or have the operator issue the correct certificate. |
-| `TLS_HANDSHAKE_FAILED` | Ask the operator to check that this is the HTTPS endpoint and that the TLS/proxy configuration is compatible. |
-| `CONNECTION_REFUSED` | Check the API address/port, running service and firewall or approved network path. |
-| `DNS_LOOKUP_FAILED` | Check the hostname in `ML_EXPD_API_URL`, DNS and network access. |
-| `CONNECTION_TIMEOUT` | Check routing, VPN/proxy and service availability. A timeout does not prove a write was rejected. |
-| `CONNECTION_FAILED` | The cause could not be classified safely; check the address and network with the operator. |
+| `invalid API URL` | Use HTTPS, or HTTP to loopback, without userinfo, query or fragment |
+| `invalid API token` | Check the token file's contents |
+| `cannot read or write private client configuration` | Check the path, ownership and permissions of the settings or token file |
+| `saved credentials belong to a different API URL` | Run `config set` for this URL, or supply explicit environment credentials |
+| `HTTP request failed` | Check the address, DNS, certificate, routing and service with the operator. TLS, DNS, refused and timed-out connections all report this |
+| `daemon did not provide a supported protocol-2 handshake` | The address is not a compatible ML-Expd API, or a proxy altered it |
 
-TLS errors have `retryable=false`: fix the trust, hostname or TLS configuration
-before retrying. Do not disable certificate/hostname verification or send private
-keys. `retryable=true` for other connection failures is a transport hint, not
-permission to replay a write. The HTTP transport does not automatically replay
-requests; inspect saved identities and reconcile uncertain operations first.
+The client trusts the public WebPKI roots built into it. A certificate from a
+private CA is not accepted, and there is no option to disable verification; give
+the API a publicly trusted certificate.
 
-The [two-machine guide](two-machine-quickstart.md#3-configure-https) shows a
-separate private CA, a matching server SAN and client trust configuration.
+A transport failure does not prove that a write was rejected, and it is not
+permission to replay one. Inspect saved identities and reconcile uncertain
+operations first; see [recovery](recovery.md).
 
 ## Server: common services
 
-Start from [source-api.yaml](../server/examples/source-api.yaml). The operator
-configures an API token, writable metadata/state roots, result object storage and
-a private image-builder socket. [Deployment](operator-guide.md) describes service
-accounts, installation and permission gates.
-
-For API-only installation, use [minimal-api.yaml](../server/examples/minimal-api.yaml).
-It permits managed project creation and source import but keeps scheduler writes
-off. Add an executor, builder and object store independently when enabling training;
-these are not provisioned or inferred from cloud credentials.
+The service reads one private deployment file, which refers to independently
+approved configuration files; see the
+[native deployment guide](../rust/README.md#deploying-a-native-service) and the
+[operator guide](operator-guide.md). A minimal API needs only a token, read
+configuration and approved Projects, and can import source without a backend.
 
 Training backend, image builder and storage are separate choices. A Slurm service
-can use a local BuildKit publisher without PAI credentials. A DLC service can consume an
-image from the same builder without enabling DSW. ACR, CCR and S3/OSS credentials
-are required only for the configured repositories and transfer paths.
+can use a local BuildKit publisher without PAI credentials. A DLC service can use
+an image from the same builder without enabling DSW. Registry and object-store
+credentials are required only for the configured repositories and transfer paths.
 
 ## Enable only the backends you use
 
-Copy one of these complete executor files to `/etc/ml-expd/executors.yaml` and
-set `container_execution.profiles_file` to that file. Replace its placeholders
-before enabling scheduler mutations.
-
-| Backend | Executor template | Additional private configuration | Setup |
+| Backend | Deployment reference | Example | Provider notes |
 |---|---|---|---|
-| SSH Slurm/Apptainer | [slurm.yaml](../server/examples/executors/slurm.yaml) | Service-account SSH config/key/known_hosts; registry pull auth for private images | [Slurm](slurm.md) |
-| SenseCore ACP | [sensecore.yaml](../server/examples/executors/sensecore.yaml) | [sensecore-rest.json](../server/examples/sensecore-rest.json), CCR authorization, NAS; data registry/debug CPU copy settings when uploading datasets | [SenseCore](sensecore-rest.md) |
-| PAI DLC | [pai-dlc.yaml](../server/examples/executors/pai-dlc.yaml) | [pai.json](../server/examples/pai.json), Docker registry auth, approved personal CPFS and runtime role | [PAI](pai.md) |
+| SSH Slurm/Apptainer | `submission_config` | [slurm.example.json](../rust/deploy/slurm.example.json) | [Slurm](slurm.md) |
+| PAI DLC | `cloud_config` | [pai.example.json](../rust/deploy/pai.example.json) | [PAI](pai.md) |
+| SenseCore ACP | `cloud_config` | [sensecore.example.json](../rust/deploy/sensecore.example.json) | [SenseCore](sensecore-rest.md) |
 
-Only executors present in that file are published to clients. For multiple
-backends, put their uniquely named entries under the same `executors:` mapping;
-there is no automatic directory loading or provider auto-discovery. Executor IDs
-are operator-chosen names, not built-in cluster names. To stop offering a profile
-for new submissions, remove its entry; existing frozen Runs/Attempts retain their
-original backend definition.
+Omitted backends stay disabled, and the examples start with `enabled`,
+`allow_run_creation` and polling off. To configure PAI and SenseCore together, put
+both in one cloud file's `backends` list. Executor IDs must be unique across Slurm
+and cloud; they are operator-chosen names, not built-in cluster names. Removing an
+entry stops offering it for new work, and existing frozen Runs and Attempts keep
+their original definition. Credential file shapes and permissions are in the
+[native deployment guide](../rust/README.md#deploying-a-native-service).
 
-Backend credentials are read when the selected adapter needs them. A configured
-Slurm executor does not require SenseCore/PAI credentials, and neither cloud
-backend requires a Slurm login. Start with `ml-exp check` to inspect published
-capabilities; then follow the chosen backend's preflight and bounded acceptance.
-Reading the catalogue does not authenticate or allocate a cloud job.
+`ml-exp backend` shows what the service publishes without contacting a provider.
+Capacity and quota do not guarantee an allocation.
 
-The [Docker auth template](../server/examples/registry-auth.json) uses `auths` and
-base64-encoded `username:password`. Base64 is not encryption. Restrict it to exact
-registry hosts and keep actual values outside Git. The older
-[single-registry pull format](../server/examples/registry-pull.json) remains
-accepted by Slurm; PAI requires Docker `auths` format. Publisher auth can remain
-separate from pull-only credentials.
+Private images use Docker `auths` credentials, set per backend with
+`registry_auth_file` on PAI and separately on the builder. Base64 in that format is
+not encryption. Restrict it to exact registry hosts and keep values outside Git.
 
 Optional capabilities have independent configuration: [image builds](builds.md),
-[OSS dataset/archive settings](pai.md), [W&B](wandb.md) and
-[temporary debug machines](debug-sessions.md). Enabling a training executor does
-not enable a debug machine, DSW builder or another backend.
+[W&B](wandb.md) and [temporary debug machines](debug-sessions.md). Enabling a
+training executor does not enable a debug machine, builder or another backend.

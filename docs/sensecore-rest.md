@@ -1,5 +1,11 @@
 # SenseCore REST and ACP
 
+> **Configuration names on this page are partly retained Python reference**
+> (`container_execution`, `server/examples`, `EXPERIMENTCTL_*`, YAML executors). The
+> provider behavior still applies. Configure a native SenseCore backend from the
+> [native deployment guide](../rust/README.md#deploying-a-native-service) and
+> [its example](../rust/deploy/sensecore.example.json).
+
 GPU training and zero-GPU data-image copy use signed HTTPS REST requests.
 No SCO executable or fallback is used. Client Bearer auth, REST AK/SK and
 registry credentials are independent.
@@ -42,7 +48,7 @@ it never authorizes a second create.
 
 ## Cluster choice
 
-Read-only `GET /api/backends/sensecore/clusters?executor_id=ID` exposes the
+Retained Python reference (no native route): read-only `GET /api/backends/sensecore/clusters?executor_id=ID` exposes the
 configured workspace pools, reported remaining cards, SPOT allowance and debug
 labels. Snapshots are cached for 25 seconds; stale/unknown evidence is explicit.
 Reported allowance is not a promise of immediate allocation.

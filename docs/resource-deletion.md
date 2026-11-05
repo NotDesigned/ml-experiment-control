@@ -1,4 +1,27 @@
-# Delete a managed Run
+# Administrative maintenance and deletion
+
+## Native commands
+
+The operator enables this with `administration: true` in the deployment file. Each
+step is explicit:
+
+```sh
+ml-exp admin plan --submission SUBMISSION_ID --request-id 32_HEX_REQUEST_ID --kind outputs
+ml-exp admin show MAINTENANCE_ID
+ml-exp admin execute MAINTENANCE_ID --confirmation 'CONFIRMATION_RETURNED_BY_THE_API'
+ml-exp admin retire --project P --run R --confirmation 'CONFIRMATION_RETURNED_BY_THE_API'
+```
+
+`admin plan` prepares removal of one terminal Attempt's `outputs`, persistent `state`
+or one `checkpoint` (with `--checkpoint`). Datasets and source trees are out of
+scope. `admin retire` retires a terminal Run registration and keeps small audit
+records. Real provider cleanup remains pending acceptance; see the
+[acceptance status](rust-rewrite.md).
+
+## Retained Python reference: `run delete`
+
+The rest of this page describes the retired Python service. The native client has no
+`run delete` command, and these routes and settings are not native.
 
 `ml-exp run delete` prepares permanent administrative deletion of one exact managed
 Run, including all its Attempts. It requires the server's

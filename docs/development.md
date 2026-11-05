@@ -61,8 +61,8 @@ installer, deployment bundle and SHA256SUMS. Never replace an existing tag or
 asset. Version changes update the workspace and its six owned lockfile entries;
 third-party dependencies remain locked.
 
-Deploy only after checking active builds, submissions, transfers and publisher
-send boundaries. Preserve frozen definitions, private configuration, unknown
+Deploy with [the upgrade tool](operator-guide.md#upgrade-a-release), only after
+checking active builds, submissions, transfers and publisher send boundaries. Preserve frozen definitions, private configuration, unknown
 operations and existing worker hashes. A release does not require rebuilding old
 experiment images or restarting training. Retain small verification records,
 not duplicate build environments or unused installation archives.

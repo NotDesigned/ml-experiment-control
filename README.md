@@ -1,6 +1,7 @@
 # ML-experiment-control
 
-The default implementation on `main` is native Rust, released as **0.1.23**.
+The default implementation on `main` is native Rust. See the
+[latest release](https://github.com/NotDesigned/ml-experiment-control/releases/latest) for the current version.
 The client, API, worker and state machines are Rust programs; optional image
 build/copy operations retain a narrow Python bridge, and W&B uses its official
 SDK process. The HTTP protocol remains **2**.
@@ -12,14 +13,15 @@ Backend credentials and image builds stay on the server side.
 ## Install the native client
 
 Download `install-native.sh` from the
-[native release](https://github.com/NotDesigned/ml-experiment-control/releases/tag/native-v0.1.23).
+[latest native release](https://github.com/NotDesigned/ml-experiment-control/releases/latest).
 Clients are published for Linux x86_64/ARM64, macOS Intel/Apple Silicon and
 Windows x86_64. The API and worker deployment bundle targets Linux x86_64.
 
-Linux or macOS:
+Replace `X.Y.Z` with that release's version; the installer requires an exact
+version. Linux or macOS:
 
 ```sh
-bash install-native.sh --version 0.1.23
+bash install-native.sh --version X.Y.Z
 ~/.local/bin/ml-exp --url https://api.example/ml-expd config set --token-file /private/api-token
 ~/.local/bin/ml-exp check
 ~/.local/bin/ml-exp backend
@@ -28,7 +30,7 @@ bash install-native.sh --version 0.1.23
 Keep the token in a private file. Subsequent calls reuse the saved URL and token.
 `ml-exp update` selects the latest stable native release and refuses an
 automatic downgrade. Windows users download `install-native.ps1` from the same
-release and run `./install-native.ps1 -Version 0.1.23` in PowerShell.
+release and run `./install-native.ps1 -Version X.Y.Z` in PowerShell.
 
 Clients from 0.1.15 or earlier use the old executable/manifest name. Run the new
 installer once to switch to `ml-exp`; subsequent updates use `ml-exp update`.
@@ -40,8 +42,9 @@ Existing URL/token configuration remains valid and is not moved or overwritten.
 |---|---|
 | Run an experiment through an existing service | [Native usage guide](rust/README.md) |
 | Install and configure the service | [Native deployment](rust/README.md#deploying-a-native-service) |
-| Connect a client or enable a backend | [Native configuration](rust/README.md#client-configuration) |
-| Understand package and module boundaries | [Architecture and acceptance](docs/rust-rewrite.md) |
+| Connect a client or enable a backend | [Configuration](docs/configuration.md) |
+| Understand crates and module boundaries | [Architecture](docs/architecture.md) |
+| Check what has been accepted on real providers | [Acceptance status](docs/rust-rewrite.md) |
 | Develop or test changes | [Development](docs/development.md) |
 
 The [documentation index](docs/README.md) separates native guides from retained
@@ -64,8 +67,8 @@ Training and evaluation use the same mechanism. Experiment code defines metric
 meaning, checkpoint contents, recovery and model selection. The platform handles
 preparation, scheduling requests, evidence, transfer and result verification.
 
-Use `ml-exp --json check` to discover the installed versions, executors, base-image
-digests, capabilities and limits. HTTP protocol remains **2**. Advertised GPU
+Use `ml-exp check` to read the server version, protocol, capabilities and source
+limits, and `ml-exp backend` to list configured executors. Advertised GPU
 specifications do not guarantee immediate allocation. Image publication,
 scheduler success, training completion and downloadable results are separate
 facts; see [recovery](docs/recovery.md).

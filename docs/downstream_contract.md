@@ -1,5 +1,9 @@
 # Public core contract
 
+> **Retained Python reference.** This covers exports of the Python core library,
+> not a native interface. See the [native usage guide](../rust/README.md) and
+> [architecture](architecture.md).
+
 The stable root exports are listed in `experiment_control.__all__`. Hosts
 may import those names from their defining modules. The backend composition
 interfaces below are also supported in `backends`, `backends.base` and
