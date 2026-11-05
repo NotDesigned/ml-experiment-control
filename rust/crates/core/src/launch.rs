@@ -228,19 +228,6 @@ pub fn endpoint(value: &str) -> Result<Endpoint, Error> {
     })
 }
 
-pub fn validate_capability(token: &str) -> Result<(), Error> {
-    if token.is_empty()
-        || token.len() > 256
-        || !token
-            .bytes()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
-    {
-        Err(Error("invalid launch capability"))
-    } else {
-        Ok(())
-    }
-}
-
 pub fn verify(body: &[u8], endpoint: &Endpoint) -> Result<Manifest, Error> {
     verify_binding(
         body,

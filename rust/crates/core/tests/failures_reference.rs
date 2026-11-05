@@ -32,27 +32,11 @@ fn exact_attempt_failure_assessments_match_actual_python_reference() {
             assert!(result.is_err(), "{} unexpectedly accepted", case["name"]);
         } else {
             same_json(&result.unwrap(), &case["expected"], &case["name"]);
-            same_json(
-                &failures::structured_failure_summary(
-                    &case["collection"],
-                    decision,
-                    Some(&context),
-                )
-                .unwrap()
-                .unwrap_or(Value::Null),
-                &case["structured"],
-                &case["name"],
-            );
         }
-        assert!(
-            failures::structured_failure_summary(&case["collection"], decision, None)
-                .unwrap()
-                .is_none()
-        );
     }
 }
 #[test]
-fn evidence_compaction_digest_and_review_only_predicate_match_python() {
+fn evidence_compaction_and_digest_match_python() {
     let fixtures = fixtures();
     for case in fixtures["compact"].as_array().unwrap() {
         assert_eq!(failures::compact_evidence(&case["input"]), case["expected"]);
@@ -60,21 +44,6 @@ fn evidence_compaction_digest_and_review_only_predicate_match_python() {
             failures::evidence_digest(&case["input"]).unwrap(),
             case["digest"]
         );
-    }
-    for case in fixtures["review_only"].as_array().unwrap() {
-        assert_eq!(
-            failures::reviewable_unknown_retry(
-                &case["decision"],
-                case["approval"].as_str().unwrap(),
-                case["reason"].as_str()
-            ),
-            case["expected"].as_bool().unwrap()
-        );
-        assert!(!failures::reviewable_unknown_retry(
-            &case["decision"],
-            "automatic",
-            Some("approved")
-        ));
     }
 }
 #[test]

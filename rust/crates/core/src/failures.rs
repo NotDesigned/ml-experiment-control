@@ -1,13 +1,10 @@
 //! Pure failure evidence assessment. A producer's label alone is diagnostic;
 //! no retry, execution permission or provider fact is inferred from it.
-use crate::{
-    canonical,
-    metrics::{numeric_compare, python_string},
-};
+use crate::{canonical, metrics::python_string};
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::{Map, Number, Value, json};
-use std::{cmp::Ordering, collections::BTreeSet, str::FromStr, sync::OnceLock};
+use std::{collections::BTreeSet, str::FromStr, sync::OnceLock};
 use time::{
     OffsetDateTime, PrimitiveDateTime, UtcOffset,
     format_description::well_known::{Iso8601, Rfc3339},
@@ -143,33 +140,6 @@ pub fn compact_evidence(value: &Value) -> Value {
 }
 pub fn evidence_digest(payload: &Value) -> Result<String, canonical::CanonicalError> {
     canonical::protocol_identity(payload)
-}
-
-/// The legacy helper permits review of an unknown classification; this result
-/// is never authorization to retry or to execute any action.
-pub fn reviewable_unknown_retry(
-    decision: &Value,
-    resource_approval: &str,
-    operator_reason: Option<&str>,
-) -> bool {
-    fn integer(value: &Value) -> bool {
-        value
-            .as_number()
-            .is_some_and(|value| !value.to_string().contains(['.', 'e', 'E']))
-    }
-    let allowed = get(decision, "retries_allowed");
-    let used = decision.get("retries_used").cloned().unwrap_or(json!(0));
-    matches!(
-        or_string(get(decision, "action"), "")
-            .to_uppercase()
-            .as_str(),
-        "REVIEW_RETRY" | "DO_NOT_RETRY"
-    ) && or_string(get(decision, "failure_class"), "").to_lowercase() == "unknown"
-        && integer(allowed)
-        && integer(&used)
-        && matches!(numeric_compare(&used, allowed), Ok(Ordering::Less))
-        && resource_approval == "review_exact"
-        && operator_reason.is_none_or(|reason| !strip(reason).is_empty())
 }
 
 /// Numeric timestamps must be finite. Common ISO timestamps are parsed without
@@ -532,30 +502,4 @@ pub fn attempt_failure_evidence_assessment(
     Ok(
         json!({"failure_summary":summary,"diagnostic_evidence":compact_evidence(&Value::Array(diagnostics))}),
     )
-}
-
-/// Without applicability context the original wrapper returns no failure. Its
-/// legacy contract uses only common Attempt/start/observation fields; callers
-/// needing per-domain bindings use `attempt_failure_evidence_assessment`.
-pub fn structured_failure_summary(
-    collection: &Value,
-    decision: Option<&Value>,
-    context: Option<&AssessmentContext>,
-) -> Result<Option<Value>, FailureError> {
-    let Some(context) = context else {
-        return Ok(None);
-    };
-    let common = AssessmentContext {
-        attempt_id: context.attempt_id.clone(),
-        attempt_state: context.attempt_state.clone(),
-        attempt_started_at: context.attempt_started_at.clone(),
-        observed_at: context.observed_at.clone(),
-        naive_utc_offset_seconds: context.naive_utc_offset_seconds,
-        ..AssessmentContext::default()
-    };
-    let value = attempt_failure_evidence_assessment(collection, decision, &common)?;
-    Ok(value
-        .get("failure_summary")
-        .filter(|value| !value.is_null())
-        .cloned())
 }

@@ -16,8 +16,6 @@ use std::{
 
 use crate::directory::Directory;
 
-pub const READY_LIMIT: u64 = checkpoints::MANIFEST_LIMIT as u64;
-
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("checkpoint filesystem operation failed")]
@@ -37,14 +35,6 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub struct Verified {
     pub manifest: Manifest,
     pub generation: String,
-}
-
-pub fn read_ready(root: &Directory) -> Result<Manifest> {
-    let bytes = root.read_regular(OsStr::new("checkpoint.ready.json"), READY_LIMIT)?;
-    let value = serde_json::Value::Object(
-        ml_exp_core::json::mapping(&bytes).map_err(|_| checkpoints::Error::Manifest)?,
-    );
-    Ok(checkpoints::manifest(&value)?)
 }
 
 fn generation_directory(root: &Directory, generation: &str) -> Result<Directory> {

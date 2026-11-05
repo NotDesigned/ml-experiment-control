@@ -1,5 +1,5 @@
 //! Backend-neutral observational projections. Never refresh a provider or grant retries.
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 
 fn present(value: &Value) -> bool {
     match value {
@@ -71,76 +71,4 @@ pub fn sanitized_outward(value: &Value) -> Value {
         Value::Array(values) => Value::Array(values.iter().map(sanitized_outward).collect()),
         _ => value.clone(),
     }
-}
-
-pub fn record_progress(
-    previous: &Value,
-    phase: &str,
-    message: &str,
-    at: &str,
-    updated_unix: f64,
-    timeout: Option<&Value>,
-) -> Result<Value, &'static str> {
-    if !updated_unix.is_finite() {
-        return Err("invalid progress time");
-    }
-    let event = json!({"phase":phase,"message":message,"at":at});
-    let mut events = previous
-        .get("events")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    events.push(event.clone());
-    let from = events.len().saturating_sub(64);
-    Ok(
-        json!({"phase":phase,"message":message,"at":at,"updated_unix":updated_unix,"timeout_seconds":timeout,"events":events[from..]}),
-    )
-}
-
-pub fn progress_view(
-    value: &Value,
-    status: &str,
-    active: bool,
-    last_activity: Option<f64>,
-    now: f64,
-) -> Result<Value, &'static str> {
-    if !now.is_finite() || last_activity.is_some_and(|n| !n.is_finite()) {
-        return Err("invalid progress time");
-    }
-    let old = value.get("updated_unix").filter(|v| !v.is_null());
-    let mut updated = old.cloned();
-    if let Some(activity) = last_activity {
-        let previous = old.and_then(Value::as_f64).unwrap_or(0.0);
-        if !previous.is_finite() {
-            return Err("invalid stored progress time");
-        }
-        updated = Some(if previous >= activity {
-            old.filter(|v| truth(v)).cloned().unwrap_or(json!(0))
-        } else {
-            json!(activity)
-        });
-    }
-    let age = match updated.as_ref() {
-        Some(value) => {
-            let at = value.as_f64().ok_or("invalid stored progress time")?;
-            if !at.is_finite() {
-                return Err("invalid stored progress time");
-            }
-            let age = now - at;
-            Some(if age <= 0.0 { json!(0) } else { json!(age) })
-        }
-        None => None,
-    };
-    let stalled = active
-        && age
-            .as_ref()
-            .and_then(Value::as_f64)
-            .is_some_and(|n| n >= 120.0);
-    Ok(
-        json!({"status":status,"phase":if active {value.get("phase").cloned().unwrap_or(json!(status))} else {json!(status)},
-        "message":value.get("message"),"phase_started_at":value.get("at"),"last_progress_unix":updated,
-        "seconds_since_progress":age,"no_progress_warning":stalled,
-        "diagnostic":if stalled {Some("No recorded progress for at least 120 seconds; inspect logs. This does not prove failure; do not resubmit.")} else {None},
-        "phase_timeout_seconds":value.get("timeout_seconds"),"events":value.get("events").cloned().unwrap_or(json!([]))}),
-    )
 }

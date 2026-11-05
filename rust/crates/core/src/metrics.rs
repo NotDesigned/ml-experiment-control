@@ -102,43 +102,15 @@ impl MetricRecord {
         }
         Ok(())
     }
-
-    /// Identity includes variant, protocol, unit and curve/summary distinction.
-    /// This is a new in-memory comparison key, NOT a replacement frozen protocol hash.
-    pub fn context_key(&self) -> serde_json::Value {
-        serde_json::json!([
-            self.name,
-            self.unit,
-            self.protocol_id,
-            self.checkpoint_id,
-            self.dataset_id,
-            self.variant_id,
-            self.epoch,
-            self.step,
-            self.summary
-        ])
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn units_variants_protocols_and_summary_are_distinct() {
+    fn nonfinite_values_and_missing_units_are_rejected() {
         let mut a: MetricRecord = serde_json::from_value(serde_json::json!({"name":"custom/loss", "unit":"nats/token", "value": 2.0, "step": 3, "variant_id":"k0"})).unwrap();
         a.validate().unwrap();
-        let mut b = a.clone();
-        b.variant_id = Some("k4".into());
-        assert_ne!(a.context_key(), b.context_key());
-        b = a.clone();
-        b.summary = true;
-        assert_ne!(a.context_key(), b.context_key());
-        b = a.clone();
-        b.unit = "bits/raw byte".into();
-        assert_ne!(a.context_key(), b.context_key());
-        b = a.clone();
-        b.protocol_id = Some("different-protocol".into());
-        assert_ne!(a.context_key(), b.context_key());
         a.value = Some(f64::NAN);
         assert!(a.validate().is_err());
         a.value = None;

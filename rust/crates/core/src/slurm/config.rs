@@ -243,14 +243,3 @@ fn image_digest(value: &str) -> bool {
         .strip_prefix("sha256:")
         .is_some_and(|hash| hash.len() == 64 && hash.bytes().all(|c| c.is_ascii_hexdigit()))
 }
-
-/// Historical *storage* names are readable; `wyd` is not an executable backend.
-pub fn compatible_storage_kind(value: &str) -> bool {
-    matches!(value, "slurm" | "wyd")
-}
-
-pub fn delivery_requested(markers: &[String], asset_id: &str) -> bool {
-    markers
-        .iter()
-        .any(|value| value == &format!("slurm:{asset_id}") || value == &format!("wyd:{asset_id}"))
-}

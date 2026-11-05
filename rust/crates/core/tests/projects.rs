@@ -94,49 +94,6 @@ fn contradictory_or_missing_path_facts_fail_without_inventing_resolution() {
     );
 }
 #[test]
-fn paths_use_only_explicitly_approved_daemon_storage() {
-    let definition=ProjectDefinition::from_value(&json!({"project":"demo","title":"","run_roots":["runs","runs","/absolute/../retained"],"base_dir":"/untrusted","authored_file":"/untrusted/file","daemon_run_root":"/untrusted/checkpoints"})).unwrap();
-    let manifest = path(
-        "/approved/repo/experiments/project.yaml",
-        "/approved/repo/experiments/project.yaml",
-    );
-    let plan = projects::project_paths(&definition, &manifest).unwrap();
-    assert_eq!(plan.base_dir, "/approved/repo");
-    assert_eq!(
-        plan.run_roots,
-        vec![
-            "/approved/repo/runs",
-            "/approved/repo/runs",
-            "/absolute/../retained"
-        ]
-    );
-    assert!(projects::project_layout(&definition, &manifest, &[], None).is_err());
-    let evidence = [
-        path("/approved/repo/runs", "/approved/repo/runs"),
-        path("/absolute/../retained", "/retained"),
-    ];
-    let layout = projects::project_layout(&definition, &manifest, &evidence, None).unwrap();
-    assert_eq!(
-        layout.run_roots,
-        vec!["/approved/repo/runs", "/absolute/../retained"]
-    );
-    assert!(
-        !definition
-            .to_value()
-            .as_object()
-            .unwrap()
-            .contains_key("daemon_run_root")
-    );
-    let layout = projects::project_layout(
-        &definition,
-        &manifest,
-        &evidence,
-        Some(&path("/daemon", "/daemon")),
-    )
-    .unwrap();
-    assert_eq!(layout.run_roots.last().unwrap(), "/daemon");
-}
-#[test]
 fn schema_values_are_not_scientific_or_execution_authority() {
     let definition=ProjectDefinition::from_value(&json!({"project":"demo","title":"","run_roots":[],"campaigns":[{"name":"c","file":"campaign.yaml","current_revision":{"campaign":"c","project":"demo","revision_id":"arbitrary-authored-string","file":"not-yet-read"}}],"controller":{"python":"/untrusted/interpreter","experimentctl":"/untrusted/tool"},"metrics_schema":{"definitions":{"token":{"unit":"nats/token","required_when":null},"password":{"unit":"bits/raw byte"}}}})).unwrap();
     assert_eq!(

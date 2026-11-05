@@ -1,6 +1,6 @@
-//! Authored schema validation and path planning only. Campaign file contents
-//! must be loaded and bound by a separate shell; these plans authorize no I/O.
-use super::{Error, PathEvidence, Result};
+//! Authored schema validation only. Campaign file contents must be loaded and
+//! bound by a separate shell; this authorizes no I/O.
+use super::{Error, Result};
 use crate::{identity, metrics::MetricSchema};
 use serde_json::{Map, Number, Value, json};
 use std::collections::BTreeSet;
@@ -299,94 +299,4 @@ fn path_string(value: &str) -> String {
     } else {
         format!("{prefix}{joined}")
     }
-}
-
-pub struct ProjectPaths {
-    pub base_dir: String,
-    pub authored_file: String,
-    pub run_roots: Vec<String>,
-}
-pub struct ProjectLayout {
-    pub base_dir: String,
-    pub authored_file: String,
-    pub run_roots: Vec<String>,
-}
-/// Return unresolved candidates. Callers resolve and approve each before using
-/// them; neither authored base_dir nor daemon_run_root confers authority.
-pub fn project_paths(
-    definition: &ProjectDefinition,
-    manifest: &PathEvidence,
-) -> Result<ProjectPaths> {
-    manifest.validate()?;
-    let (parent, _) = manifest
-        .canonical_absolute
-        .rsplit_once('/')
-        .ok_or(Error::Path)?;
-    let parent = if parent.is_empty() { "/" } else { parent };
-    let base = if parent.rsplit('/').next() == Some("experiments") {
-        parent
-            .rsplit_once('/')
-            .map(|(p, _)| if p.is_empty() { "/" } else { p })
-            .unwrap_or("/")
-    } else {
-        parent
-    };
-    let roots = definition
-        .run_roots()
-        .map(|root| {
-            if root.starts_with('/') {
-                path_string(root)
-            } else {
-                path_string(&format!("{base}/{root}"))
-            }
-        })
-        .collect();
-    Ok(ProjectPaths {
-        base_dir: base.into(),
-        authored_file: manifest.canonical_absolute.clone(),
-        run_roots: roots,
-    })
-}
-pub fn project_layout(
-    definition: &ProjectDefinition,
-    manifest: &PathEvidence,
-    resolved_run_roots: &[PathEvidence],
-    daemon_run_root: Option<&PathEvidence>,
-) -> Result<ProjectLayout> {
-    let paths = project_paths(definition, manifest)?;
-    let mut roots = Vec::new();
-    let mut seen = BTreeSet::new();
-    for (requested, authored) in paths.run_roots.iter().zip(definition.run_roots()) {
-        let matching = resolved_run_roots
-            .iter()
-            .filter(|p| &p.provided == requested)
-            .collect::<Vec<_>>();
-        let first = matching.first().ok_or(Error::PathEvidence)?;
-        first.validate()?;
-        if matching.iter().any(|path| *path != *first) {
-            return Err(Error::PathEvidence);
-        }
-        // Absolute authored paths are deliberately not resolved by Python's
-        // resolved_run_roots; preserve their lexical form, while still requiring
-        // explicit shell approval before any caller performs filesystem I/O.
-        let path = if authored.starts_with('/') {
-            requested.clone()
-        } else {
-            first.canonical_absolute.clone()
-        };
-        if seen.insert(path.clone()) {
-            roots.push(path);
-        }
-    }
-    if let Some(path) = daemon_run_root {
-        path.validate()?;
-        if seen.insert(path.canonical_absolute.clone()) {
-            roots.push(path.canonical_absolute.clone());
-        }
-    }
-    Ok(ProjectLayout {
-        base_dir: paths.base_dir,
-        authored_file: paths.authored_file,
-        run_roots: roots,
-    })
 }

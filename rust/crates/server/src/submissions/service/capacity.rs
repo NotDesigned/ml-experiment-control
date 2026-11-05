@@ -50,7 +50,6 @@ impl Service {
             let plan = ml_exp_core::slurm::allocation_plan(
                 &ml_exp_core::slurm::SshConnection {
                     ssh_binary: backend.ssh.ssh_binary.to_string_lossy().into_owned(),
-                    rsync_binary: "rsync".into(),
                     alias: backend.ssh.target_alias.clone(),
                     control_path: None,
                 },
