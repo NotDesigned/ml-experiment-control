@@ -24,6 +24,19 @@ from ml_exp_server.projects.source_revisions import _tree_digest
 
 
 class NativeBridge(unittest.TestCase):
+    def test_dsw_docker_hub_receipt_accepts_engine_normalization_only_for_same_repository(self):
+        from ml_exp_worker.dsw_build_worker import published_image
+        sha = '@sha256:' + 'a' * 64
+        for name in ('team/runtime', 'docker.io/team/runtime', 'index.docker.io/team/runtime', 'registry-1.docker.io/team/runtime'):
+            self.assertEqual(published_image('docker.io/team/runtime', [name + sha]), 'docker.io/team/runtime' + sha)
+        self.assertEqual(published_image('registry.example/team/runtime', ['registry.example/team/runtime' + sha]), 'registry.example/team/runtime' + sha)
+        for names in ([], ['other/runtime' + sha], ['team/runtime' + sha, 'team/runtime' + sha],
+                      ['team/runtime' + sha, 'team/runtime@sha256:' + 'b' * 64]):
+            with self.assertRaises(ValueError):
+                published_image('docker.io/team/runtime', names)
+        with self.assertRaises(ValueError):
+            published_image('registry.example/team/runtime', ['team/runtime' + sha])
+
     def test_docker_hub_login_alias_uses_distribution_host_and_keeps_image_name(self):
         from ml_exp_server.data.registry_transport import Registry
         with tempfile.TemporaryDirectory() as directory:
