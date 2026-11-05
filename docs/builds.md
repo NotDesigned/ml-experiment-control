@@ -10,8 +10,8 @@ can be used by any configured training backend.
 ## Dockerfile contract
 
 Clients upload code with a Dockerfile. The server validates it, appends frozen
-source at `/workspace` plus the trusted worker, and publishes the resulting
-image. The client does not upload a prebuilt Docker image through this workflow.
+source at `/ml-expd/source`, which becomes the working directory, plus the trusted
+worker at `/usr/local/bin/ml-exp-worker-rs`, and publishes the resulting image. The client does not upload a prebuilt Docker image through this workflow.
 `GET /api/environments` lists approved pinned bases, not alternative builders.
 
 ```dockerfile
@@ -33,8 +33,23 @@ Dockerfile size is at most 256 KiB; `ml-expd-build-internal` is reserved.
 See [platform checks](platform-checks.md) for the distinction between user
 requirements, implementation limits and additional platform policies under review.
 
-The final image needs Python 3.10+, `/bin/sh`, GNU `timeout`, permission to create
-`/inputs` and `/outputs`, and access to the configured backend mount/workdir.
+The final image does not need Python to train: jobs start the statically linked
+worker, or on Slurm without a managed worker the Run's `command` directly, so training
+code can use any language the image provides. The appended layer runs `chmod` through a shell, so the final stage needs
+`/bin/sh` and `chmod`. SenseCore ACP wraps the job in
+`timeout --signal=TERM --kill-after=30s`, so ACP images need a `timeout` accepting
+those options, such as GNU coreutils. Slurm managed I/O binds `/inputs` and
+`/outputs` into the image, and every backend needs access to its configured
+mount/workdir.
+
+`python3` must be on the image's `PATH` only for these optional jobs. The native code
+checks no minimum version.
+
+- A separate PAI CPU data materialization, which runs on a READY Runtime image.
+  Inline PAI preparation in the training job uses only the worker.
+- A read-only PAI diagnostic, which reuses the original job's image.
+- A `data_preparation` script, unless its `interpreter` names something else.
+
 Managed ENTRYPOINT/CMD replace client startup commands; configure scientific
 argv with Runtime `entrypoint` and Run `arguments`. Code is copied into the
 image, never overlaid by a second checkout on Slurm. The CPU data-copy base
@@ -99,9 +114,20 @@ Configure the private image builder, not a DLC training executor:
 }
 ```
 
-Merge this with the common peer UID/GID, source/state root and socket settings
-from [image-builder.json](../server/examples/image-builder.json). Omit local
-BuildKit options in DSW mode. PAI API credentials remain private;
+Merge this with the common peer UID/GID, source/state root and socket settings,
+replacing each example value:
+
+```json
+{
+  "socket": "/run/ml-expd-builder/builder.sock",
+  "client_uid": 10000,
+  "client_gid": 10000,
+  "state_root": "/var/lib/ml-expd-builder",
+  "source_root": "/srv/ml-expd/projects/source-revisions/sources"
+}
+```
+
+Omit local BuildKit options in DSW mode. PAI API credentials remain private;
 MCP upload/exec uses an isolated CLI profile. Signed REST creates, queries,
 stops and deletes only the owned instance. No public Docker port is exposed.
 
@@ -178,18 +204,21 @@ accepted without another build. Expiry or an absent receipt alone grants no
 retry. A DSW retry additionally requires its owned cleanup lease, exact absence
 from native Get/List and registry 404, all rechecked under the bundle lock.
 
-For SenseCore consuming a different private registry, configure matching
-`sensecore_mirror` on the builder and
-`container_execution.sensecore_image_mirror` on the API. Their fields are
-`source_repository` and `target_repository`. Staging streams a digest-preserving
-copy to CCR and verifies it before scheduling; repeated requests reuse it.
-Image layers do not accumulate on the API disk. Old frozen image/delivery
-references remain unchanged.
+The daemon asks for a same-digest CCR copy of every Runtime built for a SenseCore
+executor, so configure `sensecore_mirror` on the builder. Its fields are
+`target_repository`, plus `source_repository` when the source differs from the main
+`repository`, and optional `target_auth_hosts` and `target_blob_hosts`. The builder
+copies with Skopeo and verifies the digest; repeated requests reuse the copy. No API
+setting is involved, and image layers do not pass through the API disk. Old frozen
+image/delivery references remain unchanged.
 
 ## Local BuildKit storage
 
-Set `build_storage_path` to the local Docker state filesystem when using the
-local publisher. The builder checks free bytes and inodes before downloading
+The local publisher uses `"publisher": "buildkit"` with the same `repository`,
+`registry_auth_file`, `allow_dockerfile_builds` and `timeout_seconds` settings as
+above, plus `docker` and `skopeo` executable paths (for example `/usr/bin/docker`,
+`/usr/bin/skopeo`). Set `build_storage_path` to the local Docker state filesystem,
+for example `/var/lib/docker`. The builder checks free bytes and inodes before downloading
 layers. Build logs distinguish space exhaustion from registry or build errors.
 Remote Docker probes, blob relays and desktop cache helpers are no longer
 provided.

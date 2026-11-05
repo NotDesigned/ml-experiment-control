@@ -16,7 +16,7 @@ records.
 5. [Persistent checkpoints](persistent-checkpoints.md): complete state and explicit restore.
 6. [Metrics](metrics.md): curves, comparison results, units and protocol identity.
 7. [W&B](wandb.md): optional server publication and per-Run destinations.
-8. [Local metrics](local-metrics.md): attach an existing local JSONL stream through the native client.
+8. [Local metrics](metrics.md#attach-metrics-from-local-training): attach an existing local JSONL stream through the native client.
 9. [Recovery](recovery.md): failed stages, uncertain requests and output collection.
 10. [Debug sessions](debug-sessions.md): temporary CCI/DSW SSH machines.
 11. [Administrative maintenance](resource-deletion.md): reviewed removal of outputs, state and Run registrations.
@@ -33,11 +33,12 @@ with declared inputs and metrics.
 - [PAI](pai.md): DLC training, CPFS/OSS and an optional DSW builder.
 - [SenseCore](sensecore-rest.md): REST, cluster choice and job diagnostics.
 - [Builds](builds.md): Dockerfile rules, publishers, cache and capacity.
-- [Project lifecycle](project_lifecycle.md): registration, pause and archive.
+- [Project lifecycle](operator-guide.md#project-registration-and-lifecycle): registration, pause and archive.
+- [Action storage](action-storage.md): the authoritative SQLite store and its backup.
 
 ## Integrate or develop
 
-- [API resource reference](source-api.md): resources, identities and diagnostic endpoints.
+- [API resource reference](http_contract.md#api-resource-reference): resources, identities and diagnostic endpoints.
 - [HTTP contract](http_contract.md): auth, protocol 2 and errors.
 - [Backend capabilities](backends.md): matching and server preparation contracts.
 - [Architecture](architecture.md): crates, module boundaries and execution locations.
@@ -46,12 +47,7 @@ with declared inputs and metrics.
 - [Platform checks](platform-checks.md): requirements, limits and policies.
 - [Development](development.md): tests, CI and releases.
 
-## Retained Python reference
+## Retired Python service
 
-These describe retained Python packages and migration; their commands and
-configuration are not the native interface.
-
-- [Two-machine example](two-machine-quickstart.md): retired Python API and client install.
-- [Core integration](library-integration.md) and [downstream contract](downstream_contract.md): Python core library.
-- [Action storage](action-storage.md): storage notes and offline migration commands.
-- [Client package README](../client/README.md): retained Python client.
+Tag `v1.5.1` preserves the Python service, its packages and its documentation. Its
+commands and configuration are not the native interface.

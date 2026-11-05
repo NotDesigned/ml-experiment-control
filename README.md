@@ -47,9 +47,10 @@ Existing URL/token configuration remains valid and is not moved or overwritten.
 | Check what has been accepted on real providers | [Acceptance status](docs/rust-rewrite.md) |
 | Develop or test changes | [Development](docs/development.md) |
 
-The [documentation index](docs/README.md) separates native guides from retained
-Python reference documentation. Read the [migration status](docs/rust-rewrite.md)
-before upgrading existing state; never initialize a registry over production data.
+The [documentation index](docs/README.md) lists every guide. Tag `v1.5.1` preserves
+the retired Python service and its documentation. Read the
+[migration status](docs/rust-rewrite.md) before upgrading existing state; never
+initialize a registry over production data.
 
 ## Workflow and responsibilities
 
@@ -82,8 +83,8 @@ facts; see [recovery](docs/recovery.md).
 - `rust/crates/worker`: in-image execution, checkpoints, metrics and result collection.
 - `rust/`: shared credential redaction and workspace configuration.
 
-The retained `client/`, `server/`, `worker/` and `src/` Python packages are
-reference/bridge sources, not the default client or API installation path.
+The optional image-build bridge and W&B effect shell stay in Python, alongside
+release and upgrade tooling. None of these is a client or API installation path.
 
 W&B is an [optional server integration](docs/wandb.md). Platform metrics work
 without it. Temporary [CCI/DSW debug sessions](docs/debug-sessions.md) are separate

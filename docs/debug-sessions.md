@@ -120,7 +120,7 @@ Configure machines in the cloud configuration's `debug` block: `enabled`,
 REST transports are reused; no `sco` command is invoked. Existing records retain
 their frozen profile for cleanup.
 
-The field lists below come from the retained Python profile format. Check the
+The field lists below come from the retired Python profile format. Check the
 native field names against `rust/crates/core/src/cloud/debug.rs` before relying on them.
 
 DSW native fields:
