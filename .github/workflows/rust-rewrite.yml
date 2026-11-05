@@ -74,6 +74,7 @@ jobs:
         env:
           PYTHONPATH: server/src:src:worker/src
         run: python rust/tests/test_native_build_bridge.py
+      - run: python rust/tests/test_materialization_launcher.py
 
   client-platforms:
     env:

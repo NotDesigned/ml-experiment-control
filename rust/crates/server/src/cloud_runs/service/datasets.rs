@@ -18,6 +18,8 @@ pub(super) struct Saved {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) copy_runtime: Option<ml_exp_core::cloud::run::Runtime>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) copy_intent: Option<ml_exp_core::cloud::Job>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) copy_storage: Option<ml_exp_core::cloud::launch::StorageLayout>,
     #[serde(default)]
     pub(super) copy_status: Option<Value>,
@@ -154,6 +156,50 @@ impl Service {
             {
                 return Err(cloud::Error::evidence());
             }
+            let job = saved
+                .copy_intent
+                .as_ref()
+                .ok_or_else(cloud::Error::evidence)?;
+            let config: ml_exp_core::datasets::import::Config =
+                serde_json::from_str(job.command.get(5).ok_or_else(cloud::Error::evidence)?)
+                    .map_err(|_| cloud::Error::evidence())?;
+            let channel =
+                serde_json::from_str(job.command.get(6).ok_or_else(cloud::Error::evidence)?)
+                    .map_err(|_| cloud::Error::evidence())?;
+            let storage = saved
+                .copy_storage
+                .as_ref()
+                .ok_or_else(cloud::Error::evidence)?;
+            if config.project != project
+                || config.target != backend.definition.target()?
+                || config.root != backend.definition.data_root()?
+                || config.definition != saved.state.definition
+            {
+                return Err(cloud::Error::evidence());
+            }
+            let mut expected = ml_exp_core::cloud::data::materialization_job(
+                runtime,
+                &config,
+                &channel,
+                storage,
+                saved
+                    .copy_request_id
+                    .as_deref()
+                    .ok_or_else(cloud::Error::evidence)?,
+            )
+            .map_err(|_| cloud::Error::evidence())?;
+            // Launcher bytes and scoped channels belong to the original intent,
+            // not the current API executable or current public URL.
+            expected.command[3] = job
+                .command
+                .get(3)
+                .ok_or_else(cloud::Error::evidence)?
+                .clone();
+            if expected != *job {
+                return Err(cloud::Error::evidence());
+            }
+        } else if saved.copy_intent.is_some() {
+            return Err(cloud::Error::evidence());
         }
         Ok(Some(saved))
     }
@@ -250,6 +296,7 @@ impl Service {
                     copy_request_id: None,
                     copy_storage: None,
                     copy_runtime: None,
+                    copy_intent: None,
                     copy_status: None,
                     diagnostic: None,
                     import_source: None,

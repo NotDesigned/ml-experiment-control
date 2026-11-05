@@ -942,6 +942,7 @@ mod schema_tests {
                 || path.starts_with("/api/submissions/")
                     && path != "/api/submissions/{identity}"
                     && !path.contains("/artifacts")
+                    && path != "/api/submissions/{action}/sync/{request}"
             {
                 assert_eq!(operations.as_object().unwrap().len(), 1);
                 assert!(operations.get("post").is_some());

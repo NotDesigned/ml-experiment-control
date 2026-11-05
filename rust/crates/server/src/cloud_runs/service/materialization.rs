@@ -52,6 +52,37 @@ impl Service {
                 saved.copy_runtime = Some(runtime);
                 saved.copy_request_id = Some(request_id.into());
                 saved.copy_storage = Some(backend.definition.storage_layout()?);
+                let config = Config {
+                    root: backend.definition.data_root()?,
+                    target: backend.definition.target()?,
+                    project: project.into(),
+                    definition: saved.state.definition.clone(),
+                    source: Source::DatasetParts {
+                        channel: self.data_channel(project, executor, asset)?,
+                    },
+                    timeout_seconds: 3600,
+                };
+                let channel = self
+                    .exchange
+                    .as_ref()
+                    .ok_or_else(cloud::Error::configuration)?
+                    .dataset_channel(&self.workspace, project, executor, asset, "ready")?;
+                saved.copy_intent = Some(
+                    ml_exp_core::cloud::data::materialization_job(
+                        saved
+                            .copy_runtime
+                            .as_ref()
+                            .ok_or_else(cloud::Error::evidence)?,
+                        &config,
+                        &channel,
+                        saved
+                            .copy_storage
+                            .as_ref()
+                            .ok_or_else(cloud::Error::evidence)?,
+                        request_id,
+                    )
+                    .map_err(|_| cloud::Error::evidence())?,
+                );
                 // Both identity and resource intent precede outbox/provider effects.
                 lock.validate()?;
                 self.slots
@@ -63,35 +94,7 @@ impl Service {
             }
             saved
         };
-        let config = Config {
-            root: backend.definition.data_root()?,
-            target: backend.definition.target()?,
-            project: project.into(),
-            definition: saved.state.definition.clone(),
-            source: Source::DatasetParts {
-                channel: self.data_channel(project, executor, asset)?,
-            },
-            timeout_seconds: 3600,
-        };
-        let channel = self
-            .exchange
-            .as_ref()
-            .ok_or_else(cloud::Error::configuration)?
-            .dataset_channel(&self.workspace, project, executor, asset, "ready")?;
-        let job = ml_exp_core::cloud::data::materialization_job(
-            saved
-                .copy_runtime
-                .as_ref()
-                .ok_or_else(cloud::Error::evidence)?,
-            &config,
-            &channel,
-            saved
-                .copy_storage
-                .as_ref()
-                .ok_or_else(cloud::Error::evidence)?,
-            request_id,
-        )
-        .map_err(|_| cloud::Error::evidence())?;
+        let job = saved.copy_intent.ok_or_else(cloud::Error::evidence)?;
         let check = || self.project_hash(project).map(|_| ());
         let allocation = ml_exp_core::cloud::pai::Allocation::Guaranteed;
         self.sync_outbox

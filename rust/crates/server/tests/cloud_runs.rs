@@ -301,6 +301,191 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     assert_eq!(catalog["datasets"][0]["status"], "UPLOADING");
     assert_eq!(catalog["datasets"][0]["received_parts"], 0);
     assert_eq!(fs::read(&dataset_file).unwrap(), dataset_bytes);
+    // A real store compiles the full worker package, including all 303 hashes.
+    // These are synthetic receipt fixtures, not claims about a provider tree.
+    let definition = ml_exp_core::datasets::Definition {
+        sha256: "e".repeat(64),
+        archive_bytes: 1024 * 1024,
+        files: (0..303)
+            .map(|i| ml_exp_core::artifacts::FileReceipt {
+                path: format!("dataset/full-inventory/part-{i:04}.bin"),
+                bytes: 128,
+                sha256: "f".repeat(64),
+            })
+            .collect(),
+    };
+    let mut ready = ml_exp_core::datasets::State::new(
+        "demo".into(),
+        dataset.target.clone(),
+        definition.clone(),
+    )
+    .unwrap();
+    ready.parts.insert(
+        0,
+        ml_exp_core::multipart::PartRecord {
+            bytes: definition.archive_bytes,
+            sha256: "d".repeat(64),
+        },
+    );
+    let receipt = ml_exp_core::datasets::Receipt {
+        contract: ml_exp_core::datasets::CONTRACT.into(),
+        project: "demo".into(),
+        target: ready.target.clone(),
+        asset_id: ready.asset_id.clone(),
+        definition: definition.clone(),
+        root: format!(
+            "/mnt/workspace/ml-expd/datasets/demo/{}/tree",
+            ready.asset_id
+        ),
+    };
+    ready = ready.publish(receipt).unwrap();
+    let ready_file = registry.join("cloud-submissions/slots").join(format!(
+        "dataset-{}.json",
+        ml_exp_core::canonical::digest(&json!(["demo", "pai-h200", ready.asset_id])).unwrap()
+    ));
+    private(&ready_file, &json!({"state":ready,"archive_verified":true}));
+    let mut large = request.clone();
+    large.run_id = "full-inventory".into();
+    large.data = vec![ml_exp_core::datasets::Input {
+        asset_id: ready.asset_id.clone(),
+        name: "data".into(),
+    }];
+    service
+        .create_run("demo", large, "2026-10-29T00:00:00Z")
+        .unwrap();
+    let large_plan = service
+        .prepare(
+            "demo",
+            "full-inventory",
+            Approval {
+                max_gpu_hours: 1.,
+                reason: String::new(),
+            },
+            "2026-10-29T00:01:00Z",
+            "2026-10-29T01:01:00Z",
+            &"8".repeat(32),
+        )
+        .unwrap();
+    let large_slot = registry.join("cloud-submissions/slots").join(format!(
+        "{}.json",
+        ml_exp_core::first_submission::native::attempt_slot(
+            "demo",
+            "full-inventory",
+            "attempt-001"
+        )
+        .unwrap()
+    ));
+    let stored: Value = serde_json::from_slice(&fs::read(large_slot).unwrap()).unwrap();
+    let execution: ml_exp_core::cloud::action::Execution =
+        serde_json::from_value(stored["execution"].clone()).unwrap();
+    let package = execution.package().unwrap();
+    assert_eq!(package.config.datasets[0].receipt.definition, definition);
+    assert!(package.imports.is_empty());
+    assert!(serde_json::to_vec(&package).unwrap().len() <= 65536);
+    let ready_bytes = fs::read(&ready_file).unwrap();
+    // Simulate a stop after the complete copy intent was saved but before its
+    // outbox entry. A later API URL or launcher must not rebuild this command.
+    let storage: ml_exp_core::cloud::launch::StorageLayout =
+        serde_json::from_value(frozen["native_cloud"]["storage"].clone()).unwrap();
+    let channel = ml_exp_core::datasets::import::DataChannel {
+        url: format!(
+            "https://previous.example/api/dataset-exchange/demo/pai-h200/{}",
+            ready.asset_id
+        ),
+        token: "9".repeat(64),
+    };
+    let import = ml_exp_core::datasets::import::Config {
+        root: storage.datasets.to_string_lossy().into(),
+        target: ready.target.clone(),
+        project: "demo".into(),
+        definition: definition.clone(),
+        source: ml_exp_core::datasets::import::Source::DatasetParts {
+            channel: channel.clone(),
+        },
+        timeout_seconds: 3600,
+    };
+    let mut copy = ml_exp_core::cloud::data::materialization_job(
+        &runtime,
+        &import,
+        &channel,
+        &storage,
+        &"7".repeat(32),
+    )
+    .unwrap();
+    copy.command[3] = "# original frozen launcher\n".to_owned() + &copy.command[3];
+    let frozen_copy = json!({"state":ready,"archive_verified":true,"copy_runtime":runtime,"copy_storage":storage,"copy_request_id":"7".repeat(32),"copy_intent":copy});
+    private(&ready_file, &frozen_copy);
+    let intent_bytes = fs::read(&ready_file).unwrap();
+    let restarted = open();
+    assert_eq!(
+        restarted
+            .dataset_state("demo", "pai-h200", &ready.asset_id)
+            .unwrap()["runtime_id"],
+        runtime.runtime_id
+    );
+    assert_eq!(fs::read(&ready_file).unwrap(), intent_bytes);
+    let outbox = ml_exp_server::backends::cloud::outbox::Outbox::open(
+        &registry.join("cloud-submissions/sync-effects"),
+    )
+    .unwrap();
+    assert!(outbox.optional_status(&copy).unwrap().is_none());
+    outbox
+        .prepare(
+            &ml_exp_server::backends::cloud::adapter::Profile::Pai(profile.clone()),
+            &copy,
+            pai::Allocation::Guaranteed,
+            &|| Ok(()),
+        )
+        .unwrap();
+    assert_eq!(outbox.status(&copy).unwrap()["retry_safe"], true);
+    // Preparation after the simulated crash retains exactly the original Job.
+    assert_eq!(
+        restarted
+            .dataset_state("demo", "pai-h200", &ready.asset_id)
+            .unwrap()["materialization"],
+        "READY"
+    );
+    let mut missing_intent = frozen_copy.clone();
+    missing_intent
+        .as_object_mut()
+        .unwrap()
+        .remove("copy_intent");
+    private(&ready_file, &missing_intent);
+    assert!(
+        restarted
+            .dataset_state("demo", "pai-h200", &ready.asset_id)
+            .is_err()
+    );
+    fs::write(&ready_file, &ready_bytes).unwrap();
+    let mut absent = ready.clone();
+    absent.ready = None;
+    private(
+        &ready_file,
+        &json!({"state":absent,"archive_verified":true}),
+    );
+    assert!(
+        service
+            .for_run("demo", "full-inventory", "2026-10-29T00:02:00Z")
+            .is_err()
+    );
+    let mut partial = ready.clone();
+    partial.parts.clear();
+    private(
+        &ready_file,
+        &json!({"state":partial,"archive_verified":true}),
+    );
+    assert!(
+        service
+            .for_run("demo", "full-inventory", "2026-10-29T00:02:00Z")
+            .is_err()
+    );
+    fs::write(&ready_file, ready_bytes).unwrap();
+    assert_eq!(
+        service
+            .for_run("demo", "full-inventory", "2026-10-29T00:02:00Z")
+            .unwrap()["submission_id"],
+        large_plan["submission_id"]
+    );
     assert!(
         serde_json::from_slice::<Value>(&fs::read(&cpu_manifest).unwrap()).unwrap()["native_cloud"]
             .get("storage")
