@@ -33,7 +33,7 @@ jobs:
 
   native:
     needs: plan
-    if: always() && (github.event_name != 'push' || needs.plan.outputs.full == 'true')
+    if: ${{ !cancelled() && (github.event_name != 'push' || needs.plan.outputs.full == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -59,7 +59,7 @@ jobs:
 
   image-effects:
     needs: plan
-    if: always() && (github.event_name != 'push' || needs.plan.outputs.full == 'true')
+    if: ${{ !cancelled() && (github.event_name != 'push' || needs.plan.outputs.full == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
@@ -82,7 +82,7 @@ jobs:
     env:
       RUSTFLAGS: ${{ matrix.target == 'x86_64-pc-windows-msvc' && '-C target-feature=+crt-static -C link-arg=/Brepro' || '' }}
     needs: plan
-    if: always() && (github.event_name != 'push' || needs.plan.outputs.full == 'true')
+    if: ${{ !cancelled() && (github.event_name != 'push' || needs.plan.outputs.full == 'true') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
@@ -111,6 +111,8 @@ jobs:
             ~/.cargo/git
             .ops/cargo-target
           key: native-client-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: |
+            native-client-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-
       - if: runner.os == 'Linux'
         run: sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
       - if: runner.os == 'macOS'
