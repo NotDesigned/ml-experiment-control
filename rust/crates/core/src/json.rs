@@ -1,11 +1,10 @@
 //! Strict JSON remains JSON: YAML style and scalar resolution are irrelevant.
 const MAX_DEPTH: usize = 64;
-const MAX_NODES: usize = 100_000;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
     #[error("JSON is malformed or not one mapping")]
     Malformed,
-    #[error("JSON exceeds its depth or node bound")]
+    #[error("JSON exceeds its depth bound")]
     Complexity,
     #[error("JSON contains duplicate or invalid mapping keys")]
     MappingKey,
@@ -17,22 +16,13 @@ use serde_json::{Map, Value, value::RawValue};
 use std::fmt;
 
 pub fn mapping(bytes: &[u8]) -> Result<Map<String, Value>, Error> {
-    if bytes.len() > 4 * 1024 * 1024 {
-        return Err(Error::Complexity);
-    }
     let text = std::str::from_utf8(bytes).map_err(|_| Error::Malformed)?;
-    let mut remaining = MAX_NODES;
-    match value(text, 0, &mut remaining)? {
+    match value(text, 0)? {
         Value::Object(map) => Ok(map),
         _ => Err(Error::Malformed),
     }
 }
-fn consume(remaining: &mut usize) -> Result<(), Error> {
-    *remaining = remaining.checked_sub(1).ok_or(Error::Complexity)?;
-    Ok(())
-}
-fn value(text: &str, depth: usize, remaining: &mut usize) -> Result<Value, Error> {
-    consume(remaining)?;
+fn value(text: &str, depth: usize) -> Result<Value, Error> {
     if depth > MAX_DEPTH {
         return Err(Error::Complexity);
     }
@@ -42,7 +32,6 @@ fn value(text: &str, depth: usize, remaining: &mut usize) -> Result<Value, Error
         let mut failure = None;
         let visitor = Container {
             depth,
-            remaining,
             failure: &mut failure,
         };
         let result = if first == Some(&b'{') {
@@ -64,7 +53,6 @@ fn value(text: &str, depth: usize, remaining: &mut usize) -> Result<Value, Error
 }
 struct Container<'a> {
     depth: usize,
-    remaining: &'a mut usize,
     failure: &'a mut Option<Error>,
 }
 impl<'de> Visitor<'de> for Container<'_> {
@@ -75,7 +63,7 @@ impl<'de> Visitor<'de> for Container<'_> {
     fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> Result<Value, A::Error> {
         let mut result = Vec::new();
         while let Some(raw) = sequence.next_element::<&RawValue>()? {
-            let item = value(raw.get(), self.depth + 1, self.remaining).map_err(|error| {
+            let item = value(raw.get(), self.depth + 1).map_err(|error| {
                 *self.failure = Some(error);
                 de::Error::custom("metadata policy refused value")
             })?;
@@ -86,16 +74,12 @@ impl<'de> Visitor<'de> for Container<'_> {
     fn visit_map<A: MapAccess<'de>>(self, mut mapping: A) -> Result<Value, A::Error> {
         let mut result = Map::new();
         while let Some(key) = mapping.next_key::<String>()? {
-            consume(self.remaining).map_err(|error| {
-                *self.failure = Some(error);
-                de::Error::custom("metadata node limit")
-            })?;
             if result.contains_key(&key) {
                 *self.failure = Some(Error::MappingKey);
                 return Err(de::Error::custom("duplicate metadata key"));
             }
             let raw = mapping.next_value::<&RawValue>()?;
-            let item = value(raw.get(), self.depth + 1, self.remaining).map_err(|error| {
+            let item = value(raw.get(), self.depth + 1).map_err(|error| {
                 *self.failure = Some(error);
                 de::Error::custom("metadata policy refused value")
             })?;

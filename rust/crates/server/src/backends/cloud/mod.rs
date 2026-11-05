@@ -16,7 +16,7 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
-const LIMIT: u64 = 32 * 1024 * 1024;
+const LIMIT: u64 = 8 * 1024 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("cloud REST request failed ({code}); HTTP {http_status:?}; outcome uncertain: {uncertain}")]
 pub struct Error {

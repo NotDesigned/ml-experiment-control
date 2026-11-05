@@ -235,9 +235,6 @@ impl State {
                 return Err(Error);
             }
         }
-        if serde_json::to_vec(self).map_err(|_| Error)?.len() > MAX_METADATA - 4096 {
-            return Err(Error);
-        }
         Ok(())
     }
     pub fn record_part(&self, number: u64, part: multipart::PartRecord) -> Result<Self> {
