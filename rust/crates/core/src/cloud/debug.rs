@@ -178,6 +178,7 @@ impl Profile {
                     memory_gb: 1,
                     max_time_seconds: 60,
                     priority: 5,
+                    read_only_storage: false,
                 }
                 .validate()?;
                 for s in [

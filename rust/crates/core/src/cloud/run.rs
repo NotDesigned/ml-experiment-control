@@ -53,6 +53,7 @@ impl Runtime {
             memory_gb: 1,
             max_time_seconds: 1,
             priority: 5,
+            read_only_storage: false,
         }
         .validate()
     }
@@ -315,6 +316,7 @@ pub fn execution(
         memory_gb: request.resources.memory_gb.ok_or(Error("memory"))?,
         max_time_seconds: request.walltime_seconds,
         priority: policy.as_ref().map(|p| p.priority).unwrap_or(5),
+        read_only_storage: false,
     };
     let result = action::Execution {
         backend_id: request.executor,

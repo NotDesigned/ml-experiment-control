@@ -68,6 +68,7 @@ fn setup() -> (Job, Profile, Value) {
         memory_gb: 64,
         max_time_seconds: 300,
         priority: 5,
+        read_only_storage: false,
     };
     let profile = pai::Profile {
         region: "us-southeast-1".into(),
