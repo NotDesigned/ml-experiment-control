@@ -568,10 +568,13 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         serde_json::to_vec(&json!({"state":absent,"archive_verified":true})).unwrap(),
     )
     .unwrap();
-    assert!(
+    // A download-capable plan no longer fails on the inline size of the
+    // recomputed inventory; reading returns the same frozen Submission.
+    assert_eq!(
         service
             .for_run("demo", "full-inventory", "2026-10-29T00:02:00Z")
-            .is_err()
+            .unwrap()["submission_id"],
+        large_plan["submission_id"]
     );
     let mut partial = ready.clone();
     partial.parts.clear();
