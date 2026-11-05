@@ -16,7 +16,11 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route(
             "/api/worker-exchange/{project}/{run}/{attempt}/status",
-            get(diagnostic_status),
+            get(worker_read),
+        )
+        .route(
+            "/api/worker-exchange/{project}/{run}/{attempt}/package",
+            get(worker_read),
         )
         .route(
             "/api/worker-exchange/{project}/{run}/{attempt}/datasets/{asset}/{part}",
@@ -32,17 +36,18 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
             post(artifact).layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
         )
 }
-async fn diagnostic_status(
+async fn worker_read(
     State(state): State<Arc<AppState>>,
     Path((project, run, attempt)): Path<(String, String, String)>,
     RawQuery(raw): RawQuery,
     headers: HeaderMap,
+    uri: axum::http::Uri,
 ) -> Response {
     if read_api::no_parameters(raw.as_deref()).is_err() {
         return read_http::failure(read_api::Error {
             status: 422,
             code: "INVALID_WORKER_EXCHANGE",
-            detail: "worker status takes no query parameters",
+            detail: "worker reads take no query parameters",
         });
     }
     let values: Vec<_> = headers.get_all("authorization").iter().collect();
@@ -63,14 +68,17 @@ async fn diagnostic_status(
         });
     };
     read_http::execute(state, Access::Read, move |api, _| {
-        api.cloud()
-            .ok_or(read_api::Error {
-                status: 501,
-                code: "WORKER_EXCHANGE_NOT_CONFIGURED",
-                detail: "cloud worker exchange is not configured",
-            })?
-            .worker_diagnostic_status(&project, &run, &attempt, &token)
-            .map_err(super::failure)
+        let cloud = api.cloud().ok_or(read_api::Error {
+            status: 501,
+            code: "WORKER_EXCHANGE_NOT_CONFIGURED",
+            detail: "cloud worker exchange is not configured",
+        })?;
+        if uri.path().ends_with("/package") {
+            cloud.worker_package(&project, &run, &attempt, &token)
+        } else {
+            cloud.worker_diagnostic_status(&project, &run, &attempt, &token)
+        }
+        .map_err(super::failure)
     })
     .await
 }

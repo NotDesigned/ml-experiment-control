@@ -4,6 +4,9 @@ use super::*;
 use crate::{launch, managed};
 use std::path::PathBuf;
 
+pub const MAX_INLINE_BYTES: usize = 64 * 1024;
+pub const MAX_PACKAGE_BYTES: usize = 8 * 1024 * 1024;
+
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Package {
@@ -205,7 +208,7 @@ impl Package {
         if serde_json::to_vec(self)
             .map_err(|_| Error("cloud package"))?
             .len()
-            > 64 * 1024
+            > MAX_PACKAGE_BYTES
         {
             return Err(Error("cloud package size"));
         }
@@ -214,11 +217,39 @@ impl Package {
     pub fn command(&self, worker: &str) -> Result<Vec<String>> {
         self.validate()?;
         absolute_path(worker)?;
+        let json = serde_json::to_string(self).map_err(|_| Error("cloud package encoding"))?;
+        if json.len() > MAX_INLINE_BYTES {
+            return Err(Error("cloud inline package size"));
+        }
         Ok(vec![
             worker.into(),
             "cloud-launch".into(),
             "--package-json".into(),
-            serde_json::to_string(self).map_err(|_| Error("cloud package encoding"))?,
+            json,
+        ])
+    }
+    /// Read this same frozen JSON through the existing Attempt exchange.
+    pub fn download_command(&self, worker: &str) -> Result<Vec<String>> {
+        self.validate()?;
+        absolute_path(worker)?;
+        let channel = self
+            .channel
+            .as_ref()
+            .ok_or(Error("package exchange required"))?;
+        Ok(vec![
+            worker.into(),
+            "cloud-launch".into(),
+            "--package-url".into(),
+            format!("{}/package", channel.url),
+            "--package-token".into(),
+            channel.token.clone(),
+            "--package-sha256".into(),
+            helper::sha256_bytes(
+                &serde_json::to_vec(
+                    &serde_json::to_value(self).map_err(|_| Error("cloud package encoding"))?,
+                )
+                .map_err(|_| Error("cloud package encoding"))?,
+            ),
         ])
     }
 }

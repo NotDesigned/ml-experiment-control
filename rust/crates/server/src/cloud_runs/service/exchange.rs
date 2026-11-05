@@ -64,20 +64,31 @@ impl Authority {
         Ok(result)
     }
     pub(super) fn channel(&self, workspace: &str, execution: &Execution) -> cloud::Result<Channel> {
-        let job = &execution.job;
+        self.channel_for(
+            workspace,
+            &execution.binding,
+            &execution.job.submission_token,
+        )
+    }
+    pub(super) fn channel_for(
+        &self,
+        workspace: &str,
+        binding: &Binding,
+        submission_token: &str,
+    ) -> cloud::Result<Channel> {
         let mut mac =
             Hmac::<Sha256>::new_from_slice(&self.key).map_err(|_| cloud::Error::configuration())?;
         mac.update(&encode(&json!([
             "native-cloud-exchange.v1",
             workspace,
-            execution.binding,
-            job.submission_token
+            binding,
+            submission_token
         ]))?);
         let token = format!("{:x}", mac.finalize().into_bytes());
         Ok(Channel {
             url: format!(
                 "{}/api/worker-exchange/{}/{}/{}",
-                self.url, job.project, job.run_id, job.attempt_id
+                self.url, binding.project, binding.run_id, binding.attempt_id
             ),
             token,
         })
@@ -216,6 +227,36 @@ impl Service {
             .read(&context, &reference.checkpoint_id)
             .map_err(|_| cloud::Error::evidence())?
             .ok_or_else(missing)
+    }
+    pub fn worker_package(
+        &self,
+        project: &str,
+        run: &str,
+        attempt: &str,
+        token: &str,
+    ) -> cloud::Result<Value> {
+        let denied = || cloud::Error {
+            code: "WORKER_AUTH_REQUIRED".into(),
+            http_status: Some(401),
+            uncertain: false,
+        };
+        let prepared = self
+            .saved_attempt(project, run, attempt)?
+            .ok_or_else(denied)?;
+        let expected = self
+            .exchange
+            .as_ref()
+            .ok_or_else(denied)?
+            .channel(&self.workspace, &prepared.execution)?;
+        if !bool::from(expected.token.as_bytes().ct_eq(token.as_bytes())) {
+            return Err(denied());
+        }
+        self.check(&prepared)?;
+        let package = prepared
+            .execution
+            .package()
+            .map_err(|_| cloud::Error::evidence())?;
+        serde_json::to_value(package).map_err(|_| cloud::Error::evidence())
     }
     pub fn has_exchange(&self) -> bool {
         self.exchange.is_some()

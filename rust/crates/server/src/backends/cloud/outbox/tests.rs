@@ -303,6 +303,7 @@ fn cloud_runner_uses_existing_action_authorization_private_request_and_restart_r
             backend_config_sha256: profile.digest().unwrap(),
         },
         job: job.clone(),
+        launch_package: None,
     };
     let now = "2026-10-29T00:00:00Z";
     let expiry = "2026-10-29T01:00:00Z";

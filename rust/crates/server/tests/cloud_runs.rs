@@ -68,7 +68,7 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         source_dir: "/workspace".into(),
         worker_path: "/opt/ml-expd/worker".into(),
         worker_sha256: format!("sha256:{}", "3".repeat(64)),
-        worker_features: ["storage-layout.v1".into()].into(),
+        worker_features: ["storage-layout.v1".into(), "package-download.v1".into()].into(),
     };
     let credentials = temp.path().join("credentials.json");
     private(
@@ -301,12 +301,12 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     assert_eq!(catalog["datasets"][0]["status"], "UPLOADING");
     assert_eq!(catalog["datasets"][0]["received_parts"], 0);
     assert_eq!(fs::read(&dataset_file).unwrap(), dataset_bytes);
-    // A real store compiles the full worker package, including all 303 hashes.
+    // A real store compiles the full worker package, including all 304 hashes.
     // These are synthetic receipt fixtures, not claims about a provider tree.
     let definition = ml_exp_core::datasets::Definition {
         sha256: "e".repeat(64),
         archive_bytes: 1024 * 1024,
-        files: (0..303)
+        files: (0..304)
             .map(|i| ml_exp_core::artifacts::FileReceipt {
                 path: format!("dataset/full-inventory/part-{i:04}.bin"),
                 bytes: 128,
@@ -383,6 +383,106 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     assert!(package.imports.is_empty());
     assert!(serde_json::to_vec(&package).unwrap().len() <= 65536);
     let ready_bytes = fs::read(&ready_file).unwrap();
+    // A verified upload with no backend READY receipt needs the full import
+    // inventory too. This was the real 304-file >64KiB failure.
+    let mut staging = ready.clone();
+    staging.ready = None;
+    private(
+        &ready_file,
+        &json!({"state":staging,"archive_verified":true}),
+    );
+    let mut download_run = request.clone();
+    download_run.run_id = "download-inventory".into();
+    download_run.data = vec![ml_exp_core::datasets::Input {
+        asset_id: ready.asset_id.clone(),
+        name: "data".into(),
+    }];
+    service
+        .create_run("demo", download_run.clone(), "2026-10-29T00:00:00Z")
+        .unwrap();
+    let prepare_download = || {
+        service
+            .prepare(
+                "demo",
+                "download-inventory",
+                Approval {
+                    max_gpu_hours: 1.,
+                    reason: String::new(),
+                },
+                "2026-10-29T00:01:00Z",
+                "2026-10-29T01:01:00Z",
+                &"6".repeat(32),
+            )
+            .unwrap()
+    };
+    let download_plan = prepare_download();
+    assert_eq!(
+        prepare_download()["submission_id"],
+        download_plan["submission_id"]
+    );
+    let download_slot = registry.join("cloud-submissions/slots").join(format!(
+        "{}.json",
+        ml_exp_core::first_submission::native::attempt_slot(
+            "demo",
+            "download-inventory",
+            "attempt-001"
+        )
+        .unwrap()
+    ));
+    let download_saved: Value = serde_json::from_slice(&fs::read(&download_slot).unwrap()).unwrap();
+    let download_execution: ml_exp_core::cloud::action::Execution =
+        serde_json::from_value(download_saved["execution"].clone()).unwrap();
+    let download_package = download_execution.package().unwrap();
+    let download_bytes =
+        serde_json::to_vec(&serde_json::to_value(&download_package).unwrap()).unwrap();
+    assert!(download_bytes.len() > 65536);
+    assert_eq!(download_package.imports.len(), 1);
+    assert_eq!(
+        download_package.config.datasets[0]
+            .receipt
+            .definition
+            .files
+            .len(),
+        304
+    );
+    assert_eq!(download_execution.job.command[2], "--package-url");
+    assert!(download_execution.job.command.join(" ").len() < 1024);
+    assert_eq!(
+        download_execution.job.command[7],
+        ml_exp_core::slurm::helper::sha256_bytes(&download_bytes)
+    );
+    assert!(download_package.command(&runtime.worker_path).is_err());
+    let mut legacy_config = config.clone();
+    legacy_config["backends"][0]["runtimes"][&runtime.runtime_id]["worker_features"] =
+        json!(["storage-layout.v1"]);
+    let legacy = Service::open(
+        settings.clone(),
+        Settings::from_slice(&serde_json::to_vec(&legacy_config).unwrap()).unwrap(),
+        sources.clone(),
+        None,
+        Default::default(),
+    )
+    .unwrap();
+    download_run.run_id = "legacy-inventory".into();
+    legacy
+        .create_run("demo", download_run, "2026-10-29T00:00:00Z")
+        .unwrap();
+    let error = legacy
+        .prepare(
+            "demo",
+            "legacy-inventory",
+            Approval {
+                max_gpu_hours: 1.,
+                reason: String::new(),
+            },
+            "2026-10-29T00:01:00Z",
+            "2026-10-29T01:01:00Z",
+            &"5".repeat(32),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "LAUNCH_METADATA_TOO_LARGE");
+    assert_eq!(error.http_status, Some(422));
+    fs::write(&ready_file, &ready_bytes).unwrap();
     // Simulate a stop after the complete copy intent was saved but before its
     // outbox entry. A later API URL or launcher must not rebuild this command.
     let storage = Settings::from_slice(&serde_json::to_vec(&config).unwrap())
@@ -752,6 +852,51 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     let payload = serde_json::to_vec(&packet).unwrap();
     let http = reqwest::blocking::Client::new();
     let channel = package.channel.as_ref().unwrap();
+    let download_channel = download_package.channel.as_ref().unwrap();
+    let download_path = "/api/worker-exchange/demo/download-inventory/attempt-001/package";
+    for _ in 0..2 {
+        let response = http
+            .get(format!("http://{address}{download_path}"))
+            .bearer_auth(&download_channel.token)
+            .header(ml_exp_core::CLIENT_PROTOCOL_HEADER, "2")
+            .send()
+            .unwrap();
+        assert_eq!(response.status().as_u16(), 200);
+        let body = response.bytes().unwrap();
+        assert_eq!(body.as_ref(), download_bytes.as_slice());
+        let fetched: ml_exp_core::cloud::launch::Package = serde_json::from_slice(&body).unwrap();
+        fetched.validate().unwrap();
+        assert_eq!(
+            fetched.config.datasets[0].receipt.definition.files.len(),
+            304
+        );
+    }
+    for (credential, path, protocol, status) in [
+        ("wrong", download_path, "2", 401),
+        (
+            download_channel.token.as_str(),
+            "/api/worker-exchange/demo/download-inventory/attempt-002/package",
+            "2",
+            401,
+        ),
+        (download_channel.token.as_str(), "/api/health", "2", 401),
+        (download_channel.token.as_str(), download_path, "1", 426),
+    ] {
+        assert_eq!(
+            http.get(format!("http://{address}{path}"))
+                .bearer_auth(credential)
+                .header(ml_exp_core::CLIENT_PROTOCOL_HEADER, protocol)
+                .send()
+                .unwrap()
+                .status()
+                .as_u16(),
+            status
+        );
+    }
+    assert_eq!(
+        fs::read(&download_slot).unwrap(),
+        serde_json::to_vec(&download_saved).unwrap()
+    );
     let post = |token: &str, path: &str, body: Vec<u8>| {
         http.post(format!("http://{address}{path}"))
             .bearer_auth(token)

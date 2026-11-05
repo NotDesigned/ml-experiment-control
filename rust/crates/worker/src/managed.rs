@@ -32,6 +32,13 @@ pub enum Error {
     #[error("sealed launch identity, checksum or encoding is invalid")]
     Manifest,
     #[error(
+        "cloud package download failed at {operation} (http_status={http_status:?}); training was not started"
+    )]
+    PackageDownload {
+        operation: &'static str,
+        http_status: Option<u16>,
+    },
+    #[error(
         "managed input, checkpoint, record or publication I/O has not been ported; no process started"
     )]
     Unsupported,

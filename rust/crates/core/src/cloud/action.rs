@@ -15,17 +15,27 @@ pub struct Execution {
     pub binding: Binding,
     pub job: Job,
     pub allocation: pai::Allocation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_package: Option<Box<super::launch::Package>>,
 }
 impl Execution {
     pub fn package(&self) -> Result<super::launch::Package> {
-        if self.job.command.len() != 4
-            || self.job.command[1] != "cloud-launch"
-            || self.job.command[2] != "--package-json"
-        {
-            return Err(Error("sealed cloud worker command"));
-        }
-        let package: super::launch::Package = serde_json::from_str(&self.job.command[3])
-            .map_err(|_| Error("cloud worker package"))?;
+        let package = if let Some(package) = &self.launch_package {
+            if self.job.command.first().is_none_or(|worker| {
+                package.download_command(worker).ok().as_ref() != Some(&self.job.command)
+            }) {
+                return Err(Error("sealed cloud worker download"));
+            }
+            package.as_ref().clone()
+        } else {
+            if self.job.command.len() != 4
+                || self.job.command[1] != "cloud-launch"
+                || self.job.command[2] != "--package-json"
+            {
+                return Err(Error("sealed cloud worker command"));
+            }
+            serde_json::from_str(&self.job.command[3]).map_err(|_| Error("cloud worker package"))?
+        };
         package.validate()?;
         let b = package
             .config
@@ -41,6 +51,9 @@ impl Execution {
     }
     pub fn validate(&self) -> Result<()> {
         self.job.validate()?;
+        if self.launch_package.is_some() {
+            self.package()?;
+        }
         identity::validate_id(&self.backend_id).map_err(|_| Error("backend ID"))?;
         let b = &self.binding;
         if b.project != self.job.project

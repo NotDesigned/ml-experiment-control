@@ -507,7 +507,7 @@ pub(crate) fn failure(error: cloud::Error) -> read_api::Error {
             ("LAUNCH_METADATA_TOO_LARGE", _) => (
                 422,
                 "LAUNCH_METADATA_TOO_LARGE",
-                "launch metadata exceeds the control package budget; dataset payload size is independent",
+                "launch metadata exceeds the worker transport budget; legacy inline commands allow 64 KiB: use a Runtime supporting package-download.v1 or publish the dataset first",
             ),
             ("DEBUG_MACHINE_LIMIT", _) => (
                 409,
