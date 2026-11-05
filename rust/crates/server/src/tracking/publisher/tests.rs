@@ -5,15 +5,21 @@ use std::{fs, os::unix::fs::PermissionsExt};
 
 #[test]
 fn explicit_gap_repair_appends_original_ids_and_normal_publication_resumes_without_duplicates() {
-    exercise_gap_repair(false);
+    exercise_gap_repair(false, 2);
+}
+
+#[test]
+fn explicit_tail_repair_confirms_appended_tail_and_continues_without_duplicates() {
+    exercise_gap_repair(false, 4);
 }
 
 #[test]
 fn uncertain_repair_is_observed_without_resending_or_clearing_original_reservations() {
-    exercise_gap_repair(true);
+    exercise_gap_repair(true, 2);
+    exercise_gap_repair(true, 4);
 }
 
-fn exercise_gap_repair(uncertain: bool) {
+fn exercise_gap_repair(uncertain: bool, missing_sequence: i64) {
     struct FixtureSource(std::path::PathBuf);
     impl Source for FixtureSource {
         fn publisher_leader(&self) -> Result<std::fs::File> {
@@ -92,7 +98,7 @@ fn exercise_gap_repair(uncertain: bool) {
         rows.as_array()
             .unwrap()
             .iter()
-            .filter(|r| r["ml_expd/sequence"] != 2)
+            .filter(|r| r["ml_expd/sequence"] != missing_sequence)
             .collect::<Vec<_>>()
     );
     fs::write(&cloud, serde_json::to_vec(&data).unwrap()).unwrap();
@@ -100,8 +106,7 @@ fn exercise_gap_repair(uncertain: bool) {
     let original = store.publication_state(&guard, &scope).unwrap().unwrap();
     if uncertain {
         let mut reserved = original.clone();
-        reserved["history_repair"] =
-            json!({"events":{"2":"m2"},"attempted":true,"remote_confirmed":false});
+        reserved["history_repair"] = json!({"events":{missing_sequence.to_string():format!("m{missing_sequence}")},"attempted":true,"remote_confirmed":false});
         store
             .save_publication_state(
                 &guard,
@@ -130,7 +135,7 @@ fn exercise_gap_repair(uncertain: bool) {
             .as_array()
             .unwrap()
             .iter()
-            .find(|r| r["ml_expd/sequence"] == 2)
+            .find(|r| r["ml_expd/sequence"] == missing_sequence)
             .unwrap()
             .clone();
         late["_step"] = json!(4);
@@ -163,9 +168,12 @@ fn exercise_gap_repair(uncertain: bool) {
         .map(|r| r["ml_expd/event_id"].as_str().unwrap())
         .collect();
     assert_eq!(ids.len(), 5);
-    let repaired = rows.iter().find(|r| r["ml_expd/sequence"] == 2).unwrap();
+    let repaired = rows
+        .iter()
+        .find(|r| r["ml_expd/sequence"] == missing_sequence)
+        .unwrap();
     assert_eq!(repaired["_step"], 4);
-    assert_eq!(repaired["axes/loss/step"], 2);
+    assert_eq!(repaired["axes/loss/step"], missing_sequence);
     assert_eq!(store.events(&guard, &scope, 0, 128).unwrap().len(), 5);
 }
 

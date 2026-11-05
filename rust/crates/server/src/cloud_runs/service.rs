@@ -516,6 +516,11 @@ pub(crate) fn failure(error: cloud::Error) -> read_api::Error {
                 "ARTIFACTS_ADMINISTRATIVELY_REMOVED",
                 "result objects were administratively removed; collection cannot recreate them",
             ),
+            ("ARTIFACT_NOT_PUBLISHED", _) => (
+                409,
+                "ARTIFACT_NOT_PUBLISHED",
+                "the submission exists but its result archive has not been published",
+            ),
             (_, Some(422)) => (
                 422,
                 "INVALID_CLOUD_REQUEST",
@@ -591,6 +596,7 @@ mod failure_tests {
             ("LAUNCH_METADATA_TOO_LARGE", 422),
             ("DEBUG_MACHINE_LIMIT", 409),
             ("ARTIFACTS_ADMINISTRATIVELY_REMOVED", 410),
+            ("ARTIFACT_NOT_PUBLISHED", 409),
             ("OSS_DATASET_SCOPE_DENIED", 422),
             ("OSS_DATASET_READ_FAILED", 503),
             ("OSS_DATASET_VERIFICATION_FAILED", 422),

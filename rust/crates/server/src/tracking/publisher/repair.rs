@@ -64,6 +64,12 @@ pub fn repair(
     let missing =
         publication::missing_reserved(&saved.state, &evidence, &local, expected.as_deref())
             .map_err(|_| Error::Identity)?;
+    let proof_through = evidence
+        .last_history_step
+        .unwrap_or(-1)
+        .saturating_add(1)
+        .max(missing.last().map_or(confirmed, |event| event.sequence))
+        .min(through);
     if missing.is_empty() {
         return Ok(
             json!({"scope":scope,"status":"NO_RESERVED_GAP","confirmed":confirmed,"writes":0}),
@@ -124,14 +130,11 @@ pub fn repair(
         let proof = RemoteHistoryEvidence {
             route: binding["route"].clone(),
             wandb_id: status["wandb_id"].as_str().ok_or(Error::Identity)?.into(),
-            through: observed["evidence"]["last_history_step"]
-                .as_i64()
-                .ok_or(Error::Identity)?
-                .saturating_add(1)
-                .min(through),
+            through: proof_through,
             observed: evidence
                 .history
                 .iter()
+                .filter(|e| e.sequence <= proof_through)
                 .map(|e| RemoteObservation {
                     sequence: e.sequence,
                     event_id: e.event_id.clone(),

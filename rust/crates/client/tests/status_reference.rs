@@ -7,6 +7,71 @@ use ml_exp_core::diagnostic::HttpFailure;
 use serde_json::Value;
 
 #[test]
+fn saved_status_survives_optional_progress_errors_but_preserves_auth_failures() {
+    let fixtures: Value =
+        serde_json::from_str(include_str!("../../../compatibility/client-status.json")).unwrap();
+    let fixture = fixtures["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "saved-exact")
+        .unwrap();
+    for status in [401, 403, 404, 405, 409, 500, 503] {
+        let mut step = status::begin(
+            fixture["base"].as_str().unwrap(),
+            &fixture["health"],
+            Some(&fixture["saved"]),
+            Selection {
+                project: None,
+                run: None,
+                attempt: None,
+            },
+            false,
+        )
+        .unwrap();
+        let mut count = 0;
+        loop {
+            match step {
+                Step::Read(read) => {
+                    count += 1;
+                    assert!(count <= 12);
+                    let response = if read.path().ends_with("/progress") {
+                        Err(Error::Http(Box::new(HttpFailure {
+                            status,
+                            retryable: status == 503,
+                            error_code: "CLOUD_RUN_BUSY".into(),
+                            retry_after: None,
+                            details: None,
+                            response_body: None,
+                            body_truncated: false,
+                        })))
+                    } else {
+                        Ok(fixture["responses"][read.path()].clone())
+                    };
+                    match read.accept(response) {
+                        Ok(next) => step = next,
+                        Err(error) => {
+                            assert!([401, 403].contains(&status));
+                            assert!(matches!(error,Error::Http(ref e) if e.status==status));
+                            break;
+                        }
+                    }
+                }
+                Step::Complete(value) => {
+                    assert!(![401, 403].contains(&status));
+                    assert_eq!(value["project"], "p");
+                    assert_eq!(value["run_id"], "r");
+                    assert_eq!(value["progress"]["availability"], "UNAVAILABLE");
+                    assert_eq!(value["progress"]["error"]["status"], status);
+                    assert_eq!(value["training"], fixture["expected"]["training"]);
+                    break;
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn status_steps_match_python_and_preserve_exact_evidence_layers() {
     let x: Value =
         serde_json::from_str(include_str!("../../../compatibility/client-status.json")).unwrap();

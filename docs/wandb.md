@@ -211,3 +211,5 @@ Remote SDK pages may repeat the same physical row. Native 0.1.22 compares the
 complete row (including values and axes) before collapsing such page repeats;
 conflicting content or the same sequence at different physical rows is rejected.
 This does not resubmit history or relax the exact-prefix acknowledgement.
+
+Explicit history recovery can also repair an absent reserved tail. It still requires review of the exact original events and stable remote absence; the normal publisher never resends unknown reservations. The recovery confirms the appended range using normal remote evidence, preserves scientific step axes, and a repeated or uncertain repair only observes.

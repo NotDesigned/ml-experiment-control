@@ -158,6 +158,30 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
             .is_err()
     );
     assert!(!runs.join("setup-only").exists());
+    // Research parameters need not fit an invented half-package estimate.
+    // Preparing persists the same identity but creates no Run or provider job.
+    let mut metadata = setup.clone();
+    metadata.request_id = "c".repeat(32);
+    metadata.run.insert(
+        "parameters".into(),
+        json!({"description":"x".repeat(40 * 1024)}),
+    );
+    let value = service
+        .experiment_prepare("demo", metadata.clone(), None)
+        .unwrap();
+    assert_eq!(value["status"], "PREPARED");
+    assert_eq!(value["scheduler_submitted"], false);
+    assert_eq!(
+        service.experiment_prepare("demo", metadata, None).unwrap(),
+        value
+    );
+    assert_eq!(
+        service
+            .experiment_status("demo", value["preparation_id"].as_str().unwrap())
+            .unwrap(),
+        value
+    );
+    assert!(!runs.join("setup-only").exists());
     // CPU Runs use the same durable preparation path. Storage provisioning is
     // frozen only for new authorship; legacy absence remains absent on replay.
     let mut cpu = request.clone();
@@ -208,6 +232,17 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         )
         .unwrap();
     assert_eq!(cpu_plan["status"], "PREPARED");
+    let action = cpu_plan["action_id"].as_str().unwrap();
+    let error = service.artifacts(action).unwrap_err();
+    assert_eq!(error.code, "ARTIFACT_NOT_PUBLISHED");
+    assert_eq!(error.http_status, Some(409));
+    assert_eq!(
+        service
+            .artifacts("action-0000000000000000")
+            .unwrap_err()
+            .http_status,
+        Some(404)
+    );
     assert_eq!(
         service.dataset_list("demo", "pai-h200").unwrap()["datasets"],
         json!([])
