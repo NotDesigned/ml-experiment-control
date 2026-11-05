@@ -1,4 +1,7 @@
 //! Native HTTP boundary with isolated storage and explicitly configured effects.
+#[macro_use]
+mod why;
+
 pub mod administration;
 mod administration_http;
 pub mod backends;
@@ -47,14 +50,21 @@ pub struct Auth {
 }
 impl Auth {
     pub fn load(path: &Path) -> Result<Self, &'static str> {
-        let bytes =
-            read_private(path, 4096, true).map_err(|_| "invalid private daemon token file")?;
+        let bytes = read_private(path, 4096, true).map_err(why!(
+            "invalid private daemon token file",
+            "daemon token file unreadable"
+        ))?;
         let token = String::from_utf8(bytes)
-            .map_err(|_| "invalid daemon token encoding")?
+            .map_err(why!(
+                "invalid daemon token encoding",
+                "daemon token encoding invalid"
+            ))?
             .trim()
             .to_owned();
-        ml_exp_core::auth::validate_bearer(&token, 32, 4096)
-            .map_err(|_| "daemon token needs 32..4096 header-safe ASCII characters")?;
+        ml_exp_core::auth::validate_bearer(&token, 32, 4096).map_err(why!(
+            "daemon token needs 32..4096 header-safe ASCII characters",
+            "daemon token format invalid"
+        ))?;
         Ok(Self { token })
     }
 }

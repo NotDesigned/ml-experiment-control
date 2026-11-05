@@ -35,6 +35,9 @@ pub(super) fn routes() -> Router<Arc<AppState>> {
         .route("/api/attempts/{project}/{identity}/{view}", get(attempt))
 }
 pub(crate) fn failure(error: read_api::Error) -> Response {
+    if error.status >= 500 {
+        crate::why::record_status(file!(), line!(), error.status, error.code);
+    }
     let mut response = (
         StatusCode::from_u16(error.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
         Json(json!({"code":error.code,"detail":error.detail})),

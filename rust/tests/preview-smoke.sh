@@ -64,7 +64,7 @@ JSON
 cat > "$preview_root/server.json" <<JSON
 {"schema_version":1,"bind":"127.0.0.1:0","token_file":"$preview_root/token","read_config":"$preview_root/reads.json"}
 JSON
-"$preview_bins/ml-expd-rs" --config "$preview_root/server.json" > "$preview_root/server.log" 2>&1 &
+"$preview_bins/ml-expd-rs" --config "$preview_root/server.json" > "$preview_root/server.log" 2> "$preview_root/server.stderr" &
 preview_pid=$!
 for _ in {1..100}; do
   if [[ -s "$preview_root/server.log" ]]; then break; fi
@@ -88,7 +88,7 @@ fi
 grep -q 'HTTP 501' "$preview_root/not-implemented.json"
 grep -q '"scheduler_mutations": false' "$preview_root/health.json"
 grep -q '"training": "INCOMPLETE"' "$preview_root/readiness.json"
-if grep -q 'native-preview-test-token' "$preview_root/config.json" "$preview_root/health.json" "$preview_root/server.log"; then
+if grep -q 'native-preview-test-token' "$preview_root/config.json" "$preview_root/health.json" "$preview_root/server.log" "$preview_root/server.stderr"; then
   echo 'credential leaked into output' >&2; exit 1
 fi
 
@@ -109,7 +109,8 @@ wait "$preview_pid"
 preview_pid=
 "$preview_bins/ml-expd-rs" --read-config "$preview_root/reads.json" --initialize-source-archives
 : > "$preview_root/server.log"
-"$preview_bins/ml-expd-rs" --bind 127.0.0.1:0 --token-file "$preview_root/token" --read-config "$preview_root/reads.json" --source-archives > "$preview_root/server.log" 2>&1 &
+: > "$preview_root/server.stderr"
+"$preview_bins/ml-expd-rs" --bind 127.0.0.1:0 --token-file "$preview_root/token" --read-config "$preview_root/reads.json" --source-archives > "$preview_root/server.log" 2> "$preview_root/server.stderr" &
 preview_pid=$!
 for _ in {1..100}; do
   if [[ -s "$preview_root/server.log" ]]; then break; fi
@@ -145,7 +146,8 @@ preview_pid=
 start_lifecycle() {
   # Truncate synchronously: background redirection may run after the first poll.
   : > "$preview_root/server.log"
-  "$preview_bins/ml-expd-rs" --bind 127.0.0.1:0 --token-file "$preview_root/token" --read-config "$preview_root/reads.json" --project-lifecycle > "$preview_root/server.log" 2>&1 &
+  : > "$preview_root/server.stderr"
+  "$preview_bins/ml-expd-rs" --bind 127.0.0.1:0 --token-file "$preview_root/token" --read-config "$preview_root/reads.json" --project-lifecycle > "$preview_root/server.log" 2> "$preview_root/server.stderr" &
   preview_pid=$!
   for _ in {1..100}; do
     if [[ -s "$preview_root/server.log" ]]; then break; fi
