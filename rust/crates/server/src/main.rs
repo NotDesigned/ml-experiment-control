@@ -9,7 +9,7 @@ use std::{net::SocketAddr, path::PathBuf};
 )]
 struct Args {
     /// One private deployment file; initialization remains a separate command.
-    #[arg(long,conflicts_with_all=["bind","token_file","read_config","historical_read_config","history_config","inspect_historical_config","initialize_registry","initialize_project_lifecycle","initialize_source_archives","initialize_submissions","initialize_cloud_submissions","initialize_administration","project_lifecycle","source_archives","submission_config","cloud_config","tracking_config","administration"])]
+    #[arg(long,conflicts_with_all=["bind","token_file","read_config","history_config","inspect_historical_config","initialize_registry","initialize_project_lifecycle","initialize_source_archives","initialize_submissions","initialize_cloud_submissions","initialize_administration","project_lifecycle","source_archives","submission_config","cloud_config","tracking_config","administration"])]
     config: Option<PathBuf>,
     /// Validate local configuration and private dependencies without a listener,
     /// SDK process, store initialization or provider request.
@@ -36,17 +36,13 @@ struct Args {
     /// Private approved source configuration for an isolated Rust preview.
     #[arg(long, conflicts_with = "initialize_registry")]
     read_config: Option<PathBuf>,
-    /// Observe an original Python namespace with mandatory kernel-enforced
-    /// read-only access. No initialization, provider effects or SDK publication.
-    #[arg(long,conflicts_with_all=["read_config","initialize_registry","initialize_project_lifecycle","initialize_source_archives","initialize_submissions","initialize_cloud_submissions","initialize_administration","project_lifecycle","source_archives","submission_config","cloud_config","tracking_config","administration"])]
-    historical_read_config: Option<PathBuf>,
     /// Combine a native writable workspace with original experiments served
     /// through the same API under enforced read-only access.
-    #[arg(long,requires="read_config",conflicts_with_all=["historical_read_config","inspect_historical_config","initialize_registry","initialize_project_lifecycle","initialize_source_archives","initialize_submissions","initialize_cloud_submissions","initialize_administration"])]
+    #[arg(long,requires="read_config",conflicts_with_all=["inspect_historical_config","initialize_registry","initialize_project_lifecycle","initialize_source_archives","initialize_submissions","initialize_cloud_submissions","initialize_administration"])]
     history_config: Option<PathBuf>,
     /// Observe existing state and print a pinned private historical reader
     /// configuration; starts no server and writes no original metadata.
-    #[arg(long,conflicts_with_all=["token_file","read_config","historical_read_config","initialize_registry","initialize_project_lifecycle","initialize_source_archives","initialize_submissions","initialize_cloud_submissions","initialize_administration","project_lifecycle","source_archives","submission_config","cloud_config","tracking_config","administration"])]
+    #[arg(long,conflicts_with_all=["token_file","read_config","initialize_registry","initialize_project_lifecycle","initialize_source_archives","initialize_submissions","initialize_cloud_submissions","initialize_administration","project_lifecycle","source_archives","submission_config","cloud_config","tracking_config","administration"])]
     inspect_historical_config: Option<PathBuf>,
     /// Explicitly initialize a fresh registry; existing targets are refused.
     #[arg(long, conflicts_with_all = ["token_file", "read_config"])]
@@ -331,26 +327,7 @@ async fn main() -> std::process::ExitCode {
                 }
             }
         }
-        None => match args.historical_read_config.as_deref() {
-            Some(path) => {
-                let path = path.to_owned();
-                let result = tokio::task::spawn_blocking(move || {
-                    ml_exp_server::history::Settings::load(&path)
-                        .and_then(ml_exp_server::history::open)
-                })
-                .await;
-                match result {
-                    Ok(Ok(api)) => (Some(std::sync::Arc::new(api)), None),
-                    _ => {
-                        eprintln!(
-                            "historical namespace or mandatory read-only isolation is unavailable"
-                        );
-                        return std::process::ExitCode::FAILURE;
-                    }
-                }
-            }
-            None => (None, None),
-        },
+        None => (None, None),
     };
     if !args.repair_tracking.is_empty() {
         let scope = serde_json::to_string(&args.repair_tracking).expect("string scope");

@@ -575,7 +575,6 @@ then run a separate loopback reader:
 ```sh
 umask 077
 ml-expd-rs --inspect-historical-config /private/original-reads.json > /private/historical-reader.json
-ml-expd-rs --historical-read-config /private/historical-reader.json --token-file /private/reader-token --bind 127.0.0.1:18766
 ```
 
 The generated configuration pins the original journal workspace ID or its

@@ -1244,22 +1244,6 @@ fn historical_config_inspection_uses_actual_binary_without_creating_files_or_new
         serde_json::to_value(&settings).unwrap()
     );
     assert_eq!(file_inventory(fixture._temp.path()), before);
-    for incompatible in [
-        "--source-archives",
-        "--project-lifecycle",
-        "--administration",
-    ] {
-        let output = std::process::Command::new(env!("CARGO_BIN_EXE_ml-expd-rs"))
-            .arg("--historical-read-config")
-            .arg(&config)
-            .arg("--token-file")
-            .arg(&fixture.token)
-            .arg(incompatible)
-            .env_clear()
-            .output()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(2));
-    }
     assert_eq!(file_inventory(fixture._temp.path()), before);
 }
 
