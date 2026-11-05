@@ -57,6 +57,11 @@ installer, deployment bundle and SHA256SUMS. Never replace an existing tag or
 asset. Version changes update the workspace and its six owned lockfile entries;
 third-party dependencies remain locked.
 
+A tag's cache is readable only by that tag, so tag runs restore caches saved on
+`main` and save none. Refresh them after a release with
+`gh workflow run native-release.yml --ref main -f version=X.Y.Z`, which packages
+without publishing. A stale cache costs only rebuild time.
+
 Deploy with [the upgrade tool](operator-guide.md#upgrade-a-release), only after
 checking active builds, submissions, transfers and publisher send boundaries. Preserve frozen definitions, private configuration, unknown
 operations and existing worker hashes. A release does not require rebuilding old
