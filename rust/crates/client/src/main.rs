@@ -1037,7 +1037,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     Output::Json(match command {
                         Data::Diagnose { project,executor,asset,request_id,provider:true,lines,.. } => {
                             if !(1..=2000).contains(&lines) {
-                                return Err(ml_exp_client::Error::Observation("diagnose requires 1..2000 lines"));
+                                return Err(ml_exp_client::Error::Observation("diagnose requires 1..2000 lines").into());
                             }
                             client.post(&format!("/api/projects/{project}/datasets/{executor}/{asset}/publications/{request_id}/provider-diagnostics/refresh?lines={lines}"),&serde_json::json!({}))?
                         },
