@@ -23,6 +23,24 @@ const LOCK: &str = ".managed-launch.lock";
 const MANIFEST: &str = "launch-manifest.json";
 const RECEIPT: &str = "managed-receipt.json";
 
+/// Turns an underlying error into `Error::Storage`, naming this place and the cause.
+macro_rules! storage_failure {
+    () => {
+        |cause| $crate::managed::Error::storage(concat!(file!(), ":", line!()), &cause)
+    };
+}
+pub(crate) use storage_failure;
+/// `Error::Storage` for a check that failed without an underlying error.
+macro_rules! storage_refused {
+    ($why:literal) => {
+        $crate::managed::Error::Storage {
+            at: concat!(file!(), ":", line!()),
+            cause: $why.to_owned(),
+        }
+    };
+}
+pub(crate) use storage_refused;
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("invalid private managed launch configuration")]
@@ -40,8 +58,8 @@ pub enum Error {
         "managed input, checkpoint, record or publication I/O has not been ported; no process started"
     )]
     Unsupported,
-    #[error("managed launch paths or existing state are unavailable or changed")]
-    Storage,
+    #[error("managed launch storage failed at {at}: {cause}")]
+    Storage { at: &'static str, cause: String },
     #[error("managed launch identity differs from its frozen configuration")]
     Binding,
     #[error("managed launch is already being observed or executed")]
@@ -65,6 +83,16 @@ pub enum Error {
         exit_code: Option<i32>,
         errno: Option<i32>,
     },
+}
+impl Error {
+    /// The cause is bounded and redacted: it reaches the job's logs and then the client.
+    pub fn storage(at: &'static str, cause: &impl std::fmt::Debug) -> Self {
+        let cause = experiment_redact::redact_line(&format!("{cause:?}"));
+        Self::Storage {
+            at,
+            cause: cause.chars().take(300).collect(),
+        }
+    }
 }
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -127,19 +155,24 @@ fn hex(value: &str) -> bool {
             .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
 }
 fn private_bytes(root: &Directory, name: &OsStr, maximum: u64) -> Result<Vec<u8>> {
-    root.require_private().map_err(|_| Error::Storage)?;
-    let mut file = root.open_regular_read(name).map_err(|_| Error::Storage)?;
-    let metadata = file.metadata().map_err(|_| Error::Storage)?;
+    root.require_private()
+        .map_err(crate::managed::storage_failure!())?;
+    let mut file = root
+        .open_regular_read(name)
+        .map_err(crate::managed::storage_failure!())?;
+    let metadata = file
+        .metadata()
+        .map_err(crate::managed::storage_failure!())?;
     if metadata.mode() & 0o077 != 0 || metadata.len() > maximum {
-        return Err(Error::Storage);
+        return Err(storage_refused!("a private file is too open or too large"));
     }
     let mut bytes = Vec::new();
     (&mut file)
         .take(maximum + 1)
         .read_to_end(&mut bytes)
-        .map_err(|_| Error::Storage)?;
+        .map_err(crate::managed::storage_failure!())?;
     if bytes.len() as u64 != metadata.len() {
-        return Err(Error::Storage);
+        return Err(storage_refused!("a private file changed while being read"));
     }
     Ok(bytes)
 }
@@ -148,7 +181,7 @@ fn private_file(path: &Path, maximum: u64) -> Result<Vec<u8>> {
         return Err(Error::Configuration);
     }
     let root = Directory::open(path.parent().ok_or(Error::Configuration)?, false)
-        .map_err(|_| Error::Storage)?;
+        .map_err(crate::managed::storage_failure!())?;
     private_bytes(
         &root,
         path.file_name().ok_or(Error::Configuration)?,
@@ -182,7 +215,8 @@ struct Held {
 impl Held {
     fn open(config: &Config, exclusive: bool) -> Result<Self> {
         config.validate()?;
-        let root = Directory::open(&config.attempt_root, false).map_err(|_| Error::Storage)?;
+        let root = Directory::open(&config.attempt_root, false)
+            .map_err(crate::managed::storage_failure!())?;
         // The phase ledger: it is never created here, because a recreated
         // ledger reads as unstarted and could re-run training.
         let lock = root
@@ -198,12 +232,14 @@ impl Held {
                 if e.kind() == std::io::ErrorKind::WouldBlock {
                     Error::Busy
                 } else {
-                    Error::Storage
+                    Error::storage(concat!(file!(), ":", line!()), &e)
                 }
             })?;
         Ok(Self {
             root,
-            file: lock.try_clone().map_err(|_| Error::Storage)?,
+            file: lock
+                .try_clone()
+                .map_err(crate::managed::storage_failure!())?,
             _lock: Some(lock),
             binding: config.digest()?,
         })
@@ -211,11 +247,11 @@ impl Held {
     fn state(&mut self) -> Result<Record> {
         self.file
             .seek(SeekFrom::Start(0))
-            .map_err(|_| Error::Storage)?;
+            .map_err(crate::managed::storage_failure!())?;
         let mut bytes = Vec::new();
         self.file
             .read_to_end(&mut bytes)
-            .map_err(|_| Error::Storage)?;
+            .map_err(crate::managed::storage_failure!())?;
         if !bytes.ends_with(b"\n") {
             return Err(Error::Uncertain);
         }
@@ -265,11 +301,11 @@ impl Held {
             receipt_sha256: receipt,
             runtime_environment_sha256: runtime_sha256,
         };
-        let mut bytes = serde_json::to_vec(&record).map_err(|_| Error::Storage)?;
+        let mut bytes = serde_json::to_vec(&record).map_err(crate::managed::storage_failure!())?;
         bytes.push(b'\n');
         self.root
             .append_regular(OsStr::new(LOCK), &bytes)
-            .map_err(|_| Error::Storage)
+            .map_err(crate::managed::storage_failure!())
     }
     fn runtime(&mut self, config: &Config) -> Result<BTreeMap<String, String>> {
         let record = self.state()?;
@@ -356,12 +392,12 @@ pub fn initialize_with_environment(
     config.validate_runtime(runtime)?;
     let bytes = private_file(&config.manifest_path, launch::MAX_BYTES as u64)?;
     verified(config, &bytes)?;
-    Directory::open(&config.workdir, false).map_err(|_| Error::Storage)?;
+    Directory::open(&config.workdir, false).map_err(crate::managed::storage_failure!())?;
     let parent = Directory::open(
         config.attempt_root.parent().ok_or(Error::Configuration)?,
         false,
     )
-    .map_err(|_| Error::Storage)?;
+    .map_err(crate::managed::storage_failure!())?;
     let root = parent
         .create_new_child(
             config
@@ -369,9 +405,9 @@ pub fn initialize_with_environment(
                 .file_name()
                 .ok_or(Error::Configuration)?,
         )
-        .map_err(|_| Error::Storage)?;
+        .map_err(crate::managed::storage_failure!())?;
     root.publish_new(OsStr::new(MANIFEST), &bytes)
-        .map_err(|_| Error::Storage)?;
+        .map_err(crate::managed::storage_failure!())?;
     let lock = root
         .lock(
             OsStr::new(LOCK),
@@ -384,12 +420,14 @@ pub fn initialize_with_environment(
             if e.kind() == std::io::ErrorKind::WouldBlock {
                 Error::Busy
             } else {
-                Error::Storage
+                Error::storage(concat!(file!(), ":", line!()), &e)
             }
         })?;
     let mut held = Held {
         root,
-        file: lock.try_clone().map_err(|_| Error::Storage)?,
+        file: lock
+            .try_clone()
+            .map_err(crate::managed::storage_failure!())?,
         _lock: Some(lock),
         binding: config.digest()?,
     };
@@ -399,7 +437,7 @@ pub fn initialize_with_environment(
         let bytes = serde_json::to_vec(runtime).map_err(|_| Error::Configuration)?;
         held.root
             .publish_new(OsStr::new("runtime-environment.json"), &bytes)
-            .map_err(|_| Error::Storage)?;
+            .map_err(crate::managed::storage_failure!())?;
         Some(sha(&bytes))
     };
     held.append(Phase::Prepared, None, runtime_sha256)?;
@@ -417,10 +455,11 @@ pub fn inspect(config: &Config) -> Result<Observation> {
 /// possible execution only; torn or changing records yield uncertainty.
 pub fn sample(config: &Config) -> Result<Observation> {
     config.validate()?;
-    let root = Directory::open(&config.attempt_root, false).map_err(|_| Error::Storage)?;
+    let root =
+        Directory::open(&config.attempt_root, false).map_err(crate::managed::storage_failure!())?;
     let file = root
         .open_regular_read(OsStr::new(LOCK))
-        .map_err(|_| Error::Storage)?;
+        .map_err(crate::managed::storage_failure!())?;
     let mut held = Held {
         root,
         file,
@@ -451,18 +490,18 @@ pub fn run(config: &Config, cancelled: &AtomicBool) -> Result<Observation> {
     }
     let output_path = config.output_path();
     let output_parent = Directory::open(output_path.parent().ok_or(Error::Configuration)?, false)
-        .map_err(|_| Error::Storage)?;
+        .map_err(crate::managed::storage_failure!())?;
     if output_parent
         .entry_exists(output_path.file_name().ok_or(Error::Configuration)?)
-        .map_err(|_| Error::Storage)?
+        .map_err(crate::managed::storage_failure!())?
         || held
             .root
             .entry_exists(OsStr::new(RECEIPT))
-            .map_err(|_| Error::Storage)?
+            .map_err(crate::managed::storage_failure!())?
     {
         return Err(Error::Uncertain);
     }
-    Directory::open(&config.workdir, false).map_err(|_| Error::Storage)?;
+    Directory::open(&config.workdir, false).map_err(crate::managed::storage_failure!())?;
     let bytes = private_bytes(&held.root, OsStr::new(MANIFEST), launch::MAX_BYTES as u64)?;
     let (target, manifest, mut environment) = verified(config, &bytes)?;
     if let Some(plan) = &config.data_preparation {
@@ -479,12 +518,12 @@ pub fn run(config: &Config, cancelled: &AtomicBool) -> Result<Observation> {
         let (context, manifest) = ml_exp_core::checkpoints::validate_document(document, None, None)
             .map_err(|_| Error::Binding)?;
         let root = Directory::open(std::path::Path::new(&context.state_root), false)
-            .map_err(|_| Error::Storage)?;
+            .map_err(crate::managed::storage_failure!())?;
         ml_exp_io::checkpoints::verify_sealed(&root, &manifest).map_err(|_| Error::Binding)?;
     }
     for dataset in &config.datasets {
         let root = Directory::open(std::path::Path::new(&dataset.receipt.root), false)
-            .map_err(|_| Error::Storage)?;
+            .map_err(crate::managed::storage_failure!())?;
         ml_exp_io::datasets::verify(&root, &dataset.receipt.definition, true)
             .map_err(|_| Error::Binding)?;
     }

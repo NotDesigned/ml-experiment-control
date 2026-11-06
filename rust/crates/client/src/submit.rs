@@ -378,7 +378,7 @@ pub fn base_image(dockerfile: &str) -> Result<String, Error> {
             if !pinned(image) {
                 return Err(refused(format!(
                     "FROM {image} must be pinned as IMAGE@sha256:DIGEST; \
-                     `ml-exp get /api/environments` lists approved bases"
+                     `docker buildx imagetools inspect IMAGE` prints the digest"
                 )));
             }
             last = Some(image.to_owned());
@@ -390,7 +390,7 @@ pub fn base_image(dockerfile: &str) -> Result<String, Error> {
     last.ok_or_else(|| {
         refused(
             "the Dockerfile needs a FROM pinned as IMAGE@sha256:DIGEST; \
-             `ml-exp get /api/environments` lists approved bases"
+             `docker buildx imagetools inspect IMAGE` prints the digest"
                 .into(),
         )
     })
@@ -755,18 +755,21 @@ fn stopped(view: &Value, builder_idle: bool) -> Option<String> {
             return builder_idle.then(|| {
                 format!(
                     "the image build is not running and left no result ({code}), so its outcome \
-                     is unresolved. See {logs}. Running this command again checks once more; \
-                     changing the code or the Dockerfile starts a new build"
+                     is unresolved. See {logs}. Running this command again checks once more \
+                     and builds again if nothing was left behind; changing the code or the \
+                     Dockerfile starts a new build"
                 )
             });
         }
         let reason = cause["details"]["reason"]
             .as_str()
+            .or(cause["details"]["error_class"].as_str())
             .map(|reason| format!(" ({reason})"))
             .unwrap_or_default();
         return Some(format!(
-            "the image build failed with {code}{reason}. See {logs}; \
-             changing the code or the Dockerfile starts a new build"
+            "the image build failed with {code}{reason}. See {logs}. Running this command \
+             again builds again if nothing was left behind; changing the code or the \
+             Dockerfile starts a new build"
         ));
     }
     if view["data"]["new_request_allowed"] == true {
@@ -776,6 +779,12 @@ fn stopped(view: &Value, builder_idle: bool) -> Option<String> {
         );
     }
     None
+}
+/// What an earlier command's build left behind is proven safe to start over. One
+/// command does this once: a build that fails while it watches is reported, not repeated.
+fn may_build_again(view: &Value) -> bool {
+    let runtime = &view["runtime"];
+    runtime["retry_safe"] == true && !runtime["build_error"].is_null()
 }
 /// The Runtime still being built, if any. Progress is read for this one.
 fn building(view: &Value) -> Option<&str> {
@@ -1493,7 +1502,7 @@ fn read_dockerfile(directory: &Path, name: &str) -> Result<String, Error> {
     let missing = || {
         Error::Submit(format!(
             "{} needs a Dockerfile starting with FROM IMAGE@sha256:DIGEST; \
-             `ml-exp get /api/environments` lists approved bases",
+             `docker buildx imagetools inspect IMAGE` prints the digest",
             directory.display()
         ))
     };
@@ -1526,8 +1535,9 @@ fn publish(
         .ok_or(Error::Response)
 }
 
-/// Repeat the same safe continue until a Submission exists. A failure stops here
-/// rather than being retried: continue would start a failed build again.
+/// Repeat the same safe continue until a Submission exists. A failure that happens
+/// here stops here rather than being retried: continue would start it again. Only what
+/// an earlier command left is started over, once, by the next continue.
 fn prepared(
     client: &Client,
     spec: &Spec,
@@ -1544,6 +1554,7 @@ fn prepared(
     let mut build = BuildView::default();
     let mut builder_idle = false;
     let mut tick = 0;
+    let mut first_view = true;
     loop {
         if tick % ADVANCE_EVERY == 0 {
             match preparations::advance(client, &spec.project, id, &confirmation) {
@@ -1552,7 +1563,9 @@ fn prepared(
                     if let Some(submission) = view["submission"]["submission_id"].as_str() {
                         return Ok(submission.to_owned());
                     }
-                    if let Some(reason) = stopped(&view, builder_idle) {
+                    if std::mem::take(&mut first_view) && may_build_again(&view) {
+                        (hooks.progress)("the last build left nothing behind; building again");
+                    } else if let Some(reason) = stopped(&view, builder_idle) {
                         return Err(Error::Submit(format!(
                             "{reason}. No training job was submitted"
                         )));
@@ -2082,6 +2095,23 @@ mod tests {
     }
     fn stopped_now(view: &Value) -> Option<String> {
         stopped(view, false)
+    }
+    #[test]
+    fn only_a_proven_failure_may_build_again() {
+        let view = |safe| json!({"runtime":{"retry_safe":safe,"build_error":{"code":"X"}}});
+        assert!(may_build_again(&view(true)));
+        assert!(!may_build_again(&view(false)));
+        assert!(
+            !may_build_again(&json!({"runtime":{"retry_safe":true,"build_error":null}})),
+            "a fresh Runtime has nothing to recover from"
+        );
+    }
+    #[test]
+    fn a_failure_with_no_reason_shows_its_error_class() {
+        let view = json!({"runtime":{"status":"RECONCILE_REQUIRED","runtime_id":"runtime.x",
+            "build_error":{"code":"BUILD_REQUEST_FAILED","details":{"error_class":"KeyError"}}}});
+        let text = stopped_now(&view).unwrap();
+        assert!(text.contains("BUILD_REQUEST_FAILED (KeyError)"), "{text}");
     }
     #[test]
     fn a_missing_receipt_waits_until_the_builder_says_it_is_idle() {

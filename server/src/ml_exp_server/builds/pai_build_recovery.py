@@ -10,50 +10,19 @@ from ..storage import utc_now
 
 
 def observe_dsw_absence(builder, identity):
-    """Caller holds the original bundle lock. An uncertain create grants nothing."""
+    """Caller holds the original bundle lock. An uncertain create grants nothing.
+
+    No lease means no instance was ever requested, because CREATE_INTENT is durable
+    before CreateInstance. Only the registry is left to check.
+    """
     root, config = builder.root, builder.config
     lease = root / (identity + '.dsw.json')
-    if not lease.is_file() or (root / (identity + '.json')).exists():
+    if (root / (identity + '.json')).exists():
         return None
     try:
-        value = json.loads(lease.read_text())
-        if not isinstance(value, dict):
-            raise ValueError('invalid DSW recovery lease')
-        scope = config['pai_dsw']
-        api = PaiAPI.from_environment()
-        if (value.get('phase') != 'DELETE_REQUESTED' or value.get('bundle_id') != identity
-                or any(value.get(k) != scope[k] for k in ('workspace_id', 'quota_id'))
-                or value.get('region') != api.config['region'] or type(value.get('gpu')) is not int or value['gpu'] != 0):
-            return None
-        identifier, name = component(value.get('instance_id')), component(value.get('name'))
-        try:
-            api.request('pai-dsw', 'GetInstance', '/api/v2/instances/' + identifier)
-        except PaiError as exc:
-            if not (exc.status == 404 or exc.status == 400 and exc.code == 'InstanceNotExistError'):
-                raise
-        else:
-            return None
-        seen = set()
-        for page in range(1, 101):
-            result = api.request('pai-dsw', 'ListInstances', '/api/v2/instances', query={
-                'WorkspaceId': scope['workspace_id'], 'InstanceName': name, 'PageSize': 100, 'PageNumber': page})
-            rows, total = result.get('Instances'), result.get('TotalCount')
-            if not isinstance(rows, list) or type(total) is not int or total < 0:
-                raise ValueError('invalid DSW recovery inventory')
-            if any(not isinstance(row, dict) or row.get('InstanceName') == name
-                   or row.get('InstanceId') == identifier for row in rows):
+        if lease.exists():
+            if not lease.is_file() or not _lease_instance_gone(builder, lease, identity):
                 return None
-            for row in rows:
-                key = component(row.get('InstanceId'))
-                if key in seen:
-                    raise ValueError('duplicate DSW recovery inventory identity')
-                seen.add(key)
-            if len(seen) == total:
-                break
-            if not rows or len(seen) > total:
-                raise ValueError('incomplete DSW recovery inventory')
-        else:
-            raise ValueError('DSW recovery inventory exceeds bound')
         registry = Registry.from_config(config, timeout=15)
         status, _, _ = registry.request('GET', registry.prefix + '/manifests/bundle-' + identity,
                                         headers={'Accept': MANIFEST + ', ' + OCI_MANIFEST}, expected=(200, 404))
@@ -67,6 +36,49 @@ def observe_dsw_absence(builder, identity):
     except (OSError, ValueError, KeyError, TypeError, PaiError) as exc:
         raise BuildTransportError('BUILD_RECOVERY_UNCHECKED', {
             'publication_uncertain': True, 'scheduler_submitted': False, 'error_class': type(exc).__name__}) from None
+
+
+def _lease_instance_gone(builder, lease, identity):
+    """Whether the leased instance was deleted and the workspace no longer lists it."""
+    scope = builder.config['pai_dsw']
+    value = json.loads(lease.read_text())
+    if not isinstance(value, dict):
+        raise ValueError('invalid DSW recovery lease')
+    api = PaiAPI.from_environment()
+    if (value.get('phase') != 'DELETE_REQUESTED' or value.get('bundle_id') != identity
+            or any(value.get(k) != scope[k] for k in ('workspace_id', 'quota_id'))
+            or value.get('region') != api.config['region'] or type(value.get('gpu')) is not int or value['gpu'] != 0):
+        return False
+    identifier, name = component(value.get('instance_id')), component(value.get('name'))
+    try:
+        api.request('pai-dsw', 'GetInstance', '/api/v2/instances/' + identifier)
+    except PaiError as exc:
+        if not (exc.status == 404 or exc.status == 400 and exc.code == 'InstanceNotExistError'):
+            raise
+    else:
+        return False
+    seen = set()
+    for page in range(1, 101):
+        result = api.request('pai-dsw', 'ListInstances', '/api/v2/instances', query={
+            'WorkspaceId': scope['workspace_id'], 'InstanceName': name, 'PageSize': 100, 'PageNumber': page})
+        rows, total = result.get('Instances'), result.get('TotalCount')
+        if not isinstance(rows, list) or type(total) is not int or total < 0:
+            raise ValueError('invalid DSW recovery inventory')
+        if any(not isinstance(row, dict) or row.get('InstanceName') == name
+               or row.get('InstanceId') == identifier for row in rows):
+            return False
+        for row in rows:
+            key = component(row.get('InstanceId'))
+            if key in seen:
+                raise ValueError('duplicate DSW recovery inventory identity')
+            seen.add(key)
+        if len(seen) == total:
+            break
+        if not rows or len(seen) > total:
+            raise ValueError('incomplete DSW recovery inventory')
+    else:
+        raise ValueError('DSW recovery inventory exceeds bound')
+    return True
 
 
 def preserve_deleted_lease(builder, identity):

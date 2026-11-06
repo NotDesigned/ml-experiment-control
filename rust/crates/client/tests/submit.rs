@@ -609,7 +609,7 @@ fn a_missing_dockerfile_is_explained_before_anything_is_sent() {
     let error = files.run(&fake, true, &mut asked).unwrap_err();
     let text = error.to_string();
     assert!(
-        text.contains("Dockerfile") && text.contains("/api/environments"),
+        text.contains("Dockerfile") && text.contains("imagetools inspect"),
         "{text}"
     );
     assert!(asked.is_empty());

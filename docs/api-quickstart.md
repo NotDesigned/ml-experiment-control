@@ -28,7 +28,7 @@ Project and executor are only defaults; see [configuration](configuration.md).
 ## Run a repository
 
 The repository needs a Dockerfile whose external `FROM` lines are pinned by digest;
-`ml-exp get /api/environments` lists approved bases, and the
+`docker buildx imagetools inspect IMAGE` prints the digest to pin, and the
 [Dockerfile rules](builds.md#dockerfile-contract) say what else is required. The code
 reads where to write from its environment:
 

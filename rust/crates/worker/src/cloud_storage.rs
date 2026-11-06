@@ -15,7 +15,9 @@ fn descendant(anchor: &Directory, mount: &Path, path: &Path) -> Result<()> {
         let Component::Normal(name) = component else {
             return Err(Error::Configuration);
         };
-        directory = directory.child(name, true).map_err(|_| Error::Storage)?;
+        directory = directory
+            .child(name, true)
+            .map_err(crate::managed::storage_failure!())?;
     }
     Ok(())
 }
@@ -23,7 +25,8 @@ fn descendant(anchor: &Directory, mount: &Path, path: &Path) -> Result<()> {
 pub(crate) fn prepare(package: &Package) -> Result<()> {
     package.validate().map_err(|_| Error::Configuration)?;
     let storage = &package.storage;
-    let mount = Directory::open(&storage.mount, false).map_err(|_| Error::Storage)?;
+    let mount =
+        Directory::open(&storage.mount, false).map_err(crate::managed::storage_failure!())?;
     descendant(&mount, &storage.mount, &storage.runs)?;
     // The dataset store creates and atomically publishes its own marker-bearing
     // root. Creating an empty root here would make that initialization ambiguous.
@@ -31,7 +34,8 @@ pub(crate) fn prepare(package: &Package) -> Result<()> {
 }
 pub(crate) fn prepare_data(storage: &ml_exp_core::cloud::launch::StorageLayout) -> Result<()> {
     storage.validate().map_err(|_| Error::Configuration)?;
-    let mount = Directory::open(&storage.mount, false).map_err(|_| Error::Storage)?;
+    let mount =
+        Directory::open(&storage.mount, false).map_err(crate::managed::storage_failure!())?;
     descendant(
         &mount,
         &storage.mount,

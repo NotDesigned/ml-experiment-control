@@ -29,21 +29,21 @@ pub fn scoped_cache(
 pub fn cache(config: &ml_exp_core::datasets::import::Config) -> Result<()> {
     let path = std::path::Path::new(&config.root);
     let parent = Directory::open(path.parent().ok_or(Error::Configuration)?, false)
-        .map_err(|_| Error::Storage)?;
+        .map_err(crate::managed::storage_failure!())?;
     let name = path.file_name().ok_or(Error::Configuration)?;
     // Whoever gets here first creates the root. The marker, not the directory, is
     // what makes it a store, and this requires no renameat2 from the shared filesystem.
     match parent.create_new_child(name) {
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(_) => return Err(Error::Storage),
+        Err(error) => return Err(Error::storage(concat!(file!(), ":", line!()), &error)),
     }
     crate::datasets::Store::claim(crate::datasets::Config {
         root: path.into(),
         target: config.target.clone(),
     })
     .map(|_| ())
-    .map_err(|_| Error::Storage)
+    .map_err(crate::managed::storage_failure!())
 }
 fn save(root: &Directory, records: &BTreeMap<String, Record>) -> std::io::Result<()> {
     root.replace_regular(
@@ -52,16 +52,17 @@ fn save(root: &Directory, records: &BTreeMap<String, Record>) -> std::io::Result
     )
 }
 pub fn read(package: &Package) -> Result<Vec<Record>> {
-    let root = Directory::open(&package.config.attempt_root, false).map_err(|_| Error::Storage)?;
+    let root = Directory::open(&package.config.attempt_root, false)
+        .map_err(crate::managed::storage_failure!())?;
     if !root
         .entry_exists(OsStr::new(NAME))
-        .map_err(|_| Error::Storage)?
+        .map_err(crate::managed::storage_failure!())?
     {
         return Ok(Vec::new());
     }
     let bytes = root
         .read_regular(OsStr::new(NAME), 128 * 1024)
-        .map_err(|_| Error::Storage)?;
+        .map_err(crate::managed::storage_failure!())?;
     let value: Vec<Record> = serde_json::from_slice(&bytes).map_err(|_| Error::Binding)?;
     if value.len() > 32 {
         return Err(Error::Binding);
@@ -69,7 +70,8 @@ pub fn read(package: &Package) -> Result<Vec<Record>> {
     Ok(value)
 }
 pub fn materialize(package: &Package, cancelled: &AtomicBool) -> managed::Result<()> {
-    let root = Directory::open(&package.config.attempt_root, false).map_err(|_| Error::Storage)?;
+    let root = Directory::open(&package.config.attempt_root, false)
+        .map_err(crate::managed::storage_failure!())?;
     let mut records: BTreeMap<String, Record> = read(package)?
         .into_iter()
         .map(|r| (r.asset_id.clone(), r))
@@ -146,8 +148,11 @@ pub fn materialize(package: &Package, cancelled: &AtomicBool) -> managed::Result
                 record.http_status = error.http_status.map(f64::from);
                 record.errno = error.errno.map(f64::from);
                 record.error_class = error.error_class.map(str::to_owned);
-                save(&root, &records).map_err(|_| Error::Storage)?;
-                return Err(Error::Storage);
+                save(&root, &records).map_err(crate::managed::storage_failure!())?;
+                return Err(Error::Storage {
+                    at: concat!(file!(), ":", line!()),
+                    cause: format!("data import failed with {}", error.code),
+                });
             }
         }
     }

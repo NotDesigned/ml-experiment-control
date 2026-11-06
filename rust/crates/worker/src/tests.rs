@@ -318,3 +318,14 @@ fn direct_writes_and_truncation_cannot_supply_unbounded_or_incomplete_log_hashes
         assert_eq!(receipt["error"]["code"], "LOG_IDENTITY_OR_CONTENT_CHANGED");
     }
 }
+
+#[test]
+fn a_storage_failure_names_where_and_why() {
+    let cause = std::io::Error::from_raw_os_error(13);
+    let text = crate::managed::Error::storage("managed.rs:1", &cause).to_string();
+    assert!(text.contains("managed.rs:1"), "{text}");
+    assert!(text.contains("PermissionDenied"), "{text}");
+    let long = "x".repeat(2000);
+    let text = crate::managed::Error::storage("managed.rs:1", &long).to_string();
+    assert!(text.len() < 400, "bounded: {}", text.len());
+}

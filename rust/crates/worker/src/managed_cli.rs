@@ -54,7 +54,7 @@ pub fn main_from(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
         let cancelled = Arc::new(AtomicBool::new(false));
         for signal in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGINT] {
             signal_hook::flag::register(signal, Arc::clone(&cancelled))
-                .map_err(|_| managed::Error::Storage)?;
+                .map_err(|cause| managed::Error::storage("signal handler", &cause))?;
         }
         managed::run(&config, &cancelled)
     })();

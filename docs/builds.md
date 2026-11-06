@@ -10,7 +10,6 @@ can be used by any configured training backend.
 Clients upload code with a Dockerfile. The server validates it, appends frozen
 source at `/ml-expd/source`, which becomes the working directory, plus the trusted
 worker at `/usr/local/bin/ml-exp-worker-rs`, and publishes the resulting image. The client does not upload a prebuilt Docker image through this workflow.
-`GET /api/environments` lists approved pinned bases, not alternative builders.
 
 ```dockerfile
 FROM REGISTRY/BASE@sha256:ACTUAL_64_HEX_DIGEST

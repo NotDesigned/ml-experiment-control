@@ -94,6 +94,47 @@ class NativeBridge(unittest.TestCase):
             self.assertIs(publication_builder(builder, 'c' * 64), builder)
             self.assertEqual(builder.config['repository'], 'docker.io/team/runtime')
 
+    def test_no_lease_means_no_instance_was_requested(self):
+        from ml_exp_server.builds.builder_client import BuildTransportError
+        from ml_exp_server.builds.pai_build_recovery import observe_dsw_absence
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            key = 'a' * 64
+            builder = SimpleNamespace(root=root, config={'pai_dsw': {}})
+            registry = SimpleNamespace(prefix='/v2/team/runtime', request=lambda *a, **k: (404, {}, b''))
+            with patch('ml_exp_server.builds.pai_build_recovery.Registry.from_config', return_value=registry):
+                proof = observe_dsw_absence(builder, key)
+                self.assertEqual(proof['bundle_id'], key)
+                self.assertEqual((proof['registry_manifest_status'], proof['leases_clear']), (404, True))
+                # An image that exists is not absence, and a lease still has to prove itself.
+                registry.request = lambda *a, **k: (200, {}, b'')
+                with self.assertRaises(BuildTransportError):
+                    observe_dsw_absence(builder, key)
+                registry.request = lambda *a, **k: (404, {}, b'')
+                (root / (key + '.dsw.json')).write_text(json.dumps({'phase': 'CREATE_INTENT'}))
+                with patch('ml_exp_server.builds.pai_build_recovery.PaiAPI.from_environment',
+                           return_value=SimpleNamespace(config={'region': 'r'})):
+                    builder.config['pai_dsw'] = {'workspace_id': '1', 'quota_id': 'q'}
+                    self.assertIsNone(observe_dsw_absence(builder, key))
+
+    def test_a_failed_request_reports_its_code_and_logs_only_where_and_why(self):
+        from experiment_control.backends.pai_api import PaiError
+        from ml_exp_server.image_builder import failure_reply
+        with patch('sys.stderr', new_callable=io.StringIO) as stderr:
+            reply = failure_reply(PaiError('configuration', code='PAI_CONFIGURATION_UNAVAILABLE'))
+            self.assertEqual(reply['code'], 'PAI_CONFIGURATION_UNAVAILABLE')
+            self.assertEqual(reply['details'], {'error_class': 'PaiError'})
+            self.assertEqual(failure_reply(KeyError('x'))['code'], 'BUILD_REQUEST_FAILED')
+            self.assertIn('KeyError', stderr.getvalue())
+
+    def test_docker_events_read_as_text_without_byte_counts(self):
+        from ml_exp_worker.dsw_build_worker import readable
+        self.assertEqual(readable({'stream': 'Step 1/2 : FROM x\n'}), 'Step 1/2 : FROM x')
+        self.assertEqual(readable({'status': 'Pushed', 'id': 'abc', 'progressDetail': {}}), 'Pushed abc')
+        self.assertIsNone(readable({'status': 'Pushing', 'id': 'abc', 'progressDetail': {'current': 1, 'total': 2}}))
+        self.assertIsNone(readable({'aux': {'ID': 'sha256:x'}}))
+        self.assertIn('boom', readable({'error': 'boom'}))
+
     def test_an_old_acr_journal_is_never_read(self):
         from ml_exp_server.builds.build_recovery import publication_absence, publication_builder
         with tempfile.TemporaryDirectory() as directory:

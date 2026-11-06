@@ -77,25 +77,25 @@ pub fn publish(package: &Package) -> Result<()> {
     {
         return Err(Error::Binding);
     }
-    let attempt =
-        Directory::open(&package.config.attempt_root, false).map_err(|_| Error::Storage)?;
+    let attempt = Directory::open(&package.config.attempt_root, false)
+        .map_err(crate::managed::storage_failure!())?;
     let dir = if attempt
         .entry_exists(OsStr::new(".cloud-artifacts"))
-        .map_err(|_| Error::Storage)?
+        .map_err(crate::managed::storage_failure!())?
     {
         attempt.child(OsStr::new(".cloud-artifacts"), false)
     } else {
         attempt.create_new_child(OsStr::new(".cloud-artifacts"))
     }
-    .map_err(|_| Error::Storage)?;
+    .map_err(crate::managed::storage_failure!())?;
     let package_sha = cloud::package_sha(package)?;
     if dir
         .entry_exists(OsStr::new("owner"))
-        .map_err(|_| Error::Storage)?
+        .map_err(crate::managed::storage_failure!())?
     {
         if dir
             .read_regular(OsStr::new("owner"), 128)
-            .map_err(|_| Error::Storage)?
+            .map_err(crate::managed::storage_failure!())?
             != package_sha.as_bytes()
         {
             return Err(Error::Binding);
@@ -103,13 +103,13 @@ pub fn publish(package: &Package) -> Result<()> {
     } else {
         if !dir
             .entry_names_limited(1)
-            .map_err(|_| Error::Storage)?
+            .map_err(crate::managed::storage_failure!())?
             .is_empty()
         {
             return Err(Error::Binding);
         }
         dir.publish_new(OsStr::new("owner"), package_sha.as_bytes())
-            .map_err(|_| Error::Storage)?;
+            .map_err(crate::managed::storage_failure!())?;
     }
     let _lock = dir
         .lock(
@@ -123,16 +123,16 @@ pub fn publish(package: &Package) -> Result<()> {
             if error.kind() == std::io::ErrorKind::WouldBlock {
                 Error::Uncertain
             } else {
-                Error::Storage
+                Error::storage(concat!(file!(), ":", line!()), &error)
             }
         })?;
     let bundle: Bundle = if dir
         .entry_exists(OsStr::new("bundle.json"))
-        .map_err(|_| Error::Storage)?
+        .map_err(crate::managed::storage_failure!())?
     {
         serde_json::from_slice(
             &dir.read_regular(OsStr::new("bundle.json"), 8 * 1024 * 1024)
-                .map_err(|_| Error::Storage)?,
+                .map_err(crate::managed::storage_failure!())?,
         )
         .map_err(|_| Error::Binding)?
     } else {
@@ -140,26 +140,35 @@ pub fn publish(package: &Package) -> Result<()> {
         // exact package owner and exclusive lock. Published archives never are.
         if dir
             .entry_exists(OsStr::new("archive.tar"))
-            .map_err(|_| Error::Storage)?
+            .map_err(crate::managed::storage_failure!())?
         {
             dir.remove_staged_regular(OsStr::new("archive.tar"))
-                .map_err(|_| Error::Storage)?;
+                .map_err(crate::managed::storage_failure!())?;
         }
-        let outputs =
-            Directory::open(&package.config.output_path(), false).map_err(|_| Error::Storage)?;
+        let outputs = Directory::open(&package.config.output_path(), false)
+            .map_err(crate::managed::storage_failure!())?;
         let policy = package.artifacts.clone().unwrap_or_default();
-        if dir.capacity().map_err(|_| Error::Storage)?.available_bytes
-            < ml_exp_io::artifacts::estimate(&outputs, &policy).map_err(|_| Error::Storage)?
+        if dir
+            .capacity()
+            .map_err(crate::managed::storage_failure!())?
+            .available_bytes
+            < ml_exp_io::artifacts::estimate(&outputs, &policy)
+                .map_err(crate::managed::storage_failure!())?
         {
-            return Err(Error::Storage);
+            return Err(crate::managed::storage_refused!(
+                "not enough free space for the result archive"
+            ));
         }
         let mut file = dir
             .create_new_regular(OsStr::new("archive.tar"))
-            .map_err(|_| Error::Storage)?;
+            .map_err(crate::managed::storage_failure!())?;
         let (sha256, bytes, files, skipped) =
-            ml_exp_io::artifacts::pack(&outputs, &mut file, &policy).map_err(|_| Error::Storage)?;
-        file.sync_all().map_err(|_| Error::Storage)?;
-        ml_exp_io::directory::seal_regular(&file, false).map_err(|_| Error::Storage)?;
+            ml_exp_io::artifacts::pack(&outputs, &mut file, &policy)
+                .map_err(crate::managed::storage_failure!())?;
+        file.sync_all()
+            .map_err(crate::managed::storage_failure!())?;
+        ml_exp_io::directory::seal_regular(&file, false)
+            .map_err(crate::managed::storage_failure!())?;
         let id = &package.manifest.identity;
         let bundle = Bundle {
             contract: artifacts::publication::CONTRACT.into(),
@@ -186,7 +195,7 @@ pub fn publish(package: &Package) -> Result<()> {
             OsStr::new("bundle.json"),
             &serde_json::to_vec(&bundle).map_err(|_| Error::Binding)?,
         )
-        .map_err(|_| Error::Storage)?;
+        .map_err(crate::managed::storage_failure!())?;
         bundle
     };
     bundle.validate().map_err(|_| Error::Binding)?;
@@ -209,7 +218,7 @@ pub fn publish(package: &Package) -> Result<()> {
     if prepared["published"] != true {
         let mut file = dir
             .open_regular_read(OsStr::new("archive.tar"))
-            .map_err(|_| Error::Storage)?;
+            .map_err(crate::managed::storage_failure!())?;
         ml_exp_io::artifacts::verify(&mut file, &bundle.archive).map_err(|_| Error::Binding)?;
         let mut buffer = vec![0u8; PART_BYTES as usize];
         for part in 0..count {
@@ -231,9 +240,9 @@ pub fn publish(package: &Package) -> Result<()> {
                 return Err(Error::Binding);
             }
             file.seek(SeekFrom::Start(part * PART_BYTES))
-                .map_err(|_| Error::Storage)?;
+                .map_err(crate::managed::storage_failure!())?;
             file.read_exact(&mut buffer[..bytes as usize])
-                .map_err(|_| Error::Storage)?;
+                .map_err(crate::managed::storage_failure!())?;
             let response = http
                 .put(uri)
                 .header("x-oss-forbid-overwrite", "true")
@@ -258,10 +267,10 @@ pub fn publish(package: &Package) -> Result<()> {
     // remove only this owned generated archive, with metadata for lost replies.
     if dir
         .entry_exists(OsStr::new("archive.tar"))
-        .map_err(|_| Error::Storage)?
+        .map_err(crate::managed::storage_failure!())?
     {
         dir.remove_staged_regular(OsStr::new("archive.tar"))
-            .map_err(|_| Error::Storage)?;
+            .map_err(crate::managed::storage_failure!())?;
     }
     Ok(())
 }
