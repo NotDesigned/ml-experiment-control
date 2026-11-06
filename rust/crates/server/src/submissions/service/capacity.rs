@@ -2,6 +2,14 @@
 //! remote command is the pure scheduler observation plan, with bounded output.
 use super::*;
 use ml_exp_core::capacity::{self, Observation};
+impl crate::cloud_runs::ExternalExecutors for Service {
+    fn accepts(&self, executor: &str) -> bool {
+        Service::accepts(self, executor)
+    }
+    fn supports_script_preparation(&self, executor: &str) -> bool {
+        Service::supports_script_preparation(self, executor)
+    }
+}
 impl Service {
     pub fn catalogue(&self) -> Vec<Value> {
         self.backends.iter().map(|(id,b)|json!({"executor_id":id,"kind":"slurm","enabled":self.enabled,"run_creation":self.can_create_runs(),"limits":{"gpus":b.profile.max_gpus,"cpus":b.profile.max_cpus,"memory_gb":b.profile.max_memory_gb,"walltime_seconds":b.profile.max_walltime_seconds},"partition":b.profile.partition,

@@ -12,6 +12,21 @@ struct Saved {
     started: bool,
     submission: Option<Value>,
 }
+/// What this service needs to know about executors it does not run. Refusing here,
+/// before a build or a copy, is the only reason it asks.
+pub trait ExternalExecutors {
+    fn accepts(&self, executor: &str) -> bool;
+    fn supports_script_preparation(&self, executor: &str) -> bool;
+}
+/// How far a continue got. Nothing here submits a Run on another backend: the
+/// caller does that with no lock held, then records it with `experiment_finish`.
+pub enum Continue {
+    View(Value),
+    SubmitElsewhere {
+        run: Box<ml_exp_core::first_submission::native::creation::Request>,
+        approval: ml_exp_core::first_submission::native::Approval,
+    },
+}
 fn name(id: &str) -> cloud::Result<String> {
     if !id.strip_prefix("preparation-").is_some_and(|s| {
         s.len() == 32
@@ -32,7 +47,7 @@ impl Service {
         project: &str,
         request: &Request,
         worker: &str,
-        slurm: Option<&crate::submissions::Service>,
+        external: Option<&dyn ExternalExecutors>,
     ) -> cloud::Result<()> {
         let run = request
             .resolve(project, worker)
@@ -120,12 +135,12 @@ impl Service {
                 http_status: Some(422),
                 uncertain: false,
             })?;
-        } else if !slurm.is_some_and(|s| s.accepts(&run.executor)) || run.scheduling.is_some() {
+        } else if !external.is_some_and(|e| e.accepts(&run.executor)) || run.scheduling.is_some() {
             return Err(cloud::Error::configuration());
         }
         if !self.backends.contains_key(&run.executor)
             && run.data_preparation.is_some()
-            && !slurm.is_some_and(|s| s.supports_script_preparation(&run.executor))
+            && !external.is_some_and(|e| e.supports_script_preparation(&run.executor))
         {
             return Err(cloud::Error {
                 code: "SCRIPT_PREPARATION_NOT_CONFIGURED".into(),
@@ -192,7 +207,7 @@ impl Service {
         &self,
         project: &str,
         request: Request,
-        slurm: Option<&crate::submissions::Service>,
+        external: Option<&dyn ExternalExecutors>,
     ) -> cloud::Result<Value> {
         request
             .validate(project)
@@ -222,7 +237,7 @@ impl Service {
             .as_ref()
             .map(|s| s.worker_sha256.clone())
             .unwrap_or_else(|| format!("sha256:{}", "0".repeat(64)));
-        self.setup_preflight(project, &request, &worker, slurm)?;
+        self.setup_preflight(project, &request, &worker, external)?;
         if let Some(definition) = &request.runtime {
             self.prepare_runtime(project, definition.clone())?;
         }
@@ -282,9 +297,9 @@ impl Service {
         project: &str,
         id: &str,
         confirmation: &str,
-        slurm: Option<Arc<crate::submissions::Service>>,
+        external: Option<&dyn ExternalExecutors>,
         context: crate::runs::Context<'_>,
-    ) -> cloud::Result<Value> {
+    ) -> cloud::Result<Continue> {
         let crate::runs::Context {
             now,
             expires,
@@ -293,11 +308,11 @@ impl Service {
         if !self.enabled || confirmation != format!("PREPARE {id}") {
             return Err(cloud::Error::configuration());
         }
-        let mut saved = {
+        let saved = {
             let _lock = self.lock()?;
             let mut saved = self.setup_load(project, id)?;
             if saved.submission.is_some() {
-                return self.setup_view(&saved);
+                return self.setup_view(&saved).map(Continue::View);
             }
             saved.started = true;
             self.slots
@@ -309,12 +324,7 @@ impl Service {
             .request
             .resolve(project, &saved.worker_sha256)
             .map_err(why!(cloud::Error::evidence()))?;
-        self.setup_preflight(
-            project,
-            &saved.request,
-            &saved.worker_sha256,
-            slurm.as_deref(),
-        )?;
+        self.setup_preflight(project, &saved.request, &saved.worker_sha256, external)?;
         if saved.request.runtime.is_some() {
             let runtime = self.runtime_status(project, &run.runtime_id)?;
             if runtime["status"] != "READY" {
@@ -327,71 +337,69 @@ impl Service {
                 } else {
                     self.reconcile_runtime(project, &run.runtime_id)?;
                 }
-                return self.setup_view(&saved);
+                return self.setup_view(&saved).map(Continue::View);
             }
         }
-        let submission = if self.accepts(&run.executor) {
-            let backend = &self.backends[&run.executor];
-            let pai = matches!(backend.adapter.profile, cloud::adapter::Profile::Pai(_));
-            if backend.data_copier.is_some() || pai && backend.collector.is_some() {
-                for input in &run.data {
-                    if let Some(data_saved) = self
-                        .data_saved(project, &run.executor, &input.asset_id)?
-                        .filter(|s| s.state.ready.is_none())
-                    {
-                        let request_id = data_saved.copy_request_id.unwrap_or(
-                            canonical::digest(&json!([id, &input.asset_id]))
-                                .map_err(why!(cloud::Error::evidence()))?[..32]
-                                .to_owned(),
-                        );
-                        let data = self.publish_dataset(
-                            project,
-                            &run.executor,
-                            &input.asset_id,
-                            &request_id,
-                            pai.then_some(run.runtime_id.as_str()),
-                        )?;
-                        if data["ready"].is_null() {
-                            let mut view = self.setup_view(&saved)?;
-                            view["phase"] = json!("DATA_PREPARATION");
-                            view["data"] = data;
-                            return Ok(view);
-                        }
+        if !self.accepts(&run.executor) {
+            return Ok(Continue::SubmitElsewhere {
+                run: Box::new(run),
+                approval: saved.request.approval,
+            });
+        }
+        let backend = &self.backends[&run.executor];
+        let pai = matches!(backend.adapter.profile, cloud::adapter::Profile::Pai(_));
+        if backend.data_copier.is_some() || pai && backend.collector.is_some() {
+            for input in &run.data {
+                if let Some(data_saved) = self
+                    .data_saved(project, &run.executor, &input.asset_id)?
+                    .filter(|s| s.state.ready.is_none())
+                {
+                    let request_id = data_saved.copy_request_id.unwrap_or(
+                        canonical::digest(&json!([id, &input.asset_id]))
+                            .map_err(why!(cloud::Error::evidence()))?[..32]
+                            .to_owned(),
+                    );
+                    let data = self.publish_dataset(
+                        project,
+                        &run.executor,
+                        &input.asset_id,
+                        &request_id,
+                        pai.then_some(run.runtime_id.as_str()),
+                    )?;
+                    if data["ready"].is_null() {
+                        let mut view = self.setup_view(&saved)?;
+                        view["phase"] = json!("DATA_PREPARATION");
+                        view["data"] = data;
+                        return Ok(Continue::View(view));
                     }
                 }
             }
-            self.create_run(project, run.clone(), now)?;
-            if self.prepare_script(project, &run.run_id)?.is_some() {
-                return self.setup_view(&saved);
-            }
-            self.prepare(
-                project,
-                &run.run_id,
-                saved.request.approval.clone(),
-                now,
-                expires,
-                transition,
-            )?
-        } else {
-            let slurm = slurm.ok_or_else(cloud::Error::configuration)?;
-            slurm
-                .create_run(project, run.clone(), now)
-                .map_err(why!(cloud::Error::evidence()))?;
-            slurm
-                .prepare(
-                    project,
-                    &run.run_id,
-                    saved.request.approval.clone(),
-                    crate::runs::Context {
-                        now,
-                        expires,
-                        transition_id: transition,
-                    },
-                )
-                .map_err(why!(cloud::Error::evidence()))?
-        };
+        }
+        self.create_run(project, run.clone(), now)?;
+        if self.prepare_script(project, &run.run_id)?.is_some() {
+            return self.setup_view(&saved).map(Continue::View);
+        }
+        let submission = self.prepare(
+            project,
+            &run.run_id,
+            saved.request.approval.clone(),
+            now,
+            expires,
+            transition,
+        )?;
+        self.experiment_finish(project, id, submission)
+            .map(Continue::View)
+    }
+    /// Record the prepared submission. A repeat must name the same one, because its
+    /// Action already exists and nothing may point this preparation at another.
+    pub fn experiment_finish(
+        &self,
+        project: &str,
+        id: &str,
+        submission: Value,
+    ) -> cloud::Result<Value> {
         let _lock = self.lock()?;
-        saved = self.setup_load(project, id)?;
+        let mut saved = self.setup_load(project, id)?;
         if saved
             .submission
             .as_ref()

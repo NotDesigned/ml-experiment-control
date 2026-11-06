@@ -180,6 +180,18 @@ def runs_module_failures(root):
     return failures
 
 
+def service_crossing_failures(root):
+    """Neither service names the other: each asks through a one-question trait."""
+    failures = []
+    for home, other in [("cloud_runs", "submissions"), ("submissions", "cloud_runs")]:
+        pattern = re.compile(rf"\b{other}::Service\b")
+        for path in rust_files(root, SERVER / home):
+            for line in code_lines(root, path):
+                if pattern.search(line):
+                    failures.append(f"{path}: {home} must not name the other service: {line}")
+    return failures
+
+
 class Structure(unittest.TestCase):
     def test_sealed_files_are_byte_identical(self):
         self.assertEqual(pin_failures(ROOT), [])
@@ -199,6 +211,9 @@ class Structure(unittest.TestCase):
     def test_runs_module_reaches_no_effect(self):
         self.assertTrue((ROOT / RUNS_MODULE).is_dir(), "the rule must have a module to check")
         self.assertEqual(runs_module_failures(ROOT), [])
+
+    def test_neither_service_names_the_other(self):
+        self.assertEqual(service_crossing_failures(ROOT), [])
 
 
 class GuardDetects(unittest.TestCase):
@@ -290,6 +305,16 @@ class GuardDetects(unittest.TestCase):
         ]:
             self.write(RUNS_MODULE / "apply.rs", line + "\n")
             self.assertEqual(len(runs_module_failures(self.root)), 1, line)
+
+    def test_a_service_naming_the_other_fails(self):
+        self.write(SERVER / "cloud_runs/preparations.rs", "// submissions::Service\nuse crate::why;\n")
+        self.write(SERVER / "submissions/service.rs", "pub trait RuntimeBuilder {}\n")
+        self.assertEqual(service_crossing_failures(self.root), [])
+        self.write(
+            SERVER / "cloud_runs/preparations.rs", "slurm: Option<&crate::submissions::Service>,\n"
+        )
+        self.write(SERVER / "submissions/service.rs", "cloud: Arc<crate::cloud_runs::Service>,\n")
+        self.assertEqual(len(service_crossing_failures(self.root)), 2)
 
 
 if __name__ == "__main__":

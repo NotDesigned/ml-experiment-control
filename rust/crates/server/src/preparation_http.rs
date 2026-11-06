@@ -1,8 +1,10 @@
 use crate::{
     AppState,
+    cloud_runs::{Continue, ExternalExecutors},
     http_effect::{self, OnTimeout},
     read_api,
-    runs::Owner,
+    runs::{self, Owner},
+    submissions,
 };
 use axum::{
     Router,
@@ -19,6 +21,9 @@ fn invalid() -> read_api::Error {
         code: "INVALID_EXPERIMENT_PREPARATION",
         detail: "invalid experiment configuration or exact preparation identity",
     }
+}
+fn external(slurm: &Option<Arc<submissions::Service>>) -> Option<&dyn ExternalExecutors> {
+    slurm.as_deref().map(|s| s as &dyn ExternalExecutors)
 }
 pub(crate) fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -88,7 +93,7 @@ async fn prepare(
     }
     http_effect::execute(state, OnTimeout::Effect, move |api, _| {
         api.cloud_only()?
-            .experiment_prepare(&project, request, api.submissions().as_deref())
+            .experiment_prepare(&project, request, external(&api.submissions()))
             .map_err(Into::into)
     })
     .await
@@ -131,19 +136,29 @@ async fn advance(
         let expires = (timestamp + time::Duration::minutes(30))
             .format(&time::format_description::well_known::Rfc3339)
             .map_err(|_| invalid())?;
-        api.cloud_only()?
-            .experiment_continue(
-                &project,
-                &id,
-                &confirmation,
-                api.submissions(),
-                crate::runs::Context {
-                    now: &now,
-                    expires: &expires,
-                    transition_id: &transition,
-                },
-            )
-            .map_err(Into::into)
+        let context = runs::Context {
+            now: &now,
+            expires: &expires,
+            transition_id: &transition,
+        };
+        let cloud = api.cloud_only()?;
+        let slurm = api.submissions();
+        match cloud.experiment_continue(&project, &id, &confirmation, external(&slurm), context)? {
+            Continue::View(view) => Ok(view),
+            // No lock is held across these calls. A repeat reaches the same Run and
+            // the same immutable Slurm slot, and `experiment_finish` refuses any other.
+            Continue::SubmitElsewhere { run, approval } => {
+                let slurm = slurm.ok_or_else(runs::slurm_absent)?;
+                let run_id = run.run_id.clone();
+                slurm
+                    .create_run(&project, *run, &now)
+                    .map_err(submissions::http::creation_failure)?;
+                let submission = slurm.prepare(&project, &run_id, approval, context)?;
+                cloud
+                    .experiment_finish(&project, &id, submission)
+                    .map_err(Into::into)
+            }
+        }
     })
     .await
 }

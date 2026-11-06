@@ -467,6 +467,7 @@ mod data_delivery;
 mod maintenance;
 mod materialization;
 mod preparations;
+pub use preparations::{Continue, ExternalExecutors};
 mod renewal;
 mod script_preparation;
 mod sync_jobs;

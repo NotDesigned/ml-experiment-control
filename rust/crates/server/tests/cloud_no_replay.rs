@@ -25,7 +25,7 @@ use ml_exp_server::{
         slurm::{Budget, SshConfig},
     },
     background::{Cycle, Polled},
-    cloud_runs::{Service, Settings},
+    cloud_runs::{Continue, Service, Settings},
     deletion::RunFence,
     operations::{ClaimContext, Store},
     read_api::{self, Api},
@@ -837,9 +837,6 @@ fn renew_is_refused_once_started() {
     }
 }
 
-/// The Slurm service over the same registry: one real authorized Action, and an
-/// SSH program that only records that it was called. Copied from the fixture in
-/// `backends/slurm/tests/submission_tests.rs`, which is private to its crate.
 /// The real cloud observer, one second per step, with the default 10 s interval.
 struct Observer<P: Polled> {
     polled: P,
@@ -961,11 +958,12 @@ fn a_terminal_job_leaves_the_observer_at_the_next_discovery() {
     }
 }
 
-fn slurm_side(f: &Fixture) -> (submissions::Service, String, std::path::PathBuf) {
+/// One Slurm backend's configuration over the fixture's registry and source.
+/// Copied from the fixture in `backends/slurm/tests/submission_tests.rs`, which is
+/// private to its crate.
+fn slurm_parts(f: &Fixture) -> (helper::Target, native::Runtime, native::Profile) {
     let root = f.temp.path();
     submissions::Service::initialize(&f.settings).unwrap();
-    let run = f.run_directory("train");
-    fs::create_dir_all(run.join("attempts/attempt-001")).unwrap();
     let source_id = f.runtime.source_id.clone();
     let image = format!("sha256:{}", "1".repeat(64));
     let mount_path = root.join("shared");
@@ -1005,6 +1003,16 @@ fn slurm_side(f: &Fixture) -> (submissions::Service, String, std::path::PathBuf)
         max_memory_gb: 512,
         max_walltime_seconds: 86400,
     };
+    (target, runtime, profile)
+}
+/// The Slurm service over the same registry with one real authorized Action.
+fn slurm_side(f: &Fixture) -> (submissions::Service, String, std::path::PathBuf) {
+    let run = f.run_directory("train");
+    fs::create_dir_all(run.join("attempts/attempt-001")).unwrap();
+    let (target, runtime, profile) = slurm_parts(f);
+    let source_id = runtime.source_id.clone();
+    let image = runtime.image_id.clone();
+    let mount = profile.mount_root.as_str();
     let spec = JobSpec {
         run_id: "train".into(),
         attempt_id: "attempt-001".into(),
@@ -1054,8 +1062,38 @@ fn slurm_side(f: &Fixture) -> (submissions::Service, String, std::path::PathBuf)
     let status = json!({"project":"demo","run_id":"train","attempt_id":"attempt-001","state":"NOT_SUBMITTED"});
     private(&run.join("status.json"), &status);
     private(&run.join("attempts/attempt-001/status.json"), &status);
+    let (service, calls) = slurm_open(f, target, runtime, profile);
+    let prepared = service
+        .prepare(
+            "demo",
+            "train",
+            Approval {
+                max_gpu_hours: 1.,
+                reason: "owned test".into(),
+            },
+            open_gate(&f.transition()),
+        )
+        .unwrap();
+    let action = prepared["submission_id"].as_str().unwrap().to_owned();
+    let authorized = service
+        .authorize(&action, "tester", "owned", open_gate(&f.transition()))
+        .unwrap();
+    assert_eq!(authorized["status"], "AUTHORIZED");
+    (service, action, calls)
+}
+/// The service, and an SSH program that only records that it was called.
+fn slurm_open(
+    f: &Fixture,
+    target: helper::Target,
+    runtime: native::Runtime,
+    profile: native::Profile,
+) -> (submissions::Service, std::path::PathBuf) {
+    let root = f.temp.path();
     for name in ["ssh-config", "known-hosts"] {
-        ml_exp_io::write_atomic(&root.join(name), b"synthetic test fixture\n", true).unwrap();
+        // A test may open this service more than once, and these refuse to be replaced.
+        if !root.join(name).exists() {
+            ml_exp_io::write_atomic(&root.join(name), b"synthetic test fixture\n", true).unwrap();
+        }
     }
     let calls = root.join("ssh-calls");
     let script = root.join("fake-ssh");
@@ -1098,23 +1136,7 @@ fn slurm_side(f: &Fixture) -> (submissions::Service, String, std::path::PathBuf)
         true,
     )
     .unwrap();
-    let prepared = service
-        .prepare(
-            "demo",
-            "train",
-            Approval {
-                max_gpu_hours: 1.,
-                reason: "owned test".into(),
-            },
-            open_gate(&f.transition()),
-        )
-        .unwrap();
-    let action = prepared["submission_id"].as_str().unwrap().to_owned();
-    let authorized = service
-        .authorize(&action, "tester", "owned", open_gate(&f.transition()))
-        .unwrap();
-    assert_eq!(authorized["status"], "AUTHORIZED");
-    (service, action, calls)
+    (service, calls)
 }
 fn stops_at_slurm_load(result: Result<Value, submissions::Error>) {
     match result {
@@ -1727,7 +1749,8 @@ fn dataset_manifests_over_their_budget_are_refused_before_any_copy() {
                 None,
                 open_gate(&c.f.transition()),
             )
-            .unwrap_err();
+            .err()
+            .unwrap();
         assert_eq!(refused.code, "DATASET_MANIFESTS_TOO_LARGE");
         assert_eq!(c.provider.creates(), 0);
         assert!(!c.f.run_directory("large-input").exists());
@@ -2257,4 +2280,273 @@ fn sync_and_direct_download_stay_unsupported_in_the_slurm_arm() {
         (501, "CLOUD_SYNC_NOT_CONFIGURED")
     );
     assert!(!ssh_calls.exists());
+}
+
+/// A preparation for a Slurm Run: the cloud service keeps its state and Slurm
+/// creates and prepares the Run. Nothing here may reach SSH or the provider.
+fn slurm_preparation(runtime_id: &str, request_id: &str, run: &str) -> Value {
+    json!({"request_id":request_id,"runtime":null,"approval":{"max_gpu_hours":1.0,"reason":"owned test"},
+        "run":{"run_id":run,"runtime_id":runtime_id,"executor":"slurm-test",
+            "command":["python","-u","/workspace/train.py"],"resources":{"gpus":1,"cpus":8,"memory_gb":16},
+            "walltime_seconds":300,"seed":42,"parameters":{"lr":0.001},
+            "metrics_schema":{"definitions":{"val_loss":{"unit":"nats/token","required":true}}},
+            "evaluation":{"tokenizer":"fixture-v1","variant_id":"v1","D_FT":0}}})
+}
+fn preparation_request(value: Value) -> ml_exp_core::preparation::Request {
+    serde_json::from_value(value).unwrap()
+}
+struct SlurmPreparation {
+    cloud: Arc<Service>,
+    slurm: Arc<submissions::Service>,
+    runtime_id: String,
+    ssh_calls: std::path::PathBuf,
+}
+fn slurm_preparation_side(f: &Fixture, creation: bool) -> SlurmPreparation {
+    let cloud = Arc::new(f.open());
+    let (target, runtime, profile) = slurm_parts(f);
+    let runtime_id = runtime.runtime_id.clone();
+    let (slurm, ssh_calls) = slurm_open(f, target, runtime, profile);
+    SlurmPreparation {
+        cloud,
+        slurm: Arc::new(slurm.with_run_creation(creation).unwrap()),
+        runtime_id,
+        ssh_calls,
+    }
+}
+const PREPARATIONS: &str = "/api/projects/demo/experiment-preparations";
+async fn prepared_over_http(app: &axum::Router, request: &Value) -> (String, String, String) {
+    let (status, prepared) = routed(app, "POST", PREPARATIONS, &request.to_string()).await;
+    assert_eq!(status, 200, "{prepared}");
+    assert_eq!(prepared["status"], "PREPARED");
+    let id = prepared["preparation_id"].as_str().unwrap().to_owned();
+    let path = format!("{PREPARATIONS}/{id}");
+    let body = json!({"confirmation":format!("PREPARE {id}")}).to_string();
+    (path.clone(), format!("{path}/continue"), body)
+}
+
+#[tokio::test]
+async fn a_slurm_preparation_submits_through_slurm_and_repeats_from_saved_state() {
+    for kind in KINDS {
+        let f = Fixture::new(kind);
+        let side = slurm_preparation_side(&f, true);
+        let app = routing_app(
+            &f,
+            routing_api(&f, Some(side.slurm.clone()), Some(side.cloud.clone())),
+        );
+        let request = slurm_preparation(&side.runtime_id, REQUEST_A, "prepared");
+        let id = preparation_request(request.clone()).id("demo").unwrap();
+        let (show, advance, body) = prepared_over_http(&app, &request).await;
+
+        let (status, ready) = routed(&app, "POST", &advance, &body).await;
+        assert_eq!(status, 200, "{ready}");
+        assert_eq!(ready["status"], "READY");
+        assert_eq!(ready["phase"], "SUBMISSION_PREPARED");
+        assert_eq!(ready["attempt_id"], "attempt-001");
+        assert_eq!(ready["training_authorized"], false);
+        assert_eq!(ready["scheduler_submitted"], false);
+        assert_eq!(ready["submission"]["status"], "PREPARED");
+        assert_eq!(ready["submission"]["reused"], false);
+        assert!(f.run_directory("prepared").join("manifest.json").exists());
+
+        // Asking Slurm again would answer `reused: true`, so an identical view
+        // means this one came from the saved state alone.
+        let (status, repeated) = routed(&app, "POST", &advance, &body).await;
+        assert_eq!(status, 200, "{repeated}");
+        assert_eq!(repeated, ready);
+
+        // The saved state never moves to a different Action, and saying so changes nothing.
+        let refused = side
+            .cloud
+            .experiment_finish("demo", &id, json!({"submission_id":"another-action"}))
+            .unwrap_err();
+        assert_eq!(refused.code, "CLOUD_EVIDENCE_INVALID");
+        let (status, shown) = routed(&app, "GET", &show, "").await;
+        assert_eq!(status, 200, "{shown}");
+        assert_eq!(shown, ready);
+
+        assert!(f.provider.calls().is_empty());
+        assert!(!side.ssh_calls.exists());
+    }
+}
+
+#[test]
+fn a_slurm_preparation_that_lost_its_finish_reaches_the_same_action() {
+    let f = Fixture::new(Kind::Pai);
+    let side = slurm_preparation_side(&f, true);
+    let request = preparation_request(slurm_preparation(&side.runtime_id, REQUEST_A, "prepared"));
+    let id = request.id("demo").unwrap();
+    let confirmation = format!("PREPARE {id}");
+    side.cloud
+        .experiment_prepare("demo", request, Some(&*side.slurm))
+        .unwrap();
+    let advance = || {
+        side.cloud.experiment_continue(
+            "demo",
+            &id,
+            &confirmation,
+            Some(&*side.slurm),
+            open_gate(&f.transition()),
+        )
+    };
+    let mut actions = Vec::new();
+    for reused in [false, true] {
+        let Continue::SubmitElsewhere { run, approval } = advance().unwrap() else {
+            panic!("a Slurm Run has no submission saved yet, so Slurm is asked again");
+        };
+        let run_id = run.run_id.clone();
+        assert_eq!(
+            side.slurm.create_run("demo", *run, T_CREATE).unwrap()["reused"],
+            reused
+        );
+        let prepared = side
+            .slurm
+            .prepare("demo", &run_id, approval, open_gate(&f.transition()))
+            .unwrap();
+        assert_eq!(prepared["reused"], reused);
+        actions.push(prepared);
+    }
+    assert_eq!(actions[0]["submission_id"], actions[1]["submission_id"]);
+    let finished = side
+        .cloud
+        .experiment_finish("demo", &id, actions[1].clone())
+        .unwrap();
+    assert_eq!(finished["status"], "READY");
+    let Continue::View(repeated) = advance().unwrap() else {
+        panic!("a saved submission is answered from the saved state");
+    };
+    assert_eq!(repeated, finished);
+    assert!(f.provider.calls().is_empty());
+    assert!(!side.ssh_calls.exists());
+}
+
+#[tokio::test]
+async fn a_slurm_refusal_during_a_preparation_reaches_the_client_with_its_own_code() {
+    // Run creation is off for this Project, which only Slurm knows.
+    let f = Fixture::new(Kind::Pai);
+    let side = slurm_preparation_side(&f, false);
+    let app = routing_app(
+        &f,
+        routing_api(&f, Some(side.slurm.clone()), Some(side.cloud.clone())),
+    );
+    let request = slurm_preparation(&side.runtime_id, REQUEST_A, "disabled");
+    let (show, advance, body) = prepared_over_http(&app, &request).await;
+    let (status, refused) = routed(&app, "POST", &advance, &body).await;
+    assert_eq!(
+        (status, refused["code"].as_str()),
+        (403, Some("RUN_CREATION_DISABLED"))
+    );
+    let (_, shown) = routed(&app, "GET", &show, "").await;
+    assert_eq!(shown["submission"], Value::Null);
+
+    // The request is valid until it meets this backend's limits, so admission
+    // refuses it here, the same way direct Run creation does.
+    let f = Fixture::new(Kind::Pai);
+    let side = slurm_preparation_side(&f, true);
+    let app = routing_app(
+        &f,
+        routing_api(&f, Some(side.slurm.clone()), Some(side.cloud.clone())),
+    );
+    let mut request = slurm_preparation(&side.runtime_id, REQUEST_A, "too-large");
+    request["run"]["resources"]["memory_gb"] = json!(513);
+    let (_, advance, body) = prepared_over_http(&app, &request).await;
+    let (status, refused) = routed(&app, "POST", &advance, &body).await;
+    assert_eq!(
+        (status, refused["code"].as_str()),
+        (422, Some("RUN_CREATION_REJECTED"))
+    );
+    assert!(!f.run_directory("too-large").exists());
+    assert!(f.provider.calls().is_empty());
+    assert!(!side.ssh_calls.exists());
+}
+
+#[test]
+fn a_preparation_for_an_executor_nobody_runs_is_refused_before_any_effect() {
+    let f = Fixture::new(Kind::Pai);
+    let side = slurm_preparation_side(&f, true);
+    let request = preparation_request(slurm_preparation(&side.runtime_id, REQUEST_A, "orphan"));
+    let id = request.id("demo").unwrap();
+    assert!(
+        side.cloud
+            .experiment_prepare("demo", request.clone(), None)
+            .is_err()
+    );
+    assert!(side.cloud.experiment_status("demo", &id).is_err());
+
+    // Saved while Slurm was configured, then continued without it.
+    side.cloud
+        .experiment_prepare("demo", request, Some(&*side.slurm))
+        .unwrap();
+    assert!(
+        side.cloud
+            .experiment_continue(
+                "demo",
+                &id,
+                &format!("PREPARE {id}"),
+                None,
+                open_gate(&f.transition()),
+            )
+            .is_err()
+    );
+    assert!(!f.run_directory("orphan").exists());
+
+    // Slurm accepts the executor but not its script.
+    let mut scripted = slurm_preparation(&side.runtime_id, REQUEST_B, "scripted");
+    scripted["run"]["data_preparation"] = json!({"script":"prepare.py"});
+    let refused = side
+        .cloud
+        .experiment_prepare("demo", preparation_request(scripted), Some(&*side.slurm))
+        .unwrap_err();
+    assert_eq!(refused.code, "SCRIPT_PREPARATION_NOT_CONFIGURED");
+}
+
+/// Answers for the one Runtime it built, and refuses any other.
+struct Built(native::Runtime);
+impl submissions::RuntimeBuilder for Built {
+    fn slurm_runtime(
+        &self,
+        project: &str,
+        executor: &str,
+        id: &str,
+    ) -> Result<native::Runtime, submissions::Error> {
+        assert_eq!((project, executor), ("demo", "slurm-test"));
+        if id == self.0.runtime_id {
+            Ok(self.0.clone())
+        } else {
+            Err(submissions::Error::Authority)
+        }
+    }
+}
+
+#[test]
+fn a_slurm_run_finds_an_unlisted_runtime_only_through_its_builder() {
+    let f = Fixture::new(Kind::Pai);
+    let (target, runtime, profile) = slurm_parts(&f);
+    let built = native::Runtime {
+        runtime_id: format!("runtime.{}", "4".repeat(64)),
+        ..runtime.clone()
+    };
+    let request = preparation_request(slurm_preparation(&built.runtime_id, REQUEST_A, "built"))
+        .resolve("demo", &format!("sha256:{}", "0".repeat(64)))
+        .unwrap();
+    let open = |builder: Option<Arc<dyn submissions::RuntimeBuilder>>| {
+        slurm_open(&f, target.clone(), runtime.clone(), profile.clone())
+            .0
+            .with_runtime_builder(builder)
+            .with_run_creation(true)
+            .unwrap()
+    };
+    let authority = |result: Result<Value, submissions::Error>| {
+        assert!(matches!(result, Err(submissions::Error::Authority)));
+    };
+
+    authority(open(None).create_run("demo", request.clone(), T_CREATE));
+    let cloud: Arc<dyn submissions::RuntimeBuilder> = Arc::new(f.open());
+    authority(open(Some(cloud)).create_run("demo", request.clone(), T_CREATE));
+    assert!(!f.run_directory("built").exists());
+
+    let builder: Arc<dyn submissions::RuntimeBuilder> = Arc::new(Built(built));
+    let created = open(Some(builder))
+        .create_run("demo", request, T_CREATE)
+        .unwrap();
+    assert_eq!(created["creation_state"], "CREATED");
 }

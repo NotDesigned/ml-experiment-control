@@ -206,7 +206,7 @@ async fn create(
     })
     .await
 }
-fn creation_failure(cause: Error) -> read_api::Error {
+pub(crate) fn creation_failure(cause: Error) -> read_api::Error {
     let mut error = read_api::Error::from(cause);
     match error.status {
         // The caller can act on this one, so it keeps its own code.
