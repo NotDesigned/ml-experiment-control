@@ -4,7 +4,8 @@
 Without --apply this only verifies the bundle and reports what would change.
 Standard library only; it runs on the host's system Python. Settings are read
 from ROOT/deployment.json (see deployment.example.json). It never touches
-Runs, Attempts, registries, provider jobs or already-published Runtimes.
+Runs, Attempts, provider jobs or already-published Runtimes. Only
+--first-install creates a registry, by running the server's own --initialize.
 """
 import argparse
 import contextlib
@@ -14,6 +15,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import pwd
 import shutil
 import subprocess
 import sys
@@ -25,8 +27,7 @@ import urllib.request
 
 RELEASES = "https://github.com/NotDesigned/ml-experiment-control/releases/download"
 TARGET = "x86_64-unknown-linux-gnu"
-# Only these are copied, verified and restored. Any other file in bin/, including
-# a binary from an older release, is left as it is.
+# Only these are copied, verified and restored. Any other file in bin/ is left as it is.
 BINARIES = ("ml-exp", "ml-expd-rs", "ml-exp-worker-rs")
 PACKAGES = ("experiment_control", "ml_exp_server", "ml_exp_worker")
 SETTINGS = ("api_unit", "builder_unit", "server_config", "client_config", "cloud_config",
@@ -48,6 +49,23 @@ def sha256(path):
 def command(*argv, **kwargs):
     return subprocess.run(argv, check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                           universal_newlines=True, timeout=300, **kwargs).stdout.strip()
+
+
+def service_account(settings):
+    """Root must not own the stores: run the server the way its unit does."""
+    if os.geteuid() != 0:
+        return {"cwd": "/"}
+    name = command("systemctl", "show", settings["api_unit"], "-p", "User", "--value")
+    if not name:
+        raise Refused(f"{settings['api_unit']} names no service account; install the unit first")
+    account = pwd.getpwnam(name)
+
+    def become():
+        os.setgroups([])
+        os.setgid(account.pw_gid)
+        os.setuid(account.pw_uid)
+        os.umask(0o077)
+    return {"cwd": "/", "preexec_fn": become}
 
 
 def version_of(path):
@@ -106,7 +124,7 @@ def verify_bundle(root):
         manifest = json.loads((root / "native-release.json").read_text())
         info = json.loads((root / "release-info.json").read_text())
     except (OSError, ValueError) as error:
-        raise Refused("bundle predates server deployment metadata") from error
+        raise Refused("bundle lacks server deployment metadata") from error
     version = manifest["version"]
     if info["version"] != version:
         raise Refused("bundle metadata versions differ")
@@ -178,7 +196,10 @@ def publishers_stopped(settings):
             raise Refused(f"API exited with status {status}; investigate before installing")
         command("systemctl", "stop", settings["builder_unit"])
         for path in settings["publisher_locks"]:
-            descriptor = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
+            try:
+                descriptor = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
+            except FileNotFoundError:
+                continue  # No publisher has run here, so none can still hold it.
             locks.append(descriptor)
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         yield
@@ -219,6 +240,14 @@ def install(root, settings, source):
         install_tree(source / "python" / package, site / package)
 
 
+def replace_config(temporary, path):
+    """The service account refuses a private file it does not own, so keep the owner."""
+    before = path.stat()
+    os.chown(temporary, before.st_uid, before.st_gid)
+    temporary.chmod(before.st_mode & 0o777)
+    os.replace(temporary, path)
+
+
 def pin_worker(settings, digest):
     """New builds embed this worker; existing Runtimes keep their frozen hash."""
     path = Path(settings["cloud_config"])
@@ -228,8 +257,7 @@ def pin_worker(settings, digest):
     config["builds"]["worker_sha256"] = digest
     temporary = path.with_name(f".{path.name}.deploy")
     temporary.write_text(json.dumps(config, indent=2) + "\n")
-    temporary.chmod(path.stat().st_mode & 0o777)
-    os.replace(temporary, path)
+    replace_config(temporary, path)
 
 
 def save_previous(root, settings):
@@ -251,7 +279,10 @@ def save_previous(root, settings):
 def restore_previous(root, settings):
     previous = root / "previous"
     install(root, settings, previous)
-    replace_file(previous / "cloud_config.json", Path(settings["cloud_config"]), 0o600)
+    path = Path(settings["cloud_config"])
+    temporary = path.with_name(f".{path.name}.deploy")
+    shutil.copyfile(previous / "cloud_config.json", temporary)
+    replace_config(temporary, path)
     return version_of(root / "bin/ml-expd-rs")
 
 
@@ -275,31 +306,82 @@ def rollback(root, settings, timeout):
     return record(root, version, None, "rollback")
 
 
+def verified(args, work):
+    """Unpack a bundle and check every hash; returns (unpacked, version, commit)."""
+    if args.bundle:
+        bundle, expected = args.bundle, args.sha256
+    else:
+        bundle, expected = fetch_bundle(args.version, work)
+    if sha256(bundle) != expected:
+        raise Refused("bundle checksum differs")
+    unpacked = work / "bundle"
+    extract(bundle, unpacked)
+    version, commit = verify_bundle(unpacked)
+    if args.version and version != args.version:
+        raise Refused(f"bundle contains {version}, not {args.version}")
+    return unpacked, version, commit
+
+
+def preflight(settings, unpacked, work):
+    """Run the new programs against the live configuration; returns the worker's hash."""
+    for directory in (work, unpacked, unpacked / "bin"):
+        directory.chmod(0o755)  # The service account runs the unpacked server.
+    command(str(unpacked / "bin/ml-expd-rs"), "--config", settings["server_config"], "--check",
+            **service_account(settings))
+    command(settings["python"], "-c", "import ml_exp_server.image_builder",
+            cwd=str(work), env={**os.environ, "PYTHONPATH": str(unpacked / "python")})
+    return "sha256:" + sha256(unpacked / "bin/ml-exp-worker-rs")
+
+
+def first_install(root, settings, args):
+    """Install into a ROOT that has never held a release; there is nothing to roll back to."""
+    for name in ("bin/ml-expd-rs", "previous", "DEPLOYED.json"):
+        if (root / name).exists():
+            raise Refused(f"{root / name} exists; --first-install needs a fresh ROOT")
+    with tempfile.TemporaryDirectory(dir=root, prefix=".deploy-") as temporary:
+        work = Path(temporary)
+        unpacked, version, commit = verified(args, work)
+        worker = preflight(settings, unpacked, work)
+        json.loads(Path(settings["cloud_config"]).read_text())
+        plan = {"current": None, "version": version, "source_commit": commit, "worker_sha256": worker}
+        if not args.apply:
+            return {**plan, "applied": False}
+        # Initialize first: a refusal such as an occupied Run root leaves ROOT
+        # empty, so correcting the cause and repeating this command is enough.
+        command(str(unpacked / "bin/ml-expd-rs"), "--config", settings["server_config"], "--initialize",
+                **service_account(settings))
+        (root / "bin").mkdir(exist_ok=True)
+        (root / "bin").chmod(0o755)
+        install(root, settings, unpacked)
+        pin_worker(settings, worker)
+    try:
+        start(settings)
+        wait_healthy(settings, version, args.health_timeout)
+    except (Refused, subprocess.SubprocessError) as error:
+        for unit in (settings["api_unit"], settings["builder_unit"]):
+            with contextlib.suppress(subprocess.SubprocessError):
+                command("systemctl", "stop", unit)
+        raise Refused(f"{error}; {version} stays installed and its registry initialized, the units "
+                      "are stopped. Correct the cause, start both units, then repeat with --apply "
+                      "and without --first-install to record it") from error
+    return {**plan, **record(root, version, commit, "first install"), "applied": True}
+
+
 def deploy(root, settings, args):
     with tempfile.TemporaryDirectory(dir=root, prefix=".deploy-") as temporary:
         work = Path(temporary)
-        if args.bundle:
-            bundle, expected = args.bundle, args.sha256
-        else:
-            bundle, expected = fetch_bundle(args.version, work)
-        if sha256(bundle) != expected:
-            raise Refused("bundle checksum differs")
-        unpacked = work / "bundle"
-        extract(bundle, unpacked)
-        version, commit = verify_bundle(unpacked)
-        if args.version and version != args.version:
-            raise Refused(f"bundle contains {version}, not {args.version}")
+        unpacked, version, commit = verified(args, work)
+        if not (root / "bin/ml-expd-rs").exists():
+            raise Refused(f"{root} holds no installed server; a fresh host uses --first-install")
         current = version_of(root / "bin/ml-expd-rs")
         if parsed(version) < parsed(current):
             raise Refused(f"refusing downgrade from {current}; use --rollback")
-        command(str(unpacked / "bin/ml-expd-rs"), "--config", settings["server_config"], "--check")
-        command(settings["python"], "-c", "import ml_exp_server.image_builder",
-                cwd=str(work), env={**os.environ, "PYTHONPATH": str(unpacked / "python")})
+        worker = preflight(settings, unpacked, work)
         active = active_builds(settings["builder_state"])
         if active:
             raise Refused(f"builds are active: {', '.join(active)}")
         plan = {"current": current, "version": version, "source_commit": commit,
-                "worker_sha256": "sha256:" + sha256(unpacked / "bin/ml-exp-worker-rs")}
+                "worker_sha256": worker}
         if not args.apply:
             return {**plan, "applied": False}
         save_previous(root, settings)
@@ -323,8 +405,6 @@ def deploy(root, settings, args):
             wait_healthy(settings, restored, args.health_timeout)
             record(root, restored, None, "automatic rollback")
             raise Refused(f"{error}; restored {restored}") from error
-        for marker in (root / "bin").glob("*SOURCE-COMMIT"):
-            marker.unlink()
         return {**plan, **record(root, version, commit, "deploy"), "applied": True}
 
 
@@ -336,10 +416,14 @@ def main():
     parser.add_argument("--sha256")
     parser.add_argument("--apply", action="store_true", help="install instead of only verifying")
     parser.add_argument("--rollback", action="store_true", help="restore the retained previous install")
+    parser.add_argument("--first-install", action="store_true",
+                        help="install into a fresh ROOT and initialize a new registry")
     parser.add_argument("--health-timeout", type=int, default=120)
     args = parser.parse_args()
     if args.rollback == bool(args.version or args.bundle) or bool(args.bundle) != bool(args.sha256):
         parser.error("use --version, --bundle with --sha256, or --rollback")
+    if args.rollback and args.first_install:
+        parser.error("--first-install installs a release; it has nothing to roll back")
     root = args.root.resolve()
     try:
         settings = json.loads((root / "deployment.json").read_text())
@@ -353,9 +437,11 @@ def main():
                 raise Refused("another deployment is running") from None
             if args.rollback:
                 result = rollback(root, settings, args.health_timeout)
+            elif args.first_install:
+                result = first_install(root, settings, args)
             else:
                 result = deploy(root, settings, args)
-    except (Refused, OSError, ValueError, subprocess.SubprocessError) as error:
+    except (Refused, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         output = getattr(error, "stdout", None)
         print(f"deployment refused: {error}" + (f"\n{output}" if output else ""), file=sys.stderr)
         return 1

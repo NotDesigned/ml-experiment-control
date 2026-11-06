@@ -37,7 +37,7 @@ class PaiAPI:
 
     @classmethod
     def from_environment(cls) -> PaiAPI:
-        path = Path(os.environ.get("EXPERIMENTCTL_PAI_CONFIG", "/etc/ml-expd/pai.json"))
+        path = Path(os.environ.get("ML_EXP_PAI_CONFIG", "/etc/ml-exp/pai.json"))
         try:
             return cls(json.loads(path.read_text()))
         except (OSError, ValueError):

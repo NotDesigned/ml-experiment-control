@@ -18,9 +18,9 @@
       "storage_volume": "example-personal-nas", "storage_subdir": "/researcher", "mount_path": "/data",
       "purpose": "training", "quota": "SPOT"
     },
-    "run_root": "/data/ml-expd-native/runs",
-    "data_root": "/data/ml-expd-native/datasets",
-    "credentials_file": "/etc/ml-expd/native/sensecore-credentials.json",
+    "run_root": "/data/ml-exp/runs",
+    "data_root": "/data/ml-exp/datasets",
+    "credentials_file": "/etc/ml-exp/sensecore-credentials.json",
     "runtimes": {},
     "data_copier": {
       "provider": "sensecore",
@@ -49,13 +49,13 @@
       "purpose": "result_collection", "quota": "RESERVED"
     }
   }],
-  "exchange": {"public_url": "https://api.example/ml-expd", "signing_key_file": "/etc/ml-expd/native/exchange-key"},
+  "exchange": {"public_url": "https://api.example/ml-expd", "signing_key_file": "/etc/ml-exp/exchange-key"},
   "artifacts": {
     "endpoint": "oss-cn-hangzhou.aliyuncs.com", "bucket": "example-private-bucket",
-    "prefix": "users/researcher/ml-expd-native/", "credentials_file": "/etc/ml-expd/native/oss-credentials.json"
+    "prefix": "users/researcher/ml-exp/", "credentials_file": "/etc/ml-exp/oss-credentials.json"
   },
   "builds": {
-    "socket": "/run/ml-expd-native-builder/worker.sock", "peer_uid": 0,
+    "socket": "/run/ml-exp-builder/builder.sock", "peer_uid": 0,
     "worker_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
     "data_base_image": "registry.example/base@sha256:0000000000000000000000000000000000000000000000000000000000000000"
   },

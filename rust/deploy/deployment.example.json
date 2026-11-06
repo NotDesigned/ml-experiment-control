@@ -1,11 +1,14 @@
 {
   "api_unit": "ml-expd.service",
   "builder_unit": "ml-expd-builder.service",
-  "server_config": "/etc/ml-expd/native/server.json",
-  "client_config": "/etc/ml-expd/native/local-client.json",
-  "cloud_config": "/etc/ml-expd/native/cloud.json",
-  "builder_state": "/var/lib/ml-expd-native/builder",
-  "python": "/opt/ml-expd/image-effects/bin/python",
-  "python_site_packages": "/opt/ml-expd/image-effects/lib/python3.11/site-packages",
-  "publisher_locks": ["/var/lib/ml-expd-native/submissions/.publisher.lock"]
+  "server_config": "/etc/ml-exp/server.json",
+  "client_config": "/etc/ml-exp/local-client.json",
+  "cloud_config": "/etc/ml-exp/cloud.json",
+  "builder_state": "/var/lib/ml-exp/builder",
+  "python": "/opt/ml-exp/image-effects/bin/python",
+  "python_site_packages": "/opt/ml-exp/image-effects/lib/python3.11/site-packages",
+  "publisher_locks": [
+    "/var/lib/ml-exp/registry/submissions/.publisher.lock",
+    "/var/lib/ml-exp/registry/cloud-submissions/.publisher.lock"
+  ]
 }

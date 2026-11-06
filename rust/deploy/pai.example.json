@@ -19,22 +19,22 @@
       },
       "vpc": {"VpcId": "vpc-example", "VSwitchId": "vsw-example", "SecurityGroupId": "sg-example"}
     },
-    "run_root": "/mnt/workspace/ml-expd-native/runs",
-    "data_root": "/mnt/workspace/ml-expd-native/datasets",
-    "credentials_file": "/etc/ml-expd/native/pai-credentials.json",
-    "registry_auth_file": "/etc/ml-expd/native/registry-auth.json",
+    "run_root": "/mnt/workspace/ml-exp/runs",
+    "data_root": "/mnt/workspace/ml-exp/datasets",
+    "credentials_file": "/etc/ml-exp/pai-credentials.json",
+    "registry_auth_file": "/etc/ml-exp/registry-auth.json",
     "runtimes": {},
     "allocation": "guaranteed"
   }],
-  "exchange": {"public_url": "https://api.example/ml-expd", "signing_key_file": "/etc/ml-expd/native/exchange-key"},
+  "exchange": {"public_url": "https://api.example/ml-expd", "signing_key_file": "/etc/ml-exp/exchange-key"},
   "artifacts": {
     "endpoint": "oss-cn-hangzhou.aliyuncs.com",
     "bucket": "example-private-bucket",
-    "prefix": "users/researcher/ml-expd-native/",
-    "credentials_file": "/etc/ml-expd/native/oss-credentials.json"
+    "prefix": "users/researcher/ml-exp/",
+    "credentials_file": "/etc/ml-exp/oss-credentials.json"
   },
   "builds": {
-    "socket": "/run/ml-expd-native-builder/worker.sock",
+    "socket": "/run/ml-exp-builder/builder.sock",
     "peer_uid": 0,
     "worker_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
   },

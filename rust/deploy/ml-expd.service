@@ -8,8 +8,8 @@ Type=simple
 User=ml-expd
 Group=ml-expd
 UMask=0077
-ExecStart=/opt/ml-expd/bin/ml-expd-rs --config /etc/ml-expd/native/server.json
-WorkingDirectory=/opt/ml-expd
+ExecStart=/opt/ml-exp/bin/ml-expd-rs --config /etc/ml-exp/server.json
+WorkingDirectory=/opt/ml-exp
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=120s
@@ -17,7 +17,7 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/var/lib/ml-expd-native /srv/ml-expd-native
+ReadWritePaths=/var/lib/ml-exp /srv/ml-exp
 LimitNOFILE=65536
 
 [Install]

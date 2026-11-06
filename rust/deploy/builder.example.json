@@ -1,0 +1,19 @@
+{
+  "socket": "/run/ml-exp-builder/builder.sock",
+  "client_uid": 10000,
+  "client_gid": 10000,
+  "state_root": "/var/lib/ml-exp/builder",
+  "native_worker_bin": "/opt/ml-exp/bin/ml-exp-worker-rs",
+  "native_source_root": "/var/lib/ml-exp/registry/source-revisions/sources",
+  "repository": "docker.io/YOUR_ACCOUNT/RUNTIME",
+  "publisher": "pai-dsw",
+  "allow_dockerfile_builds": true,
+  "timeout_seconds": 1200,
+  "registry_auth_file": "/etc/ml-exp/build-docker/config.json",
+  "pai_dsw": {
+    "workspace_id": "WORKSPACE_ID",
+    "quota_id": "QUOTA_ID",
+    "image_id": "DOCKER_ENABLED_CPU_IMAGE_ID",
+    "pai_bin": "/usr/local/bin/pai"
+  }
+}

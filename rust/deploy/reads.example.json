@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
-  "registry_root": "/var/lib/ml-expd-native/registry",
+  "registry_root": "/var/lib/ml-exp/registry",
   "projects": [
     {
       "project": "demo",
-      "project_file": "/srv/ml-expd-native/demo/project.json",
-      "run_roots": ["/srv/ml-expd-native/demo/runs"]
+      "project_file": "/srv/ml-exp/demo/project.json",
+      "run_roots": ["/srv/ml-exp/demo/runs"]
     }
   ],
   "source_policy": {

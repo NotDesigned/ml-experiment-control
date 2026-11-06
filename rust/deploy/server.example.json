@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "bind": "127.0.0.1:18765",
-  "token_file": "/etc/ml-expd/native/api-token",
-  "read_config": "/etc/ml-expd/native/reads.json",
+  "token_file": "/etc/ml-exp/api-token",
+  "read_config": "/etc/ml-exp/reads.json",
   "project_lifecycle": true,
   "source_archives": true,
   "administration": false

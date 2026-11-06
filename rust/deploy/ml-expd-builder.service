@@ -5,18 +5,24 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=ml-expd
-Group=ml-expd
+# Runs as root: it owns its socket as uid 0, and builds.peer_uid is 0 in the cloud
+# configuration. client_uid and client_gid in its configuration admit the API.
 UMask=0077
-ExecStart=/opt/ml-expd/image-effects/bin/python -m ml_exp_server.image_builder --config /etc/ml-expd/native/builder.json
-WorkingDirectory=/opt/ml-expd
+Environment=ML_EXP_PAI_CONFIG=/etc/ml-exp/pai.json
+# ProtectHome hides /root, so the CLIs keep their state beside the builder's.
+Environment=HOME=/var/lib/ml-exp/builder
+Environment=DOCKER_CONFIG=/etc/ml-exp/build-docker
+ExecStart=/opt/ml-exp/image-effects/bin/python -m ml_exp_server.image_builder --config /etc/ml-exp/builder.json
+WorkingDirectory=/opt/ml-exp
 Restart=on-failure
 RestartSec=5s
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/var/lib/ml-expd-native/builder
+RuntimeDirectory=ml-exp-builder
+RuntimeDirectoryMode=0750
+ReadWritePaths=/var/lib/ml-exp/builder /etc/ml-exp/build-docker
 
 [Install]
 WantedBy=multi-user.target
