@@ -91,6 +91,8 @@ pub fn documents(
         authority.data_root,
     )
     .map_err(|_| Error("cloud dataset scope"))?;
+    crate::datasets::manifest_budget(&datasets)
+        .map_err(|_| Error(crate::datasets::ManifestsTooLarge::CAUSE))?;
     match (&request.resume_from, authority.checkpoint) {
         (None, None) => {}
         (Some(reference), Some(value)) => {

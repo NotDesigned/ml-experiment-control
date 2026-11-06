@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "project": "demo",
+  "run_id": "train",
+  "attempt_id": "attempt-001",
+  "image_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "backend": {
+    "kind": "slurm",
+    "ssh_alias": "test",
+    "partition": "h100",
+    "account": "science",
+    "qos": "normal",
+    "gres": "gpu:h100:1",
+    "time": "00:05:00",
+    "source_dir": "@ROOT@/source",
+    "sif_path": "@ROOT@/image.sif",
+    "mount_root": "@ROOT@"
+  },
+  "storage": {
+    "run_dir": "@ROOT@/shared-runs/demo/train",
+    "project_data_root": "@ROOT@/data/demo"
+  },
+  "resources": {
+    "gpus": 1,
+    "cpus": 2,
+    "memory_gb": 4
+  },
+  "execution": {
+    "source_mount": "/workspace",
+    "workdir": "/workspace",
+    "managed_io": true
+  },
+  "command": [
+    "python",
+    "train.py"
+  ]
+}

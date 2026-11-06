@@ -4,31 +4,34 @@ mod why;
 
 pub mod administration;
 mod administration_http;
+pub mod api;
 pub mod backends;
 pub mod background;
 mod capacity_http;
 pub mod checkpoints;
-pub mod cloud_runs;
 mod data_delivery_http;
+mod dataset_http;
 pub mod deletion;
 pub mod deployment;
+pub mod error;
 pub mod experiments;
+mod http_effect;
 mod local_http;
 mod native_contract;
 pub mod objects;
 pub mod operations;
 mod preparation_http;
 pub mod projects;
-pub mod read_api;
 pub mod read_config;
 mod read_http;
 pub mod read_model;
 mod readiness;
 pub mod records;
 mod renewal;
+pub mod runs;
 pub mod sources;
 pub mod storage;
-pub mod submissions;
+mod submission_http;
 pub mod tracking;
 use axum::{
     Json, Router,
@@ -38,6 +41,12 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
+// For two sealed test files only, `tests/cloud_runs.rs` and `submission_tests.rs`,
+// which name these paths. All other code names the real ones.
+#[doc(hidden)]
+pub use api as read_api;
+#[doc(hidden)]
+pub use backends::{cloud::service as cloud_runs, slurm::service as submissions};
 use ml_exp_io::read_private;
 use serde_json::json;
 use std::{path::Path, sync::Arc};
@@ -85,8 +94,8 @@ fn authorized(token: &str, headers: &HeaderMap) -> bool {
 
 pub(crate) struct AppState {
     auth: Auth,
-    reads: Option<Arc<read_api::Api>>,
-    read_slots: Arc<tokio::sync::Semaphore>,
+    api: Option<Arc<api::Api>>,
+    effect_slots: Arc<tokio::sync::Semaphore>,
     data_slots: Arc<tokio::sync::Semaphore>,
 }
 
@@ -122,7 +131,7 @@ fn health_document(
     reads: bool,
     lifecycle: bool,
     sources: Option<&sources::Service>,
-    submissions: Option<&submissions::Service>,
+    submissions: Option<&backends::slurm::service::Service>,
 ) -> serde_json::Value {
     let mut capabilities = vec!["bearer-auth.v1", "deployment-readiness.v1"];
     if lifecycle {
@@ -141,14 +150,14 @@ fn health_document(
         capabilities.push("native-cancellation.v1");
         capabilities.push("native-metric-history.v1");
         capabilities.push("native-tracking-status.v1");
-        if submissions.is_some_and(submissions::Service::can_create_runs) {
+        if submissions.is_some_and(backends::slurm::service::Service::can_create_runs) {
             capabilities.push("native-attempt-retry.v1");
         }
     }
-    if submissions.is_some_and(submissions::Service::can_create_runs) {
+    if submissions.is_some_and(backends::slurm::service::Service::can_create_runs) {
         capabilities.push("native-run-creation.v1");
     }
-    if submissions.is_some_and(submissions::Service::has_datasets) {
+    if submissions.is_some_and(backends::slurm::service::Service::has_datasets) {
         capabilities.push("native-datasets.v1");
     }
     json!({
@@ -156,17 +165,17 @@ fn health_document(
         "openapi_path":"/api/v2/openapi.json", "capabilities":capabilities,
         "projects":projects, "workspace_id":workspace_id, "local_reads_configured":reads,
         "source_archive_limits":sources.map(sources::Service::limits),
-        "scheduler_mutations":submissions.is_some_and(submissions::Service::enabled),
-        "run_writes":submissions.is_some_and(submissions::Service::can_create_runs),
+        "scheduler_mutations":submissions.is_some_and(backends::slurm::service::Service::enabled),
+        "run_writes":submissions.is_some_and(backends::slurm::service::Service::can_create_runs),
         "deployment":readiness::observe(None)
     })
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> Response {
-    if state.reads.is_none() {
+    if state.api.is_none() {
         return Json(health_document(0, "unconfigured", false, false, None, None)).into_response();
     }
-    read_http::execute(state, read_http::Access::Read, |api, _| {
+    http_effect::execute(state, http_effect::OnTimeout::NoEffect, |api, _| {
         let mut document = health_document(
             api.active_project_count()?,
             api.workspace_id(),
@@ -250,10 +259,10 @@ async fn health(State(state): State<Arc<AppState>>) -> Response {
     .await
 }
 async fn readiness(State(state): State<Arc<AppState>>) -> Response {
-    if state.reads.is_none() {
+    if state.api.is_none() {
         return Json(readiness::observe(None)).into_response();
     }
-    read_http::execute(state, read_http::Access::Read, |api, _| {
+    http_effect::execute(state, http_effect::OnTimeout::NoEffect, |api, _| {
         Ok(readiness::observe(Some(api)))
     })
     .await
@@ -549,7 +558,16 @@ fn schema_document() -> serde_json::Value {
         );
         operation["post"]["responses"]["403"] =
             json!({"description":"Native scheduler execution is disabled by the operator"});
-        if matches!(name, "refresh" | "checkpoint" | "collect" | "acknowledge") {
+        if matches!(name, "collect" | "acknowledge") {
+            operation["post"]["responses"]["200"]["description"] = json!(
+                "Original Submission and its result state; cloud collection may have submitted a synchronization job, and an acknowledgement with release may have deleted the generated archive"
+            );
+            operation["post"]["responses"]["500"]["description"] = json!(
+                "Outcome is uncertain: a synchronization job or an archive release may have happened; query the original Submission and reconcile; do not repeat execution"
+            );
+            operation["post"]["responses"]["503"] = json!({"description":"Result evidence is unavailable or the response is uncertain; original outputs and checkpoints are retained; query the original Submission before repeating"});
+        }
+        if matches!(name, "refresh" | "checkpoint") {
             operation["post"]["responses"]["200"]["description"] = json!(
                 "Original Submission plus sampled worker phase and receive time; no Action or scheduler mutation"
             );
@@ -583,11 +601,11 @@ async fn unavailable(request: Request) -> Response {
     }
 }
 
-pub fn app(auth: Auth, reads: Option<Arc<read_api::Api>>) -> Router {
+pub fn app(auth: Auth, api: Option<Arc<api::Api>>) -> Router {
     let state = Arc::new(AppState {
         auth,
-        reads,
-        read_slots: Arc::new(tokio::sync::Semaphore::new(4)),
+        api,
+        effect_slots: Arc::new(tokio::sync::Semaphore::new(4)),
         data_slots: Arc::new(tokio::sync::Semaphore::new(4)),
     });
     Router::new()
@@ -597,11 +615,11 @@ pub fn app(auth: Auth, reads: Option<Arc<read_api::Api>>) -> Router {
         .merge(read_http::routes())
         .merge(projects::http::routes())
         .merge(sources::http::routes())
-        .merge(submissions::http::routes())
-        .merge(submissions::dataset_http::routes())
-        .merge(cloud_runs::routes())
-        .merge(cloud_runs::build_routes())
-        .merge(cloud_runs::debug_routes())
+        .merge(submission_http::routes())
+        .merge(dataset_http::routes())
+        .merge(backends::cloud::service::routes())
+        .merge(backends::cloud::service::build_routes())
+        .merge(backends::cloud::service::debug_routes())
         .merge(administration_http::routes())
         .merge(preparation_http::routes())
         .merge(local_http::routes())
@@ -733,6 +751,26 @@ mod tests {
 
 #[cfg(test)]
 mod schema_tests {
+    #[test]
+    fn only_observations_promise_that_a_failed_response_had_no_effect() {
+        let schema = super::schema_document();
+        let responses = |name: &str| {
+            schema["paths"][format!("/api/submissions/{{identity}}/{name}")]["post"]["responses"]
+                .clone()
+        };
+        for name in ["collect", "acknowledge"] {
+            let text = responses(name).to_string();
+            assert!(text.contains("do not repeat execution"), "{name}");
+            assert!(!text.contains("no scheduler effect"), "{name}");
+            assert!(!text.contains("no Action or scheduler mutation"), "{name}");
+        }
+        for name in ["refresh", "checkpoint"] {
+            assert_eq!(
+                responses(name)["500"]["description"],
+                "Observation response failed; no scheduler effect was requested"
+            );
+        }
+    }
     #[test]
     fn native_contract_declares_narrow_lifecycle_posts_and_exact_read_identity() {
         let schema = super::schema_document();

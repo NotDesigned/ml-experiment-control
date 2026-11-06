@@ -28,10 +28,9 @@ impl Helper {
         }
         self.verify_issued(request.intent())?;
         let read = || -> Result<Page> {
-            let (plan, directories) = self
-                .observe_shared(request.intent(), &snapshot.directory, false)?
-                .ok_or(Error::Configuration)?;
-            let package = plan.managed.as_ref().ok_or(Error::Configuration)?;
+            let (plan, directories) =
+                self.observe_shared(request.intent(), &snapshot.directory, false)?;
+            let package = &plan.managed;
             let worker = crate::managed::sample(&package.config).map_err(|_| Error::Metadata)?;
             let outputs = directories[5].child(OsStr::new("payload"), false)?;
             if !outputs.entry_exists(OsStr::new("metrics.jsonl"))?

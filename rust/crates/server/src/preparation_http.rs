@@ -1,6 +1,12 @@
 use crate::{
-    AppState, read_api,
-    read_http::{self, Access},
+    AppState, api,
+    backends::{
+        cloud::service::{Continue, ExternalExecutors},
+        slurm::service as slurm,
+    },
+    error::Error,
+    http_effect::{self, OnTimeout},
+    runs::{self, Owner},
 };
 use axum::{
     Router,
@@ -11,19 +17,15 @@ use axum::{
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
-fn invalid() -> read_api::Error {
-    read_api::Error {
+fn invalid() -> Error {
+    Error {
         status: 422,
         code: "INVALID_EXPERIMENT_PREPARATION",
         detail: "invalid experiment configuration or exact preparation identity",
     }
 }
-fn service(api: &read_api::Api) -> Result<Arc<crate::cloud_runs::Service>, read_api::Error> {
-    api.cloud().ok_or(read_api::Error {
-        status: 501,
-        code: "EXPERIMENT_PREPARATION_DISABLED",
-        detail: "native experiment preparation is not configured",
-    })
+fn external(slurm: &Option<Arc<slurm::Service>>) -> Option<ExternalExecutors> {
+    slurm.as_deref().map(slurm::Service::executors)
 }
 pub(crate) fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -47,34 +49,26 @@ async fn discover(
     Path((project, run)): Path<(String, String)>,
     RawQuery(query): RawQuery,
 ) -> Response {
-    if read_api::no_parameters(query.as_deref()).is_err() {
-        return read_http::failure(invalid());
+    if api::no_parameters(query.as_deref()).is_err() {
+        return http_effect::failure(invalid());
     }
-    read_http::execute(state, Access::Read, move |api, now| {
-        if let Some(cloud) = api.cloud() {
-            if let Some(value) = cloud
-                .experiment_for_run(&project, &run)
-                .map_err(crate::cloud_runs::failure)?
-            {
-                return Ok(value);
-            }
-            if cloud
-                .handles_run(&project, &run)
-                .map_err(crate::cloud_runs::failure)?
-            {
-                return cloud
-                    .for_run(&project, &run, &timestamp(now)?)
-                    .map_err(crate::cloud_runs::failure);
-            }
+    http_effect::execute(state, OnTimeout::NoEffect, move |api, now| {
+        let preparation = match api.cloud() {
+            Some(cloud) => cloud.experiment_for_run(&project, &run)?,
+            None => None,
+        };
+        if let Some(value) = preparation {
+            return Ok(value);
         }
-        api.submissions()
-            .ok_or_else(invalid)?
-            .for_run(&project, &run, &timestamp(now)?)
-            .map_err(crate::submissions::http::failure)
+        let now = timestamp(now)?;
+        match api.run_owner(&project, &run)? {
+            Owner::Cloud(cloud) => cloud.for_run(&project, &run, &now).map_err(Into::into),
+            Owner::Slurm(slurm) => slurm.for_run(&project, &run, &now).map_err(Into::into),
+        }
     })
     .await
 }
-fn timestamp(now: f64) -> Result<String, read_api::Error> {
+fn timestamp(now: f64) -> Result<String, Error> {
     time::OffsetDateTime::from_unix_timestamp(now as i64)
         .map_err(|_| invalid())?
         .format(&time::format_description::well_known::Rfc3339)
@@ -86,23 +80,23 @@ async fn prepare(
     RawQuery(query): RawQuery,
     body: Bytes,
 ) -> Response {
-    if read_api::no_parameters(query.as_deref()).is_err() {
-        return read_http::failure(invalid());
+    if api::no_parameters(query.as_deref()).is_err() {
+        return http_effect::failure(invalid());
     }
     let request: ml_exp_core::preparation::Request = match ml_exp_core::json::mapping(&body)
         .ok()
         .and_then(|m| serde_json::from_value(Value::Object(m)).ok())
     {
         Some(r) => r,
-        None => return read_http::failure(invalid()),
+        None => return http_effect::failure(invalid()),
     };
     if request.validate(&project).is_err() {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
-    read_http::execute(state, Access::Write, move |api, _| {
-        service(api)?
-            .experiment_prepare(&project, request, api.submissions().as_deref())
-            .map_err(crate::cloud_runs::failure)
+    http_effect::execute(state, OnTimeout::Effect, move |api, _| {
+        api.cloud_only()?
+            .experiment_prepare(&project, request, external(&api.submissions()).as_ref())
+            .map_err(Into::into)
     })
     .await
 }
@@ -111,13 +105,13 @@ async fn show(
     Path((project, id)): Path<(String, String)>,
     RawQuery(query): RawQuery,
 ) -> Response {
-    if read_api::no_parameters(query.as_deref()).is_err() {
-        return read_http::failure(invalid());
+    if api::no_parameters(query.as_deref()).is_err() {
+        return http_effect::failure(invalid());
     }
-    read_http::execute(state, Access::Read, move |api, _| {
-        service(api)?
+    http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
+        api.cloud_only()?
             .experiment_status(&project, &id)
-            .map_err(crate::cloud_runs::failure)
+            .map_err(Into::into)
     })
     .await
 }
@@ -127,16 +121,16 @@ async fn advance(
     RawQuery(query): RawQuery,
     body: Bytes,
 ) -> Response {
-    if read_api::no_parameters(query.as_deref()).is_err() {
-        return read_http::failure(invalid());
+    if api::no_parameters(query.as_deref()).is_err() {
+        return http_effect::failure(invalid());
     }
     let confirmation = format!("PREPARE {id}");
     if ml_exp_core::json::mapping(&body).ok().map(Value::Object)
         != Some(json!({"confirmation":confirmation}))
     {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
-    read_http::execute(state, Access::RunCreate, move |api, _| {
+    http_effect::execute(state, OnTimeout::RunCreate, move |api, _| {
         let (now, transition) = crate::projects::transition_context()?;
         let timestamp =
             time::OffsetDateTime::parse(&now, &time::format_description::well_known::Rfc3339)
@@ -144,19 +138,35 @@ async fn advance(
         let expires = (timestamp + time::Duration::minutes(30))
             .format(&time::format_description::well_known::Rfc3339)
             .map_err(|_| invalid())?;
-        service(api)?
-            .experiment_continue(
-                &project,
-                &id,
-                &confirmation,
-                api.submissions(),
-                crate::submissions::Context {
-                    now: &now,
-                    expires: &expires,
-                    transition_id: &transition,
-                },
-            )
-            .map_err(crate::cloud_runs::failure)
+        let context = runs::Context {
+            now: &now,
+            expires: &expires,
+            transition_id: &transition,
+        };
+        let cloud = api.cloud_only()?;
+        let slurm = api.submissions();
+        match cloud.experiment_continue(
+            &project,
+            &id,
+            &confirmation,
+            external(&slurm).as_ref(),
+            context,
+        )? {
+            Continue::View(view) => Ok(view),
+            // No lock is held across these calls. A repeat reaches the same Run and
+            // the same immutable Slurm slot, and `experiment_finish` refuses any other.
+            Continue::SubmitElsewhere { run, approval } => {
+                let slurm = api.slurm_only()?;
+                let run_id = run.run_id.clone();
+                slurm
+                    .create_run(&project, *run, &now)
+                    .map_err(crate::submission_http::creation_failure)?;
+                let submission = slurm.prepare(&project, &run_id, approval, context)?;
+                cloud
+                    .experiment_finish(&project, &id, submission)
+                    .map_err(Into::into)
+            }
+        }
     })
     .await
 }

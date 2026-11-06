@@ -22,10 +22,9 @@ impl Helper {
         }
         self.verify_issued(request.intent())?;
         let read = || -> Result<serde_json::Value> {
-            let (plan, directories) = self
-                .observe_shared(request.intent(), &snapshot.directory, false)?
-                .ok_or(Error::Configuration)?;
-            let package = plan.managed.as_ref().ok_or(Error::Configuration)?;
+            let (plan, directories) =
+                self.observe_shared(request.intent(), &snapshot.directory, false)?;
+            let package = &plan.managed;
             // The sealed worker ledger proves this output tree belongs to the
             // issued job. It does not claim the training process is alive.
             crate::managed::sample(&package.config).map_err(|_| Error::Metadata)?;

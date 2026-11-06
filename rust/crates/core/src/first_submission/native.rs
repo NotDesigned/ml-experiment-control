@@ -524,9 +524,7 @@ pub fn prepare(
             slurm::shell_quote(value).map_err(|_| Error("execution environment"))?
         ));
     }
-    if spec.execution.managed_io {
-        environment.push_str("export INPUT_DIR=/inputs\nexport OUTPUT_DIR=/outputs\n");
-    }
+    environment.push_str("export INPUT_DIR=/inputs\nexport OUTPUT_DIR=/outputs\n");
     let verify = format!(
         "set -euo pipefail\n{environment}if ! printf '%s  %s\\n' {} {} | sha256sum --check --status; then\n  printf '%s\\n' 'ML_EXPD_STAGING=FAILED code=ATTEMPT_VERIFICATION_FAILED' >&2\n  exit 78\nfi\nprintf '%s\\n' ML_EXPD_STAGING=READY\nif ! printf '%s  %s\\n' {} {} | sha256sum --check --status; then\n  printf '%s\\n' 'ML_EXPD_RUNTIME=FAILED code=SIF_VERIFICATION_FAILED' >&2\n  exit 78\nfi\nprintf '%s\\n' ML_EXPD_RUNTIME=VERIFIED\n",
         slurm::shell_quote(&helper::sha256_bytes(manifest.as_bytes())[7..])
@@ -539,10 +537,10 @@ pub fn prepare(
     let request = Request::prepare(
         FrozenIntent {
             target: profile.target.clone(),
-            staging: Some(slurm::staging::Requirement {
+            staging: slurm::staging::Requirement {
                 runs_root: profile.run_root.clone(),
-                worker: Some(runtime.worker.clone()),
-            }),
+                worker: runtime.worker.clone(),
+            },
             scope,
             submission_token: token.into(),
             scheduler_name: slurm::scheduler_job_name(&binding.run_id, &binding.attempt_id)

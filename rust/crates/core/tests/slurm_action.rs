@@ -5,14 +5,26 @@ use ml_exp_core::{
 use serde_json::{Value, json};
 const NOW: &str = "2026-10-28T00:00:00Z";
 fn fixture() -> (Value, Request) {
-    let manifest = "run_id: train\n";
+    let manifest = include_str!("fixtures/slurm/attempt.json")
+        .trim()
+        .replace("@ROOT@", "/synthetic");
     let script = format!(
         "#!/bin/sh\n#SBATCH --job-name=train--attempt-001\n#SBATCH --comment=ml-exp-{}\n\nexit 0\n",
         "a".repeat(32)
     );
     let request = Request::prepare(
         FrozenIntent {
-            staging: None,
+            staging: slurm::staging::Requirement {
+                runs_root: "/synthetic/shared-runs".into(),
+                worker: slurm::managed::Runtime {
+                    program: "/opt/ml-expd/bin/ml-exp-worker-rs".into(),
+                    base_environment: std::collections::BTreeMap::from([(
+                        "PATH".into(),
+                        "/usr/bin:/bin".into(),
+                    )]),
+                    runtime_environment: Vec::new(),
+                },
+            },
             target: Target {
                 backend_id: "slurm-test".into(),
                 profile_sha256: sha256_bytes(b"profile"),
@@ -28,7 +40,7 @@ fn fixture() -> (Value, Request) {
             manifest_sha256: sha256_bytes(manifest.as_bytes()),
             script_sha256: sha256_bytes(script.as_bytes()),
         },
-        manifest.into(),
+        manifest,
         script,
     )
     .unwrap();

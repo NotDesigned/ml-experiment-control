@@ -51,8 +51,9 @@ field even when the API has no READY receipt yet. The worker imports and
 verifies it on CPFS before starting training, or reuses an exact verified cache.
 This inline preparation consumes the allocated job's running time and resources.
 A Run's dataset manifests must fit 256 KiB together, and the full worker package,
-including checkpoint metadata, must fit 8 MiB. `ready:null` alone does not prove
-that a physical cache is absent.
+including checkpoint metadata, must fit 8 MiB. A larger set is refused with 422
+`DATASET_MANIFESTS_TOO_LARGE` when the Run is created or prepared, before any CPU
+copy job. `ready:null` alone does not prove that a physical cache is absent.
 
 A separate CPU publication avoids doing that work on allocated training GPUs.
 It is optional for this inline path:
@@ -74,10 +75,41 @@ on exit. During the second phase, copying parts does not fetch signed URLs.
 
 The complete command, channels, Runtime and request are retained before any
 provider effect. Repeating the same call observes the same CPU job, including
-after an API restart or launcher/URL change. Failed or uncertain jobs are not
-automatically replaced. `data show` reads cached evidence without querying the
+after an API restart or launcher/URL change. Failed or uncertain jobs are never
+replaced automatically. `data show` reads cached evidence without querying the
 provider. Only a complete verified READY receipt allows later training to reuse
 the cache without another download.
+
+The launcher and worker keep the config in a private scratch file. On the provider
+request it travels in arguments of at most 64 KiB, and a request above 1 MiB is
+refused before any provider call. Whether a provider passes the joined command to a
+shell as one argument, which Linux limits to 128 KiB, has not been verified.
+
+## Replace a failed copy
+
+Repeat the original request until `data show` reports `new_request_allowed: true`.
+That means the last observation proved this exact job FAILED, was CANCELLED or was
+PREEMPTED. Then publish with a new request ID, on PAI or SenseCore. A fresh provider
+read must prove the same thing again before the new job is prepared.
+
+Anything else returns `DATA_COPY_IDENTITY_CONFLICT` and creates nothing: a job that
+was never prepared or never started, a submission with no provider record (absence
+cannot prove an uncertain create did not land), a failed read, a running job, or
+SUCCEEDED without READY. The worker exits non-zero unless READY was acknowledged, so
+that last case is contradictory evidence.
+
+SenseCore `SUSPENDED` and `DELETING` also refuse, although they display as CANCELLED: a
+deleting job may still be running, and a suspended job has not been shown unable to
+resume. The service never stops a copy job itself. To replace one in either state, have
+the provider finish deleting it, so that a read reports `DELETED`. If the provider stops
+reporting the job at all, the read fails and the request stays refused, because absence
+is not proof.
+
+The new job has its own deterministic identity from the new request ID. On PAI,
+`--runtime` may name another READY Runtime; without it the original Runtime is kept.
+The old job stays retained for `data diagnose`. Publishing the old ID again returns
+`DATA_COPY_REQUEST_SUPERSEDED` and creates nothing. `experiment continue` shows the
+failure and never chooses a new ID. READY still requires the worker's verified receipt.
 
 ## Read-only diagnostics
 
@@ -98,12 +130,18 @@ original image, 0 GPUs, 2 CPUs and 4 GiB, and a 300-second running limit. CPFS i
 mounted read-only. It does not run data-copy, unpack files, publish READY, remove
 parts or retry the original copy.
 
+SenseCore has no read-only diagnostic and no provider read for a copy. There,
+`data diagnose` returns 422 `READONLY_DIAGNOSTIC_UNSUPPORTED` and the provider read
+says `PROVIDER_DIAGNOSTICS_UNSUPPORTED`, with no provider call.
+
 The report contains current available bytes/inodes, marker/state identity and
 metadata hashes, modes/ownership, recorded part counts, part sizes, and an
 existing-lock nonblocking check. Part contents are not read. Up to 128 part
 entries are included with an explicit truncation flag. A missing lock is never
-created. `statvfs` does not prove user-quota availability. Missing offline
-logs stay `AWAITING_OFFLINE_LOGS`; a later explicit observation can retrieve them.
+created. `statvfs` does not prove user-quota availability. The job logs its report
+in numbered, hashed parts, at most 19 lines, so a long report survives provider line
+limits. Until every part is readable the report stays `AWAITING_OFFLINE_LOGS`; a
+later explicit observation can retrieve the rest.
 
 To read what the provider recorded for the copy and its diagnostic, add `--provider`
 (with optional `--lines`, up to 2000). This returns each job's reason, pods, events

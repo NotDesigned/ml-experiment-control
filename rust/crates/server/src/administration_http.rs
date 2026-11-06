@@ -1,6 +1,7 @@
 use crate::{
-    AppState, read_api,
-    read_http::{self, Access},
+    AppState, api,
+    error::Error,
+    http_effect::{self, OnTimeout},
 };
 use axum::{
     Router,
@@ -12,21 +13,21 @@ use axum::{
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
-fn invalid() -> read_api::Error {
-    read_api::Error {
+fn invalid() -> Error {
+    Error {
         status: 422,
         code: "INVALID_ADMINISTRATIVE_REQUEST",
         detail: "invalid administrative request or exact confirmation",
     }
 }
-fn service(api: &read_api::Api) -> Result<Arc<crate::administration::Service>, read_api::Error> {
-    api.administration().ok_or(read_api::Error {
+fn service(api: &api::Api) -> Result<Arc<crate::administration::Service>, Error> {
+    api.administration().ok_or(Error {
         status: 501,
         code: "ADMINISTRATION_DISABLED",
         detail: "administrative deletion is not configured",
     })
 }
-fn now(value: f64) -> Result<String, read_api::Error> {
+fn now(value: f64) -> Result<String, Error> {
     time::OffsetDateTime::from_unix_timestamp(value as i64)
         .map_err(|_| invalid())?
         .format(&time::format_description::well_known::Rfc3339)
@@ -50,18 +51,18 @@ async fn prepare(
     RawQuery(query): RawQuery,
     body: Bytes,
 ) -> Response {
-    if read_api::no_parameters(query.as_deref()).is_err() {
-        return read_http::failure(invalid());
+    if api::no_parameters(query.as_deref()).is_err() {
+        return http_effect::failure(invalid());
     }
     let request = match ml_exp_core::json::mapping(&body).ok().and_then(|m| {
         serde_json::from_value::<crate::administration::Request>(Value::Object(m)).ok()
     }) {
         Some(r) => r,
-        None => return read_http::failure(invalid()),
+        None => return http_effect::failure(invalid()),
     };
-    read_http::execute_timeout(
+    http_effect::execute_timeout(
         state,
-        Access::Write,
+        OnTimeout::Effect,
         std::time::Duration::from_secs(180),
         move |api, time| service(api)?.prepare(&action, request, &now(time)?),
     )
@@ -72,10 +73,10 @@ async fn show(
     Path(identity): Path<String>,
     RawQuery(query): RawQuery,
 ) -> Response {
-    if read_api::no_parameters(query.as_deref()).is_err() {
-        return read_http::failure(invalid());
+    if api::no_parameters(query.as_deref()).is_err() {
+        return http_effect::failure(invalid());
     }
-    read_http::execute(state, Access::Read, move |api, _| {
+    http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
         service(api)?.status(&identity)
     })
     .await
@@ -86,18 +87,18 @@ async fn execute(
     RawQuery(query): RawQuery,
     body: Bytes,
 ) -> Response {
-    if read_api::no_parameters(query.as_deref()).is_err() {
-        return read_http::failure(invalid());
+    if api::no_parameters(query.as_deref()).is_err() {
+        return http_effect::failure(invalid());
     }
     let confirmation = format!("DELETE {identity}");
     if ml_exp_core::json::mapping(&body).ok().map(Value::Object)
         != Some(json!({"confirmation":confirmation}))
     {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
-    read_http::execute_timeout(
+    http_effect::execute_timeout(
         state,
-        Access::Write,
+        OnTimeout::Effect,
         std::time::Duration::from_secs(930),
         move |api, _| service(api)?.execute(&identity, &confirmation),
     )
@@ -109,18 +110,18 @@ async fn retire(
     RawQuery(query): RawQuery,
     body: Bytes,
 ) -> Response {
-    if read_api::no_parameters(query.as_deref()).is_err() {
-        return read_http::failure(invalid());
+    if api::no_parameters(query.as_deref()).is_err() {
+        return http_effect::failure(invalid());
     }
     let confirmation = format!("DELETE {project}/{run}");
     if ml_exp_core::json::mapping(&body).ok().map(Value::Object)
         != Some(json!({"confirmation":confirmation}))
     {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
-    read_http::execute_timeout(
+    http_effect::execute_timeout(
         state,
-        Access::Write,
+        OnTimeout::Effect,
         std::time::Duration::from_secs(180),
         move |api, time| service(api)?.retire(&project, &run, &confirmation, &now(time)?),
     )
@@ -133,8 +134,8 @@ async fn receive(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    if read_api::no_parameters(query.as_deref()).is_err() {
-        return read_http::failure(invalid());
+    if api::no_parameters(query.as_deref()).is_err() {
+        return http_effect::failure(invalid());
     }
     let values: Vec<_> = headers.get_all("authorization").iter().collect();
     let token = if values.len() == 1 {
@@ -147,7 +148,7 @@ async fn receive(
         None
     };
     let Some(token) = token else {
-        return read_http::failure(read_api::Error {
+        return http_effect::failure(Error {
             status: 401,
             code: "WORKER_AUTH_REQUIRED",
             detail: "Attempt worker authentication required",
@@ -155,9 +156,9 @@ async fn receive(
     };
     let receipt = match ml_exp_core::json::mapping(&body) {
         Ok(m) => Value::Object(m),
-        Err(_) => return read_http::failure(invalid()),
+        Err(_) => return http_effect::failure(invalid()),
     };
-    read_http::execute(state, Access::Write, move |api, _| {
+    http_effect::execute(state, OnTimeout::Effect, move |api, _| {
         service(api)?.receive(&project, &run, &attempt, &token, receipt)
     })
     .await

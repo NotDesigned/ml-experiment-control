@@ -88,6 +88,11 @@ impl JobSpec {
         {
             return Err(Error::Configuration("command"));
         }
+        // Every Attempt runs under the managed launcher. The field stays because
+        // stored documents and pinned test fixtures name it.
+        if !self.execution.managed_io {
+            return Err(Error::Configuration("managed I/O"));
+        }
         Ok(())
     }
 }
@@ -102,9 +107,6 @@ pub fn render_job_with_datasets(
     let mut dataset_binds = String::new();
     let mut roots = std::collections::BTreeSet::new();
     for mount in datasets {
-        if !spec.execution.managed_io {
-            return Err(Error::Configuration("dataset managed I/O"));
-        }
         let source = &mount.receipt.root;
         let inputs = format!(
             "{}/attempts/{}/inputs/{}",
@@ -158,17 +160,11 @@ pub fn render_job_with_datasets(
     } else {
         ""
     };
-    let (managed_dirs, managed_binds) = if spec.execution.managed_io {
-        let root = format!("{run_dir}/attempts/{}", spec.attempt_id);
-        let inputs = shell_quote(&format!("{root}/inputs"))?;
-        let outputs = shell_quote(&format!("{root}/outputs"))?;
-        (
-            format!("mkdir -p {inputs} {outputs}\n"),
-            format!("  --bind {inputs}:/inputs \\\n  --bind {outputs}:/outputs \\\n"),
-        )
-    } else {
-        (String::new(), String::new())
-    };
+    let attempt_root = format!("{run_dir}/attempts/{}", spec.attempt_id);
+    let inputs = shell_quote(&format!("{attempt_root}/inputs"))?;
+    let outputs = shell_quote(&format!("{attempt_root}/outputs"))?;
+    let managed_dirs = format!("mkdir -p {inputs} {outputs}\n");
+    let managed_binds = format!("  --bind {inputs}:/inputs \\\n  --bind {outputs}:/outputs \\\n");
     let marker = token
         .map(submission_marker)
         .transpose()

@@ -76,22 +76,26 @@ Paths are relative to `rust/crates/`.
 | Client observation | `client/src/observation.rs`, `status.rs`, `watch.rs`, `read.rs`, `presentation.rs`, `local.rs` |
 | HTTP and daemon lifetime | `server/src/main.rs`, `lib.rs`, `deployment.rs`, `read_config.rs`, `readiness.rs`, `native_contract.rs` |
 | Projects and immutable source | `core/src/projects.rs`, `core/src/sources.rs`, `server/src/projects/`, `server/src/sources/` |
-| Preparation | `core/src/preparation.rs`, `core/src/first_submission/`, `server/src/preparation_http.rs`, `server/src/cloud_runs/service/preparations.rs`, `server/src/submissions/service/preparation.rs` |
-| Slurm dispatch and control | `core/src/slurm/`, `server/src/backends/slurm/`, `server/src/submissions/`, `worker/src/slurm/` |
-| Cloud dispatch and control | `core/src/cloud/`, `server/src/backends/cloud/`, `server/src/cloud_runs/` |
+| Preparation | `core/src/preparation.rs`, `core/src/first_submission/`, `server/src/preparation_http.rs`, `server/src/backends/cloud/service/engine/preparations.rs`, `server/src/backends/slurm/service/engine/preparation.rs` |
+| Backend routing and HTTP shell | `server/src/runs/` (which backend owns a Run or Action), `server/src/submission_http.rs`, `server/src/dataset_http.rs` (routes that serve either backend), `server/src/http_effect.rs` (permits, deadline and uncertainty for every effect), `server/src/error.rs`, `server/src/api.rs` |
+| Slurm dispatch and control | `core/src/slurm/`, `server/src/backends/slurm/`, `worker/src/slurm/` |
+| Cloud dispatch and control | `core/src/cloud/`, `server/src/backends/cloud/` |
 | Action storage | `server/src/operations/` |
 | Data and capacity | `core/src/datasets/`, `core/src/data_preparation.rs`, `core/src/capacity.rs`, `server/src/objects.rs`, `server/src/capacity_http.rs`, `server/src/data_delivery_http.rs`, `worker/src/cloud_data.rs`, `worker/src/data_import.rs` |
-| Images | `core/src/cloud/build.rs`, `core/src/cloud/materialize.rs`, `server/src/cloud_runs/service/builds.rs`, `worker/src/materialize.rs` |
-| Results and retention | `core/src/artifacts/`, `io/src/artifacts.rs`, `server/src/submissions/artifact_http.rs`, `server/src/cloud_runs/service/artifacts.rs`, `worker/src/cloud_artifacts.rs` |
+| Images | `core/src/cloud/build.rs`, `core/src/cloud/materialize.rs`, `server/src/backends/cloud/service/engine/builds.rs`, `worker/src/materialize.rs` |
+| Results and retention | `core/src/artifacts/`, `io/src/artifacts.rs`, `server/src/backends/slurm/service/artifact_http.rs`, `server/src/backends/cloud/service/engine/artifacts.rs`, `worker/src/cloud_artifacts.rs` |
 | Checkpoints | `core/src/checkpoints.rs`, `io/src/checkpoints.rs`, `server/src/checkpoints.rs` |
-| Observation | `core/src/observation.rs`, `core/src/polling.rs`, `io/src/observations.rs`, `server/src/background.rs`, `server/src/read_api.rs`, `server/src/read_model.rs`, `worker/src/cloud_exchange.rs` |
+| Observation | `core/src/observation.rs`, `core/src/polling.rs`, `io/src/observations.rs`, `server/src/background.rs`, `server/src/api.rs`, `server/src/read_model.rs`, `worker/src/cloud_exchange.rs` |
 | Platform metrics | `core/src/metrics.rs`, `core/src/records.rs`, `server/src/records/`, `server/src/local_http.rs` |
 | W&B | `core/src/tracking/`, `server/src/tracking/` (the SDK process runs `server/src/tracking/sdk.py`) |
-| Debug machines | `core/src/cloud/debug.rs`, `server/src/cloud_runs/debug_http.rs`, `server/src/cloud_runs/service/debug.rs`, `client/src/debug.rs` |
+| Debug machines | `core/src/cloud/debug.rs`, `server/src/backends/cloud/service/debug_http.rs`, `server/src/backends/cloud/service/engine/debug.rs`, `client/src/debug.rs` |
 | Administrative maintenance | `core/src/maintenance.rs`, `server/src/administration.rs`, `server/src/deletion.rs`, `worker/src/maintenance.rs` |
 
 Slurm and cloud are separate services behind one API. They share core types and
-Action storage but have distinct adapters and effect stores. Adding a backend requires its
+Action storage but have distinct adapters and effect stores. `server/src/runs/` decides
+which one owns a Run or Action, from the format its frozen manifest or Action declares;
+a failed read is an answer of its own and never falls through to the other backend.
+Each service keeps its own execute and reconcile ordering. Adding a backend requires its
 capability declaration, adapter and storage operations; there is no dynamic
 plugin loader or second scheduler.
 
@@ -140,7 +144,7 @@ keep it, and neither is needed for basic API or client reads:
 Neither is an install path for the client or API. Two short launchers embedded in
 native jobs also use Python, inside the training image and only when those jobs
 run: `core/src/cloud/materialize.py` (PAI data materialization) and
-`server/src/cloud_runs/service/sync_diagnostic.py` (read-only diagnostics). Release
+`server/src/backends/cloud/service/engine/sync_diagnostic.py` (read-only diagnostics). Release
 and CI scripts and the `deploy_native.py` install tool are operator tooling.
 
 ## Upgrades

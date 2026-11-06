@@ -1,6 +1,7 @@
 use crate::{
-    AppState, read_api,
-    read_http::{self, Access},
+    AppState, api,
+    error::Error,
+    http_effect::{self, OnTimeout},
 };
 use axum::{
     Router,
@@ -12,8 +13,8 @@ use axum::{
 };
 use serde_json::Value;
 use std::sync::Arc;
-fn invalid() -> read_api::Error {
-    read_api::Error {
+fn invalid() -> Error {
+    Error {
         status: 422,
         code: "INVALID_DATA_DELIVERY_REQUEST",
         detail: "invalid data-only delivery request",
@@ -46,21 +47,20 @@ async fn download(
     struct Request {
         part: u64,
     }
-    if read_api::no_parameters(query.as_deref()).is_err() {
-        return read_http::failure(invalid());
+    if api::no_parameters(query.as_deref()).is_err() {
+        return http_effect::failure(invalid());
     }
     let request: Request = match ml_exp_core::json::mapping(&body)
         .ok()
         .and_then(|m| serde_json::from_value(Value::Object(m)).ok())
     {
         Some(r) => r,
-        None => return read_http::failure(invalid()),
+        None => return http_effect::failure(invalid()),
     };
-    read_http::execute(state, Access::Read, move |api, _| {
-        api.cloud()
-            .ok_or_else(invalid)?
+    http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
+        api.cloud_only()?
             .dataset_download(&project, &executor, &asset, request.part)
-            .map_err(crate::cloud_runs::failure)
+            .map_err(Into::into)
     })
     .await
 }
@@ -71,13 +71,13 @@ async fn exchange(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    if read_api::no_parameters(query.as_deref()).is_err()
+    if api::no_parameters(query.as_deref()).is_err()
         || ml_exp_core::identity::validate_id(&project)
             .and_then(|_| ml_exp_core::identity::validate_id(&executor))
             .is_err()
         || !ml_exp_core::datasets::asset_id(&asset)
     {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
     let values: Vec<_> = headers.get_all("authorization").iter().collect();
     let token = if values.len() == 1 {
@@ -90,7 +90,7 @@ async fn exchange(
         None
     };
     let Some(token) = token else {
-        return read_http::failure(read_api::Error {
+        return http_effect::failure(Error {
             status: 401,
             code: "DATASET_AUTH_REQUIRED",
             detail: "data-only capability required",
@@ -98,30 +98,28 @@ async fn exchange(
     };
     let body = match ml_exp_core::json::mapping(&body) {
         Ok(m) => Value::Object(m),
-        Err(_) => return read_http::failure(invalid()),
+        Err(_) => return http_effect::failure(invalid()),
     };
     if operation == "ready" {
         let receipt = match serde_json::from_value(body) {
             Ok(r) => r,
-            Err(_) => return read_http::failure(invalid()),
+            Err(_) => return http_effect::failure(invalid()),
         };
-        read_http::execute(state, Access::Write, move |api, _| {
-            api.cloud()
-                .ok_or_else(invalid)?
+        http_effect::execute(state, OnTimeout::Effect, move |api, _| {
+            api.cloud_only()?
                 .data_ready(&project, &executor, &asset, &token, receipt)
-                .map_err(crate::cloud_runs::failure)
+                .map_err(Into::into)
         })
         .await
     } else {
         let part = match operation.parse::<u64>() {
             Ok(n) if n.to_string() == operation && body == serde_json::json!({}) => n,
-            _ => return read_http::failure(invalid()),
+            _ => return http_effect::failure(invalid()),
         };
-        read_http::execute(state, Access::Read, move |api, _| {
-            api.cloud()
-                .ok_or_else(invalid)?
+        http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
+            api.cloud_only()?
                 .data_download_ticket(&project, &executor, &asset, &token, part)
-                .map_err(crate::cloud_runs::failure)
+                .map_err(Into::into)
         })
         .await
     }
@@ -140,22 +138,21 @@ async fn publish(
         #[serde(default)]
         runtime_id: Option<String>,
     }
-    if read_api::no_parameters(query.as_deref()).is_err() {
-        return read_http::failure(invalid());
+    if api::no_parameters(query.as_deref()).is_err() {
+        return http_effect::failure(invalid());
     }
     let request: Request = match ml_exp_core::json::mapping(&body)
         .ok()
         .and_then(|m| serde_json::from_value(Value::Object(m)).ok())
     {
         Some(r) => r,
-        None => return read_http::failure(invalid()),
+        None => return http_effect::failure(invalid()),
     };
     if request.confirmation != format!("PUBLISH {asset}") {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
-    read_http::execute(state, Access::Write, move |api, _| {
-        api.cloud()
-            .ok_or_else(invalid)?
+    http_effect::execute(state, OnTimeout::Effect, move |api, _| {
+        api.cloud_only()?
             .publish_dataset(
                 &project,
                 &executor,
@@ -163,7 +160,7 @@ async fn publish(
                 &request.request_id,
                 request.runtime_id.as_deref(),
             )
-            .map_err(crate::cloud_runs::failure)
+            .map_err(Into::into)
     })
     .await
 }

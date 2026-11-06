@@ -36,15 +36,6 @@ pub enum Error {
     Invalid(&'static str),
 }
 
-impl Error {
-    /// A failed persistence response may follow a durable execution claim.
-    /// Even false is never positive proof that a scheduler submit was absent;
-    /// only the core's exact reconciliation evidence can authorize a retry.
-    pub fn effects_may_have_applied(&self) -> bool {
-        matches!(self, Self::Storage(error) if error.effects_may_have_applied())
-    }
-}
-
 // Schema user_version=1. Plans remain immutable external files; executions and
 // audit transitions commit together.
 const SCHEMA: &str = r#"

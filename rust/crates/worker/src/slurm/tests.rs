@@ -4,6 +4,7 @@ use ml_exp_core::slurm::helper::{
     UnknownReason,
 };
 use std::{
+    cell::RefCell,
     collections::BTreeMap,
     fs::{self, File},
     os::unix::fs::PermissionsExt,
@@ -22,15 +23,31 @@ fn target() -> Target {
         storage_scope: helper::sha256_bytes(b"storage"),
     }
 }
+thread_local! {
+    /// Where `config` last placed the shared runs, so `request()` names that root.
+    static ROOT: RefCell<PathBuf> = RefCell::new(PathBuf::from("/synthetic"));
+}
 fn request() -> Request {
-    let manifest = "run_id: train\n".to_owned();
+    ROOT.with(|root| request_at(&root.borrow()))
+}
+fn request_at(root: &Path) -> Request {
+    let manifest = include_str!("../../../core/tests/fixtures/slurm/attempt.json")
+        .trim()
+        .replace("@ROOT@", root.to_str().unwrap());
     let script = format!(
         "#!/usr/bin/env bash\n#SBATCH --job-name=train--attempt-001\n#SBATCH --comment=ml-exp-{}\n\nexit 0\n",
         "a".repeat(32)
     );
     Request::prepare(
         FrozenIntent {
-            staging: None,
+            staging: ml_exp_core::slurm::staging::Requirement {
+                runs_root: root.join("shared-runs").display().to_string(),
+                worker: ml_exp_core::slurm::managed::Runtime {
+                    program: "/opt/ml-expd/bin/ml-exp-worker-rs".into(),
+                    base_environment: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
+                    runtime_environment: vec!["CUDA_VISIBLE_DEVICES".into()],
+                },
+            },
             target: target(),
             scope: Scope {
                 project: "demo".into(),
@@ -48,6 +65,14 @@ fn request() -> Request {
     .unwrap()
 }
 fn config(root: &Path) -> HelperConfig {
+    fs::create_dir_all(root.join("shared-runs")).unwrap();
+    ROOT.with(|current| *current.borrow_mut() = root.into());
+    HelperConfig {
+        shared_run_root: Some(root.join("shared-runs")),
+        ..unshared_config(root)
+    }
+}
+fn unshared_config(root: &Path) -> HelperConfig {
     HelperConfig {
         root: root.join("helper"),
         shared_run_root: None,

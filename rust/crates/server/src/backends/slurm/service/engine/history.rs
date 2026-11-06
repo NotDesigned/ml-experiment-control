@@ -1,0 +1,239 @@
+//! Explicit bounded history ingestion. Events commit before the cursor; replay
+//! after a crash emits the same event IDs and cannot lose an accepted prefix.
+//! GET remains local-only. Cloud publication is a separate effect boundary.
+use super::*;
+use crate::backends::slurm::{CallOutcome, call};
+use ml_exp_core::{
+    managed::history::{Cursor, Page},
+    records::{ImportCounts, JsonlImporter},
+};
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Saved {
+    request_sha256: String,
+    cursor: Option<Cursor>,
+    importer: Option<JsonlImporter>,
+    counts: ImportCounts,
+    complete: bool,
+    missing_after_finish: bool,
+}
+impl Service {
+    pub(super) fn history_complete(&self, prepared: &Prepared) -> Result<bool> {
+        let name = format!(
+            "{}.history.json",
+            native::attempt_slot(
+                &prepared.binding.project,
+                &prepared.binding.run_id,
+                &prepared.binding.attempt_id
+            )?
+        );
+        if !self
+            .slots
+            .entry_exists(OsStr::new(&name))
+            .map_err(why!(Error::Authority))?
+        {
+            return Ok(false);
+        }
+        let bytes = self
+            .slots
+            .read_whole(OsStr::new(&name))
+            .map_err(why!(Error::Authority))?;
+        let saved: Saved = serde_json::from_value(Value::Object(
+            ml_exp_core::json::own_mapping(&bytes).map_err(why!(Error::Authority))?,
+        ))
+        .map_err(why!(Error::Authority))?;
+        if saved.request_sha256
+            != prepared
+                .request
+                .identity()
+                .map_err(why!(Error::Authority))?
+                .request_sha256
+        {
+            return Err(Error::Authority);
+        }
+        Ok(saved.complete)
+    }
+    pub fn ingest_history(&self, action: &str, cancelled: &AtomicBool) -> Result<Value> {
+        self.ingest_history_with_limit(action, cancelled, None)
+    }
+    pub(super) fn ingest_history_with_limit(
+        &self,
+        action: &str,
+        cancelled: &AtomicBool,
+        limit: Option<std::time::Duration>,
+    ) -> Result<Value> {
+        let _lock = self.lock()?;
+        let prepared = self.load(action)?;
+        let guard = self
+            .fence
+            .existing_observation_guard(&prepared.binding.project, &prepared.binding.run_id)
+            .map_err(why!(Error::Authority))?;
+        let snapshot = self.actions.observe(action)?;
+        if snapshot["execution"]["status"] != "VERIFIED" {
+            return Err(Error::Conflict);
+        }
+        let job = snapshot["execution"]["result"]["submission"]["backend_job_id"]
+            .as_str()
+            .ok_or(Error::Authority)?;
+        let (manifest, _) = prepared
+            .request
+            .prepared_content()
+            .ok_or(Error::Authority)?;
+        let plan =
+            ml_exp_core::slurm::staging::admit(prepared.request.intent(), manifest.as_bytes())
+                .map_err(why!(Error::Authority))?;
+        let package = plan.managed;
+        let name = format!(
+            "{}.history.json",
+            native::attempt_slot(
+                &prepared.binding.project,
+                &prepared.binding.run_id,
+                &prepared.binding.attempt_id
+            )?
+        );
+        let request_sha256 = prepared
+            .request
+            .identity()
+            .map_err(why!(Error::Authority))?
+            .request_sha256;
+        // First use is an explicit metadata mutation in this isolated registry.
+        // Existing bindings win: history import cannot enable or reroute W&B.
+        let records = self.journal(&prepared)?;
+        let journal_guard = records
+            .guard(&prepared.binding.project, &prepared.binding.run_id)
+            .map_err(why!(Error::Authority))?;
+        let (scope, config) = records
+            .import_scope(&journal_guard, &prepared.binding.attempt_id)
+            .map_err(why!(Error::ObservationConflict))?;
+        let saved = if self
+            .slots
+            .entry_exists(OsStr::new(&name))
+            .map_err(why!(Error::Authority))?
+        {
+            let bytes = self
+                .slots
+                .read_whole(OsStr::new(&name))
+                .map_err(why!(Error::Authority))?;
+            let value: Saved = serde_json::from_value(Value::Object(
+                ml_exp_core::json::own_mapping(&bytes).map_err(why!(Error::Authority))?,
+            ))
+            .map_err(why!(Error::Authority))?;
+            if value.request_sha256 != request_sha256
+                || value.complete != value.importer.is_none()
+                || value.cursor.as_ref().is_none_or(|v| v.validate().is_err())
+                || value
+                    .importer
+                    .as_ref()
+                    .is_some_and(|v| !v.matches("metrics.jsonl", &config))
+            {
+                return Err(Error::Authority);
+            }
+            value
+        } else {
+            Saved {
+                request_sha256,
+                cursor: None,
+                importer: Some(
+                    JsonlImporter::new("metrics.jsonl", config)
+                        .map_err(why!(Error::ObservationConflict))?,
+                ),
+                counts: ImportCounts::default(),
+                complete: false,
+                missing_after_finish: false,
+            }
+        };
+        if saved.complete {
+            if let Some(observation) = self.observation(&prepared)? {
+                if let Some(receipt) = observation.evidence.worker.receipt {
+                    self.journal_training_end(&prepared, &receipt)?;
+                }
+            }
+            return Ok(history_view(action, &saved));
+        }
+        let request = helper::Request::metric_history(
+            prepared.request.intent().clone(),
+            job.into(),
+            saved.cursor.clone(),
+        )
+        .map_err(why!(Error::Authority))?;
+        let backend = self
+            .backends
+            .values()
+            .find(|v| v.profile.target == request.intent().target)
+            .ok_or(Error::Authority)?;
+        let outcome = call(&Self::observation_ssh(backend, limit), &request, cancelled)
+            .map_err(why!(Error::ObservationUnavailable))?;
+        let CallOutcome::Receipt { reply, .. } = outcome else {
+            return Err(Error::ObservationUnavailable);
+        };
+        let helper::ReplyOutcome::MetricHistory { page } = reply.outcome else {
+            return Err(Error::ObservationUnavailable);
+        };
+        let page: Page = *page;
+        page.validate(saved.cursor.as_ref())
+            .map_err(why!(Error::ObservationConflict))?;
+        if page.config_sha256
+            != helper::sha256_bytes(&package.config_bytes().map_err(why!(Error::Authority))?)
+        {
+            return Err(Error::Authority);
+        }
+        guard
+            .require_observed_live(&prepared.binding.project, &prepared.binding.run_id)
+            .map_err(why!(Error::Authority))?;
+        let mut importer = saved.importer.ok_or(Error::Authority)?;
+        let mut counts = saved.counts;
+        for chunk in page.bytes.chunks(JsonlImporter::INPUT_BOUND) {
+            let (next, emission) = importer
+                .feed(chunk)
+                .map_err(why!(Error::ObservationConflict))?;
+            records
+                .append_import(&journal_guard, &scope, &emission)
+                .map_err(why!(Error::ObservationConflict))?;
+            counts = emission.counts;
+            importer = next;
+        }
+        let complete = page.complete();
+        let importer = if complete {
+            let emission = importer
+                .finish()
+                .map_err(why!(Error::ObservationConflict))?;
+            records
+                .append_import(&journal_guard, &scope, &emission)
+                .map_err(why!(Error::ObservationConflict))?;
+            counts = emission.counts;
+            None
+        } else {
+            Some(importer)
+        };
+        let next = Saved {
+            request_sha256: saved.request_sha256,
+            cursor: Some(page.next),
+            importer,
+            counts,
+            complete,
+            missing_after_finish: page.missing_after_finish,
+        };
+        if complete {
+            if let Some(saved) = self.observation(&prepared)? {
+                if let Some(receipt) = saved.evidence.worker.receipt {
+                    self.journal_training_end(&prepared, &receipt)?;
+                }
+            }
+        }
+        let bytes = serde_json::to_vec(&next).map_err(why!(Error::Authority))?;
+        guard
+            .require_observed_live(&prepared.binding.project, &prepared.binding.run_id)
+            .map_err(why!(Error::Uncertain))?;
+        self.slots
+            .replace_regular(OsStr::new(&name), &bytes)
+            .map_err(why!(Error::Uncertain))?;
+        Ok(history_view(action, &next))
+    }
+}
+fn history_view(action: &str, saved: &Saved) -> Value {
+    json!({"submission_id":action,"status":if saved.complete{"COMPLETE"}else{"PARTIAL"},
+        "received_bytes":saved.cursor.as_ref().map(|v|v.offset_bytes).unwrap_or(0),"records":saved.counts.records,
+        "invalid_lines":saved.counts.invalid_lines,"metrics_file":if saved.missing_after_finish{"NOT_PRODUCED"}else{"PRESENT"},"scheduler_mutation_performed":false,"source":"native-shared-metric-history"})
+}

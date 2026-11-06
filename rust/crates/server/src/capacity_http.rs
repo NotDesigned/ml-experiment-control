@@ -1,6 +1,7 @@
 use crate::{
-    AppState, read_api,
-    read_http::{self, Access},
+    AppState, api,
+    error::Error,
+    http_effect::{self, OnTimeout},
 };
 use axum::{
     Router,
@@ -18,13 +19,13 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
         .layer(DefaultBodyLimit::max(16))
 }
 async fn list(State(state): State<Arc<AppState>>, RawQuery(query): RawQuery) -> Response {
-    if read_api::no_parameters(query.as_deref()).is_err() {
-        return read_http::failure(invalid());
+    if api::no_parameters(query.as_deref()).is_err() {
+        return http_effect::failure(invalid());
     }
-    read_http::execute(state, Access::Read, move |api, _| {
+    http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
         let mut rows = api.submissions().map(|s| s.catalogue()).unwrap_or_default();
         if let Some(cloud) = api.cloud() {
-            rows.extend(cloud.catalogue().map_err(crate::cloud_runs::failure)?);
+            rows.extend(cloud.catalogue()?);
         }
         let mut names = std::collections::BTreeSet::new();
         if rows
@@ -37,8 +38,8 @@ async fn list(State(state): State<Arc<AppState>>, RawQuery(query): RawQuery) -> 
     })
     .await
 }
-fn invalid() -> read_api::Error {
-    read_api::Error {
+fn invalid() -> Error {
+    Error {
         status: 422,
         code: "INVALID_CAPACITY_REQUEST",
         detail: "choose a configured backend and an empty refresh request",
@@ -58,7 +59,7 @@ async fn refresh(
     body: Bytes,
 ) -> Response {
     if body.as_ref() != b"{}" {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
     observe(state, executor, query, true).await
 }
@@ -69,31 +70,27 @@ async fn observe(
     refresh: bool,
 ) -> Response {
     if ml_exp_core::identity::validate_id(&executor).is_err()
-        || read_api::no_parameters(query.as_deref()).is_err()
+        || api::no_parameters(query.as_deref()).is_err()
     {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
-    read_http::execute_timeout(
+    http_effect::execute_timeout(
         state,
-        Access::Read,
+        OnTimeout::NoEffect,
         std::time::Duration::from_secs(120),
         move |api, _| {
             let (now, _) = crate::projects::transition_context()?;
             if let Some(cloud) = api.cloud() {
                 if cloud.accepts(&executor) {
-                    return cloud
-                        .capacity(&executor, refresh, &now)
-                        .map_err(crate::cloud_runs::failure);
+                    return cloud.capacity(&executor, refresh, &now).map_err(Into::into);
                 }
             }
             if let Some(slurm) = api.submissions() {
                 if slurm.accepts(&executor) {
-                    return slurm
-                        .capacity(&executor, refresh, &now)
-                        .map_err(crate::submissions::http::failure);
+                    return slurm.capacity(&executor, refresh, &now).map_err(Into::into);
                 }
             }
-            Err(read_api::Error {
+            Err(Error {
                 status: 404,
                 code: "BACKEND_NOT_FOUND",
                 detail: "backend is not configured",

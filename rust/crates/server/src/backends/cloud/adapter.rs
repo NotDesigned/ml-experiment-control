@@ -4,17 +4,28 @@ use super::{Client, Error, Result};
 use ml_exp_core::cloud::{self, Job, JobObservation, Page, Request, pai, sensecore};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{collections::BTreeSet, sync::atomic::AtomicBool};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, atomic::AtomicBool},
+};
 
 pub trait Transport: Send + Sync {
     fn request(&self, request: &Request, cancelled: &AtomicBool) -> Result<Value>;
 }
+/// What a configured backend's adapters hold: the real `Client`, or a counting
+/// fake when a service-level no-replay test opens the service.
+pub type Shared = Arc<dyn Transport>;
 impl Transport for Client {
     fn request(&self, request: &Request, cancelled: &AtomicBool) -> Result<Value> {
         self.call(request, cancelled)
     }
 }
 impl<T: Transport> Transport for &T {
+    fn request(&self, request: &Request, cancelled: &AtomicBool) -> Result<Value> {
+        (**self).request(request, cancelled)
+    }
+}
+impl Transport for Shared {
     fn request(&self, request: &Request, cancelled: &AtomicBool) -> Result<Value> {
         (**self).request(request, cancelled)
     }

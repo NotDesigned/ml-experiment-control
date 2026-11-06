@@ -301,6 +301,24 @@ pub struct Mount {
     pub name: String,
     pub receipt: Receipt,
 }
+/// What the dataset mounts of one Run may serialize to, together. Each mount carries
+/// its full file inventory, and both backends freeze these bytes in launch metadata.
+pub const MAX_MANIFEST_BYTES: usize = 256 * 1024;
+/// A Run's dataset mounts do not fit [`MAX_MANIFEST_BYTES`]. The unit [`Error`] cannot
+/// say so, and this refusal needs a code that tells the caller what to reduce.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ManifestsTooLarge;
+impl ManifestsTooLarge {
+    /// The cause both planners report, so each service can recognise this refusal.
+    pub const CAUSE: &'static str = "dataset manifests exceed their budget";
+}
+pub fn manifest_budget(values: &[Mount]) -> std::result::Result<(), ManifestsTooLarge> {
+    if serde_json::to_vec(values).is_ok_and(|bytes| bytes.len() <= MAX_MANIFEST_BYTES) {
+        Ok(())
+    } else {
+        Err(ManifestsTooLarge)
+    }
+}
 pub fn inputs(values: &[Input]) -> Result<()> {
     let mut names = BTreeSet::new();
     if values.len() > 32 {
@@ -315,9 +333,7 @@ pub fn inputs(values: &[Input]) -> Result<()> {
     Ok(())
 }
 pub fn mounts(values: &[Mount]) -> Result<()> {
-    if serde_json::to_vec(values).map_err(|_| Error)?.len() > 256 * 1024 {
-        return Err(Error);
-    }
+    manifest_budget(values).map_err(|_| Error)?;
     inputs(
         &values
             .iter()
@@ -547,6 +563,30 @@ pub fn decode_reply(frame: &[u8], request: &Request) -> Result<Reply> {
     Ok(reply)
 }
 
+/// A valid receipt whose file inventory alone exceeds [`MAX_MANIFEST_BYTES`].
+#[cfg(test)]
+pub(crate) fn oversized_receipt(project: &str, target: &Target, data_root: &str) -> Receipt {
+    let definition = Definition {
+        sha256: "1".repeat(64),
+        archive_bytes: 1024 * 1024,
+        files: (0..5000)
+            .map(|n| FileReceipt {
+                path: format!("dataset/tasks/sample-{n:05}.bin"),
+                sha256: "2".repeat(64),
+                bytes: 128,
+            })
+            .collect(),
+    };
+    let asset_id = definition.asset_id();
+    Receipt {
+        contract: CONTRACT.into(),
+        project: project.into(),
+        target: target.clone(),
+        root: format!("{data_root}/{project}/{asset_id}/tree"),
+        asset_id,
+        definition,
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -567,6 +607,28 @@ mod tests {
             profile_sha256: format!("sha256:{}", "3".repeat(64)),
             storage_scope: format!("sha256:{}", "4".repeat(64)),
         }
+    }
+    #[test]
+    fn the_manifest_budget_is_exact_and_mounts_enforce_it() {
+        let receipt = oversized_receipt("demo", &target(), "/data");
+        receipt.validate().unwrap();
+        let mount = |receipt: Receipt| Mount {
+            name: "train".into(),
+            receipt,
+        };
+        let oversized = [mount(receipt.clone())];
+        assert_eq!(manifest_budget(&oversized), Err(ManifestsTooLarge));
+        assert_eq!(mounts(&oversized), Err(Error));
+        // Pad a shorter inventory so the serialized mounts land exactly on the budget.
+        let mut exact = receipt;
+        exact.definition.files.truncate(1000);
+        let size = |receipt: &Receipt| serde_json::to_vec(&[mount(receipt.clone())]).unwrap().len();
+        let room = MAX_MANIFEST_BYTES - size(&exact);
+        exact.root.push_str(&"x".repeat(room));
+        assert_eq!(size(&exact), MAX_MANIFEST_BYTES);
+        assert_eq!(manifest_budget(&[mount(exact.clone())]), Ok(()));
+        exact.root.push('x');
+        assert_eq!(manifest_budget(&[mount(exact)]), Err(ManifestsTooLarge));
     }
     #[test]
     fn datasets_above_four_gib_are_chunked_without_truncation() {

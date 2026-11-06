@@ -44,6 +44,7 @@ fn state(mut value: Value, project: &str, executor: &str, asset: &str) -> Result
             "materialization",
             "data_image",
             "copy_job",
+            "new_request_allowed",
             "diagnostic",
             "import_source",
             "runtime_id",

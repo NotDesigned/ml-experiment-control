@@ -2,8 +2,9 @@
 //! configuration by Service; requests cannot import arbitrary files or code.
 use super::{Operation, Service, transition_context};
 use crate::{
-    AppState, read_api,
-    read_http::{self, Access},
+    AppState, api,
+    error::Error,
+    http_effect::{self, OnTimeout},
 };
 use axum::{
     Router,
@@ -32,15 +33,15 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
         .route("/api/project-lifecycle/{project}/{action}", post(action))
         .layer(DefaultBodyLimit::max(MAX_BODY))
 }
-fn invalid() -> read_api::Error {
-    read_api::Error {
+fn invalid() -> Error {
+    Error {
         status: 422,
         code: "INVALID_PROJECT_LIFECYCLE_REQUEST",
         detail: "invalid project lifecycle request",
     }
 }
-fn service(api: &read_api::Api) -> Result<Arc<Service>, read_api::Error> {
-    api.lifecycle().ok_or(read_api::Error {
+fn service(api: &api::Api) -> Result<Arc<Service>, Error> {
+    api.lifecycle().ok_or(Error {
         status: 501,
         code: "PROJECT_LIFECYCLE_NOT_CONFIGURED",
         detail: "project lifecycle is not enabled",
@@ -48,8 +49,8 @@ fn service(api: &read_api::Api) -> Result<Arc<Service>, read_api::Error> {
 }
 fn request<T: serde::de::DeserializeOwned>(
     body: Result<Bytes, BytesRejection>,
-) -> Result<T, read_api::Error> {
-    let bytes = body.map_err(|error| read_api::Error {
+) -> Result<T, Error> {
+    let bytes = body.map_err(|error| Error {
         status: if error.status() == axum::http::StatusCode::PAYLOAD_TOO_LARGE {
             413
         } else {
@@ -59,7 +60,7 @@ fn request<T: serde::de::DeserializeOwned>(
         detail: "project lifecycle body is unavailable or exceeds its limit",
     })?;
     if bytes.len() > MAX_BODY {
-        return Err(read_api::Error {
+        return Err(Error {
             status: 413,
             code: "PROJECT_LIFECYCLE_BODY_LIMIT",
             detail: "project lifecycle body exceeds 64 KiB",
@@ -76,7 +77,7 @@ struct LifecycleRequest {
     expected_revision: Option<u64>,
 }
 impl LifecycleRequest {
-    fn validate(&self) -> Result<(), read_api::Error> {
+    fn validate(&self) -> Result<(), Error> {
         if self.reason.chars().count() > 4000 {
             return Err(invalid());
         }
@@ -104,7 +105,7 @@ struct RegisterRequest {
     expected_revision: Option<u64>,
 }
 impl RegisterRequest {
-    fn path(self) -> Result<(String, Option<u64>), read_api::Error> {
+    fn path(self) -> Result<(String, Option<u64>), Error> {
         let path = match (self.project_file, self.source) {
             (Some(path), None) => path,
             (
@@ -124,10 +125,13 @@ impl RegisterRequest {
 }
 
 async fn list(State(state): State<Arc<AppState>>, RawQuery(query): RawQuery) -> Response {
-    if let Err(error) = read_api::no_parameters(query.as_deref()) {
-        return read_http::failure(error);
+    if let Err(error) = api::no_parameters(query.as_deref()) {
+        return http_effect::failure(error);
     }
-    read_http::execute(state, Access::Read, |api, _| api.project_lifecycle_read()).await
+    http_effect::execute(state, OnTimeout::NoEffect, |api, _| {
+        api.project_lifecycle_read()
+    })
+    .await
 }
 async fn register(
     State(state): State<Arc<AppState>>,
@@ -135,16 +139,16 @@ async fn register(
     body: Result<Bytes, BytesRejection>,
 ) -> Response {
     let parsed = (|| {
-        read_api::no_parameters(query.as_deref())?;
+        api::no_parameters(query.as_deref())?;
         request::<RegisterRequest>(body)?.path()
     })();
     let (path, revision) = match parsed {
         Ok(value) => value,
-        Err(error) => return read_http::failure(error),
+        Err(error) => return http_effect::failure(error),
     };
-    read_http::execute(state, Access::Write, move |api, _| {
+    http_effect::execute(state, OnTimeout::Project, move |api, _| {
         let service = service(api)?;
-        let (now, id) = transition_context().map_err(read_api::Error::from)?;
+        let (now, id) = transition_context().map_err(Error::from)?;
         service
             .register(&path, &now, &id, revision)
             .map_err(Into::into)
@@ -157,18 +161,18 @@ async fn unregister_all(
     body: Result<Bytes, BytesRejection>,
 ) -> Response {
     let parsed = (|| {
-        read_api::no_parameters(query.as_deref())?;
+        api::no_parameters(query.as_deref())?;
         let request = request::<LifecycleRequest>(body)?;
         request.validate()?;
-        Ok::<_, read_api::Error>(request)
+        Ok::<_, Error>(request)
     })();
     let request = match parsed {
         Ok(value) => value,
-        Err(error) => return read_http::failure(error),
+        Err(error) => return http_effect::failure(error),
     };
-    read_http::execute(state, Access::Write, move |api, _| {
+    http_effect::execute(state, OnTimeout::Project, move |api, _| {
         let service = service(api)?;
-        let (now, id) = transition_context().map_err(read_api::Error::from)?;
+        let (now, id) = transition_context().map_err(Error::from)?;
         service
             .execute(
                 Operation::UnregisterAll {
@@ -197,7 +201,7 @@ async fn action(
         ) {
             return Err(invalid());
         }
-        read_api::no_parameters(query.as_deref())?;
+        api::no_parameters(query.as_deref())?;
         let request = request::<LifecycleRequest>(body)?;
         request.validate()?;
         let operation = if action == "unregister" {
@@ -216,11 +220,11 @@ async fn action(
     })();
     let (operation, revision) = match parsed {
         Ok(value) => value,
-        Err(error) => return read_http::failure(error),
+        Err(error) => return http_effect::failure(error),
     };
-    read_http::execute(state, Access::Write, move |api, _| {
+    http_effect::execute(state, OnTimeout::Project, move |api, _| {
         let service = service(api)?;
-        let (now, id) = transition_context().map_err(read_api::Error::from)?;
+        let (now, id) = transition_context().map_err(Error::from)?;
         service
             .execute(operation, &now, &id, revision)
             .map_err(Into::into)
@@ -313,7 +317,7 @@ mod tests {
             let settings=crate::read_config::Settings::from_json(&serde_json::to_vec(&json!({"schema_version":1,"registry_root":registry,"projects":[{"project":"demo","project_file":project,"run_roots":[temp.path().join("demo/runs")]}]})).unwrap()).unwrap();
             Service::initialize(&settings, "2026-10-27T00:00:00Z", &"1".repeat(32)).unwrap();
             let service = Arc::new(Service::open(&settings).unwrap());
-            let api = crate::read_api::Api::open(settings)
+            let api = crate::api::Api::open(settings)
                 .unwrap()
                 .with_lifecycle(service.clone())
                 .unwrap();

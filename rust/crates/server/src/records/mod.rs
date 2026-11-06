@@ -43,11 +43,3 @@ pub enum Error {
 
 #[cfg(test)]
 mod tests;
-
-impl Error {
-    /// A changed namespace/commit failure may require journal reconciliation.
-    /// Never report these storage failures as evidence of no effect.
-    pub fn effects_may_have_applied(&self) -> bool {
-        matches!(self, Self::Storage(error) if error.effects_may_have_applied())
-    }
-}

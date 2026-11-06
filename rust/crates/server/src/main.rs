@@ -196,7 +196,7 @@ async fn main() -> std::process::ExitCode {
         )
         .map_err(|_| "invalid read configuration")
         .and_then(|settings| {
-            ml_exp_server::submissions::Service::initialize(&settings)
+            ml_exp_server::backends::slurm::service::Service::initialize(&settings)
                 .map_err(|_| "cannot initialize fresh submission namespace")
         }) {
             Ok(()) => {
@@ -214,7 +214,7 @@ async fn main() -> std::process::ExitCode {
             ml_exp_server::read_config::load(args.read_config.as_deref().expect("required config"))
                 .map_err(|_| "invalid read configuration")
                 .and_then(|settings| {
-                    ml_exp_server::cloud_runs::Service::initialize(&settings)
+                    ml_exp_server::backends::cloud::service::Service::initialize(&settings)
                         .map_err(|_| "cannot initialize fresh cloud namespace")
                 });
         return match result {
@@ -346,13 +346,12 @@ async fn main() -> std::process::ExitCode {
         println!("{address}");
     }
     let _observer = match polling.filter(|policy| policy.enabled) {
-        Some(policy) => match ml_exp_server::background::Observer::start(
-            reads
-                .as_ref()
-                .and_then(|api| api.submissions())
-                .expect("submission polling configuration"),
-            policy,
-        ) {
+        Some(policy) => match reads
+            .as_ref()
+            .and_then(|api| api.submissions())
+            .expect("submission polling configuration")
+            .start_observer(policy)
+        {
             Ok(observer) => Some(observer),
             Err(error) => {
                 eprintln!("{error}");
@@ -366,7 +365,7 @@ async fn main() -> std::process::ExitCode {
         .and_then(|api| api.cloud())
         .filter(|s| s.polling_enabled())
     {
-        Some(service) => match ml_exp_server::cloud_runs::Observer::start(service) {
+        Some(service) => match service.start_observer() {
             Ok(observer) => Some(observer),
             Err(_) => {
                 eprintln!("cloud scheduler observer unavailable");
@@ -430,7 +429,7 @@ fn open_api(
     tracking: Option<ml_exp_core::tracking::RoutingSettings>,
 ) -> Result<
     (
-        ml_exp_server::read_api::Api,
+        ml_exp_server::api::Api,
         Option<ml_exp_core::polling::Policy>,
     ),
     Box<dyn std::error::Error>,
@@ -443,7 +442,7 @@ fn open_api(
     } else {
         None
     };
-    let api = ml_exp_server::read_api::Api::open(settings.clone())?
+    let api = ml_exp_server::api::Api::open(settings.clone())?
         .with_local_tracking(tracking.clone().unwrap_or_default());
     let api = match service {
         Some(service) => api.with_lifecycle(service)?,
@@ -456,8 +455,8 @@ fn open_api(
         )?);
         let mut api = api.with_sources(source.clone())?;
         if let Some(path) = cloud_config {
-            let config = ml_exp_server::cloud_runs::Settings::load(path)?;
-            let cloud = ml_exp_server::cloud_runs::Service::open(
+            let config = ml_exp_server::backends::cloud::service::Settings::load(path)?;
+            let cloud = ml_exp_server::backends::cloud::service::Service::open(
                 settings.clone(),
                 config,
                 source.clone(),
@@ -467,16 +466,21 @@ fn open_api(
             api = api.with_cloud(std::sync::Arc::new(cloud))?;
         }
         if let Some(path) = submission_config {
-            let config = ml_exp_server::submissions::config::load(path)?;
+            let config = ml_exp_server::backends::slurm::service::config::load(path)?;
             let submissions = std::sync::Arc::new(
-                ml_exp_server::submissions::Service::open(
+                ml_exp_server::backends::slurm::service::Service::open(
                     settings,
                     source,
                     api.lifecycle(),
                     config.backends,
                     config.enabled,
                 )?
-                .with_runtime_builder(api.cloud())
+                .with_runtime_builder(api.cloud().map(|cloud| {
+                    cloud
+                        as std::sync::Arc<
+                            dyn ml_exp_server::backends::slurm::service::RuntimeBuilder,
+                        >
+                }))
                 .with_run_creation(config.creation)?
                 .with_tracking(tracking.unwrap_or_default()),
             );

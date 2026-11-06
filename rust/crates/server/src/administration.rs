@@ -1,23 +1,30 @@
 //! Opt-in administrative plans, distinct from download acknowledgements. Keep
 //! small immutable manifests/audit records; payload removal needs a reviewed
 //! plan and exact terminal scheduler evidence from the original backend.
-use crate::{cloud_runs, deletion::RunFence, experiments, read_config, submissions};
+use crate::{
+    backends::{cloud::service as cloud, slurm::service as slurm},
+    deletion::RunFence,
+    error::Error,
+    experiments, read_config,
+    runs::Owner,
+};
 use ml_exp_core::{
     checkpoints::{self},
     maintenance::{Plan, Selection},
+    records::RunKind,
 };
 use ml_exp_io::directory::{Directory, FileLock, LockOptions};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{ffi::OsStr, path::Path, sync::Arc};
-fn invalid() -> crate::read_api::Error {
-    crate::read_api::Error {
+fn invalid() -> Error {
+    Error {
         status: 409,
         code: "ADMINISTRATION_BLOCKED",
         detail: "administrative identity, terminal evidence, checkpoint dependencies or original plan cannot be verified",
     }
 }
-type Result<T> = std::result::Result<T, crate::read_api::Error>;
+type Result<T> = std::result::Result<T, Error>;
 /// Run authorship and retirement share this admission lock. This is separate
 /// from the read-only Run fence so dependency scans can retain normal guards.
 pub(crate) type Admission = FileLock;
@@ -70,8 +77,8 @@ struct Saved {
 pub struct Service {
     settings: read_config::Settings,
     directory: Directory,
-    slurm: Option<Arc<submissions::Service>>,
-    cloud: Option<Arc<cloud_runs::Service>>,
+    slurm: Option<Arc<slurm::Service>>,
+    cloud: Option<Arc<cloud::Service>>,
 }
 impl Service {
     pub fn initialize(settings: &read_config::Settings) -> Result<()> {
@@ -89,8 +96,8 @@ impl Service {
     }
     pub fn open(
         settings: read_config::Settings,
-        slurm: Option<Arc<submissions::Service>>,
-        cloud: Option<Arc<cloud_runs::Service>>,
+        slurm: Option<Arc<slurm::Service>>,
+        cloud: Option<Arc<cloud::Service>>,
     ) -> Result<Self> {
         let (root, _) = read_config::workspace(&settings.registry_root).map_err(why!(invalid()))?;
         let directory = root
@@ -156,41 +163,26 @@ impl Service {
     pub fn status(&self, id: &str) -> Result<Value> {
         Self::view(&self.read(id)?)
     }
-    fn checkpoint_list(&self, cloud: bool, action: &str) -> Result<Vec<Value>> {
+    fn action_owner(&self, action: &str) -> Result<Owner> {
+        Owner::of_action(self.cloud.clone(), self.slurm.clone(), action).map_err(why!(invalid()))
+    }
+    fn checkpoint_list(&self, owner: &Owner, action: &str) -> Result<Vec<Value>> {
         // Scope comes from the committed Action read, never caller input.
         let now = crate::projects::transition_context()
             .map_err(why!(invalid()))?
             .0;
-        let value = if cloud {
-            self.cloud
-                .as_ref()
-                .ok_or_else(invalid)?
-                .get(action, &now)
-                .map_err(why!(invalid()))?
-        } else {
-            self.slurm
-                .as_ref()
-                .ok_or_else(invalid)?
-                .get(action, &now)
-                .map_err(why!(invalid()))?
+        let value = match owner {
+            Owner::Cloud(cloud) => cloud.get(action, &now).map_err(why!(invalid()))?,
+            Owner::Slurm(slurm) => slurm.get(action, &now).map_err(why!(invalid()))?,
         };
         let (p, r, a) = (
             value["project"].as_str().ok_or_else(invalid)?,
             value["run_id"].as_str().ok_or_else(invalid)?,
             value["attempt_id"].as_str().ok_or_else(invalid)?,
         );
-        let result = if cloud {
-            self.cloud
-                .as_ref()
-                .ok_or_else(invalid)?
-                .checkpoints(p, r, a, None)
-                .map_err(why!(invalid()))?
-        } else {
-            self.slurm
-                .as_ref()
-                .ok_or_else(invalid)?
-                .checkpoints(p, r, a, None)
-                .map_err(why!(invalid()))?
+        let result = match owner {
+            Owner::Cloud(cloud) => cloud.checkpoints(p, r, a, None).map_err(why!(invalid()))?,
+            Owner::Slurm(slurm) => slurm.checkpoints(p, r, a, None).map_err(why!(invalid()))?,
         };
         result["checkpoints"]
             .as_array()
@@ -224,14 +216,12 @@ impl Service {
                 return Self::view(&saved);
             }
         }
-        let cloud = self
-            .cloud
-            .as_ref()
-            .is_some_and(|c| c.handles_action(action).unwrap_or(false));
+        let owner = self.action_owner(action)?;
+        let cloud = matches!(owner, Owner::Cloud(_));
         let checkpoints = if matches!(request.selection, Choice::Outputs) {
             Vec::new()
         } else {
-            self.checkpoint_list(cloud, action)?
+            self.checkpoint_list(&owner, action)?
         };
         let selection = match request.selection {
             Choice::Outputs => Selection::Outputs,
@@ -246,18 +236,13 @@ impl Service {
                 ),
             },
         };
-        let plan = if cloud {
-            self.cloud
-                .as_ref()
-                .ok_or_else(invalid)?
+        let plan = match &owner {
+            Owner::Cloud(cloud) => cloud
                 .maintenance_plan(action, selection, request.request_id, now)
-                .map_err(why!(invalid()))?
-        } else {
-            self.slurm
-                .as_ref()
-                .ok_or_else(invalid)?
+                .map_err(why!(invalid()))?,
+            Owner::Slurm(slurm) => slurm
                 .maintenance_plan(action, selection, request.request_id, now)
-                .map_err(why!(invalid()))?
+                .map_err(why!(invalid()))?,
         };
         let checkpoints = match &plan.selection {
             Selection::Checkpoint { checkpoint } => vec![(**checkpoint).clone()],
@@ -450,24 +435,21 @@ impl Service {
         // The caller retires tracking separately from physical payloads. Every
         // Attempt must have exact terminal native provider evidence.
         for attempt in &snapshot.attempts {
-            let value = if let Some(cloud) = &self.cloud {
-                if cloud.handles_run(project, run).map_err(why!(invalid()))? {
-                    cloud
-                        .for_attempt_admin(project, run, &attempt.attempt_id, now)
-                        .map_err(why!(invalid()))?
-                } else {
-                    self.slurm
-                        .as_ref()
-                        .ok_or_else(invalid)?
-                        .for_attempt(project, run, &attempt.attempt_id, now)
-                        .map_err(why!(invalid()))?
-                }
-            } else {
-                self.slurm
-                    .as_ref()
-                    .ok_or_else(invalid)?
+            let owner = Owner::of_run(
+                RunKind::of(&snapshot.run.metadata),
+                self.cloud.clone(),
+                self.slurm.clone(),
+                project,
+                run,
+            )
+            .map_err(why!(invalid()))?;
+            let value = match owner {
+                Owner::Cloud(cloud) => cloud
+                    .for_attempt_admin(project, run, &attempt.attempt_id, now)
+                    .map_err(why!(invalid()))?,
+                Owner::Slurm(slurm) => slurm
                     .for_attempt(project, run, &attempt.attempt_id, now)
-                    .map_err(why!(invalid()))?
+                    .map_err(why!(invalid()))?,
             };
             let action = value["submission_id"].as_str().ok_or_else(invalid)?;
             let request_id = ml_exp_core::canonical::digest(&json!([
@@ -478,22 +460,17 @@ impl Service {
             ]))
             .map_err(why!(invalid()))?[..32]
                 .to_owned();
-            if self
-                .cloud
-                .as_ref()
-                .is_some_and(|c| c.handles_action(action).unwrap_or(false))
-            {
-                self.cloud
-                    .as_ref()
-                    .ok_or_else(invalid)?
-                    .maintenance_plan(action, Selection::Outputs, request_id, now)
-                    .map_err(why!(invalid()))?;
-            } else {
-                self.slurm
-                    .as_ref()
-                    .ok_or_else(invalid)?
-                    .maintenance_plan(action, Selection::Outputs, request_id, now)
-                    .map_err(why!(invalid()))?;
+            match self.action_owner(action)? {
+                Owner::Cloud(cloud) => {
+                    cloud
+                        .maintenance_plan(action, Selection::Outputs, request_id, now)
+                        .map_err(why!(invalid()))?;
+                }
+                Owner::Slurm(slurm) => {
+                    slurm
+                        .maintenance_plan(action, Selection::Outputs, request_id, now)
+                        .map_err(why!(invalid()))?;
+                }
             }
         }
         let guard = fence.exclusive_existing(false).map_err(why!(invalid()))?;

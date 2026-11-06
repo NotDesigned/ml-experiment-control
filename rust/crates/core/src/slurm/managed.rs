@@ -83,10 +83,7 @@ pub fn plan_with_inputs(
     scope.validate()?;
     spec.validate().map_err(|_| helper::Error::Metadata)?;
     runtime.validate()?;
-    if scope.run_id != spec.run_id
-        || scope.attempt_id != spec.attempt_id
-        || !spec.execution.managed_io
-    {
+    if scope.run_id != spec.run_id || scope.attempt_id != spec.attempt_id {
         return Err(helper::Error::Identity);
     }
     let root = format!("{}/attempts/{}", spec.storage.run_dir, scope.attempt_id);

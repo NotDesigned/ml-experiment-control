@@ -1,7 +1,9 @@
 import fcntl
 import hashlib
 import importlib.util
+from contextlib import redirect_stdout
 from http.server import BaseHTTPRequestHandler, HTTPServer
+import io
 import json
 import os
 from pathlib import Path
@@ -13,19 +15,113 @@ import unittest
 from unittest.mock import patch
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "rust/crates/server/src/cloud_runs/service/sync_diagnostic.py"
+SCRIPT = Path(__file__).resolve().parents[1] / "rust/crates/server/src/backends/cloud/service/engine/sync_diagnostic.py"
 spec = importlib.util.spec_from_file_location("sync_diagnostic", SCRIPT)
 diagnostic = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(diagnostic)
+# Also read by the Rust test in service/diagnostics.rs, so both sides pin one format.
+PINNED_LINE = ('ML_EXPD_DIAGNOSTIC_PART=265ee923a61584279face2967b07f430b70f20d8d36ab06bc1ccf8d66cde6446'
+               ':0:1:{"contract":"sync-diagnostic.v1"}')
+
+
+def lines_of(stdout):
+    return stdout.splitlines()
+
+
+def reassembled(stdout):
+    """Read a report back from its log lines the way the API does."""
+    chunks = {}
+    for line in lines_of(stdout):
+        digest, index, count, chunk = line.split(diagnostic.PART_PREFIX, 1)[1].split(":", 3)
+        chunks[int(index)] = chunk
+    text = "".join(chunks[i] for i in range(int(count)))
+    if hashlib.sha256(text.encode()).hexdigest() != digest:
+        raise AssertionError("report digest does not match its parts")
+    return json.loads(text)
 
 
 class ReadonlyDiagnostic(unittest.TestCase):
+    def run_script(self, config):
+        result = subprocess.run([sys.executable, str(SCRIPT), json.dumps(config)],
+                                capture_output=True, text=True, check=True)
+        self.assertEqual(result.stderr, "")
+        for line in lines_of(result.stdout):
+            self.assertLessEqual(len(line), 2048 - 64, "keep room for a provider timestamp")
+            self.assertTrue(line.startswith(diagnostic.PART_PREFIX))
+            self.assertEqual(line, line.strip())
+        return result.stdout
+
+    def test_a_short_report_is_this_exact_line_which_the_api_test_also_reads(self):
+        stream = io.StringIO()
+        with redirect_stdout(stream):
+            diagnostic.emit('{"contract":"sync-diagnostic.v1"}')
+        self.assertEqual(stream.getvalue(), PINNED_LINE + "\n")
+
+    def test_a_report_at_the_cap_fits_nineteen_lines_inside_the_log_tail(self):
+        stream = io.StringIO()
+        report = {"contract": diagnostic.CONTRACT, "filler": "x" * 40000}
+        text = diagnostic.encoded(report)[:diagnostic.MAX_REPORT_BYTES]
+        with redirect_stdout(stream):
+            diagnostic.emit(text)
+        lines = lines_of(stream.getvalue())
+        self.assertEqual(len(lines), 19)
+        self.assertTrue(all(len(line) < 2048 for line in lines))
+        parts = [line.split(":", 3)[3] for line in lines]
+        self.assertEqual("".join(parts), text)
+
+    def test_text_has_no_whitespace_for_a_log_store_to_trim_and_means_the_same(self):
+        report = {"path": "a b\tc\nd", "name": "\u4e2d\u6587"}
+        text = diagnostic.encoded(report)
+        self.assertFalse(any(c.isspace() for c in text))
+        self.assertEqual(json.loads(text), report)
+
+    def test_128_data_parts_stay_within_the_line_limit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            definition = {"archive_bytes": 128 * 16777216, "files": []}
+            config = {"contract": "data-diagnostic.v1", "project": "demo", "asset_id": "asset." + "a" * 64,
+                      "request_id": "b" * 32, "root": tmp, "definition": definition, "target": {}}
+            stdout = self.run_script(config)
+            self.assertGreater(len(lines_of(stdout)), 1)
+            report = reassembled(stdout)
+            self.assertEqual(len(report["parts"]), 128)
+            self.assertEqual(report["request_id"], config["request_id"])
+
+    def sync_config(self, root, required):
+        package = {
+            "config": {"attempt_root": root, "output_directory": root + "/output",
+                       "local_binding": {"sha256": "0" * 64}},
+            "manifest": {}, "artifacts": {"required_files": required},
+        }
+        return {"contract": diagnostic.CONTRACT, "action": "action-0123456789abcdef",
+                "request_id": "a" * 32, "package": package, "package_sha256": "sha256:package",
+                "config_sha256": "sha256:config", "config_binding_sha256": "binding",
+                "channel": {"url": "http://127.0.0.1:1/api/worker-exchange/demo/run/attempt", "token": "t"}}
+
+    def test_many_required_files_stay_within_the_line_limit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            required = ["outputs/file {:05}.bin".format(n) for n in range(200)]
+            stdout = self.run_script(self.sync_config(tmp, required))
+            self.assertGreater(len(lines_of(stdout)), 1)
+            report = reassembled(stdout)
+            paths = [row["path"] for row in report["checks"]]
+            self.assertIn("output/outputs/file 00000.bin", paths)
+            self.assertIn("output/outputs/file 00199.bin", paths)
+            self.assertNotIn(tmp, stdout)
+
+    def test_too_many_required_files_report_their_size_on_one_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            required = ["outputs/file-{:05}.bin".format(n) for n in range(2000)]
+            stdout = self.run_script(self.sync_config(tmp, required))
+            self.assertEqual(len(lines_of(stdout)), 1)
+            self.assertEqual(reassembled(stdout), {"contract": diagnostic.CONTRACT, "action": "action-0123456789abcdef",
+                                                   "request_id": "a" * 32, "error": "REPORT_TOO_LARGE"})
+
     def test_missing_data_root_reports_safe_errno_and_original_lineage_instead_of_hanging(self):
         with tempfile.TemporaryDirectory() as tmp:
             config = {"contract": "data-diagnostic.v1", "project": "demo", "asset_id": "asset." + "a" * 64,
                       "request_id": "b" * 32, "root": tmp + "/absent-private-path", "token": "synthetic-secret"}
             result = subprocess.run([sys.executable, str(SCRIPT), json.dumps(config)], capture_output=True, text=True, check=True)
-            report = json.loads(result.stdout.split(diagnostic.PREFIX, 1)[1])
+            report = reassembled(result.stdout)
             self.assertEqual(report["contract"], config["contract"])
             self.assertEqual(report["request_id"], config["request_id"])
             self.assertEqual(report["errno"], 2)

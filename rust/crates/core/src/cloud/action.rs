@@ -150,13 +150,16 @@ pub fn validate(plan: &Value, execution: &Execution) -> Result<()> {
     {
         return Err(Error("Action gates"));
     }
-    let intent = digest(&body(plan)?)?;
+    let frozen = body(plan)?;
+    let intent = digest(&frozen)?;
     if plan["request_digest"] != intent
         || plan["intent_digest"] != intent
         || plan["action_id"] != operations::action_id(&scope(execution), &intent)
         || plan["gate_bundle_digest"]
             != digest(&json!({"intent_digest":intent,"gates":plan["gates"]}))?
-        || serde_json::to_string(plan)
+        // Only the frozen plan must omit the token. A snapshot also carries the
+        // execution result, where a SenseCore job name legitimately contains it.
+        || serde_json::to_string(&frozen)
             .map_err(|_| Error("Action encoding"))?
             .contains(&execution.job.submission_token)
     {

@@ -1,0 +1,312 @@
+//! Opt-in background sampling shares the explicit read-only effect paths.
+//! Each tick performs at most one bounded RPC and releases the execution lock.
+use super::*;
+use crate::background::{Polled, Worker};
+use ml_exp_core::polling::{Phase, Policy};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
+
+#[derive(Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Samples {
+    request_sha256: String,
+    phases: BTreeMap<String, Sample>,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Sample {
+    at: String,
+    error: Option<String>,
+    failures: u32,
+    last_success_at: Option<String>,
+}
+
+/// Slurm's side of the observer: it applies the RPC time limit, treats a busy
+/// service as a retry of the same phase and reports each result in `observer.json`.
+struct Polling {
+    service: Arc<Service>,
+    limit: std::time::Duration,
+}
+impl Polled for Polling {
+    fn discover(&self) -> Option<BTreeSet<String>> {
+        match self.service.background_candidates() {
+            Ok(found) => {
+                if found.is_empty() {
+                    let _ = self.service.background_report(None, None, Ok(()));
+                }
+                Some(found)
+            }
+            Err(error) => {
+                let _ = self.service.background_report(None, None, Err(&error));
+                None
+            }
+        }
+    }
+    fn sample(&self, action: &str, phase: Phase, stop: &AtomicBool) -> crate::background::Sample {
+        let Ok((now, _)) = crate::projects::transition_context() else {
+            return crate::background::Sample::Failed;
+        };
+        let outcome = self
+            .service
+            .background_sample(action, phase, &now, stop, self.limit);
+        let _ =
+            self.service
+                .background_report(Some(action), Some(phase), outcome.as_ref().map(|_| ()));
+        match outcome {
+            Ok(_) => crate::background::Sample::Done,
+            Err(Error::Busy) => crate::background::Sample::Busy,
+            Err(_) => crate::background::Sample::Failed,
+        }
+    }
+    fn started(&self) {
+        let _ = self.service.background_report(None, None, Ok(()));
+    }
+    fn stopped(&self) {
+        let _ = self.service.background_stopped();
+    }
+}
+
+impl Service {
+    pub fn start_observer(self: Arc<Self>, policy: Policy) -> Result<Worker> {
+        if !policy.enabled || !policy.validate() {
+            return Err(Error::Configuration);
+        }
+        let leader = self.background_leader()?;
+        let limit = std::time::Duration::from_secs(policy.rpc_timeout_seconds);
+        let polling = Polling {
+            service: self,
+            limit,
+        };
+        crate::background::observe("native-observer", polling, policy, leader)
+            .map_err(why!(Error::Configuration))
+    }
+    fn background_leader(&self) -> Result<FileLock> {
+        self.directory
+            .lock(
+                OsStr::new(".observer.lock"),
+                LockOptions {
+                    create: true,
+                    ..Default::default()
+                },
+            )
+            .map_err(why_lock!(Error::Busy, Error::Authority))
+    }
+    fn background_report(
+        &self,
+        action: Option<&str>,
+        phase: Option<Phase>,
+        result: std::result::Result<(), &Error>,
+    ) -> Result<()> {
+        let (at, _) = crate::projects::transition_context().map_err(why!(Error::Configuration))?;
+        let code = result.err().map(|error| match error {
+            Error::Busy => "BUSY",
+            Error::ObservationUnavailable => "OBSERVATION_UNAVAILABLE",
+            Error::ObservationConflict => "OBSERVATION_CONFLICT",
+            _ => "OBSERVATION_REJECTED",
+        });
+        if let (Some(action), Some(phase)) = (action, phase) {
+            let prepared = self.load(action)?;
+            let name = Self::polling_name(&prepared)?;
+            let mut samples = self.polling_samples(&prepared)?;
+            let phase = format!("{phase:?}");
+            let previous = samples.phases.get(&phase);
+            let failures = if code.is_none() {
+                0
+            } else {
+                previous.map_or(1, |sample| sample.failures.saturating_add(1))
+            };
+            let last_success_at = if code.is_none() {
+                Some(at.clone())
+            } else {
+                previous.and_then(|sample| sample.last_success_at.clone())
+            };
+            samples.phases.insert(
+                phase,
+                Sample {
+                    at: at.clone(),
+                    error: code.map(str::to_owned),
+                    failures,
+                    last_success_at,
+                },
+            );
+            self.slots
+                .replace_regular(
+                    OsStr::new(&name),
+                    &serde_json::to_vec(&samples).map_err(why!(Error::Configuration))?,
+                )
+                .map_err(why!(Error::Uncertain))?;
+        }
+        self.directory.replace_regular(OsStr::new("observer.json"),&serde_json::to_vec(&json!({"status":if code.is_some(){"RETRY_PENDING"}else if action.is_some(){"OBSERVING"}else{"IDLE"},"at":at,"submission_id":action,"phase":phase.map(|p|format!("{p:?}")),"error":code,"provider_mutations":false,"heartbeat_proven":false})).map_err(why!(Error::Configuration))?).map_err(why!(Error::Uncertain))
+    }
+    fn background_stopped(&self) -> Result<()> {
+        let (at, _) = crate::projects::transition_context().map_err(why!(Error::Configuration))?;
+        self.directory.replace_regular(OsStr::new("observer.json"),&serde_json::to_vec(&json!({"status":"STOPPED","at":at,"provider_mutations":false,"heartbeat_proven":false})).map_err(why!(Error::Configuration))?).map_err(why!(Error::Uncertain))
+    }
+    fn polling_name(prepared: &Prepared) -> Result<String> {
+        Ok(format!(
+            "{}.polling.json",
+            native::attempt_slot(
+                &prepared.binding.project,
+                &prepared.binding.run_id,
+                &prepared.binding.attempt_id
+            )?
+        ))
+    }
+    fn polling_samples(&self, prepared: &Prepared) -> Result<Samples> {
+        let name = Self::polling_name(prepared)?;
+        let request_sha256 = prepared
+            .request
+            .identity()
+            .map_err(why!(Error::Authority))?
+            .request_sha256;
+        if !self
+            .slots
+            .entry_exists(OsStr::new(&name))
+            .map_err(why!(Error::Authority))?
+        {
+            return Ok(Samples {
+                request_sha256,
+                ..Default::default()
+            });
+        }
+        let bytes = self
+            .slots
+            .read_whole(OsStr::new(&name))
+            .map_err(why!(Error::Authority))?;
+        let samples: Samples = serde_json::from_value(Value::Object(
+            ml_exp_core::json::own_mapping(&bytes).map_err(why!(Error::Authority))?,
+        ))
+        .map_err(why!(Error::Authority))?;
+        if samples.request_sha256 != request_sha256
+            || samples.phases.len() > 3
+            || samples
+                .phases
+                .keys()
+                .any(|key| !matches!(key.as_str(), "Scheduler" | "Worker" | "History"))
+        {
+            return Err(Error::Authority);
+        }
+        Ok(samples)
+    }
+    pub(super) fn polling_status(&self, prepared: &Prepared) -> Result<Value> {
+        Ok(json!({"phases":self.polling_samples(prepared)?.phases,"provider_mutations":false}))
+    }
+    pub fn background_status(&self) -> Result<Value> {
+        let name = OsStr::new("observer.json");
+        if !self
+            .directory
+            .entry_exists(name)
+            .map_err(why!(Error::Authority))?
+        {
+            return Ok(json!({"status":"NOT_STARTED"}));
+        }
+        let bytes = self
+            .directory
+            .read_whole(name)
+            .map_err(why!(Error::Authority))?;
+        Ok(Value::Object(
+            ml_exp_core::json::own_mapping(&bytes).map_err(why!(Error::Authority))?,
+        ))
+    }
+    fn background_candidates(&self) -> Result<BTreeSet<String>> {
+        let mut actions = BTreeSet::new();
+        for project in &self.settings.projects {
+            if !project.discovery_enabled() {
+                continue;
+            }
+            if self.lifecycle.as_ref().is_some_and(|service| {
+                service
+                    .active_projects()
+                    .is_ok_and(|active| !active.contains(&project.project))
+            }) {
+                continue;
+            }
+            let discovery = self
+                .evidence
+                .discover(&project.project)
+                .map_err(why!(Error::Authority))?;
+            for run in discovery.runs {
+                let snapshot = self
+                    .evidence
+                    .snapshot_metadata(&run.reference)
+                    .map_err(why!(Error::Authority))?;
+                for attempt in snapshot.attempts {
+                    let Some(prepared) = self.saved_attempt(
+                        &project.project,
+                        &snapshot.run_id,
+                        &attempt.attempt_id,
+                    )?
+                    else {
+                        continue;
+                    };
+                    let action = prepared.plan["action_id"]
+                        .as_str()
+                        .ok_or(Error::Authority)?;
+                    if self.actions.observe(action)?["execution"]["status"] != "VERIFIED" {
+                        continue;
+                    }
+                    // A terminal scheduler receipt is independent of process and
+                    // history completion. All three must be complete to retire.
+                    let terminal = self
+                        .scheduler_observation(&prepared)?
+                        .is_some_and(|saved| saved.observation.status.state.is_terminal());
+                    Self::background_admitted(&prepared)?;
+                    let finished = self.observation(&prepared)?.is_some_and(|saved| {
+                        saved.evidence.worker.phase
+                            == ml_exp_core::managed::evidence::Phase::Finished
+                    });
+                    if terminal
+                        && finished
+                        && self.history_complete(&prepared)?
+                        && self.journal_terminal_recorded(&prepared)
+                    {
+                        continue;
+                    }
+                    actions.insert(action.into());
+                }
+            }
+        }
+        Ok(actions)
+    }
+    fn background_sample(
+        &self,
+        action: &str,
+        phase: Phase,
+        now: &str,
+        cancelled: &AtomicBool,
+        timeout: std::time::Duration,
+    ) -> Result<Value> {
+        let prepared = self.load(action)?;
+        Self::background_admitted(&prepared)?;
+        match phase {
+            Phase::Scheduler => {
+                self.refresh_scheduler_with_limit(action, now, cancelled, Some(timeout))
+            }
+            Phase::Worker => self.refresh_with_limit(action, now, cancelled, Some(timeout)),
+            Phase::History => self.ingest_history_with_limit(action, cancelled, Some(timeout)),
+        }
+    }
+    fn background_admitted(prepared: &Prepared) -> Result<()> {
+        let (manifest, _) = prepared
+            .request
+            .prepared_content()
+            .ok_or(Error::Authority)?;
+        ml_exp_core::slurm::staging::admit(prepared.request.intent(), manifest.as_bytes())
+            .map_err(why!(Error::Authority))?;
+        Ok(())
+    }
+    pub(super) fn observation_ssh(
+        backend: &Backend,
+        limit: Option<std::time::Duration>,
+    ) -> SshConfig {
+        let mut ssh = backend.ssh.clone();
+        if let Some(limit) = limit {
+            ssh.budget.timeout = ssh.budget.timeout.min(limit);
+            ssh.budget.connect_timeout_seconds = ssh
+                .budget
+                .connect_timeout_seconds
+                .min(ssh.budget.timeout.as_secs().max(1) as u32);
+        }
+        ssh
+    }
+}

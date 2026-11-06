@@ -11,8 +11,15 @@ import sys
 import tempfile
 
 
+def private_file(path, text):
+    with open(path, "x", encoding="utf-8") as stream:
+        os.chmod(path, 0o600)
+        stream.write(text)
+
+
 def main():
-    worker, raw, channel, storage = sys.argv[1:]
+    worker, *parts, channel, storage = sys.argv[1:]
+    raw = "".join(parts)
     config = json.loads(raw)
     directory = "/ml-expd/data"
     archive = directory + "/archive.tar"
@@ -25,15 +32,15 @@ def main():
     try:
         with tempfile.TemporaryDirectory(prefix="ml-expd-data-") as scratch:
             path = os.path.join(scratch, "import.json")
-            with open(path, "x", encoding="utf-8") as stream:
-                os.chmod(path, 0o600)
-                stream.write(raw)
+            private_file(path, raw)
             try:
                 subprocess.run([worker, "data-import", "--config", path, "--bundle-output", archive], check=True)
             except (OSError, subprocess.CalledProcessError):
                 raise RuntimeError("DATA_IMPORT_FAILED") from None
             config["source"] = {"kind": "file", "path": archive}
-            command = [worker, "data-copy", "--config-json", json.dumps(config, separators=(",", ":")), "--channel-json", channel, "--storage-json", storage]
+            path = os.path.join(scratch, "copy.json")
+            private_file(path, json.dumps(config, separators=(",", ":")))
+            command = [worker, "data-copy", "--config", path, "--channel-json", channel, "--storage-json", storage]
             try:
                 subprocess.run(command, check=True)
             except (OSError, subprocess.CalledProcessError):

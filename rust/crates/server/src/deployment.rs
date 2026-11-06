@@ -137,7 +137,8 @@ impl Settings {
         }
         let mut executors = BTreeSet::new();
         if let Some(path) = &self.submission_config {
-            let slurm = crate::submissions::config::load(path).map_err(why!(at("slurm_config")))?;
+            let slurm = crate::backends::slurm::service::config::load(path)
+                .map_err(why!(at("slurm_config")))?;
             for backend in slurm.backends {
                 if !executors.insert(backend.profile.target.backend_id.clone()) {
                     return Err(at("duplicate_executor"));
@@ -149,10 +150,11 @@ impl Settings {
             }
         }
         if let Some(path) = &self.cloud_config {
-            let cloud = crate::cloud_runs::Settings::load(path).map_err(|error| {
+            let cloud = crate::backends::cloud::service::Settings::load(path).map_err(|error| {
                 crate::why::record(file!(), line!(), &error);
                 at(
-                    if error.code == crate::cloud_runs::RUN_CREATION_REQUIRES_EXCHANGE {
+                    if error.code == crate::backends::cloud::service::RUN_CREATION_REQUIRES_EXCHANGE
+                    {
                         "cloud_run_creation_requires_exchange"
                     } else {
                         "cloud_config"
@@ -244,11 +246,13 @@ impl Settings {
             stores.push("source_archives");
         }
         if self.submission_config.is_some() {
-            crate::submissions::Service::initialize(&reads).map_err(why!(at("slurm_namespace")))?;
+            crate::backends::slurm::service::Service::initialize(&reads)
+                .map_err(why!(at("slurm_namespace")))?;
             stores.push("slurm");
         }
         if self.cloud_config.is_some() {
-            crate::cloud_runs::Service::initialize(&reads).map_err(why!(at("cloud_namespace")))?;
+            crate::backends::cloud::service::Service::initialize(&reads)
+                .map_err(why!(at("cloud_namespace")))?;
             stores.push("cloud");
         }
         if self.administration {
@@ -299,9 +303,9 @@ mod tests {
             include_bytes!("../../../deploy/pai.example.json").as_slice(),
             include_bytes!("../../../deploy/sensecore.example.json").as_slice(),
         ] {
-            crate::cloud_runs::Settings::from_slice(bytes).unwrap();
+            crate::backends::cloud::service::Settings::from_slice(bytes).unwrap();
         }
-        crate::submissions::config::Settings::from_slice(include_bytes!(
+        crate::backends::slurm::service::config::Settings::from_slice(include_bytes!(
             "../../../deploy/slurm.example.json"
         ))
         .unwrap()

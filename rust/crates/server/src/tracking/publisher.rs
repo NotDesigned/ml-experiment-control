@@ -1,7 +1,8 @@
 use super::{Error, Result, Runtime, transport::Sdk};
+use crate::background::Worker;
 use crate::records::{RecordGuard, RemoteHistoryEvidence, RemoteObservation, Store};
 use ml_exp_core::{
-    records::Scope,
+    records::{RunKind, Scope},
     tracking::{
         self,
         publication::{
@@ -15,10 +16,10 @@ use serde_json::json;
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{
-        Arc, Condvar, Mutex,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
-    thread::{self, JoinHandle},
+    thread,
     time::{Duration, Instant},
 };
 mod repair;
@@ -43,9 +44,7 @@ struct Saved {
     history_repair: Option<HistoryRepair>,
 }
 pub struct Publisher {
-    stop: Arc<AtomicBool>,
-    wake: Arc<(Mutex<()>, Condvar)>,
-    thread: Option<JoinHandle<()>>,
+    _worker: Worker,
 }
 /// Publication depends on frozen Run authority and a local journal, never on
 /// a particular scheduler or a worker's ability to reach W&B directly.
@@ -57,7 +56,7 @@ pub trait Source: Send + Sync {
         candidate_scopes(store)
     }
 }
-impl Source for crate::submissions::Service {
+impl Source for crate::backends::slurm::service::Service {
     fn publisher_leader(&self) -> Result<ml_exp_io::directory::FileLock> {
         self.publisher_leader().map_err(why!(Error::Storage))
     }
@@ -69,7 +68,7 @@ impl Source for crate::submissions::Service {
             .map_err(why!(Error::Identity))
     }
 }
-impl Source for crate::read_api::Api {
+impl Source for crate::api::Api {
     fn publisher_leader(&self) -> Result<ml_exp_io::directory::FileLock> {
         if let Some(service) = self.submissions() {
             Source::publisher_leader(&*service)
@@ -89,13 +88,12 @@ impl Source for crate::read_api::Api {
         }
     }
     fn tracking_journal(&self, project: &str, run: &str) -> Result<Store> {
-        if let Some(service) = self.cloud() {
-            if service
-                .handles_run(project, run)
-                .map_err(why!(Error::Identity))?
-            {
-                return Source::tracking_journal(&*service, project, run);
-            }
+        if self.run_kind(project, run).map_err(why!(Error::Identity))? == RunKind::Cloud {
+            let service = self.cloud().ok_or(Error::Configuration)?;
+            service
+                .validate_run(project, run)
+                .map_err(why!(Error::Identity))?;
+            return Source::tracking_journal(&*service, project, run);
         }
         if let Some(store) = self
             .local_journal(project, run)
@@ -115,81 +113,57 @@ impl Publisher {
         }
         let leader = service.publisher_leader().map_err(why!(Error::Storage))?;
         let store = service.publisher_store().map_err(why!(Error::Storage))?;
-        let stop = Arc::new(AtomicBool::new(false));
-        let wake = Arc::new((Mutex::new(()), Condvar::new()));
-        let flag = stop.clone();
-        let sleep = wake.clone();
-        let handle = thread::Builder::new()
-            .name("native-wandb".into())
-            .spawn(move || {
-                // Moved in by name: the flock must live as long as this thread.
-                let _leader = leader;
-                let start = Instant::now();
-                let policy = ml_exp_core::polling::Policy {
-                    enabled: true,
-                    ..Default::default()
-                };
-                let mut schedule = ml_exp_core::polling::Schedule::default();
-                let mut sdk = None;
-                let mut candidates = BTreeSet::new();
-                let mut discover_at = 0;
-                while !flag.load(Ordering::Relaxed) {
-                    let elapsed = start.elapsed().as_secs();
-                    if elapsed >= discover_at {
-                        if let Ok(scopes) = service.publication_scopes(&store) {
-                            candidates = scopes;
-                        }
-                        discover_at = elapsed.saturating_add(30);
+        let worker = Worker::spawn("native-wandb", move |stop| {
+            let flag = stop.flag();
+            // Moved in by name: the flock must live as long as this thread.
+            let _leader = leader;
+            let start = Instant::now();
+            let policy = ml_exp_core::polling::Policy {
+                enabled: true,
+                ..Default::default()
+            };
+            let mut schedule = ml_exp_core::polling::Schedule::default();
+            let mut sdk = None;
+            let mut candidates = BTreeSet::new();
+            let mut discover_at = 0;
+            while !stop.requested() {
+                let elapsed = start.elapsed().as_secs();
+                if elapsed >= discover_at {
+                    if let Ok(scopes) = service.publication_scopes(&store) {
+                        candidates = scopes;
                     }
-                    let (next, selected) = schedule.select(&candidates, elapsed, &policy);
-                    schedule = next;
-                    if let Some((scope, _)) = selected {
-                        let outcome =
-                            publish_scope(&*service, &store, &runtime, &mut sdk, &scope, &flag);
-                        schedule = schedule.outcome(
-                            &scope,
-                            start.elapsed().as_secs(),
-                            &policy,
-                            outcome.is_ok(),
-                            false,
-                        );
-                        match outcome {
-                            Err(error) if !flag.load(Ordering::Relaxed) => {
-                                record_failure(&store, &scope, &mut sdk, &error);
-                            }
-                            _ => {}
-                        }
-                    }
-                    let Ok(guard) = sleep.0.lock() else {
-                        break;
-                    };
-                    if flag.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    let _ = sleep.1.wait_timeout(guard, Duration::from_secs(1));
+                    discover_at = elapsed.saturating_add(30);
                 }
-                if let Some(sdk) = sdk.as_mut() {
-                    let _ = sdk.shutdown();
+                let (next, selected) = schedule.select(&candidates, elapsed, &policy);
+                schedule = next;
+                if let Some((scope, _)) = selected {
+                    let outcome =
+                        publish_scope(&*service, &store, &runtime, &mut sdk, &scope, flag);
+                    schedule = schedule.outcome(
+                        &scope,
+                        start.elapsed().as_secs(),
+                        &policy,
+                        outcome.is_ok(),
+                        false,
+                    );
+                    match outcome {
+                        Err(error) if !stop.requested() => {
+                            record_failure(&store, &scope, &mut sdk, &error);
+                        }
+                        _ => {}
+                    }
                 }
-                drop(sdk);
-            })
-            .map_err(why!(Error::Transport))?;
-        Ok(Self {
-            stop,
-            wake,
-            thread: Some(handle),
+                if !stop.pause() {
+                    break;
+                }
+            }
+            if let Some(sdk) = sdk.as_mut() {
+                let _ = sdk.shutdown();
+            }
+            drop(sdk);
         })
-    }
-}
-impl Drop for Publisher {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Ok(_guard) = self.wake.0.lock() {
-            self.wake.1.notify_all();
-        }
-        if let Some(handle) = self.thread.take() {
-            let _ = handle.join();
-        }
+        .map_err(why!(Error::Transport))?;
+        Ok(Self { _worker: worker })
     }
 }
 fn candidate_scopes(store: &Store) -> Result<BTreeSet<String>> {

@@ -101,11 +101,7 @@ impl HelperConfig {
         self.target.validate()?;
         if let Some(root) = &self.shared_run_root {
             let root = root.to_str().ok_or(Error::Configuration)?;
-            ml_exp_core::slurm::staging::Requirement {
-                worker: None,
-                runs_root: root.into(),
-            }
-            .validate()?;
+            ml_exp_core::slurm::staging::validate_runs_root(root)?;
             let helper_root = self.root.to_str().ok_or(Error::Configuration)?;
             if ml_exp_core::slurm::path_within(root, helper_root)
                 || ml_exp_core::slurm::path_within(helper_root, root)
@@ -491,13 +487,13 @@ impl Helper {
                 },
             )?);
         }
-        if request.intent().staging.as_ref().is_some_and(|required| {
-            self.config
-                .shared_run_root
-                .as_ref()
-                .and_then(|p| p.to_str())
-                != Some(required.runs_root.as_str())
-        }) {
+        if self
+            .config
+            .shared_run_root
+            .as_ref()
+            .and_then(|p| p.to_str())
+            != Some(request.intent().staging.runs_root.as_str())
+        {
             return Ok(Reply::for_request(
                 request,
                 ReplyOutcome::Rejected {

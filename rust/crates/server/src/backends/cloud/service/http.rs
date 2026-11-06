@@ -1,0 +1,241 @@
+use crate::{
+    AppState, api,
+    error::Error,
+    http_effect::{self, OnTimeout},
+};
+use axum::{
+    Router,
+    body::Bytes,
+    extract::{DefaultBodyLimit, Path, RawQuery, State},
+    http::HeaderMap,
+    response::Response,
+    routing::{get, post},
+};
+use ml_exp_core::cloud::exchange::{MAX_BYTES, Packet};
+use std::sync::Arc;
+pub(crate) fn routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route(
+            "/api/worker-exchange/{project}/{run}/{attempt}/status",
+            get(worker_read),
+        )
+        .route(
+            "/api/worker-exchange/{project}/{run}/{attempt}/package",
+            get(worker_read),
+        )
+        .route(
+            "/api/worker-exchange/{project}/{run}/{attempt}/datasets/{asset}/{part}",
+            post(dataset),
+        )
+        .route(
+            "/api/worker-exchange/{project}/{run}/{attempt}",
+            post(receive),
+        )
+        .layer(DefaultBodyLimit::max(MAX_BYTES))
+        .route(
+            "/api/worker-exchange/{project}/{run}/{attempt}/artifacts",
+            post(artifact).layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
+        )
+}
+async fn worker_read(
+    State(state): State<Arc<AppState>>,
+    Path((project, run, attempt)): Path<(String, String, String)>,
+    RawQuery(raw): RawQuery,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+) -> Response {
+    if api::no_parameters(raw.as_deref()).is_err() {
+        return http_effect::failure(Error {
+            status: 422,
+            code: "INVALID_WORKER_EXCHANGE",
+            detail: "worker reads take no query parameters",
+        });
+    }
+    let values: Vec<_> = headers.get_all("authorization").iter().collect();
+    let token = if values.len() == 1 {
+        values[0]
+            .to_str()
+            .ok()
+            .and_then(|s| s.strip_prefix("Bearer "))
+            .map(str::to_owned)
+    } else {
+        None
+    };
+    let Some(token) = token else {
+        return http_effect::failure(Error {
+            status: 401,
+            code: "WORKER_AUTH_REQUIRED",
+            detail: "Attempt worker authentication required",
+        });
+    };
+    http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
+        let cloud = api.cloud_only()?;
+        if uri.path().ends_with("/package") {
+            cloud.worker_package(&project, &run, &attempt, &token)
+        } else {
+            cloud.worker_diagnostic_status(&project, &run, &attempt, &token)
+        }
+        .map_err(Into::into)
+    })
+    .await
+}
+async fn artifact(
+    State(state): State<Arc<AppState>>,
+    Path((project, run, attempt)): Path<(String, String, String)>,
+    RawQuery(raw): RawQuery,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let invalid = || Error {
+        status: 422,
+        code: "INVALID_ARTIFACT_EXCHANGE",
+        detail: "invalid cloud artifact request",
+    };
+    if raw.as_deref().is_some_and(|s| !s.is_empty())
+        || ml_exp_core::identity::validate_id(&project)
+            .and_then(|_| ml_exp_core::identity::validate_id(&run))
+            .and_then(|_| ml_exp_core::identity::validate_attempt(&attempt))
+            .is_err()
+    {
+        return http_effect::failure(invalid());
+    }
+    let values: Vec<_> = headers.get_all("authorization").iter().collect();
+    let token = if values.len() == 1 {
+        values[0]
+            .to_str()
+            .ok()
+            .and_then(|s| s.strip_prefix("Bearer "))
+            .map(str::to_owned)
+    } else {
+        None
+    };
+    let Some(token) = token else {
+        return http_effect::failure(Error {
+            status: 401,
+            code: "WORKER_AUTH_REQUIRED",
+            detail: "Attempt worker authentication required",
+        });
+    };
+    let request: ml_exp_core::cloud::exchange::ArtifactRequest =
+        match ml_exp_core::json::mapping(&body)
+            .ok()
+            .and_then(|v| serde_json::from_value(serde_json::Value::Object(v)).ok())
+        {
+            Some(r) => r,
+            None => return http_effect::failure(invalid()),
+        };
+    http_effect::execute_timeout(
+        state,
+        OnTimeout::Effect,
+        std::time::Duration::from_secs(3600),
+        move |api, now| {
+            let cloud = api.cloud_only()?;
+            let now = time::OffsetDateTime::from_unix_timestamp(now as i64)
+                .map_err(|_| invalid())?
+                .format(&time::format_description::well_known::Rfc3339)
+                .map_err(|_| invalid())?;
+            cloud
+                .receive_artifacts(&project, &run, &attempt, &token, request, &now)
+                .map_err(Into::into)
+        },
+    )
+    .await
+}
+async fn receive(
+    State(state): State<Arc<AppState>>,
+    Path((project, run, attempt)): Path<(String, String, String)>,
+    RawQuery(raw): RawQuery,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let invalid = || Error {
+        status: 422,
+        code: "INVALID_WORKER_EXCHANGE",
+        detail: "invalid bounded worker packet",
+    };
+    if raw.as_deref().is_some_and(|v| !v.is_empty())
+        || ml_exp_core::identity::validate_id(&project)
+            .and_then(|_| ml_exp_core::identity::validate_id(&run))
+            .and_then(|_| ml_exp_core::identity::validate_attempt(&attempt))
+            .is_err()
+    {
+        return http_effect::failure(invalid());
+    }
+    let values: Vec<_> = headers.get_all("authorization").iter().collect();
+    let token = if values.len() == 1 {
+        values[0]
+            .to_str()
+            .ok()
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .map(str::to_owned)
+    } else {
+        None
+    };
+    let Some(token) = token else {
+        return http_effect::failure(Error {
+            status: 401,
+            code: "WORKER_AUTH_REQUIRED",
+            detail: "Attempt worker authentication required",
+        });
+    };
+    let packet: Packet = match ml_exp_core::json::mapping(&body)
+        .ok()
+        .and_then(|v| serde_json::from_value(serde_json::Value::Object(v)).ok())
+    {
+        Some(p) => p,
+        None => return http_effect::failure(invalid()),
+    };
+    http_effect::execute(state, OnTimeout::Effect, move |api, now| {
+        let cloud = api.cloud_only()?;
+        let now = time::OffsetDateTime::from_unix_timestamp(now as i64)
+            .map_err(|_| invalid())?
+            .format(&time::format_description::well_known::Rfc3339)
+            .map_err(|_| invalid())?;
+        let ack = cloud.receive(&project, &run, &attempt, &token, &packet, &now)?;
+        serde_json::to_value(ack).map_err(|_| invalid())
+    })
+    .await
+}
+
+async fn dataset(
+    State(state): State<Arc<AppState>>,
+    Path((project, run, attempt, asset, part)): Path<(String, String, String, String, u64)>,
+    RawQuery(raw): RawQuery,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let invalid = || Error {
+        status: 422,
+        code: "INVALID_DATA_TICKET",
+        detail: "invalid exact input data ticket request",
+    };
+    if api::no_parameters(raw.as_deref()).is_err()
+        || body.as_ref() != b"{}"
+        || !ml_exp_core::datasets::asset_id(&asset)
+    {
+        return http_effect::failure(invalid());
+    }
+    let values: Vec<_> = headers.get_all("authorization").iter().collect();
+    let token = if values.len() == 1 {
+        values[0]
+            .to_str()
+            .ok()
+            .and_then(|s| s.strip_prefix("Bearer "))
+            .map(str::to_owned)
+    } else {
+        None
+    };
+    let Some(token) = token else {
+        return http_effect::failure(Error {
+            status: 401,
+            code: "WORKER_AUTH_REQUIRED",
+            detail: "Attempt worker authentication required",
+        });
+    };
+    http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
+        api.cloud_only()?
+            .dataset_ticket(&project, &run, &attempt, &token, &asset, part)
+            .map_err(Into::into)
+    })
+    .await
+}

@@ -157,6 +157,8 @@ pub fn plan(
         &profile.data_root,
     )
     .map_err(|_| Error("dataset receipt scope"))?;
+    crate::datasets::manifest_budget(&datasets)
+        .map_err(|_| Error(crate::datasets::ManifestsTooLarge::CAUSE))?;
     let spec = slurm::JobSpec {
         run_id: request.run_id.clone(),
         attempt_id: "attempt-001".into(),
@@ -435,6 +437,66 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(spelled("1.5"), spelled("1.50"));
+    }
+    #[test]
+    fn planning_refuses_dataset_manifests_over_their_budget() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let target = slurm::helper::Target {
+            backend_id: "slurm-test".into(),
+            profile_sha256: digest.clone(),
+            storage_scope: digest.clone(),
+        };
+        let profile = Profile {
+            target: target.clone(),
+            ssh_alias: "cluster".into(),
+            partition: "gpu".into(),
+            account: "team".into(),
+            qos: "normal".into(),
+            gpu_type: "h200".into(),
+            mount_root: "/shared".into(),
+            run_root: "/shared/runs".into(),
+            data_root: "/shared/datasets".into(),
+            max_gpus: 8,
+            max_cpus: 64,
+            max_memory_gb: 512,
+            max_walltime_seconds: 86400,
+        };
+        let runtime = Runtime {
+            runtime_id: format!("runtime.{}", "1".repeat(64)),
+            source_id: format!("source.{}", "2".repeat(64)),
+            image_id: digest.clone(),
+            sif_path: "/shared/images/code.sif".into(),
+            sif_sha256: digest.clone(),
+            oci_image: format!("registry.example/team/code@{digest}"),
+            worker: slurm::managed::Runtime {
+                program: "/opt/ml-expd/worker".into(),
+                base_environment: BTreeMap::new(),
+                runtime_environment: Vec::new(),
+            },
+            source_dir: "/workspace".into(),
+        };
+        let receipt = crate::datasets::oversized_receipt("demo", &target, &profile.data_root);
+        let mut value = request();
+        value["data"] = json!([{"name":"train","asset_id":receipt.asset_id}]);
+        let request: Request = serde_json::from_value(value).unwrap();
+        let refused = plan(
+            "demo",
+            &request,
+            &profile,
+            &runtime,
+            Authority {
+                project_sha256: &digest,
+                source_receipt_sha256: &digest,
+                backend_config_sha256: &digest,
+                checkpoint: None,
+                datasets: std::slice::from_ref(&receipt),
+                tracking_route: None,
+            },
+            "2026-10-29T00:00:00Z",
+        )
+        .err()
+        .unwrap();
+        assert_eq!(refused.0, crate::datasets::ManifestsTooLarge::CAUSE);
     }
     #[test]
     fn optional_cloud_policy_is_identity_bound_and_omission_preserves_original_bytes() {

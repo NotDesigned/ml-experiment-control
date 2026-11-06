@@ -1,6 +1,6 @@
 //! Read-only readiness projection. Configuration permits submission; cached
 //! provider reads and successful GPU execution are separate evidence.
-use crate::read_api::Api;
+use crate::api::Api;
 use serde_json::{Value, json};
 
 pub(crate) fn observe(api: Option<&Api>) -> Value {
