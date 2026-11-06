@@ -484,3 +484,127 @@ pub fn confirmation_plan(
         display_version: proof.display_version,
     })
 }
+
+/// Who created a Run, read from the format its frozen manifest declares. Each
+/// creator writes its own exclusive format, and anything else is authored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunKind {
+    Slurm,
+    Cloud,
+    Local,
+    Authored,
+}
+impl RunKind {
+    pub fn of(manifest: &Map<String, Value>) -> Self {
+        let format = manifest
+            .get("native_creation")
+            .and_then(|creation| creation.get("format"))
+            .and_then(Value::as_str);
+        match format {
+            Some("native-run-creation.v1") => Self::Slurm,
+            Some("native-cloud-run.v1") => Self::Cloud,
+            Some(crate::local::FORMAT) => Self::Local,
+            _ => Self::Authored,
+        }
+    }
+}
+
+/// Which protocol an Action's plan is bound to. A plan naming neither, or both,
+/// is no backend's Submission.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActionKind {
+    Slurm,
+    Cloud,
+    Other,
+}
+impl ActionKind {
+    pub fn of(snapshot: &Value) -> Self {
+        let slurm = snapshot["native_slurm"]["format"] == "native-slurm-action.v1";
+        let cloud = snapshot["native_cloud"]["format"] == "native-cloud-action.v1";
+        match (slurm, cloud) {
+            (true, false) => Self::Slurm,
+            (false, true) => Self::Cloud,
+            _ => Self::Other,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(creation: Value) -> Map<String, Value> {
+        json!({"native_creation":creation})
+            .as_object()
+            .unwrap()
+            .clone()
+    }
+    #[test]
+    fn a_run_has_the_kind_its_format_names_and_anything_else_is_authored() {
+        for (format, kind) in [
+            ("native-run-creation.v1", RunKind::Slurm),
+            ("native-cloud-run.v1", RunKind::Cloud),
+            ("native-local-run.v1", RunKind::Local),
+            ("native-run-creation.v2", RunKind::Authored),
+            ("", RunKind::Authored),
+        ] {
+            assert_eq!(
+                RunKind::of(&run(json!({"format":format}))),
+                kind,
+                "{format}"
+            );
+        }
+        for creation in [
+            json!(null),
+            json!("native-cloud-run.v1"),
+            json!({}),
+            json!({"format":1}),
+        ] {
+            assert_eq!(RunKind::of(&run(creation)), RunKind::Authored);
+        }
+        assert_eq!(RunKind::of(&Map::new()), RunKind::Authored);
+    }
+    #[test]
+    fn an_action_has_one_kind_and_a_plan_naming_neither_or_both_has_none() {
+        let slurm = json!({"format":"native-slurm-action.v1"});
+        let cloud = json!({"format":"native-cloud-action.v1"});
+        for (snapshot, kind) in [
+            (json!({"native_slurm":slurm}), ActionKind::Slurm),
+            (json!({"native_cloud":cloud}), ActionKind::Cloud),
+            (
+                json!({"native_slurm":slurm,"native_cloud":cloud}),
+                ActionKind::Other,
+            ),
+            (json!({"native_slurm":cloud}), ActionKind::Other),
+            (json!({"native_cloud":slurm}), ActionKind::Other),
+            (json!({"operation":"SUBMIT_RUN"}), ActionKind::Other),
+            (json!(null), ActionKind::Other),
+        ] {
+            assert_eq!(ActionKind::of(&snapshot), kind, "{snapshot}");
+        }
+    }
+    /// The creators keep these strings private, and two of those files are sealed.
+    #[test]
+    fn each_format_is_the_one_its_creator_writes() {
+        for (source, written) in [
+            (
+                include_str!("slurm/action.rs"),
+                r#"const FORMAT: &str = "native-slurm-action.v1";"#,
+            ),
+            (
+                include_str!("cloud/action.rs"),
+                r#"const FORMAT: &str = "native-cloud-action.v1";"#,
+            ),
+            (
+                include_str!("cloud/run.rs"),
+                r#""native_creation":{"format":"native-cloud-run.v1""#,
+            ),
+            (
+                include_str!("first_submission/native/creation.rs"),
+                r#""native_creation":{"format":"native-run-creation.v1""#,
+            ),
+        ] {
+            assert!(source.contains(written), "{written}");
+        }
+    }
+}
