@@ -72,7 +72,8 @@ impl World {
             ("GET", "/api/health") => (
                 200,
                 json!({"capabilities":["native-submissions.v1","source-archive.v1",
-                    "native-experiment-preparations.v1","native-runtime-builds.v1"],
+                    "native-experiment-preparations.v1","native-runtime-builds.v1",
+                    "native-scheduler-observation.v1"],
                     "scheduler_mutations":true}),
             ),
             ("GET", "/api/executors") => (
@@ -550,6 +551,7 @@ fn losing_the_status_stops_watching_and_touches_nothing() {
     );
     assert_eq!(fake.count("POST", "/execute"), 1);
     assert_eq!(fake.count("POST", "/cancel"), 0);
+    assert!(fake.count("POST", "/refresh") > 1, "it kept trying");
 }
 
 #[test]
