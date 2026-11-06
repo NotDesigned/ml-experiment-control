@@ -1,7 +1,7 @@
 use crate::{
-    AppState,
+    AppState, api,
+    error::Error,
     http_effect::{self, OnTimeout},
-    read_api,
 };
 use axum::{
     Router,
@@ -12,8 +12,8 @@ use axum::{
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
-fn invalid() -> read_api::Error {
-    read_api::Error {
+fn invalid() -> Error {
+    Error {
         status: 422,
         code: "INVALID_DEBUG_REQUEST",
         detail: "invalid debug identity, resources, SSH public key or confirmation",
@@ -26,23 +26,21 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
         .route("/api/debug/{identity}/{operation}", post(change))
         .layer(DefaultBodyLimit::max(16384))
 }
-fn service(api: &read_api::Api) -> Result<Arc<super::Service>, read_api::Error> {
-    api.cloud()
-        .filter(|s| s.has_debug())
-        .ok_or(read_api::Error {
-            status: 501,
-            code: "DEBUG_NOT_CONFIGURED",
-            detail: "debug machines are not configured",
-        })
+fn service(api: &api::Api) -> Result<Arc<super::Service>, Error> {
+    api.cloud().filter(|s| s.has_debug()).ok_or(Error {
+        status: 501,
+        code: "DEBUG_NOT_CONFIGURED",
+        detail: "debug machines are not configured",
+    })
 }
-fn timestamp(now: f64) -> Result<String, read_api::Error> {
+fn timestamp(now: f64) -> Result<String, Error> {
     time::OffsetDateTime::from_unix_timestamp(now as i64)
         .map_err(|_| invalid())?
         .format(&time::format_description::well_known::Rfc3339)
         .map_err(|_| invalid())
 }
 async fn list(State(state): State<Arc<AppState>>, RawQuery(query): RawQuery) -> Response {
-    if read_api::no_parameters(query.as_deref()).is_err() {
+    if api::no_parameters(query.as_deref()).is_err() {
         return http_effect::failure(invalid());
     }
     http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
@@ -55,7 +53,7 @@ async fn show(
     Path(id): Path<String>,
     RawQuery(query): RawQuery,
 ) -> Response {
-    if read_api::no_parameters(query.as_deref()).is_err() {
+    if api::no_parameters(query.as_deref()).is_err() {
         return http_effect::failure(invalid());
     }
     http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
@@ -68,7 +66,7 @@ async fn create(
     RawQuery(query): RawQuery,
     body: Bytes,
 ) -> Response {
-    if read_api::no_parameters(query.as_deref()).is_err() {
+    if api::no_parameters(query.as_deref()).is_err() {
         return http_effect::failure(invalid());
     }
     let request = match ml_exp_core::json::mapping(&body)
@@ -99,7 +97,7 @@ async fn change(
     RawQuery(query): RawQuery,
     body: Bytes,
 ) -> Response {
-    if read_api::no_parameters(query.as_deref()).is_err() {
+    if api::no_parameters(query.as_deref()).is_err() {
         return http_effect::failure(invalid());
     }
     let Ok(m) = ml_exp_core::json::mapping(&body) else {

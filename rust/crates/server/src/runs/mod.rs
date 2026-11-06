@@ -2,9 +2,9 @@
 //! each backend's service and reaches a provider only by calling those services.
 //! A failed read is an answer of its own: it never falls through to a backend.
 use crate::{
+    api::Api,
     backends::{cloud::service as cloud, slurm::service as slurm},
     error::{Error, error},
-    read_api::Api,
 };
 use ml_exp_core::records::{ActionKind, RunKind};
 use serde::Deserialize;
@@ -25,7 +25,7 @@ fn cloud_absent() -> Error {
         "cloud submission service is not configured",
     )
 }
-pub(crate) fn slurm_absent() -> Error {
+fn slurm_absent() -> Error {
     error(
         501,
         "SUBMISSION_NOT_CONFIGURED",
@@ -101,6 +101,10 @@ impl Api {
     /// For routes only the cloud service has. This chooses nothing.
     pub fn cloud_only(&self) -> Result<Arc<cloud::Service>, Error> {
         self.cloud().ok_or_else(cloud_absent)
+    }
+    /// For routes only the Slurm service has. This chooses nothing.
+    pub fn slurm_only(&self) -> Result<Arc<slurm::Service>, Error> {
+        self.submissions().ok_or_else(slurm_absent)
     }
 }
 

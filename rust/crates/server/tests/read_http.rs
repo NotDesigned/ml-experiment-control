@@ -2,7 +2,7 @@
 //! All manifests, journals and credentials are synthetic private temp fixtures.
 use ml_exp_client::{Client, Error as ClientError, observation::Selection, read, status, watch};
 use ml_exp_core::records::{Event, normalized_metric};
-use ml_exp_server::{Auth, read_api::Api, read_config, records};
+use ml_exp_server::{Auth, api::Api, read_config, records};
 use serde_json::{Value, json};
 use std::{
     cell::Cell,

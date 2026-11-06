@@ -1,7 +1,7 @@
 //! The bounded shell around every local effect a handler runs, read or write:
 //! permits, a blocking task, a deadline, the response limit and the secret check.
 //! A timed-out write remains uncertain; waiting does not cancel kernel I/O.
-use crate::{AppState, error::Error, read_api};
+use crate::{AppState, api, error::Error};
 use axum::{
     Json,
     http::StatusCode,
@@ -77,7 +77,7 @@ fn undelivered(on_timeout: OnTimeout, plain: Error) -> Response {
 pub(crate) async fn execute(
     state: Arc<AppState>,
     on_timeout: OnTimeout,
-    effect: impl FnOnce(&read_api::Api, f64) -> Result<Value, Error> + Send + 'static,
+    effect: impl FnOnce(&api::Api, f64) -> Result<Value, Error> + Send + 'static,
 ) -> Response {
     execute_timeout(state, on_timeout, Duration::from_secs(30), effect).await
 }
@@ -85,16 +85,16 @@ pub(crate) async fn execute_timeout(
     state: Arc<AppState>,
     on_timeout: OnTimeout,
     timeout: Duration,
-    effect: impl FnOnce(&read_api::Api, f64) -> Result<Value, Error> + Send + 'static,
+    effect: impl FnOnce(&api::Api, f64) -> Result<Value, Error> + Send + 'static,
 ) -> Response {
-    let Some(api) = state.reads.clone() else {
+    let Some(api) = state.api.clone() else {
         return failure(Error {
             status: 501,
             code: "LOCAL_SERVICES_NOT_CONFIGURED",
             detail: "local experiment services are not configured",
         });
     };
-    let Ok(permit) = state.read_slots.clone().try_acquire_owned() else {
+    let Ok(permit) = state.effect_slots.clone().try_acquire_owned() else {
         let mut response = failure(Error {
             status: 429,
             code: if matches!(on_timeout, OnTimeout::NoEffect) {
@@ -133,7 +133,7 @@ pub(crate) async fn execute_timeout(
                     },
                 );
             }
-            if read_api::contains_secret(&value, &state.auth.token) {
+            if api::contains_secret(&value, &state.auth.token) {
                 return undelivered(
                     on_timeout,
                     Error {
@@ -185,7 +185,7 @@ pub(crate) mod tests {
             .unwrap(),
         )
         .unwrap();
-        let api = read_api::Api::open(settings).unwrap();
+        let api = api::Api::open(settings).unwrap();
         (
             temp,
             Arc::new(AppState {
@@ -193,8 +193,8 @@ pub(crate) mod tests {
                 auth: crate::Auth {
                     token: TOKEN.into(),
                 },
-                reads: Some(Arc::new(api)),
-                read_slots: Arc::new(tokio::sync::Semaphore::new(4)),
+                api: Some(Arc::new(api)),
+                effect_slots: Arc::new(tokio::sync::Semaphore::new(4)),
             }),
         )
     }
@@ -239,15 +239,15 @@ pub(crate) mod tests {
                 }
             );
             ready.recv_timeout(Duration::from_secs(1)).unwrap();
-            assert_eq!(state.read_slots.available_permits(), 3);
+            assert_eq!(state.effect_slots.available_permits(), 3);
             assert_eq!(completed.load(Ordering::SeqCst), 0);
             release.send(()).unwrap();
             let end = std::time::Instant::now() + Duration::from_secs(2);
-            while state.read_slots.available_permits() != 4 && std::time::Instant::now() < end {
+            while state.effect_slots.available_permits() != 4 && std::time::Instant::now() < end {
                 tokio::time::sleep(Duration::from_millis(2)).await;
             }
             assert_eq!(completed.load(Ordering::SeqCst), 1);
-            assert_eq!(state.read_slots.available_permits(), 4);
+            assert_eq!(state.effect_slots.available_permits(), 4);
         }
     }
     #[tokio::test]

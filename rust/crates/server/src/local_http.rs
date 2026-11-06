@@ -1,7 +1,7 @@
 use crate::{
-    AppState,
+    AppState, api,
+    error::Error,
     http_effect::{self, OnTimeout},
-    read_api,
 };
 use axum::{
     Router,
@@ -12,8 +12,8 @@ use axum::{
 };
 use ml_exp_core::local::{Packet, Registration};
 use std::sync::Arc;
-fn invalid() -> read_api::Error {
-    read_api::Error {
+fn invalid() -> Error {
+    Error {
         status: 422,
         code: "INVALID_LOCAL_INGRESS",
         detail: "invalid local execution or JSONL packet",
@@ -32,7 +32,7 @@ async fn register(
     RawQuery(query): RawQuery,
     body: Bytes,
 ) -> Response {
-    if read_api::no_parameters(query.as_deref()).is_err() || body.len() > 131072 {
+    if api::no_parameters(query.as_deref()).is_err() || body.len() > 131072 {
         return http_effect::failure(invalid());
     }
     let Some(request) = ml_exp_core::json::mapping(&body)
@@ -52,7 +52,7 @@ async fn status(
     Path((project, run)): Path<(String, String)>,
     RawQuery(query): RawQuery,
 ) -> Response {
-    if read_api::no_parameters(query.as_deref()).is_err() {
+    if api::no_parameters(query.as_deref()).is_err() {
         return http_effect::failure(invalid());
     }
     http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
@@ -66,7 +66,7 @@ async fn ingest(
     RawQuery(query): RawQuery,
     body: Bytes,
 ) -> Response {
-    if read_api::no_parameters(query.as_deref()).is_err() {
+    if api::no_parameters(query.as_deref()).is_err() {
         return http_effect::failure(invalid());
     }
     let Some(packet) = ml_exp_core::json::mapping(&body)

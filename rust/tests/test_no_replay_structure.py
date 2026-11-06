@@ -180,8 +180,25 @@ def runs_module_failures(root):
     return failures
 
 
+def tree_crossing_failures(root):
+    """Handlers that serve either backend sit above both trees, not inside one."""
+    failures = []
+    for home, pattern in [
+        ("backends/slurm", r"\bOwner::Cloud\b|\bapi\.cloud\(\)|\bapi\.cloud_only\(\)|\bbackends::cloud\b"),
+        ("backends/cloud", r"\bOwner::Slurm\b|\bapi\.submissions\(\)|\bapi\.slurm_only\(\)"),
+    ]:
+        if not (root / SERVER / home).is_dir():
+            failures.append(f"{home}: the tree has moved, so this rule reads nothing")
+        for path in rust_files(root, SERVER / home):
+            for line in production_lines(root, path):
+                if re.search(pattern, line):
+                    failures.append(f"{path}: {home} must not reach the other backend: {line}")
+    return failures
+
+
 def service_crossing_failures(root):
-    """Neither service names the other: each asks through a one-question trait."""
+    """Neither service names the other's `Service`. Slurm asks a builder through the
+    `RuntimeBuilder` trait, and anything else reaches a service as data from its caller."""
     failures = []
     for home, other in [
         ("backends/cloud/service", r"(?:submissions|slurm::service)"),
@@ -219,6 +236,9 @@ class Structure(unittest.TestCase):
 
     def test_neither_service_names_the_other(self):
         self.assertEqual(service_crossing_failures(ROOT), [])
+
+    def test_neither_backend_tree_reaches_the_other(self):
+        self.assertEqual(tree_crossing_failures(ROOT), [])
 
 
 class GuardDetects(unittest.TestCase):
@@ -310,6 +330,32 @@ class GuardDetects(unittest.TestCase):
         ]:
             self.write(RUNS_MODULE / "apply.rs", line + "\n")
             self.assertEqual(len(runs_module_failures(self.root)), 1, line)
+
+    def test_a_backend_tree_reaching_the_other_fails(self):
+        self.write(SERVER / "backends/slurm/service/http.rs", "// Owner::Cloud is a comment.\nfn f() {}\n")
+        self.write(SERVER / "backends/cloud/service/http.rs", "fn f() {}\n")
+        self.assertEqual(tree_crossing_failures(self.root), [])
+        for line in [
+            "Owner::Cloud(cloud) => cloud.tracking_status(),",
+            "let cloud = api.cloud();",
+            "let cloud = api.cloud_only()?;",
+            "use crate::backends::cloud::service::ExternalExecutors;",
+        ]:
+            self.write(SERVER / "backends/slurm/service/http.rs", line + "\n")
+            self.assertEqual(len(tree_crossing_failures(self.root)), 1, line)
+        self.write(SERVER / "backends/slurm/service/http.rs", "fn f() {}\n")
+        for line in [
+            "Owner::Slurm(slurm) => slurm.tracking_status(),",
+            "let slurm = api.submissions();",
+            "let slurm = api.slurm_only()?;",
+        ]:
+            self.write(SERVER / "backends/cloud/service/http.rs", line + "\n")
+            self.assertEqual(len(tree_crossing_failures(self.root)), 1, line)
+        (self.root / SERVER / "backends/cloud/service/http.rs").unlink()
+        (self.root / SERVER / "backends/cloud/service").rmdir()
+        (self.root / SERVER / "backends/cloud/outbox.rs").unlink()
+        (self.root / SERVER / "backends/cloud").rmdir()
+        self.assertIn("has moved", tree_crossing_failures(self.root)[0])
 
     def test_a_service_naming_the_other_fails(self):
         self.write(SERVER / "backends/cloud/service/preparations.rs", "// submissions::Service\nuse crate::why;\n")

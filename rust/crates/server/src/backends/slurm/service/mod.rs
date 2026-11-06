@@ -3,8 +3,6 @@
 //! Action confirmation; it cannot supply a script, source receipt or Run path.
 pub mod config;
 mod engine;
-pub(crate) mod http;
 pub use engine::{Backend, Context, Error, RuntimeBuilder, Service};
 
-mod artifact_http;
-pub(crate) mod dataset_http;
+pub(crate) mod artifact_http;

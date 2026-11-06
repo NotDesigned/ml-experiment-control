@@ -60,7 +60,7 @@ impl Service {
             .snapshot_metadata(&facts.reference)
             .map_err(why!(Error::Authority))?;
         if let Some(binding) = &binding {
-            if !crate::read_api::journal_binding_matches(&snapshot, Some(binding)) {
+            if !crate::api::journal_binding_matches(&snapshot, Some(binding)) {
                 return Err(Error::ObservationConflict);
             }
         }
@@ -141,7 +141,7 @@ impl Service {
             .snapshot_metadata(&facts.reference)
             .map_err(why!(Error::Authority))?;
         let binding = records.binding(&guard).map_err(why!(Error::Authority))?;
-        if !crate::read_api::journal_binding_matches(&snapshot, binding.as_ref()) {
+        if !crate::api::journal_binding_matches(&snapshot, binding.as_ref()) {
             return Err(Error::ObservationConflict);
         }
         drop(guard);

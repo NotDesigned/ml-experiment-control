@@ -1,7 +1,7 @@
 use crate::{
-    AppState,
+    AppState, api,
+    error::Error,
     http_effect::{self, OnTimeout},
-    read_api,
 };
 use axum::{
     Router,
@@ -12,21 +12,19 @@ use axum::{
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
-fn invalid() -> read_api::Error {
-    read_api::Error {
+fn invalid() -> Error {
+    Error {
         status: 422,
         code: "INVALID_RUNTIME_REQUEST",
         detail: "invalid exact native runtime request",
     }
 }
-fn service(api: &read_api::Api) -> Result<Arc<super::Service>, read_api::Error> {
-    api.cloud()
-        .filter(|s| s.has_builds())
-        .ok_or(read_api::Error {
-            status: 501,
-            code: "NATIVE_BUILDER_NOT_CONFIGURED",
-            detail: "native runtime builder is not configured",
-        })
+fn service(api: &api::Api) -> Result<Arc<super::Service>, Error> {
+    api.cloud().filter(|s| s.has_builds()).ok_or(Error {
+        status: 501,
+        code: "NATIVE_BUILDER_NOT_CONFIGURED",
+        detail: "native runtime builder is not configured",
+    })
 }
 pub(crate) fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -43,7 +41,7 @@ async fn list(
     Path(project): Path<String>,
     RawQuery(query): RawQuery,
 ) -> Response {
-    if read_api::no_parameters(query.as_deref()).is_err() {
+    if api::no_parameters(query.as_deref()).is_err() {
         return http_effect::failure(invalid());
     }
     http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
@@ -58,7 +56,7 @@ async fn prepare(
     body: Bytes,
 ) -> Response {
     if ml_exp_core::identity::validate_id(&project).is_err()
-        || read_api::no_parameters(query.as_deref()).is_err()
+        || api::no_parameters(query.as_deref()).is_err()
     {
         return http_effect::failure(invalid());
     }
@@ -81,7 +79,7 @@ async fn show(
     Path((project, runtime)): Path<(String, String)>,
     RawQuery(query): RawQuery,
 ) -> Response {
-    if read_api::no_parameters(query.as_deref()).is_err() {
+    if api::no_parameters(query.as_deref()).is_err() {
         return http_effect::failure(invalid());
     }
     http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
@@ -97,7 +95,7 @@ async fn observe(
     RawQuery(query): RawQuery,
 ) -> Response {
     if !matches!(operation.as_str(), "logs" | "progress")
-        || read_api::no_parameters(query.as_deref()).is_err()
+        || api::no_parameters(query.as_deref()).is_err()
     {
         return http_effect::failure(invalid());
     }
@@ -114,7 +112,7 @@ async fn change(
     RawQuery(query): RawQuery,
     body: Bytes,
 ) -> Response {
-    if read_api::no_parameters(query.as_deref()).is_err() {
+    if api::no_parameters(query.as_deref()).is_err() {
         return http_effect::failure(invalid());
     }
     let request = match ml_exp_core::json::mapping(&body) {

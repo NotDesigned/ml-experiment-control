@@ -1,8 +1,9 @@
 //! Authenticated observation routes. Every handler runs with `OnTimeout::NoEffect`.
 use crate::{
     AppState,
+    api::{self, Query, View},
+    error::Error,
     http_effect::{OnTimeout, execute, failure},
-    read_api::{self, Query, View},
 };
 use axum::{
     Router,
@@ -33,14 +34,14 @@ pub(super) fn routes() -> Router<Arc<AppState>> {
         .route("/api/attempts/{project}/{identity}/{view}", get(attempt))
 }
 fn bad_path() -> Response {
-    failure(read_api::Error {
+    failure(Error {
         status: 422,
         code: "INVALID_EXPERIMENT_IDENTITY",
         detail: "invalid experiment identity",
     })
 }
 async fn projects(State(state): State<Arc<AppState>>, RawQuery(raw): RawQuery) -> Response {
-    if let Err(e) = read_api::no_parameters(raw.as_deref()) {
+    if let Err(e) = api::no_parameters(raw.as_deref()) {
         return failure(e);
     }
     execute(state, OnTimeout::NoEffect, |api, now| api.projects(now)).await
@@ -53,7 +54,7 @@ async fn submission(
     let Ok(Path(identity)) = path else {
         return bad_path();
     };
-    if let Err(error) = read_api::no_parameters(raw.as_deref()) {
+    if let Err(error) = api::no_parameters(raw.as_deref()) {
         return failure(error);
     }
     execute(state, OnTimeout::NoEffect, move |api, now| {
@@ -69,7 +70,7 @@ async fn submission_progress(
     let Ok(Path(identity)) = path else {
         return bad_path();
     };
-    if let Err(error) = read_api::no_parameters(raw.as_deref()) {
+    if let Err(error) = api::no_parameters(raw.as_deref()) {
         return failure(error);
     }
     execute(state, OnTimeout::NoEffect, move |api, now| {
@@ -85,7 +86,7 @@ async fn experiment_submissions(
     let Ok(Path((project, run))) = path else {
         return bad_path();
     };
-    if let Err(error) = read_api::no_parameters(raw.as_deref()) {
+    if let Err(error) = api::no_parameters(raw.as_deref()) {
         return failure(error);
     }
     execute(state, OnTimeout::NoEffect, move |api, _| {
@@ -101,7 +102,7 @@ async fn run(
     let Ok(Path((project, run))) = path else {
         return bad_path();
     };
-    if let Err(e) = read_api::no_parameters(raw.as_deref()) {
+    if let Err(e) = api::no_parameters(raw.as_deref()) {
         return failure(e);
     }
     execute(state, OnTimeout::NoEffect, move |api, now| {
@@ -124,7 +125,7 @@ async fn attempts(
     let Ok(Path((project, run))) = path else {
         return bad_path();
     };
-    if let Err(e) = read_api::no_parameters(raw.as_deref()) {
+    if let Err(e) = api::no_parameters(raw.as_deref()) {
         return failure(e);
     }
     execute(state, OnTimeout::NoEffect, move |api, now| {
@@ -147,7 +148,7 @@ async fn collection(
     let Ok(Path((project, run, attempt))) = path else {
         return bad_path();
     };
-    if let Err(e) = read_api::no_parameters(raw.as_deref()) {
+    if let Err(e) = api::no_parameters(raw.as_deref()) {
         return failure(e);
     }
     if ml_exp_core::identity::validate_attempt(&attempt).is_err() {
@@ -173,27 +174,27 @@ async fn attempt(
     let Ok(Path((project, identity, view))) = path else {
         return bad_path();
     };
-    let (run, attempt) = match read_api::exact_identity(&identity) {
+    let (run, attempt) = match api::exact_identity(&identity) {
         Ok(value) => value,
         Err(e) => return failure(e),
     };
     let view = match view.as_str() {
         "show" => {
-            if let Err(e) = read_api::no_parameters(raw.as_deref()) {
+            if let Err(e) = api::no_parameters(raw.as_deref()) {
                 return failure(e);
             }
             View::Show { attempt }
         }
-        "logs" => match read_api::log_query(raw.as_deref()) {
+        "logs" => match api::log_query(raw.as_deref()) {
             Ok(query) => View::Logs { attempt, query },
             Err(e) => return failure(e),
         },
-        "metrics" => match read_api::metric_query(raw.as_deref()) {
+        "metrics" => match api::metric_query(raw.as_deref()) {
             Ok(query) => View::Metrics { attempt, query },
             Err(e) => return failure(e),
         },
         _ => {
-            return failure(read_api::Error {
+            return failure(Error {
                 status: 404,
                 code: "UNKNOWN_ATTEMPT_VIEW",
                 detail: "unknown Attempt view",

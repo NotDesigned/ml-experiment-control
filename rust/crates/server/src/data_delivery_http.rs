@@ -1,7 +1,7 @@
 use crate::{
-    AppState,
+    AppState, api,
+    error::Error,
     http_effect::{self, OnTimeout},
-    read_api,
 };
 use axum::{
     Router,
@@ -13,8 +13,8 @@ use axum::{
 };
 use serde_json::Value;
 use std::sync::Arc;
-fn invalid() -> read_api::Error {
-    read_api::Error {
+fn invalid() -> Error {
+    Error {
         status: 422,
         code: "INVALID_DATA_DELIVERY_REQUEST",
         detail: "invalid data-only delivery request",
@@ -47,7 +47,7 @@ async fn download(
     struct Request {
         part: u64,
     }
-    if read_api::no_parameters(query.as_deref()).is_err() {
+    if api::no_parameters(query.as_deref()).is_err() {
         return http_effect::failure(invalid());
     }
     let request: Request = match ml_exp_core::json::mapping(&body)
@@ -71,7 +71,7 @@ async fn exchange(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    if read_api::no_parameters(query.as_deref()).is_err()
+    if api::no_parameters(query.as_deref()).is_err()
         || ml_exp_core::identity::validate_id(&project)
             .and_then(|_| ml_exp_core::identity::validate_id(&executor))
             .is_err()
@@ -90,7 +90,7 @@ async fn exchange(
         None
     };
     let Some(token) = token else {
-        return http_effect::failure(read_api::Error {
+        return http_effect::failure(Error {
             status: 401,
             code: "DATASET_AUTH_REQUIRED",
             detail: "data-only capability required",
@@ -138,7 +138,7 @@ async fn publish(
         #[serde(default)]
         runtime_id: Option<String>,
     }
-    if read_api::no_parameters(query.as_deref()).is_err() {
+    if api::no_parameters(query.as_deref()).is_err() {
         return http_effect::failure(invalid());
     }
     let request: Request = match ml_exp_core::json::mapping(&body)

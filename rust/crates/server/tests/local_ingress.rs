@@ -2,7 +2,7 @@
 //! journal. No process control, provider credentials or cloud calls.
 use ml_exp_client::{Client, local};
 use ml_exp_core::local::{Finish, INITIAL_CHAIN, MAX_BATCH, Packet, Registration};
-use ml_exp_server::{Auth, read_api::Api, read_config};
+use ml_exp_server::{Auth, api::Api, read_config};
 use serde_json::{Value, json};
 use std::{
     fs,

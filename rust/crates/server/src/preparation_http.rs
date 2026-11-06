@@ -1,11 +1,11 @@
 use crate::{
-    AppState,
+    AppState, api,
     backends::{
         cloud::service::{Continue, ExternalExecutors},
         slurm::service as slurm,
     },
+    error::Error,
     http_effect::{self, OnTimeout},
-    read_api,
     runs::{self, Owner},
 };
 use axum::{
@@ -17,8 +17,8 @@ use axum::{
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
-fn invalid() -> read_api::Error {
-    read_api::Error {
+fn invalid() -> Error {
+    Error {
         status: 422,
         code: "INVALID_EXPERIMENT_PREPARATION",
         detail: "invalid experiment configuration or exact preparation identity",
@@ -49,7 +49,7 @@ async fn discover(
     Path((project, run)): Path<(String, String)>,
     RawQuery(query): RawQuery,
 ) -> Response {
-    if read_api::no_parameters(query.as_deref()).is_err() {
+    if api::no_parameters(query.as_deref()).is_err() {
         return http_effect::failure(invalid());
     }
     http_effect::execute(state, OnTimeout::NoEffect, move |api, now| {
@@ -68,7 +68,7 @@ async fn discover(
     })
     .await
 }
-fn timestamp(now: f64) -> Result<String, read_api::Error> {
+fn timestamp(now: f64) -> Result<String, Error> {
     time::OffsetDateTime::from_unix_timestamp(now as i64)
         .map_err(|_| invalid())?
         .format(&time::format_description::well_known::Rfc3339)
@@ -80,7 +80,7 @@ async fn prepare(
     RawQuery(query): RawQuery,
     body: Bytes,
 ) -> Response {
-    if read_api::no_parameters(query.as_deref()).is_err() {
+    if api::no_parameters(query.as_deref()).is_err() {
         return http_effect::failure(invalid());
     }
     let request: ml_exp_core::preparation::Request = match ml_exp_core::json::mapping(&body)
@@ -105,7 +105,7 @@ async fn show(
     Path((project, id)): Path<(String, String)>,
     RawQuery(query): RawQuery,
 ) -> Response {
-    if read_api::no_parameters(query.as_deref()).is_err() {
+    if api::no_parameters(query.as_deref()).is_err() {
         return http_effect::failure(invalid());
     }
     http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
@@ -121,7 +121,7 @@ async fn advance(
     RawQuery(query): RawQuery,
     body: Bytes,
 ) -> Response {
-    if read_api::no_parameters(query.as_deref()).is_err() {
+    if api::no_parameters(query.as_deref()).is_err() {
         return http_effect::failure(invalid());
     }
     let confirmation = format!("PREPARE {id}");
@@ -156,11 +156,11 @@ async fn advance(
             // No lock is held across these calls. A repeat reaches the same Run and
             // the same immutable Slurm slot, and `experiment_finish` refuses any other.
             Continue::SubmitElsewhere { run, approval } => {
-                let slurm = slurm.ok_or_else(runs::slurm_absent)?;
+                let slurm = api.slurm_only()?;
                 let run_id = run.run_id.clone();
                 slurm
                     .create_run(&project, *run, &now)
-                    .map_err(slurm::http::creation_failure)?;
+                    .map_err(crate::submission_http::creation_failure)?;
                 let submission = slurm.prepare(&project, &run_id, approval, context)?;
                 cloud
                     .experiment_finish(&project, &id, submission)

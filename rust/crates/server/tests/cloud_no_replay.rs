@@ -16,22 +16,23 @@ use ml_exp_core::{
 use ml_exp_io::directory::{Directory, FileLock, LockOptions};
 use ml_exp_server::{
     administration,
+    api::Api,
     backends::{
         cloud::{
             self,
             adapter::{Adapter, Profile, Transport},
             outbox::Outbox,
+            service::{Continue, Service, Settings},
         },
-        slurm::{Budget, SshConfig},
+        slurm::{Budget, SshConfig, service as slurm_service},
     },
     background::{Cycle, Polled},
-    cloud_runs::{Continue, Service, Settings},
     deletion::RunFence,
+    error,
     operations::{ClaimContext, Store},
-    read_api::{self, Api},
     read_config,
     runs::{self, Operation, Owner},
-    sources, submissions,
+    sources,
 };
 use serde_json::{Value, json};
 use std::{
@@ -483,15 +484,15 @@ fn renewal(action: &str) -> ml_exp_core::renewal::Request {
         confirmation: format!("RENEW {action}"),
     }
 }
-fn expired_gate(transition_id: &str) -> submissions::Context<'_> {
-    submissions::Context {
+fn expired_gate(transition_id: &str) -> slurm_service::Context<'_> {
+    slurm_service::Context {
         now: T_GATE_EXPIRED,
         expires: RENEWED_GATE_EXPIRES,
         transition_id,
     }
 }
-fn open_gate(transition_id: &str) -> submissions::Context<'_> {
-    submissions::Context {
+fn open_gate(transition_id: &str) -> slurm_service::Context<'_> {
+    slurm_service::Context {
         now: T_PREPARE,
         expires: GATE_EXPIRES,
         transition_id,
@@ -869,7 +870,7 @@ fn a_renewal_whose_pointer_write_fails_is_uncertain_and_a_repeat_finishes_it() {
         fs::set_permissions(&slots, writable).unwrap();
         assert!(failed.uncertain);
         assert_eq!(failed.code, "CLOUD_RENEWAL_UNCERTAIN");
-        let public = read_api::Error::from(failed);
+        let public = error::Error::from(failed);
         assert_eq!(public.status, 500);
         assert_eq!(public.code, "CLOUD_OPERATION_UNCERTAIN");
         assert_eq!(fs::read(&pointer).unwrap(), before);
@@ -1047,7 +1048,7 @@ fn a_terminal_job_leaves_the_observer_at_the_next_discovery() {
 /// private to its crate.
 fn slurm_parts(f: &Fixture) -> (helper::Target, native::Runtime, native::Profile) {
     let root = f.temp.path();
-    submissions::Service::initialize(&f.settings).unwrap();
+    slurm_service::Service::initialize(&f.settings).unwrap();
     let source_id = f.runtime.source_id.clone();
     let image = format!("sha256:{}", "1".repeat(64));
     let mount_path = root.join("shared");
@@ -1090,7 +1091,7 @@ fn slurm_parts(f: &Fixture) -> (helper::Target, native::Runtime, native::Profile
     (target, runtime, profile)
 }
 /// The Slurm service over the same registry with one real authorized Action.
-fn slurm_side(f: &Fixture) -> (submissions::Service, String, std::path::PathBuf) {
+fn slurm_side(f: &Fixture) -> (slurm_service::Service, String, std::path::PathBuf) {
     let run = f.run_directory("train");
     fs::create_dir_all(run.join("attempts/attempt-001")).unwrap();
     let (target, runtime, profile) = slurm_parts(f);
@@ -1171,7 +1172,7 @@ fn slurm_open(
     target: helper::Target,
     runtime: native::Runtime,
     profile: native::Profile,
-) -> (submissions::Service, std::path::PathBuf) {
+) -> (slurm_service::Service, std::path::PathBuf) {
     let root = f.temp.path();
     for name in ["ssh-config", "known-hosts"] {
         // A test may open this service more than once, and these refuse to be replaced.
@@ -1190,11 +1191,11 @@ fn slurm_open(
     )
     .unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
-    let service = submissions::Service::open(
+    let service = slurm_service::Service::open(
         f.settings.clone(),
         f.sources.clone(),
         None,
-        vec![submissions::Backend {
+        vec![slurm_service::Backend {
             profile,
             ssh: SshConfig {
                 target,
@@ -1222,9 +1223,9 @@ fn slurm_open(
     .unwrap();
     (service, calls)
 }
-fn stops_at_slurm_load(result: Result<Value, submissions::Error>) {
+fn stops_at_slurm_load(result: Result<Value, slurm_service::Error>) {
     match result {
-        Err(submissions::Error::Authority) => {}
+        Err(slurm_service::Error::Authority) => {}
         other => panic!("a cloud Action must stop at the Slurm load, got {other:?}"),
     }
 }
@@ -2143,7 +2144,7 @@ const ROUTING_TOKEN: &str = "synthetic-routing-http-token-0000000000";
 
 fn routing_api(
     f: &Fixture,
-    slurm: Option<Arc<submissions::Service>>,
+    slurm: Option<Arc<slurm_service::Service>>,
     cloud: Option<Arc<Service>>,
 ) -> Arc<Api> {
     let mut api = Api::open(f.settings.clone())
@@ -2223,7 +2224,7 @@ async fn a_configured_cloud_service_can_read_a_slurm_run_in_an_explicit_run_proj
     }
 }
 
-fn refusal(result: Result<Owner, read_api::Error>) -> (u16, &'static str) {
+fn refusal(result: Result<Owner, error::Error>) -> (u16, &'static str) {
     let error = result.err().unwrap();
     (error.status, error.code)
 }
@@ -2320,7 +2321,7 @@ async fn a_bad_sibling_cannot_stop_a_healthy_run_in_its_project() {
         let f = Fixture::new(kind);
         let cloud_service = Arc::new(f.open());
         let (cloud_action, _) = f.authorized(&cloud_service, "cloud-run");
-        let (slurm, slurm_action, ssh_calls) = slurm_side(&f);
+        let (slurm, _, ssh_calls) = slurm_side(&f);
         let api = routing_api(&f, Some(Arc::new(slurm)), Some(cloud_service));
         let app = routing_app(&f, api.clone());
         let sibling = f.run_directory("broken-sibling");
@@ -2341,12 +2342,11 @@ async fn a_bad_sibling_cannot_stop_a_healthy_run_in_its_project() {
             api.run_owner("demo", "train"),
             Ok(Owner::Slurm(_))
         ));
-        for (run, action) in [("cloud-run", &cloud_action), ("train", &slurm_action)] {
-            let (status, body) =
-                routed(&app, "GET", &format!("/api/runs/demo/{run}/submission"), "").await;
-            assert_eq!(status, 200, "{body}");
-            assert_eq!(body["submission_id"], action.as_str());
-        }
+        // The Slurm service reads its Runs through discovery itself, so routing is all
+        // this can promise for one. The cloud service never scans.
+        let (status, body) = routed(&app, "GET", "/api/runs/demo/cloud-run/submission", "").await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["submission_id"], cloud_action.as_str());
         let (status, body) = routed(&app, "GET", "/api/runs/demo/cloud-run/preparation", "").await;
         assert_eq!(status, 200, "{body}");
         let (status, body) = routed(&app, "GET", "/api/runs/demo/cloud-run/tracking", "").await;
@@ -2455,7 +2455,7 @@ fn a_lost_reply_keeps_one_create_through_the_one_dispatch() {
                 Owner::Cloud(service.clone()),
                 &action,
                 operation,
-                submissions::Context {
+                slurm_service::Context {
                     now: T_EXECUTE,
                     expires: GATE_EXPIRES,
                     transition_id: &transition,
@@ -2523,7 +2523,7 @@ fn preparation_request(value: Value) -> ml_exp_core::preparation::Request {
 }
 struct SlurmPreparation {
     cloud: Arc<Service>,
-    slurm: Arc<submissions::Service>,
+    slurm: Arc<slurm_service::Service>,
     runtime_id: String,
     ssh_calls: std::path::PathBuf,
 }
@@ -2731,18 +2731,18 @@ fn a_preparation_for_an_executor_nobody_runs_is_refused_before_any_effect() {
 
 /// Answers for the one Runtime it built, and refuses any other.
 struct Built(native::Runtime);
-impl submissions::RuntimeBuilder for Built {
+impl slurm_service::RuntimeBuilder for Built {
     fn slurm_runtime(
         &self,
         project: &str,
         executor: &str,
         id: &str,
-    ) -> Result<native::Runtime, submissions::Error> {
+    ) -> Result<native::Runtime, slurm_service::Error> {
         assert_eq!((project, executor), ("demo", "slurm-test"));
         if id == self.0.runtime_id {
             Ok(self.0.clone())
         } else {
-            Err(submissions::Error::Authority)
+            Err(slurm_service::Error::Authority)
         }
     }
 }
@@ -2758,23 +2758,23 @@ fn a_slurm_run_finds_an_unlisted_runtime_only_through_its_builder() {
     let request = preparation_request(slurm_preparation(&built.runtime_id, REQUEST_A, "built"))
         .resolve("demo", &format!("sha256:{}", "0".repeat(64)))
         .unwrap();
-    let open = |builder: Option<Arc<dyn submissions::RuntimeBuilder>>| {
+    let open = |builder: Option<Arc<dyn slurm_service::RuntimeBuilder>>| {
         slurm_open(&f, target.clone(), runtime.clone(), profile.clone())
             .0
             .with_runtime_builder(builder)
             .with_run_creation(true)
             .unwrap()
     };
-    let authority = |result: Result<Value, submissions::Error>| {
-        assert!(matches!(result, Err(submissions::Error::Authority)));
+    let authority = |result: Result<Value, slurm_service::Error>| {
+        assert!(matches!(result, Err(slurm_service::Error::Authority)));
     };
 
     authority(open(None).create_run("demo", request.clone(), T_CREATE));
-    let cloud: Arc<dyn submissions::RuntimeBuilder> = Arc::new(f.open());
+    let cloud: Arc<dyn slurm_service::RuntimeBuilder> = Arc::new(f.open());
     authority(open(Some(cloud)).create_run("demo", request.clone(), T_CREATE));
     assert!(!f.run_directory("built").exists());
 
-    let builder: Arc<dyn submissions::RuntimeBuilder> = Arc::new(Built(built));
+    let builder: Arc<dyn slurm_service::RuntimeBuilder> = Arc::new(Built(built));
     let created = open(Some(builder))
         .create_run("demo", request, T_CREATE)
         .unwrap();

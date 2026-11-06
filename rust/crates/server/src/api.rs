@@ -1,9 +1,10 @@
-//! The read-only application shell. Trusted configuration chooses locations;
-//! requests choose identities and views. No index, bootstrap or provider call.
-pub use crate::error::Error;
+//! The application shell every handler runs against. It holds the configured services
+//! and answers reads itself: trusted configuration chooses locations, requests choose
+//! identities and views, with no index, bootstrap or provider call. A write goes to a
+//! backend's service, through `runs`.
 use crate::{
     deletion::RunFence,
-    error::error,
+    error::{Error, error},
     experiments::{RunRef, Snapshot, Store},
     read_config,
     read_model::{self, LiveMetrics, LogQuery, MetricQuery},

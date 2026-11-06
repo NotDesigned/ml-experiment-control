@@ -4,11 +4,13 @@ mod why;
 
 pub mod administration;
 mod administration_http;
+pub mod api;
 pub mod backends;
 pub mod background;
 mod capacity_http;
 pub mod checkpoints;
 mod data_delivery_http;
+mod dataset_http;
 pub mod deletion;
 pub mod deployment;
 pub mod error;
@@ -20,7 +22,6 @@ pub mod objects;
 pub mod operations;
 mod preparation_http;
 pub mod projects;
-pub mod read_api;
 pub mod read_config;
 mod read_http;
 pub mod read_model;
@@ -30,9 +31,8 @@ mod renewal;
 pub mod runs;
 pub mod sources;
 pub mod storage;
+mod submission_http;
 pub mod tracking;
-// For tests only: `tests/cloud_runs.rs` and `submission_tests.rs` are sealed and
-// name these paths. Production code names the backend tree.
 use axum::{
     Json, Router,
     extract::{Request, State},
@@ -41,6 +41,10 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
+// For two sealed test files only, `tests/cloud_runs.rs` and `submission_tests.rs`,
+// which name these paths. All other code names the real ones.
+#[doc(hidden)]
+pub use api as read_api;
 #[doc(hidden)]
 pub use backends::{cloud::service as cloud_runs, slurm::service as submissions};
 use ml_exp_io::read_private;
@@ -90,8 +94,8 @@ fn authorized(token: &str, headers: &HeaderMap) -> bool {
 
 pub(crate) struct AppState {
     auth: Auth,
-    reads: Option<Arc<read_api::Api>>,
-    read_slots: Arc<tokio::sync::Semaphore>,
+    api: Option<Arc<api::Api>>,
+    effect_slots: Arc<tokio::sync::Semaphore>,
     data_slots: Arc<tokio::sync::Semaphore>,
 }
 
@@ -168,7 +172,7 @@ fn health_document(
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> Response {
-    if state.reads.is_none() {
+    if state.api.is_none() {
         return Json(health_document(0, "unconfigured", false, false, None, None)).into_response();
     }
     http_effect::execute(state, http_effect::OnTimeout::NoEffect, |api, _| {
@@ -255,7 +259,7 @@ async fn health(State(state): State<Arc<AppState>>) -> Response {
     .await
 }
 async fn readiness(State(state): State<Arc<AppState>>) -> Response {
-    if state.reads.is_none() {
+    if state.api.is_none() {
         return Json(readiness::observe(None)).into_response();
     }
     http_effect::execute(state, http_effect::OnTimeout::NoEffect, |api, _| {
@@ -597,11 +601,11 @@ async fn unavailable(request: Request) -> Response {
     }
 }
 
-pub fn app(auth: Auth, reads: Option<Arc<read_api::Api>>) -> Router {
+pub fn app(auth: Auth, api: Option<Arc<api::Api>>) -> Router {
     let state = Arc::new(AppState {
         auth,
-        reads,
-        read_slots: Arc::new(tokio::sync::Semaphore::new(4)),
+        api,
+        effect_slots: Arc::new(tokio::sync::Semaphore::new(4)),
         data_slots: Arc::new(tokio::sync::Semaphore::new(4)),
     });
     Router::new()
@@ -611,8 +615,8 @@ pub fn app(auth: Auth, reads: Option<Arc<read_api::Api>>) -> Router {
         .merge(read_http::routes())
         .merge(projects::http::routes())
         .merge(sources::http::routes())
-        .merge(backends::slurm::service::http::routes())
-        .merge(backends::slurm::service::dataset_http::routes())
+        .merge(submission_http::routes())
+        .merge(dataset_http::routes())
         .merge(backends::cloud::service::routes())
         .merge(backends::cloud::service::build_routes())
         .merge(backends::cloud::service::debug_routes())

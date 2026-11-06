@@ -68,7 +68,7 @@ impl Source for crate::backends::slurm::service::Service {
             .map_err(why!(Error::Identity))
     }
 }
-impl Source for crate::read_api::Api {
+impl Source for crate::api::Api {
     fn publisher_leader(&self) -> Result<ml_exp_io::directory::FileLock> {
         if let Some(service) = self.submissions() {
             Source::publisher_leader(&*service)

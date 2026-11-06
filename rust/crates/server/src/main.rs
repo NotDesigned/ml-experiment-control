@@ -429,7 +429,7 @@ fn open_api(
     tracking: Option<ml_exp_core::tracking::RoutingSettings>,
 ) -> Result<
     (
-        ml_exp_server::read_api::Api,
+        ml_exp_server::api::Api,
         Option<ml_exp_core::polling::Policy>,
     ),
     Box<dyn std::error::Error>,
@@ -442,7 +442,7 @@ fn open_api(
     } else {
         None
     };
-    let api = ml_exp_server::read_api::Api::open(settings.clone())?
+    let api = ml_exp_server::api::Api::open(settings.clone())?
         .with_local_tracking(tracking.clone().unwrap_or_default());
     let api = match service {
         Some(service) => api.with_lifecycle(service)?,

@@ -220,7 +220,10 @@ Run. See [data](data.md).
 There is no plugin mechanism or backend registry. Slurm lives in the server's
 `backends/slurm`. PAI and SenseCore share `backends/cloud`: the `Profile` enum in
 `backends/cloud/adapter.rs` selects the provider, and its request compiler lives in
-`core/src/cloud/`. Data preparation
+`core/src/cloud/`. Neither tree decides ownership: `runs/` chooses the backend for a Run
+or Action and calls only its service, and the handlers that serve either backend
+(`submission_http.rs`, `dataset_http.rs`, `preparation_http.rs`, `capacity_http.rs`) sit
+above both trees. Data preparation
 (`backends/cloud/service/engine/script_preparation.rs`, `data_delivery.rs`) and independent result
 collection (`synchronization.rs`) are separate operations from training. Another cloud
 provider means a new `Profile` variant and compiler, written against those modules.

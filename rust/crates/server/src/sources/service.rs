@@ -1,6 +1,6 @@
 //! Approved-project authorization around the immutable source store.
 use super::{Policy, Store};
-use crate::{deletion::RunFence, experiments, projects, read_api, read_config};
+use crate::{deletion::RunFence, experiments, projects, read_config};
 use ml_exp_core::sources;
 use serde_json::{Value, json};
 use std::{
@@ -19,22 +19,22 @@ pub struct Service {
     store: Store,
     policy: Policy,
 }
-fn invalid() -> read_api::Error {
-    read_api::Error {
+fn invalid() -> crate::error::Error {
+    crate::error::Error {
         status: 409,
         code: "SOURCE_AUTHORITY_UNAVAILABLE",
         detail: "approved Project or isolated source workspace cannot be validated",
     }
 }
-fn uncertain() -> read_api::Error {
-    read_api::Error {
+fn uncertain() -> crate::error::Error {
+    crate::error::Error {
         status: 500,
         code: "SOURCE_PUBLICATION_UNCERTAIN",
         detail: "source may have been published; query its archive SHA receipt before deciding whether to retry",
     }
 }
-fn unavailable() -> read_api::Error {
-    read_api::Error {
+fn unavailable() -> crate::error::Error {
+    crate::error::Error {
         status: 409,
         code: "SOURCE_STORAGE_UNAVAILABLE",
         detail: "immutable source evidence is unavailable, invalid, changed or beyond its configured bounds",
@@ -91,10 +91,10 @@ impl Service {
                 _ => false,
             }
     }
-    fn scope(&self, project: &str) -> Result<(), read_api::Error> {
+    fn scope(&self, project: &str) -> Result<(), crate::error::Error> {
         ml_exp_core::identity::validate_id(project).map_err(why!(invalid()))?;
         if !self.approved.contains_key(project) {
-            return Err(read_api::Error {
+            return Err(crate::error::Error {
                 status: 404,
                 code: "SOURCE_PROJECT_NOT_APPROVED",
                 detail: "source import requires a Project already approved by the isolated server configuration",
@@ -106,17 +106,17 @@ impl Service {
         }
         Ok(())
     }
-    fn approval(&self, project: &str) -> Result<String, read_api::Error> {
+    fn approval(&self, project: &str) -> Result<String, crate::error::Error> {
         self.scope(project)?;
         if let Some(lifecycle) = &self.lifecycle {
             if !lifecycle
                 .snapshot()
-                .map_err(read_api::Error::from)?
+                .map_err(crate::error::Error::from)?
                 .projects
                 .iter()
                 .any(|record| record.project == project)
             {
-                return Err(read_api::Error {
+                return Err(crate::error::Error {
                     status: 409,
                     code: "SOURCE_PROJECT_NOT_REGISTERED",
                     detail: "register the approved Project before importing source; automatic Project creation is not yet native",
@@ -136,7 +136,7 @@ impl Service {
         Ok(document.raw_sha256)
     }
     /// This check precedes receiving archive bytes and performs no publication.
-    pub fn authorize_upload(&self, project: &str, sha256: &str) -> Result<(), read_api::Error> {
+    pub fn authorize_upload(&self, project: &str, sha256: &str) -> Result<(), crate::error::Error> {
         sources::validate_archive_digest(sha256).map_err(why!(invalid()))?;
         self.approval(project)?;
         Ok(())
@@ -153,7 +153,7 @@ impl Service {
         stream: &mut R,
         sha256: &str,
         now: &str,
-    ) -> Result<Value, read_api::Error> {
+    ) -> Result<Value, crate::error::Error> {
         let observed = self.approval(project)?;
         let metadata = self
             .store
@@ -174,21 +174,21 @@ impl Service {
         )
         .map_err(why!(uncertain()))
     }
-    pub fn read(&self, project: &str, source_id: &str) -> Result<Value, read_api::Error> {
+    pub fn read(&self, project: &str, source_id: &str) -> Result<Value, crate::error::Error> {
         self.scope(project)?;
         sources::validate_source_id(source_id).map_err(why!(invalid()))?;
         let metadata = self.store.read(project, source_id).map_err(store_error)?;
         self.scope(project)?;
         Ok(metadata.to_value())
     }
-    pub fn lookup(&self, project: &str, sha256: &str) -> Result<Value, read_api::Error> {
+    pub fn lookup(&self, project: &str, sha256: &str) -> Result<Value, crate::error::Error> {
         self.scope(project)?;
         sources::validate_archive_digest(sha256).map_err(why!(invalid()))?;
         let metadata = self
             .store
             .find_archive(project, sha256)
             .map_err(store_error)?;
-        let metadata=metadata.ok_or(read_api::Error {status:404,code:"SOURCE_RECEIPT_NOT_OBSERVED",detail:"no archive receipt was observed; this does not prove source publication was absent and does not authorize automatic replay"})?;
+        let metadata=metadata.ok_or(crate::error::Error {status:404,code:"SOURCE_RECEIPT_NOT_OBSERVED",detail:"no archive receipt was observed; this does not prove source publication was absent and does not authorize automatic replay"})?;
         self.scope(project)?;
         sources::response(
             &metadata,
@@ -199,7 +199,7 @@ impl Service {
         .map_err(why!(unavailable()))
     }
 }
-fn store_error(error: super::Error) -> read_api::Error {
+fn store_error(error: super::Error) -> crate::error::Error {
     // Refined typed mapping lives here, outside pure source identity reducers.
     match error {
         super::Error::EffectUncertain(_) => uncertain(),

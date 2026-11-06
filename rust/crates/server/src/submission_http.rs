@@ -1,10 +1,11 @@
-//! Narrow submission HTTP effects. GET is local-only; reconcile observes the
-//! original provider identity, while only execute can submit a new scheduler job.
-use super::{Error, Service};
+//! Narrow submission HTTP effects for either backend, which `runs` chooses between.
+//! GET is local-only; reconcile observes the original provider identity, while only
+//! execute can submit a new scheduler job.
 use crate::{
-    AppState,
+    AppState, api,
+    backends::slurm::service as slurm,
+    error::Error,
     http_effect::{self, OnTimeout},
-    read_api,
     runs::{self, Acknowledge, Context, Operation, Owner},
 };
 use axum::{
@@ -46,7 +47,7 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
         )
         .route(
             "/api/submissions/{identity}/artifacts/{sha256}",
-            get(super::artifact_http::download),
+            get(slurm::artifact_http::download),
         )
         .layer(DefaultBodyLimit::max(MAX_BODY))
 }
@@ -63,7 +64,7 @@ async fn tracking(
     {
         return http_effect::failure(invalid());
     }
-    if let Err(error) = read_api::no_parameters(raw.as_deref()) {
+    if let Err(error) = api::no_parameters(raw.as_deref()) {
         return http_effect::failure(error);
     }
     http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
@@ -78,11 +79,11 @@ async fn tracking(
     .await
 }
 async fn observer(State(state): State<Arc<AppState>>, RawQuery(raw): RawQuery) -> Response {
-    if let Err(error) = read_api::no_parameters(raw.as_deref()) {
+    if let Err(error) = api::no_parameters(raw.as_deref()) {
         return http_effect::failure(error);
     }
     http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
-        service(api)?.background_status().map_err(Into::into)
+        api.slurm_only()?.background_status().map_err(Into::into)
     })
     .await
 }
@@ -94,7 +95,7 @@ async fn checkpoint_list(
     let Ok(Path((project, run, attempt))) = path else {
         return http_effect::failure(invalid());
     };
-    if let Err(error) = read_api::no_parameters(raw.as_deref()) {
+    if let Err(error) = api::no_parameters(raw.as_deref()) {
         return http_effect::failure(error);
     }
     checkpoint_get(state, project, run, attempt, None).await
@@ -107,7 +108,7 @@ async fn checkpoint_read(
     let Ok(Path((project, run, attempt, id))) = path else {
         return http_effect::failure(invalid());
     };
-    if let Err(error) = read_api::no_parameters(raw.as_deref()) {
+    if let Err(error) = api::no_parameters(raw.as_deref()) {
         return http_effect::failure(error);
     }
     checkpoint_get(state, project, run, attempt, Some(id)).await
@@ -140,20 +141,15 @@ async fn checkpoint_get(
     })
     .await
 }
-fn invalid() -> read_api::Error {
-    read_api::Error {
+fn invalid() -> Error {
+    Error {
         status: 422,
         code: "INVALID_SUBMISSION_REQUEST",
         detail: "invalid native submission identity or request",
     }
 }
-pub(super) fn service(api: &read_api::Api) -> Result<Arc<Service>, read_api::Error> {
-    api.submissions().ok_or_else(crate::runs::slurm_absent)
-}
-fn decode<T: serde::de::DeserializeOwned>(
-    body: Result<Bytes, BytesRejection>,
-) -> Result<T, read_api::Error> {
-    let bytes = body.map_err(|error| read_api::Error {
+fn decode<T: serde::de::DeserializeOwned>(body: Result<Bytes, BytesRejection>) -> Result<T, Error> {
+    let bytes = body.map_err(|error| Error {
         status: if error.status() == axum::http::StatusCode::PAYLOAD_TOO_LARGE {
             413
         } else {
@@ -165,7 +161,7 @@ fn decode<T: serde::de::DeserializeOwned>(
     let value = ml_exp_core::json::mapping(&bytes).map_err(|_| invalid())?;
     serde_json::from_value(Value::Object(value)).map_err(|_| invalid())
 }
-fn clock(now: f64) -> Result<String, read_api::Error> {
+fn clock(now: f64) -> Result<String, Error> {
     if !now.is_finite() {
         return Err(invalid());
     }
@@ -185,7 +181,7 @@ async fn create(
     if ml_exp_core::identity::validate_id(&project).is_err() {
         return http_effect::failure(invalid());
     }
-    if let Err(error) = read_api::no_parameters(raw.as_deref()) {
+    if let Err(error) = api::no_parameters(raw.as_deref()) {
         return http_effect::failure(error);
     }
     let request: ml_exp_core::first_submission::native::creation::Request = match decode(body) {
@@ -200,14 +196,14 @@ async fn create(
                     .map_err(Into::into);
             }
         }
-        service(api)?
+        api.slurm_only()?
             .create_run(&project, request, &clock(now)?)
             .map_err(creation_failure)
     })
     .await
 }
-pub(crate) fn creation_failure(cause: Error) -> read_api::Error {
-    let mut error = read_api::Error::from(cause);
+pub(crate) fn creation_failure(cause: slurm::Error) -> Error {
+    let mut error = Error::from(cause);
     match error.status {
         // The caller can act on this one, so it keeps its own code.
         422 if error.code == "DATASET_MANIFESTS_TOO_LARGE" => {}
@@ -233,7 +229,7 @@ pub(crate) fn creation_failure(cause: Error) -> read_api::Error {
     }
     error
 }
-fn identities(project: &str, run: &str) -> Result<(), read_api::Error> {
+fn identities(project: &str, run: &str) -> Result<(), Error> {
     ml_exp_core::identity::validate_id(project)
         .and_then(|_| ml_exp_core::identity::validate_id(run))
         .map(|_| ())
@@ -250,7 +246,7 @@ async fn existing(
     if let Err(error) = identities(&project, &run) {
         return http_effect::failure(error);
     }
-    if let Err(error) = read_api::no_parameters(raw.as_deref()) {
+    if let Err(error) = api::no_parameters(raw.as_deref()) {
         return http_effect::failure(error);
     }
     http_effect::execute(state, OnTimeout::NoEffect, move |api, now| {
@@ -274,7 +270,7 @@ async fn prepare(
     if let Err(error) = identities(&project, &run) {
         return http_effect::failure(error);
     }
-    if let Err(error) = read_api::no_parameters(raw.as_deref()) {
+    if let Err(error) = api::no_parameters(raw.as_deref()) {
         return http_effect::failure(error);
     }
     let approval: Approval = match decode(body) {
@@ -289,7 +285,7 @@ async fn prepare(
             .ok_or_else(invalid)?
             .format(&Rfc3339)
             .map_err(|_| invalid())?;
-        let (_, identity) = crate::projects::transition_context().map_err(read_api::Error::from)?;
+        let (_, identity) = crate::projects::transition_context().map_err(Error::from)?;
         match api.run_owner(&project, &run)? {
             Owner::Cloud(cloud) => cloud
                 .prepare(&project, &run, approval, &now, &expires, &identity)
@@ -361,7 +357,7 @@ async fn change(
     if validate_action_id(&identity).is_err() {
         return http_effect::failure(invalid());
     }
-    if let Err(error) = read_api::no_parameters(raw.as_deref()) {
+    if let Err(error) = api::no_parameters(raw.as_deref()) {
         return http_effect::failure(error);
     }
     let operation = match operation.as_str() {
@@ -420,8 +416,7 @@ async fn change(
         std::time::Duration::from_secs(120),
         move |api, now| {
             let now = clock(now)?;
-            let (_, transition) =
-                crate::projects::transition_context().map_err(read_api::Error::from)?;
+            let (_, transition) = crate::projects::transition_context().map_err(Error::from)?;
             let expires = crate::renewal::expiry(&now)?;
             runs::apply(
                 api.action_owner(&identity)?,
@@ -449,7 +444,7 @@ async fn artifact_metadata(
     if validate_action_id(&identity).is_err() {
         return http_effect::failure(invalid());
     }
-    if let Err(e) = read_api::no_parameters(raw.as_deref()) {
+    if let Err(e) = api::no_parameters(raw.as_deref()) {
         return http_effect::failure(e);
     }
     http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
@@ -517,11 +512,11 @@ mod tests {
     #[test]
     fn dataset_manifests_over_their_budget_keep_their_code_through_run_creation() {
         let too_large = || {
-            Error::Admission(native::Error(
+            slurm::Error::Admission(native::Error(
                 ml_exp_core::datasets::ManifestsTooLarge::CAUSE,
             ))
         };
-        let public = read_api::Error::from(too_large());
+        let public = Error::from(too_large());
         assert_eq!(
             (public.status, public.code),
             (422, "DATASET_MANIFESTS_TOO_LARGE")
@@ -531,7 +526,9 @@ mod tests {
             (created.status, created.code),
             (422, "DATASET_MANIFESTS_TOO_LARGE")
         );
-        let other = creation_failure(Error::Admission(native::Error("Run runtime or executor")));
+        let other = creation_failure(slurm::Error::Admission(native::Error(
+            "Run runtime or executor",
+        )));
         assert_eq!((other.status, other.code), (422, "RUN_CREATION_REJECTED"));
     }
 }

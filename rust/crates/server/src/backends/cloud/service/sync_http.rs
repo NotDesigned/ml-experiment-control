@@ -1,7 +1,7 @@
 use crate::{
-    AppState,
+    AppState, api,
+    error::Error,
     http_effect::{self, OnTimeout},
-    read_api,
 };
 use axum::{
     Router,
@@ -12,8 +12,8 @@ use axum::{
     routing::{get, post},
 };
 use std::sync::{Arc, atomic::AtomicBool};
-fn invalid() -> read_api::Error {
-    read_api::Error {
+fn invalid() -> Error {
+    Error {
         status: 422,
         code: "INVALID_SYNC_REQUEST",
         detail: "invalid original synchronization identity or retry confirmation",
@@ -109,7 +109,7 @@ async fn diagnose_sync(
     body: Bytes,
 ) -> Response {
     let execute = method == Method::POST;
-    if read_api::no_parameters(query.as_deref()).is_err() || !empty(&body, execute) {
+    if api::no_parameters(query.as_deref()).is_err() || !empty(&body, execute) {
         return http_effect::failure(invalid());
     }
     http_effect::execute_timeout(
@@ -136,7 +136,7 @@ async fn diagnose_data(
     body: Bytes,
 ) -> Response {
     let execute = method == Method::POST;
-    if read_api::no_parameters(query.as_deref()).is_err() || !empty(&body, execute) {
+    if api::no_parameters(query.as_deref()).is_err() || !empty(&body, execute) {
         return http_effect::failure(invalid());
     }
     http_effect::execute_timeout(
@@ -161,7 +161,7 @@ fn empty(body: &[u8], execute: bool) -> bool {
     }
     ml_exp_core::json::mapping(body).is_ok_and(|m| m.is_empty())
 }
-fn clock(now: f64) -> Result<String, read_api::Error> {
+fn clock(now: f64) -> Result<String, Error> {
     time::OffsetDateTime::from_unix_timestamp(now as i64)
         .map_err(|_| invalid())?
         .format(&time::format_description::well_known::Rfc3339)
@@ -172,7 +172,7 @@ async fn show(
     Path((action, request)): Path<(String, String)>,
     RawQuery(query): RawQuery,
 ) -> Response {
-    if read_api::no_parameters(query.as_deref()).is_err() {
+    if api::no_parameters(query.as_deref()).is_err() {
         return http_effect::failure(invalid());
     }
     let check = ml_exp_core::cloud::exchange::Sync {
@@ -195,7 +195,7 @@ async fn retry(
     RawQuery(query): RawQuery,
     body: Bytes,
 ) -> Response {
-    if read_api::no_parameters(query.as_deref()).is_err() {
+    if api::no_parameters(query.as_deref()).is_err() {
         return http_effect::failure(invalid());
     }
     let retry: ml_exp_core::cloud::exchange::SyncRetry = match ml_exp_core::json::mapping(&body)

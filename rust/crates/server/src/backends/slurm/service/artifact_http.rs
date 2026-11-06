@@ -1,7 +1,6 @@
 //! The download endpoint is intentionally the one GET that reads backend bytes.
 //! It neither publishes metadata nor acknowledges a successful download.
-use super::http::service;
-use crate::{AppState, http_effect, read_api};
+use crate::{AppState, api, http_effect};
 use axum::{
     body::{Body, Bytes},
     extract::{Path, RawQuery, State},
@@ -36,18 +35,18 @@ pub(crate) async fn download(
     {
         return http_effect::failure(invalid());
     }
-    if let Err(error) = read_api::no_parameters(raw.as_deref()) {
+    if let Err(error) = api::no_parameters(raw.as_deref()) {
         return http_effect::failure(error);
     }
-    let Some(api) = state.reads.clone() else {
+    let Some(api) = state.api.clone() else {
         return http_effect::failure(invalid());
     };
-    let service = match service(&api) {
+    let service = match api.slurm_only() {
         Ok(s) => s,
         Err(e) => return http_effect::failure(e),
     };
-    let Ok(permit) = state.read_slots.clone().try_acquire_owned() else {
-        return http_effect::failure(read_api::Error {
+    let Ok(permit) = state.effect_slots.clone().try_acquire_owned() else {
+        return http_effect::failure(crate::error::Error {
             status: 429,
             code: "DOWNLOAD_BUSY",
             detail: "download concurrency limit reached",
@@ -66,7 +65,7 @@ pub(crate) async fn download(
         Ok(Ok(Ok(v))) => v,
         Ok(Ok(Err(e))) => return http_effect::failure(e.into()),
         _ => {
-            return http_effect::failure(read_api::Error {
+            return http_effect::failure(crate::error::Error {
                 status: 503,
                 code: "ARTIFACT_STREAM_UNAVAILABLE",
                 detail: "backend stream could not be opened; no download acknowledgement was sent",
@@ -91,8 +90,8 @@ pub(crate) async fn download(
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response
 }
-fn invalid() -> read_api::Error {
-    read_api::Error {
+fn invalid() -> crate::error::Error {
+    crate::error::Error {
         status: 422,
         code: "INVALID_ARTIFACT_IDENTITY",
         detail: "invalid exact artifact download identity",

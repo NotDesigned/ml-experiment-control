@@ -1,7 +1,7 @@
 use crate::{
-    AppState,
+    AppState, api,
+    error::Error,
     http_effect::{self, OnTimeout},
-    read_api,
 };
 use axum::{
     Router,
@@ -44,8 +44,8 @@ async fn worker_read(
     headers: HeaderMap,
     uri: axum::http::Uri,
 ) -> Response {
-    if read_api::no_parameters(raw.as_deref()).is_err() {
-        return http_effect::failure(read_api::Error {
+    if api::no_parameters(raw.as_deref()).is_err() {
+        return http_effect::failure(Error {
             status: 422,
             code: "INVALID_WORKER_EXCHANGE",
             detail: "worker reads take no query parameters",
@@ -62,7 +62,7 @@ async fn worker_read(
         None
     };
     let Some(token) = token else {
-        return http_effect::failure(read_api::Error {
+        return http_effect::failure(Error {
             status: 401,
             code: "WORKER_AUTH_REQUIRED",
             detail: "Attempt worker authentication required",
@@ -86,7 +86,7 @@ async fn artifact(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let invalid = || read_api::Error {
+    let invalid = || Error {
         status: 422,
         code: "INVALID_ARTIFACT_EXCHANGE",
         detail: "invalid cloud artifact request",
@@ -110,7 +110,7 @@ async fn artifact(
         None
     };
     let Some(token) = token else {
-        return http_effect::failure(read_api::Error {
+        return http_effect::failure(Error {
             status: 401,
             code: "WORKER_AUTH_REQUIRED",
             detail: "Attempt worker authentication required",
@@ -148,7 +148,7 @@ async fn receive(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let invalid = || read_api::Error {
+    let invalid = || Error {
         status: 422,
         code: "INVALID_WORKER_EXCHANGE",
         detail: "invalid bounded worker packet",
@@ -172,7 +172,7 @@ async fn receive(
         None
     };
     let Some(token) = token else {
-        return http_effect::failure(read_api::Error {
+        return http_effect::failure(Error {
             status: 401,
             code: "WORKER_AUTH_REQUIRED",
             detail: "Attempt worker authentication required",
@@ -204,12 +204,12 @@ async fn dataset(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let invalid = || read_api::Error {
+    let invalid = || Error {
         status: 422,
         code: "INVALID_DATA_TICKET",
         detail: "invalid exact input data ticket request",
     };
-    if read_api::no_parameters(raw.as_deref()).is_err()
+    if api::no_parameters(raw.as_deref()).is_err()
         || body.as_ref() != b"{}"
         || !ml_exp_core::datasets::asset_id(&asset)
     {
@@ -226,7 +226,7 @@ async fn dataset(
         None
     };
     let Some(token) = token else {
-        return http_effect::failure(read_api::Error {
+        return http_effect::failure(Error {
             status: 401,
             code: "WORKER_AUTH_REQUIRED",
             detail: "Attempt worker authentication required",

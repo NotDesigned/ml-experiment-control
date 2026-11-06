@@ -98,6 +98,13 @@ cannot prove an uncertain create did not land), a failed read, a running job, or
 SUCCEEDED without READY. The worker exits non-zero unless READY was acknowledged, so
 that last case is contradictory evidence.
 
+SenseCore `SUSPENDED` and `DELETING` also refuse, although they display as CANCELLED: a
+deleting job may still be running, and a suspended job has not been shown unable to
+resume. The service never stops a copy job itself. To replace one in either state, have
+the provider finish deleting it, so that a read reports `DELETED`. If the provider stops
+reporting the job at all, the read fails and the request stays refused, because absence
+is not proof.
+
 The new job has its own deterministic identity from the new request ID. On PAI,
 `--runtime` may name another READY Runtime; without it the original Runtime is kept.
 The old job stays retained for `data diagnose`. Publishing the old ID again returns

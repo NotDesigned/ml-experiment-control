@@ -33,8 +33,8 @@ pub(crate) fn retain(slots: &Directory, name: &str, value: &impl Serialize) -> i
     }
     Ok(())
 }
-pub(crate) fn expiry(now: &str) -> Result<String, crate::read_api::Error> {
-    let invalid = || crate::read_api::Error {
+pub(crate) fn expiry(now: &str) -> Result<String, crate::error::Error> {
+    let invalid = || crate::error::Error {
         status: 422,
         code: "INVALID_RENEWAL_TIME",
         detail: "submission renewal time is invalid",

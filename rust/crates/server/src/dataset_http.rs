@@ -1,9 +1,10 @@
+//! Dataset routes for either backend, chosen by which one accepts the executor.
 //! Acquire bounded ingress capacity before reading a dataset part. No payload
 //! file is created on the API host; durable acknowledgement belongs to gateway.
 use crate::{
-    AppState,
+    AppState, api,
+    error::Error,
     http_effect::{self, OnTimeout},
-    read_api,
 };
 use axum::{
     Router,
@@ -67,14 +68,11 @@ async fn import_oss(
         Duration::from_secs(1230),
         move |api, _| {
             let _permit = permit;
-            let cloud = api
-                .cloud()
-                .filter(|c| c.accepts(&executor))
-                .ok_or(read_api::Error {
-                    status: 422,
-                    code: "OSS_DATASET_IMPORT_UNSUPPORTED",
-                    detail: "this executor does not support configured object-store imports",
-                })?;
+            let cloud = api.cloud().filter(|c| c.accepts(&executor)).ok_or(Error {
+                status: 422,
+                code: "OSS_DATASET_IMPORT_UNSUPPORTED",
+                detail: "this executor does not support configured object-store imports",
+            })?;
             cloud
                 .import_oss_dataset(&project, &executor, source)
                 .map_err(Into::into)
@@ -82,8 +80,8 @@ async fn import_oss(
     )
     .await
 }
-fn invalid() -> read_api::Error {
-    read_api::Error {
+fn invalid() -> Error {
+    Error {
         status: 422,
         code: "INVALID_DATASET_REQUEST",
         detail: "invalid dataset scope, archive definition or part",
@@ -101,7 +99,7 @@ async fn list(
         if let Some(cloud) = api.cloud().filter(|c| c.accepts(&executor)) {
             return cloud.dataset_list(&project, &executor).map_err(Into::into);
         }
-        super::http::service(api)?
+        api.slurm_only()?
             .dataset_list(&project, &executor)
             .map_err(Into::into)
     })
@@ -112,10 +110,10 @@ fn scope(
     executor: &str,
     asset: Option<&str>,
     raw: Option<&str>,
-) -> Result<(), read_api::Error> {
+) -> Result<(), Error> {
     ml_exp_core::identity::validate_id(project).map_err(|_| invalid())?;
     ml_exp_core::identity::validate_id(executor).map_err(|_| invalid())?;
-    read_api::no_parameters(raw)?;
+    api::no_parameters(raw)?;
     if asset.is_some_and(|v| !datasets::asset_id(v)) {
         return Err(invalid());
     }
@@ -135,7 +133,9 @@ async fn status(
                 .dataset_state(&project, &executor, &asset)
                 .map_err(Into::into);
         }
-        let result = super::http::service(api)?.dataset_state(&project, &executor, &asset)?;
+        let result = api
+            .slurm_only()?
+            .dataset_state(&project, &executor, &asset)?;
         Ok(json!(result))
     })
     .await
@@ -144,12 +144,12 @@ async fn ingress(
     state: &Arc<AppState>,
     request: Request,
     limit: usize,
-) -> Result<(Vec<u8>, tokio::sync::OwnedSemaphorePermit), read_api::Error> {
+) -> Result<(Vec<u8>, tokio::sync::OwnedSemaphorePermit), Error> {
     let permit = state
         .data_slots
         .clone()
         .try_acquire_owned()
-        .map_err(|_| read_api::Error {
+        .map_err(|_| Error {
             status: 429,
             code: "DATASET_TRANSFER_BUSY",
             detail: "dataset transfer buffer is busy; resume the same asset",
@@ -159,12 +159,12 @@ async fn ingress(
         to_bytes(request.into_body(), limit),
     )
     .await
-    .map_err(|_| read_api::Error {
+    .map_err(|_| Error {
         status: 408,
         code: "DATASET_BODY_TIMEOUT",
         detail: "dataset request body timed out; no gateway request was issued",
     })?
-    .map_err(|_| read_api::Error {
+    .map_err(|_| Error {
         status: 413,
         code: "DATASET_BODY_LIMIT",
         detail: "dataset part exceeds its fixed bound or the request body is invalid",
@@ -190,7 +190,7 @@ async fn transfer(
                     .dataset_transfer(&project, &executor, command, &payload)
                     .map_err(Into::into);
             }
-            let value = super::http::service(api)?.dataset_transfer(
+            let value = api.slurm_only()?.dataset_transfer(
                 &project,
                 &executor,
                 command,

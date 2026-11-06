@@ -77,6 +77,7 @@ Paths are relative to `rust/crates/`.
 | HTTP and daemon lifetime | `server/src/main.rs`, `lib.rs`, `deployment.rs`, `read_config.rs`, `readiness.rs`, `native_contract.rs` |
 | Projects and immutable source | `core/src/projects.rs`, `core/src/sources.rs`, `server/src/projects/`, `server/src/sources/` |
 | Preparation | `core/src/preparation.rs`, `core/src/first_submission/`, `server/src/preparation_http.rs`, `server/src/backends/cloud/service/engine/preparations.rs`, `server/src/backends/slurm/service/engine/preparation.rs` |
+| Backend routing and HTTP shell | `server/src/runs/` (which backend owns a Run or Action), `server/src/submission_http.rs`, `server/src/dataset_http.rs` (routes that serve either backend), `server/src/http_effect.rs` (permits, deadline and uncertainty for every effect), `server/src/error.rs`, `server/src/api.rs` |
 | Slurm dispatch and control | `core/src/slurm/`, `server/src/backends/slurm/`, `worker/src/slurm/` |
 | Cloud dispatch and control | `core/src/cloud/`, `server/src/backends/cloud/` |
 | Action storage | `server/src/operations/` |
@@ -84,14 +85,17 @@ Paths are relative to `rust/crates/`.
 | Images | `core/src/cloud/build.rs`, `core/src/cloud/materialize.rs`, `server/src/backends/cloud/service/engine/builds.rs`, `worker/src/materialize.rs` |
 | Results and retention | `core/src/artifacts/`, `io/src/artifacts.rs`, `server/src/backends/slurm/service/artifact_http.rs`, `server/src/backends/cloud/service/engine/artifacts.rs`, `worker/src/cloud_artifacts.rs` |
 | Checkpoints | `core/src/checkpoints.rs`, `io/src/checkpoints.rs`, `server/src/checkpoints.rs` |
-| Observation | `core/src/observation.rs`, `core/src/polling.rs`, `io/src/observations.rs`, `server/src/background.rs`, `server/src/read_api.rs`, `server/src/read_model.rs`, `worker/src/cloud_exchange.rs` |
+| Observation | `core/src/observation.rs`, `core/src/polling.rs`, `io/src/observations.rs`, `server/src/background.rs`, `server/src/api.rs`, `server/src/read_model.rs`, `worker/src/cloud_exchange.rs` |
 | Platform metrics | `core/src/metrics.rs`, `core/src/records.rs`, `server/src/records/`, `server/src/local_http.rs` |
 | W&B | `core/src/tracking/`, `server/src/tracking/` (the SDK process runs `server/src/tracking/sdk.py`) |
 | Debug machines | `core/src/cloud/debug.rs`, `server/src/backends/cloud/service/debug_http.rs`, `server/src/backends/cloud/service/engine/debug.rs`, `client/src/debug.rs` |
 | Administrative maintenance | `core/src/maintenance.rs`, `server/src/administration.rs`, `server/src/deletion.rs`, `worker/src/maintenance.rs` |
 
 Slurm and cloud are separate services behind one API. They share core types and
-Action storage but have distinct adapters and effect stores. Adding a backend requires its
+Action storage but have distinct adapters and effect stores. `server/src/runs/` decides
+which one owns a Run or Action, from the format its frozen manifest or Action declares;
+a failed read is an answer of its own and never falls through to the other backend.
+Each service keeps its own execute and reconcile ordering. Adding a backend requires its
 capability declaration, adapter and storage operations; there is no dynamic
 plugin loader or second scheduler.
 

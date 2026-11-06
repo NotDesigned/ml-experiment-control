@@ -1,7 +1,7 @@
 use crate::{
-    AppState,
+    AppState, api,
+    error::Error,
     http_effect::{self, OnTimeout},
-    read_api,
 };
 use axum::{
     Router,
@@ -19,7 +19,7 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
         .layer(DefaultBodyLimit::max(16))
 }
 async fn list(State(state): State<Arc<AppState>>, RawQuery(query): RawQuery) -> Response {
-    if read_api::no_parameters(query.as_deref()).is_err() {
+    if api::no_parameters(query.as_deref()).is_err() {
         return http_effect::failure(invalid());
     }
     http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
@@ -38,8 +38,8 @@ async fn list(State(state): State<Arc<AppState>>, RawQuery(query): RawQuery) -> 
     })
     .await
 }
-fn invalid() -> read_api::Error {
-    read_api::Error {
+fn invalid() -> Error {
+    Error {
         status: 422,
         code: "INVALID_CAPACITY_REQUEST",
         detail: "choose a configured backend and an empty refresh request",
@@ -70,7 +70,7 @@ async fn observe(
     refresh: bool,
 ) -> Response {
     if ml_exp_core::identity::validate_id(&executor).is_err()
-        || read_api::no_parameters(query.as_deref()).is_err()
+        || api::no_parameters(query.as_deref()).is_err()
     {
         return http_effect::failure(invalid());
     }
@@ -90,7 +90,7 @@ async fn observe(
                     return slurm.capacity(&executor, refresh, &now).map_err(Into::into);
                 }
             }
-            Err(read_api::Error {
+            Err(Error {
                 status: 404,
                 code: "BACKEND_NOT_FOUND",
                 detail: "backend is not configured",

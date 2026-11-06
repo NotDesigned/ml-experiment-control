@@ -4,6 +4,7 @@
 use crate::{
     backends::{cloud::service as cloud, slurm::service as slurm},
     deletion::RunFence,
+    error::Error,
     experiments, read_config,
     runs::Owner,
 };
@@ -16,14 +17,14 @@ use ml_exp_io::directory::{Directory, FileLock, LockOptions};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{ffi::OsStr, path::Path, sync::Arc};
-fn invalid() -> crate::read_api::Error {
-    crate::read_api::Error {
+fn invalid() -> Error {
+    Error {
         status: 409,
         code: "ADMINISTRATION_BLOCKED",
         detail: "administrative identity, terminal evidence, checkpoint dependencies or original plan cannot be verified",
     }
 }
-type Result<T> = std::result::Result<T, crate::read_api::Error>;
+type Result<T> = std::result::Result<T, Error>;
 /// Run authorship and retirement share this admission lock. This is separate
 /// from the read-only Run fence so dependency scans can retain normal guards.
 pub(crate) type Admission = FileLock;

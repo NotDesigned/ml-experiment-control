@@ -1,8 +1,8 @@
 //! The one error an HTTP handler returns: a status, a stable code and fixed text.
 //! Every domain error converts here, so a handler's `?` picks the public answer.
 //! No conversion echoes provider or request text. Mappings that depend on the
-//! operation stay at their call site: `creation_failure` and the refresh remap in
-//! `backends::slurm::service::http`, and the exact Submission lookup in `read_api`.
+//! operation stay at their call site: `creation_failure` in `submission_http`, the
+//! refresh remap `slurm_failure` in `runs`, and the exact Submission lookup in `api`.
 use crate::{experiments, read_model};
 
 #[derive(Clone, Copy, Debug, thiserror::Error)]
