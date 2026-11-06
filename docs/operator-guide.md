@@ -207,11 +207,8 @@ state.
 ## Existing state
 
 The server serves only its native namespace. Older namespaces are never read or
-changed. `history_config` in the deployment file and `historical_handoff` in the
-tracking file are no longer supported: `--check` and startup refuse a file that
-sets either, naming the key, so remove them before upgrading. `deploy_native.py`
-runs that check before stopping anything. Rolling back to an earlier release
-needs the keys restored.
+changed. A deployment or tracking file with a key the release does not know is
+refused by `--check` and at startup.
 
 ## Project registration and lifecycle
 

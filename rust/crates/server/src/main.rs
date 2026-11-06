@@ -73,10 +73,6 @@ async fn main() -> std::process::ExitCode {
     if let Some(path) = args.config.take() {
         let settings = match ml_exp_server::deployment::Settings::load(&path) {
             Ok(value) => value,
-            Err(error @ ml_exp_server::deployment::LoadError::RetiredKey(_)) => {
-                eprintln!("{error}");
-                return std::process::ExitCode::FAILURE;
-            }
             Err(_) => {
                 eprintln!("private deployment configuration is invalid or unavailable");
                 return std::process::ExitCode::FAILURE;

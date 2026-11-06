@@ -16,20 +16,6 @@ fn at(stage: &'static str) -> Error {
     Error { stage }
 }
 
-/// The history bridge is gone. A deployment that still names it is refused rather
-/// than started without those Runs, so the operator decides. Nothing on disk is read.
-const RETIRED_HISTORY_KEY: &str = "history_config";
-
-#[derive(Debug, thiserror::Error)]
-pub enum LoadError {
-    #[error(
-        "deployment key {0} is no longer supported; remove it from the file and restart (historical data on disk is not touched)"
-    )]
-    RetiredKey(&'static str),
-    #[error(transparent)]
-    Invalid(#[from] crate::read_config::Error),
-}
-
 /// Safe local configuration facts. No credentials or private paths are returned.
 #[derive(serde::Serialize)]
 pub struct Check {
@@ -87,20 +73,17 @@ impl Settings {
         }
         Ok(())
     }
-    pub fn from_json(bytes: &[u8]) -> Result<Self, LoadError> {
+    pub fn from_json(bytes: &[u8]) -> Result<Self, crate::read_config::Error> {
         if bytes.len() > 64 * 1024 {
-            return Err(crate::read_config::Error.into());
+            return Err(crate::read_config::Error);
         }
         let mapping = ml_exp_core::json::mapping(bytes).map_err(why!(crate::read_config::Error))?;
-        if mapping.contains_key(RETIRED_HISTORY_KEY) {
-            return Err(LoadError::RetiredKey(RETIRED_HISTORY_KEY));
-        }
         let value: Self = serde_json::from_value(serde_json::Value::Object(mapping))
             .map_err(why!(crate::read_config::Error))?;
         value.validate()?;
         Ok(value)
     }
-    pub fn load(path: &Path) -> Result<Self, LoadError> {
+    pub fn load(path: &Path) -> Result<Self, crate::read_config::Error> {
         Self::from_json(
             &ml_exp_io::read_private(path, 64 * 1024, true)
                 .map_err(why!(crate::read_config::Error))?,
@@ -198,14 +181,7 @@ impl Settings {
         if let Some(path) = &self.tracking_config {
             crate::tracking::Config::load(path)
                 .and_then(|c| c.check_references())
-                .map_err(|error| {
-                    at(match error {
-                        crate::tracking::Error::RetiredKey(_) => {
-                            "tracking_config: remove retired key historical_handoff"
-                        }
-                        _ => "tracking_config",
-                    })
-                })?;
+                .map_err(why!(at("tracking_config")))?;
         }
         let parent = ml_exp_io::directory::Directory::open(
             reads
@@ -311,11 +287,6 @@ mod tests {
             v[field] = value;
             assert!(parse(&v).is_err(), "{field}");
         }
-        let mut v = base.clone();
-        v["history_config"] = json!("/private/history.json");
-        let refused = parse(&v).err().unwrap();
-        assert!(matches!(refused, LoadError::RetiredKey("history_config")));
-        assert!(refused.to_string().contains("history_config"));
         let mut v = base;
         v["source_archives"] = json!(true);
         v["cloud_config"] = json!("/private/cloud.json");
