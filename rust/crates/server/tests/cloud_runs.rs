@@ -1421,7 +1421,6 @@ fn check_running_attempt_after_project_edit(
         restart_from: Some(ml_exp_core::first_submission::native::retry::StartFrom {
             run_id: "train".into(),
             attempt_id: "attempt-001".into(),
-            sync_request_id: String::new(),
         }),
         max_gpu_hours: 1.,
         reason: String::new(),

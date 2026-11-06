@@ -75,9 +75,9 @@ fn discovery_accepts_retained_preparation_before_any_submission_exists() {
     assert!(submissions::response(&plan, wrong).is_err());
 }
 #[test]
-fn checkpoint_free_retry_requires_exact_parent_and_frozen_cpu_sync_choice() {
+fn checkpoint_free_retry_requires_exact_parent() {
     let request: ml_exp_core::first_submission::native::retry::Request = serde_json::from_value(json!({
-        "confirmation":format!("RETRY {ID}"),"restart_from":{"run_id":"train","attempt_id":"attempt-001","sync_request_id":"a".repeat(32)},"max_gpu_hours":2.0,"reason":"cache repair"
+        "confirmation":format!("RETRY {ID}"),"restart_from":{"run_id":"train","attempt_id":"attempt-001"},"max_gpu_hours":2.0,"reason":"cache repair"
     })).unwrap();
     let plan = submissions::plan(Command::Retry {
         submission: ID,
@@ -90,7 +90,7 @@ fn checkpoint_free_retry_requires_exact_parent_and_frozen_cpu_sync_choice() {
         "reserved_gpu_seconds":7200,"run_sha256":format!("sha256:{}","b".repeat(64)),"attempt_sha256":format!("sha256:{}","c".repeat(64))});
     assert!(submissions::response(&plan, response.clone()).is_ok());
     let mut wrong = response.clone();
-    wrong["restart_from"]["sync_request_id"] = json!("f".repeat(32));
+    wrong["restart_from"]["attempt_id"] = json!("attempt-002");
     assert!(submissions::response(&plan, wrong).is_err());
     let mut wrong = response;
     wrong["resume_from"] = json!({"run_id":"train","attempt_id":"attempt-001","checkpoint_id":format!("checkpoint.{}","d".repeat(64))});

@@ -642,7 +642,7 @@ fn schema_document() -> serde_json::Value {
         (
             "retry",
             "Append a new Attempt from an explicit checkpoint or full restart after exact terminal scheduler evidence; never submits",
-            json!({"type":"object","additionalProperties":false,"oneOf":[{"required":["resume_from"]},{"required":["restart_from"]}],"properties":{"confirmation":{"type":"string","default":""},"max_gpu_hours":{"type":"number","default":0},"reason":{"type":"string"},"restart_from":{"type":"object","additionalProperties":false,"required":["run_id","attempt_id"],"properties":{"run_id":{"type":"string"},"attempt_id":{"type":"string"},"sync_request_id":{"type":"string"}}},"resume_from":{"type":"object","additionalProperties":false,"required":["run_id","attempt_id","checkpoint_id"],"properties":{"run_id":{"type":"string"},"attempt_id":{"type":"string"},"checkpoint_id":{"type":"string"}}}}}),
+            json!({"type":"object","additionalProperties":false,"oneOf":[{"required":["resume_from"]},{"required":["restart_from"]}],"properties":{"confirmation":{"type":"string","default":""},"max_gpu_hours":{"type":"number","default":0},"reason":{"type":"string"},"restart_from":{"type":"object","additionalProperties":false,"required":["run_id","attempt_id"],"properties":{"run_id":{"type":"string"},"attempt_id":{"type":"string"}}},"resume_from":{"type":"object","additionalProperties":false,"required":["run_id","attempt_id","checkpoint_id"],"properties":{"run_id":{"type":"string"},"attempt_id":{"type":"string"},"checkpoint_id":{"type":"string"}}}}}),
         ),
         (
             "cancel",

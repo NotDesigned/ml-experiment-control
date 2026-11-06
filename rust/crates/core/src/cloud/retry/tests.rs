@@ -23,7 +23,6 @@ fn fixture() -> (Value, Receipt) {
         restart_from: Some(StartFrom {
             run_id: "train".into(),
             attempt_id: "attempt-001".into(),
-            sync_request_id: "b".repeat(32),
         }),
         max_gpu_hours: 2.,
         reason: "cache repaired before training".into(),

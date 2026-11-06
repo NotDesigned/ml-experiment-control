@@ -12,9 +12,6 @@ pub const CONTRACT: &str = "native-attempt-retry.v1";
 pub struct StartFrom {
     pub run_id: String,
     pub attempt_id: String,
-    /// Legacy synchronization reference, retained for old request identities.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub sync_request_id: String,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

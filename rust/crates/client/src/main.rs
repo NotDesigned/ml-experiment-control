@@ -447,9 +447,6 @@ enum Run {
         /// Restart from the beginning after the parent job is terminal.
         #[arg(long)]
         from_start: bool,
-        /// Legacy CPU synchronization reference; optional.
-        #[arg(long, requires = "from_start")]
-        sync_request: Option<String>,
         #[arg(long, default_value_t = 0.)]
         max_gpu_hours: f64,
         #[arg(long, default_value = "")]
@@ -892,7 +889,6 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     attempt,
                     checkpoint,
                     from_start,
-                    sync_request,
                     max_gpu_hours,
                     reason,
                 },
@@ -910,7 +906,6 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     Some(ml_exp_core::first_submission::native::retry::StartFrom {
                         run_id: run.clone(),
                         attempt_id: attempt.clone(),
-                        sync_request_id: sync_request.clone().unwrap_or_default(),
                     })
                 } else {
                     None
