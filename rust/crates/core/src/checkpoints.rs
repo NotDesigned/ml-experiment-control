@@ -99,7 +99,7 @@ pub fn selected(
         project,
         storage_scope,
         &format!(
-            "{runs_root}/{project}/{}/attempts/{}/outputs/payload",
+            "{runs_root}/{project}/{}/attempts/{}/state",
             reference.run_id, reference.attempt_id
         ),
     )
@@ -502,7 +502,7 @@ mod tests {
     fn explicit_restore_refuses_foreign_projects_storage_paths_and_unregistered_choices() {
         let root = "/shared/runs";
         let mut context = context(&context_value()).unwrap();
-        context.state_root = format!("{root}/demo/trial/attempts/attempt-001/outputs/payload");
+        context.state_root = format!("{root}/demo/trial/attempts/attempt-001/state");
         let doc = register(
             &document(&context, &ready()).unwrap(),
             "2026-10-29T00:00:00Z",
@@ -526,6 +526,27 @@ mod tests {
         ] {
             assert!(selected(&reference, &doc, project, scope, path).is_err());
         }
+        let mut outputs = context.clone();
+        outputs.state_root = format!("{root}/demo/trial/attempts/attempt-001/outputs");
+        let outside_state = register(
+            &document(&outputs, &ready()).unwrap(),
+            "2026-10-29T00:00:00Z",
+        )
+        .unwrap();
+        let reference_outside = Reference {
+            checkpoint_id: outside_state["checkpoint_id"].as_str().unwrap().into(),
+            ..reference.clone()
+        };
+        assert!(
+            selected(
+                &reference_outside,
+                &outside_state,
+                "demo",
+                &context.storage_scope,
+                root
+            )
+            .is_err()
+        );
         let mut absent = doc.clone();
         absent.as_object_mut().unwrap().remove("status");
         assert!(selected(&reference, &absent, "demo", &context.storage_scope, root).is_err());

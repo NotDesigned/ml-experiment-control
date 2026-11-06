@@ -82,6 +82,9 @@ pub fn environment_policy(base: &BTreeMap<String, String>, runtime: &[String]) -
                     "RUN_ID",
                     "ATTEMPT_ID",
                     "DATASETS_JSON",
+                    "RESUME_DIR",
+                    "RESUME_CHECKPOINT_ID",
+                    "RESUME_STEP",
                 ]
                 .contains(&name.as_str())
         })
@@ -234,29 +237,10 @@ pub fn execution_environment(
         }
     }
     if !config.datasets.is_empty() {
-        let inputs = values.get("INPUT_DIR").ok_or(AdmissionError::Binding)?;
-        let mapping: BTreeMap<_, _> = config
-            .datasets
-            .iter()
-            .map(|v| (v.name.clone(), format!("{inputs}/{}", v.name)))
-            .collect();
-        let expected = serde_json::to_string(&mapping).map_err(|_| AdmissionError::Binding)?;
+        let expected =
+            crate::datasets::paths_json(&config.datasets).map_err(|_| AdmissionError::Binding)?;
         if values.get("DATASETS_JSON") != Some(&expected) {
-            let direct: BTreeMap<_, _> = config
-                .datasets
-                .iter()
-                .map(|v| (v.name.clone(), v.receipt.root.clone()))
-                .collect();
-            if !crate::datasets::root_path(inputs)
-                || config
-                    .datasets
-                    .iter()
-                    .any(|v| !v.receipt.root.starts_with(&format!("{inputs}/")))
-                || values.get("DATASETS_JSON")
-                    != Some(&serde_json::to_string(&direct).map_err(|_| AdmissionError::Binding)?)
-            {
-                return Err(AdmissionError::Binding);
-            }
+            return Err(AdmissionError::Binding);
         }
     } else if values.contains_key("DATASETS_JSON") {
         return Err(AdmissionError::Binding);

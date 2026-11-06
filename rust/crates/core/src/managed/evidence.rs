@@ -23,8 +23,13 @@ pub struct ProcessEvidence {
     pub timed_out: bool,
     pub cancelled: bool,
     pub error: Option<Diagnostic>,
+    /// Hashes of the logs as retained: their start, a seam line if anything was
+    /// dropped, and their end.
     pub stdout_sha256: Option<String>,
     pub stderr_sha256: Option<String>,
+    /// Output a log no longer holds. A marker, not a failure.
+    pub stdout_dropped_bytes: u64,
+    pub stderr_dropped_bytes: u64,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -48,11 +53,6 @@ pub fn training(process: &ProcessEvidence) -> Training {
         Training::Unknown
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum Publication {
-    NotImplemented,
-}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Receipt {
@@ -61,14 +61,14 @@ pub struct Receipt {
     pub manifest_sha256: String,
     pub process: ProcessEvidence,
     pub training: Training,
-    pub publication: Publication,
     pub download_available: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_environment_sha256: Option<String>,
 }
 impl Receipt {
-    /// Success covers the supervised local process and verified captured logs.
-    /// It makes no assertion that outputs were archived, uploaded or published.
+    /// Success covers the supervised local process and verified captured logs,
+    /// whether or not those logs dropped output. It makes no assertion that
+    /// outputs were archived, uploaded or published.
     pub fn succeeded(&self) -> bool {
         self.training == Training::Completed
             && self.process.error.is_none()
@@ -88,4 +88,10 @@ pub struct Observation {
     pub receipt: Option<Receipt>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runtime_environment_sha256: Option<String>,
+}
+impl Observation {
+    /// What a launch command exits with, on every backend. No receipt, no success.
+    pub fn succeeded(&self) -> bool {
+        self.receipt.as_ref().is_some_and(Receipt::succeeded)
+    }
 }

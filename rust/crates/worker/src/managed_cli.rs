@@ -64,13 +64,7 @@ pub fn main_from(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
                 "{}",
                 serde_json::to_string(&value).expect("managed observation JSON")
             );
-            if args.initialize
-                || args.inspect
-                || value
-                    .receipt
-                    .as_ref()
-                    .is_some_and(managed::Receipt::succeeded)
-            {
+            if args.initialize || args.inspect || value.succeeded() {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::FAILURE

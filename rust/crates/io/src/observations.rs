@@ -73,7 +73,6 @@ pub fn history(
             config_sha256: config_sha256.into(),
             start: None,
             next: Cursor {
-                device: 0,
                 inode: 0,
                 offset_bytes: 0,
                 prefix_sha256: helper::sha256_bytes(&[]),
@@ -87,9 +86,7 @@ pub fn history(
     let mut file = directory.open_regular_read(OsStr::new("metrics.jsonl"))?;
     let before = file.metadata()?;
     let offset = start.map_or(0, |c| c.offset_bytes);
-    if offset > before.len()
-        || start.is_some_and(|c| c.device != before.dev() || c.inode != before.ino())
-    {
+    if offset > before.len() || start.is_some_and(|c| c.inode != before.ino()) {
         return Err(io::Error::other("metrics file identity changed"));
     }
     let mut hash = Sha256::new();
@@ -116,7 +113,6 @@ pub fn history(
         config_sha256: config_sha256.into(),
         start: start.cloned(),
         next: Cursor {
-            device: before.dev(),
             inode: before.ino(),
             offset_bytes: offset + count as u64,
             prefix_sha256: format!("sha256:{:x}", hash.finalize()),
@@ -129,4 +125,36 @@ pub fn history(
     page.validate(start)
         .map_err(|_| io::Error::other("invalid metrics page"))?;
     Ok(Some(page))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{fs, io::Write};
+
+    #[test]
+    fn a_cursor_continues_on_its_inode_and_refuses_a_replaced_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("metrics.jsonl");
+        fs::write(&path, b"{\"step\":1}\n").unwrap();
+        let directory = Directory::open(temp.path(), false).unwrap();
+        let config = helper::sha256_bytes(b"config");
+        let first = history(&directory, None, false, &config).unwrap().unwrap();
+        assert_eq!(first.next.inode, fs::metadata(&path).unwrap().ino());
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"{\"step\":2}\n")
+            .unwrap();
+        let second = history(&directory, Some(&first.next), false, &config)
+            .unwrap()
+            .unwrap();
+        assert_eq!(second.bytes, b"{\"step\":2}\n");
+        // Identical bytes under a new inode: only the inode can tell them apart.
+        let copy = temp.path().join("copy");
+        fs::copy(&path, &copy).unwrap();
+        fs::rename(&copy, &path).unwrap();
+        assert!(history(&directory, Some(&second.next), false, &config).is_err());
+    }
 }

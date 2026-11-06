@@ -184,13 +184,9 @@ def diagnose(config):
             report["checks"].append(row)
             if raw is not None:
                 metadata[path] = raw
-        output = package["config"].get("output_directory") or package["config"]["attempt_root"] + "/output"
-        prefix = package["config"]["attempt_root"] + "/"
-        if not output.startswith(prefix):
-            raise ValueError()
         for path in (package.get("artifacts") or {}).get("required_files", []):
             components(path)
-            row, _ = inspect(root, output[len(prefix):] + "/" + path)
+            row, _ = inspect(root, "outputs/" + path)
             report["checks"].append(row)
     finally:
         os.close(root)
@@ -232,7 +228,7 @@ def diagnose_data(config):
         slot = config["project"] + "/" + config["asset_id"] + "/"
         metadata = {}
         for path, limit, lock in [(".native-data.json", 4096, False),
-                                  (".native-data.lock", None, True),
+                                  (config["project"] + "/" + config["asset_id"] + ".lock", None, True),
                                   (slot + "state.json", 8 * 1024 * 1024, False)]:
             row, raw = inspect(root, path, limit, lock)
             report["checks"].append(row)

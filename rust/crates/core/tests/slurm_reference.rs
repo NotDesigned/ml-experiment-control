@@ -34,10 +34,11 @@ fn user_environment_is_literal_and_bound_to_the_managed_launch() {
         package.manifest.environment["LABEL"],
         "two words; $(literal)"
     );
+    // The worker replaces its environment, so the value belongs in the manifest alone.
     assert!(
-        render_job_with_datasets(&spec, None, &[])
+        !render_job_with_datasets(&spec, None, &[])
             .unwrap()
-            .contains("'LABEL=two words; $(literal)'")
+            .contains("LABEL")
     );
     let binding = package.config.binding().unwrap();
     spec.execution
@@ -165,6 +166,9 @@ fn typed_configuration_accepts_exactly_the_valid_cases() {
     let mut s = sample();
     s.backend.kind = "wyd".into();
     assert!(s.validate().is_err());
+    let mut extra = f["config_cases"][0]["spec"].clone();
+    extra["storage"]["additional_roots"] = serde_json::json!({"hf_home":"/shared/cache"});
+    assert!(serde_json::from_value::<JobSpec>(extra).is_err());
 }
 #[test]
 fn lexical_mount_image_resource_and_time_validation_is_explicit() {

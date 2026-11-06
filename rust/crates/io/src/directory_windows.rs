@@ -1,6 +1,7 @@
 //! Retained Windows directory handles deny deletion and ancestor replacement.
 //! Reparse points and alternate streams are rejected at every component.
 use std::{
+    collections::BTreeSet,
     ffi::{OsStr, OsString},
     fs::{self, File, OpenOptions},
     io::{self, Read},
@@ -15,6 +16,15 @@ use windows_sys::Win32::Storage::FileSystem::*;
 
 use crate::file_lock::acquire;
 pub use crate::file_lock::{FileLock, LockOptions, Wait};
+
+/// What a directory entry is, read without following a reparse point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntryType {
+    Directory,
+    Regular,
+    SymbolicLink,
+    Special,
+}
 
 #[derive(Clone, Debug)]
 pub struct Directory {
@@ -139,6 +149,37 @@ impl Directory {
         }
         names.sort();
         Ok(names)
+    }
+    pub fn first_entry_names(&self, maximum: usize) -> io::Result<(Vec<OsString>, u64)> {
+        let mut names = BTreeSet::new();
+        let mut more = 0u64;
+        for entry in fs::read_dir(&self.inner.path)? {
+            names.insert(entry?.file_name());
+            if names.len() > maximum {
+                names.pop_last();
+                more += 1;
+            }
+        }
+        Ok((names.into_iter().collect(), more))
+    }
+    pub fn entry_type(&self, name: &OsStr) -> io::Result<Option<EntryType>> {
+        leaf(name)?;
+        let metadata = match fs::symlink_metadata(self.inner.path.join(name)) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        Ok(Some(
+            if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                EntryType::SymbolicLink
+            } else if metadata.is_dir() {
+                EntryType::Directory
+            } else if metadata.is_file() {
+                EntryType::Regular
+            } else {
+                EntryType::Special
+            },
+        ))
     }
     pub fn open_regular_read(&self, name: &OsStr) -> io::Result<File> {
         leaf(name)?;

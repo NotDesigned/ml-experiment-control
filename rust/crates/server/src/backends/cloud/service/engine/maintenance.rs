@@ -72,11 +72,11 @@ impl Service {
             .ok_or_else(cloud::Error::configuration)?;
         let mut job = execution.job.clone();
         let id = plan.id().map_err(why!(cloud::Error::evidence()))?;
+        // The run name decides the outbox slot, so each plan is one job of its own and
+        // a finished plan cannot close the way to the next. The plan names the Attempt.
+        job.run_id = format!("maintenance-{}", &id[..32]);
         job.submission_token = id[..32].into();
         job.gpus = 0;
-        job.cpus = 2;
-        job.memory_gb = 4;
-        job.max_time_seconds = 600;
         job.priority = 5;
         let worker = execution
             .job
@@ -91,6 +91,7 @@ impl Service {
             "--channel-json".into(),
             String::from_utf8(encode(&channel)?).map_err(why!(cloud::Error::evidence()))?,
         ];
+        let job = self.with_result_limits(&execution.backend_id, job)?;
         let check = || self.maintenance_original(action, plan).map(|_| ());
         self.submit_once_or_reconcile(
             collector,

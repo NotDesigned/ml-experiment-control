@@ -158,9 +158,11 @@ resubmit a failed GPU job automatically.
 
 ### Slurm shared-data staging
 
-New target-backed uploads stream parts through the shared 1 GiB API disk buffer
-to a pinned Slurm receiver over SSH. Each part is removed locally after matching
-durable ACK; the whole archive and expanded files live only on shared storage.
+The API holds each upload part in memory while it forwards it to a pinned Slurm
+receiver over SSH, and writes no part to its own disk. It handles four dataset
+requests at once, each at most 16 MiB; a further one gets 429
+`DATASET_TRANSFER_BUSY`. The whole archive and expanded files live only on shared
+storage.
 The backend validates archive/file hashes and atomically publishes the cache.
 A bounded read-only check permits reuse before GPU submission. GPU nodes need no
 external data access. New frozen inputs require the verified cache and fail closed
@@ -179,8 +181,10 @@ inventory, cache lock and atomic READY receipt are the same as elsewhere.
 The allocated worker only verifies the sealed cache; missing or corrupt data
 fails before training rather than downloading on an offline GPU node. The script
 retains its own timeout; a 60-second launcher allowance covers container startup
-and teardown. A cache verification also runs before scheduler submission. An
-uncertain stage remains subject to the existing explicit reconciliation rules.
+and teardown. Staging hashes the cache once. Before scheduler submission the helper
+checks only the sealed file set and sizes, and the allocated worker's own hash proves
+the content. An uncertain stage remains subject to the existing explicit
+reconciliation rules.
 
 
 ### SenseCore script preparation

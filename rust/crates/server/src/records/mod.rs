@@ -33,8 +33,6 @@ pub enum Error {
     Unbound,
     #[error("record scope does not exist or belongs to another Run")]
     Scope,
-    #[error("Run deletion must be durably fenced first")]
-    DeletionNotStarted,
     #[error("remote confirmation does not prove the frozen publication identity and sequence")]
     Confirmation,
     #[error("invalid record storage metadata: {0}")]

@@ -248,21 +248,9 @@ fn deletion_fences_proven_companions_and_keeps_independent_suffix_runs() {
             .append(&guard, &scope, &[event("m1", metric(2.5, 1))])
             .unwrap();
     }
-    assert!(matches!(
-        store.delete_run("demo", "run-a", "t0"),
-        Err(Error::DeletionNotStarted)
-    ));
     RunFence::new(temp.path())
         .mark("demo", "run-a", &serde_json::Map::new(), "t1")
         .unwrap();
-    assert_eq!(
-        store.delete_run("demo", "run-a", "t2").unwrap()["scopes_removed"],
-        3
-    );
-    assert_eq!(
-        store.delete_run("demo", "run-a", "t3").unwrap()["scopes_removed"],
-        0
-    );
     for run in ["run-a", "run-a--preparation", "run-a--backfill"] {
         assert!(store.guard("demo", run).is_err());
     }
@@ -285,10 +273,6 @@ fn deletion_fences_proven_companions_and_keeps_independent_suffix_runs() {
     RunFence::new(temp.path())
         .mark("demo", "trial", &serde_json::Map::new(), "t4")
         .unwrap();
-    assert_eq!(
-        store.delete_run("demo", "trial", "t5").unwrap()["scopes_removed"],
-        1
-    );
     for run in ["trial--preparation", "trial--backfill"] {
         let guard = store.guard("demo", run).unwrap();
         let scope = store.scope(&guard, "attempt-001").unwrap();
@@ -1259,7 +1243,6 @@ fn missing_fence_lock_after_open_is_never_repaired_by_normal_reads_writes_or_del
     let path = temp.path().join(".run-deletion.lock");
     fs::rename(&path, temp.path().join("removed-fence-evidence")).unwrap();
     assert!(store.guard("demo", "run-a").is_err());
-    assert!(store.delete_run("demo", "run-a", "cleanup").is_err());
     assert!(!path.exists(), "the lock was silently rebuilt");
     let connection = Connection::open(store.path()).unwrap();
     assert_eq!(

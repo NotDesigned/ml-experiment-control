@@ -26,6 +26,41 @@ pub enum ArtifactOperation {
     },
     Complete,
 }
+/// Resources of the CPU job that collects a finished Attempt's results or removes its
+/// storage. Packing restarts from nothing when interrupted, so the limit must cover a
+/// whole archive. Six hours is a judgement, not a measurement: it lets the four passes
+/// over a 1 TiB archive (pack, rehash, verify, upload) average about 200 MB/s. A
+/// backend's configuration can change it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ResultJobLimits {
+    pub cpus: u32,
+    pub memory_gb: u32,
+    pub max_time_seconds: u64,
+}
+impl Default for ResultJobLimits {
+    fn default() -> Self {
+        Self {
+            cpus: 2,
+            memory_gb: 4,
+            max_time_seconds: 6 * 3600,
+        }
+    }
+}
+impl ResultJobLimits {
+    pub fn of(job: &Job) -> Self {
+        Self {
+            cpus: job.cpus,
+            memory_gb: job.memory_gb,
+            max_time_seconds: job.max_time_seconds,
+        }
+    }
+    pub fn apply(self, job: &mut Job) {
+        job.cpus = self.cpus;
+        job.memory_gb = self.memory_gb;
+        job.max_time_seconds = self.max_time_seconds;
+    }
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Sync {
@@ -42,6 +77,8 @@ impl Sync {
         }
         Ok(())
     }
+    /// The job under the default limits. Its identity holds no limit, so a changed
+    /// limit can never name a second job.
     pub fn job(&self, parent: &Job) -> Result<Job> {
         parent.validate()?;
         let mut job = parent.clone();
@@ -54,9 +91,7 @@ impl Sync {
         .map_err(|_| Error("sync identity"))?[..32]
             .into();
         job.gpus = 0;
-        job.cpus = 2;
-        job.memory_gb = 4;
-        job.max_time_seconds = 600;
+        ResultJobLimits::default().apply(&mut job);
         job.command.push("--sync".into());
         job.validate()?;
         Ok(job)
@@ -158,8 +193,20 @@ mod sync_retry_tests {
                 child.memory_gb,
                 child.max_time_seconds
             ),
-            (0, 2, 4, 600)
+            (0, 2, 4, 6 * 3600)
         );
+        // No limit is part of the identity.
+        let mut limited = child.clone();
+        let limits = ResultJobLimits {
+            cpus: 16,
+            memory_gb: 64,
+            max_time_seconds: 86400,
+        };
+        limits.apply(&mut limited);
+        assert_eq!(ResultJobLimits::of(&limited), limits);
+        assert_eq!(limited.gpus, 0);
+        assert_eq!(limited.run_id, child.run_id);
+        assert_eq!(limited.submission_token, child.submission_token);
         assert_eq!(child.command[..parent.command.len()], parent.command);
         assert_eq!(child.command.last().unwrap(), "--sync");
         assert_eq!(

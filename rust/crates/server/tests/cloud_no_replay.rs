@@ -1154,7 +1154,6 @@ fn slurm_side(f: &Fixture) -> (slurm_service::Service, String, std::path::PathBu
         storage: Storage {
             run_dir: format!("{mount}/runs/demo/train"),
             project_data_root: format!("{mount}/data/demo"),
-            additional_roots: BTreeMap::new(),
         },
         resources: Resources {
             gpus: 1,
@@ -1663,6 +1662,240 @@ fn a_sync_job_driven_twice_creates_once() {
     }
 }
 
+fn with_result_job(config: &[u8], limits: Value) -> Vec<u8> {
+    let mut config: Value = serde_json::from_slice(config).unwrap();
+    config["backends"][0]["result_job"] = limits;
+    serde_json::to_vec(&config).unwrap()
+}
+
+#[test]
+fn a_changed_result_job_limit_keeps_each_recorded_job_and_reaches_only_new_ones() {
+    let mut c = CopyFixture::new(Kind::Pai, 1);
+    c.config = with_result_job(&c.config, json!({"max_time_seconds":3600}));
+    let service = c.open();
+    let (action, _) = c.f.authorized(&service, "train");
+    assert_eq!(
+        c.f.execute(&service, &action).unwrap()["status"],
+        "VERIFIED"
+    );
+    assert_eq!(c.provider.creates(), 1);
+    let sync = |service: &Service, request: &str| {
+        service
+            .synchronize(
+                &action,
+                &ml_exp_core::cloud::exchange::Sync {
+                    request_id: request.into(),
+                    confirmation: format!("SYNC {action}"),
+                },
+                T_RECONCILE,
+                &AtomicBool::new(false),
+            )
+            .unwrap()["synchronization"]
+            .clone()
+    };
+    let first = sync(&service, REQUEST_A);
+    assert_eq!(first["max_time_seconds"], 3600);
+    assert_eq!(first["resources"], json!({"gpus":0,"cpus":2,"memory_gb":4}));
+    assert_eq!(c.provider.creates(), 2);
+
+    // A daemon restarted with a higher limit still drives the job it recorded.
+    c.config = with_result_job(
+        &c.config,
+        json!({"cpus":4,"memory_gb":8,"max_time_seconds":7200}),
+    );
+    drop(service);
+    let service = c.open();
+    assert_eq!(sync(&service, REQUEST_A)["max_time_seconds"], 3600);
+    assert_eq!(
+        service
+            .sync_status(&action, REQUEST_A, T_RECONCILE)
+            .unwrap()["synchronization"]["max_time_seconds"],
+        3600
+    );
+    assert_eq!(c.provider.creates(), 2);
+
+    // A new request and an explicit retry are new jobs, so they take the new limit.
+    let second = sync(&service, REQUEST_B);
+    assert_eq!(second["max_time_seconds"], 7200);
+    assert_eq!(
+        second["resources"],
+        json!({"gpus":0,"cpus":4,"memory_gb":8})
+    );
+    assert_eq!(c.provider.creates(), 3);
+    let job_id = |row: usize| c.provider.world().rows[row]["JobId"].clone();
+    let failed = job_id(1).as_str().unwrap().to_owned();
+    for row in [0, 1] {
+        c.provider.world().rows[row]["Status"] = json!("Failed");
+    }
+    let retry = ml_exp_core::cloud::exchange::SyncRetry {
+        expected_failed_job_id: failed.clone(),
+        confirmation: format!("RETRY SYNC {action} {REQUEST_A} {failed}"),
+    };
+    let retried = |service: &Service| {
+        service
+            .retry_sync(
+                &action,
+                REQUEST_A,
+                &retry,
+                T_RECONCILE,
+                &AtomicBool::new(false),
+            )
+            .unwrap()["synchronization"]
+            .clone()
+    };
+    let child = retried(&service);
+    assert_eq!(child["max_time_seconds"], 7200);
+    assert_eq!(c.provider.creates(), 4);
+
+    // Neither the failed original nor the retried child is orphaned by a later change.
+    c.config = with_result_job(&c.config, json!({"max_time_seconds":10800}));
+    drop(service);
+    let service = c.open();
+    assert_eq!(retried(&service)["max_time_seconds"], 7200);
+    assert_eq!(sync(&service, REQUEST_A)["max_time_seconds"], 7200);
+    assert_eq!(c.provider.creates(), 4);
+    let recorded: Vec<u64> = c
+        .sync_entries()
+        .iter()
+        .map(|entry| entry["job"]["max_time_seconds"].as_u64().unwrap())
+        .collect();
+    assert_eq!(
+        recorded
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from([3600, 7200])
+    );
+    assert_eq!(recorded.len(), 3);
+}
+
+#[test]
+fn a_maintenance_job_takes_the_configured_limit_and_keeps_it_once_recorded() {
+    let mut c = CopyFixture::new(Kind::Pai, 1);
+    c.config = with_result_job(&c.config, json!({"max_time_seconds":3600}));
+    let service = c.open();
+    let (action, _) = c.f.authorized(&service, "train");
+    c.f.execute(&service, &action).unwrap();
+    c.provider.world().rows[0]["Status"] = json!("Failed");
+    let plan = service
+        .maintenance_plan(
+            &action,
+            ml_exp_core::maintenance::Selection::Outputs,
+            REQUEST_A.into(),
+            T_RECONCILE,
+        )
+        .unwrap();
+    service.maintenance_execute(&action, &plan).unwrap();
+    assert_eq!(c.provider.creates(), 2);
+    c.config = with_result_job(&c.config, json!({"max_time_seconds":7200}));
+    drop(service);
+    let service = c.open();
+    service.maintenance_execute(&action, &plan).unwrap();
+    assert_eq!(c.provider.creates(), 2);
+    let entries = c.sync_entries();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["job"]["max_time_seconds"], 3600);
+    assert_eq!(entries[0]["job"]["gpus"], 0);
+}
+
+/// Each plan is one job of its own, so removing outputs leaves state and a generation
+/// removable. Driving a plan again observes its job and creates nothing.
+#[test]
+fn every_maintenance_plan_of_an_attempt_runs_as_its_own_job_once() {
+    for kind in KINDS {
+        let mut c = CopyFixture::new(kind, 1);
+        if let Profile::Sensecore(training) = &c.f.provider.profile {
+            let mut collector = training.clone();
+            collector.purpose = sensecore::Purpose::ResultCollection;
+            collector.cluster = "debug-cpu".into();
+            collector.worker_spec = "cpu.2c4g".into();
+            collector.worker_gpus = 0;
+            collector.worker_cpus = 2;
+            collector.worker_memory_gb = 4;
+            collector.quota = sensecore::Quota::Reserved;
+            let mut config: Value = serde_json::from_slice(&c.config).unwrap();
+            config["backends"][0]["collector"] = json!(Profile::Sensecore(collector));
+            c.config = serde_json::to_vec(&config).unwrap();
+        }
+        let service = c.open();
+        let (action, _) = c.f.authorized(&service, "train");
+        c.f.execute(&service, &action).unwrap();
+        c.provider.set_state("FAILED");
+        let plan = |selection, request: &str| {
+            service
+                .maintenance_plan(&action, selection, request.into(), T_RECONCILE)
+                .unwrap()
+        };
+        let outputs = plan(ml_exp_core::maintenance::Selection::Outputs, REQUEST_A);
+        let state = plan(ml_exp_core::maintenance::Selection::State, REQUEST_B);
+        service.maintenance_execute(&action, &outputs).unwrap();
+        assert_eq!(c.provider.creates(), 2);
+        service.maintenance_execute(&action, &state).unwrap();
+        assert_eq!(c.provider.creates(), 3);
+        for repeated in [&outputs, &state] {
+            service.maintenance_execute(&action, repeated).unwrap();
+        }
+        assert_eq!(c.provider.creates(), 3);
+        let entries = c.sync_entries();
+        assert_eq!(entries.len(), 2);
+        assert_ne!(
+            entries[0]["job"]["submission_token"],
+            entries[1]["job"]["submission_token"]
+        );
+        for entry in &entries {
+            assert_eq!(entry["job"]["project"], "demo");
+            assert_eq!(entry["job"]["attempt_id"], "attempt-001");
+            assert_eq!(entry["job"]["gpus"], 0);
+            assert_ne!(entry["job"]["run_id"], "train");
+        }
+    }
+}
+
+#[test]
+fn result_job_limits_default_and_refuse_what_the_collector_cannot_run() {
+    let c = CopyFixture::new(Kind::Pai, 1);
+    let load = |limits: Value| Settings::from_slice(&with_result_job(&c.config, limits));
+    let default = Settings::from_slice(&c.config).unwrap();
+    let limits = default.backends[0].result_job;
+    assert_eq!(
+        (limits.cpus, limits.memory_gb, limits.max_time_seconds),
+        (2, 4, 21600)
+    );
+    let chosen = load(json!({"max_time_seconds":86400})).ok().unwrap();
+    assert_eq!(chosen.backends[0].result_job.max_time_seconds, 86400);
+    assert_eq!(chosen.backends[0].result_job.cpus, 2);
+    for refused in [
+        json!({"max_time_seconds":0}),
+        json!({"max_time_seconds":86401}),
+        json!({"cpus":0}),
+        json!({"cpus":201}),
+        json!({"memory_gb":1601}),
+        json!({"unknown":1}),
+    ] {
+        assert!(load(refused.clone()).is_err(), "{refused}");
+    }
+    // SenseCore's collector has one fixed shape, and only the time limit can move.
+    let f = Fixture::new(Kind::Sensecore);
+    let Profile::Sensecore(training) = &f.provider.profile else {
+        panic!("expected SenseCore");
+    };
+    let mut collector = training.clone();
+    collector.purpose = sensecore::Purpose::ResultCollection;
+    collector.cluster = "debug-cpu".into();
+    collector.worker_spec = "cpu.2c4g".into();
+    collector.worker_gpus = 0;
+    collector.worker_cpus = 2;
+    collector.worker_memory_gb = 4;
+    collector.quota = sensecore::Quota::Reserved;
+    let mut config: Value = serde_json::from_slice(&f.config).unwrap();
+    config["backends"][0]["collector"] = json!(Profile::Sensecore(collector));
+    let config = serde_json::to_vec(&config).unwrap();
+    let load = |limits: Value| Settings::from_slice(&with_result_job(&config, limits));
+    assert!(load(json!({"max_time_seconds":86400})).is_ok());
+    assert!(load(json!({"cpus":4})).is_err());
+    assert!(load(json!({"memory_gb":8})).is_err());
+}
+
 #[test]
 fn a_started_sync_job_makes_no_create() {
     for kind in KINDS {
@@ -1952,6 +2185,55 @@ fn dataset_manifests_over_their_budget_are_refused_before_any_copy() {
         assert_eq!(c.provider.creates(), 0);
         assert!(!c.f.run_directory("large-input").exists());
     }
+}
+
+#[test]
+fn a_dataset_no_run_could_mount_is_refused_at_begin_on_every_backend() {
+    let begin = |files: usize| ml_exp_core::datasets::Command::Begin {
+        definition: Definition {
+            sha256: "9".repeat(64),
+            archive_bytes: 1024 * 1024,
+            files: (0..files)
+                .map(|n| FileReceipt {
+                    path: format!("dataset/tasks/sample-{n:05}.bin"),
+                    bytes: 128,
+                    sha256: "f".repeat(64),
+                })
+                .collect(),
+        },
+    };
+    for kind in KINDS {
+        let c = CopyFixture::new(kind, 3);
+        let service = c.open();
+        let refused = service
+            .dataset_transfer("demo", c.f.executor, begin(5000), &[])
+            .unwrap_err();
+        assert_eq!(refused.code, "DATASET_MANIFESTS_TOO_LARGE");
+        assert_eq!(refused.http_status, Some(422));
+        assert!(!refused.uncertain);
+        // A definition that fits goes on to this fixture's refusal: it has no dataset
+        // storage configured.
+        let other = service
+            .dataset_transfer("demo", c.f.executor, begin(3), &[])
+            .unwrap_err();
+        assert_eq!(other.code, cloud::Error::configuration().code);
+        assert_eq!(c.provider.creates(), 0);
+    }
+    // This Slurm fixture has no data helper, so the refusal cannot have used SSH.
+    let f = Fixture::new(Kind::Pai);
+    let (slurm, _, _) = slurm_side(&f);
+    let transfer =
+        |files| slurm.dataset_transfer("demo", "slurm", begin(files), &[], &AtomicBool::new(false));
+    match transfer(5000) {
+        Err(slurm_service::Error::Admission(cause)) => {
+            assert_eq!(cause.0, ml_exp_core::datasets::ManifestsTooLarge::CAUSE);
+        }
+        other => panic!("expected the manifest refusal, got {other:?}"),
+    }
+    assert!(matches!(
+        transfer(3),
+        Err(slurm_service::Error::DatasetUnavailable)
+    ));
 }
 
 #[test]
@@ -2445,6 +2727,45 @@ async fn a_run_that_cannot_be_read_or_is_deleted_has_no_owner() {
         assert!(f.provider.calls().is_empty());
         assert!(!ssh_calls.exists());
     }
+}
+
+/// The order the docs give: bytes first, then the Run. Retiring removes nothing and
+/// says so, and it is the end of the line for new plans.
+#[test]
+fn a_run_retires_after_its_bytes_and_takes_no_later_plan() {
+    let c = CopyFixture::new(Kind::Pai, 1);
+    let service = c.open();
+    let (action, _) = c.f.authorized(&service, "train");
+    c.f.execute(&service, &action).unwrap();
+    c.provider.world().rows[0]["Status"] = json!("Failed");
+    let plan = |request: &str| {
+        service.maintenance_plan(
+            &action,
+            ml_exp_core::maintenance::Selection::Outputs,
+            request.into(),
+            T_RECONCILE,
+        )
+    };
+    let outputs = plan(REQUEST_A).unwrap();
+    service.maintenance_execute(&action, &outputs).unwrap();
+
+    administration::Service::initialize(&c.f.settings).unwrap();
+    let admin =
+        administration::Service::open(c.f.settings.clone(), None, Some(service.clone())).unwrap();
+    assert!(
+        admin
+            .retire("demo", "train", "RETIRE demo/train", T_RECONCILE)
+            .is_err()
+    );
+    let fence = RunFence::new(&c.f.settings.registry_root);
+    assert!(!fence.is_deleted("demo", "train").unwrap());
+    let retired = admin
+        .retire("demo", "train", "DELETE demo/train", T_RECONCILE)
+        .unwrap();
+    assert_eq!(retired["status"], "RETIRED");
+    assert_eq!(retired["payloads_removed"], false);
+    assert!(fence.is_deleted("demo", "train").unwrap());
+    assert!(plan(REQUEST_B).is_err());
 }
 
 #[test]

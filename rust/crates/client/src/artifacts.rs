@@ -250,6 +250,6 @@ pub fn download(
         }
     }
     Ok(
-        json!({"submission_id":action,"local_archive":output,"local_archive_verified":true,"reused_existing_archive":reused,"release_requested":release,"retention":after.retention,"scheduler_mutation_performed":false}),
+        json!({"submission_id":action,"local_archive":output,"local_archive_verified":true,"reused_existing_archive":reused,"skipped":after.bundle.skipped,"release_requested":release,"retention":after.retention,"scheduler_mutation_performed":false}),
     )
 }

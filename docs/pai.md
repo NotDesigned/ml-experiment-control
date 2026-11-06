@@ -134,33 +134,37 @@ endpoint. Direct personal storage identities bind the endpoint and approved
 user, so identical container paths do not make another user's state reusable.
 
 DLC injects the approved personal role through `EnableCredentialInject` and
-`CredentialConfigItems`. Existing versioned PAI Dataset mounts can instead be
-configured through `data_sources`; an explicit RW NAS/CPFS mount covering
-`storage_root` is required for persistent checkpoints and in-job data scripts.
-Additional mounts must not shadow the personal/public paths above. A declared
-storage ID is configuration, not proof that the remote mount works.
+`CredentialConfigItems`. A job's mounts are exactly the three above: the profile has
+no other mount setting and refuses unknown fields. A declared `storage` is
+configuration, not proof that the remote mount works.
 
 ### Data and recovery limits
 
 Configure [OSS dataset assets](data.md#pai-preparation-using-an-existing-image)
 for versioned originals, upload/import and signed downloads. DLC first delivery
 uses the exact-Attempt API transfer into a verified personal CPFS cache. This
-happens inside the allocated job and consumes its time/GPU budget; subsequent
-jobs can reuse verified cache bytes. An alternative is an experiment-authored
+happens inside the allocated job and consumes its time/GPU budget, unless you
+publish the asset first with a CPU job; subsequent jobs can reuse verified cache
+bytes. An alternative is an experiment-authored
 download script writing to persistent `DATA_DIR` before training. Successful
-image pulls do not prove general Internet connectivity for that script.
+image pulls do not prove general Internet connectivity for that script. On a backend
+with no dataset yet, that script blocks later dataset delivery; see
+[paths in the job](data.md#paths-in-the-job).
 
 Native OSS filesystem mounts remain **blocked and disabled** because provider
-mount authorization fails before user code starts. Do not configure `oss_uri`
-or OSS `Datasets` mounts as a workaround, change the role, or make the bucket
-public. CPFS mounts and OSS SDK/object transfers are independent and remain the
-supported paths. No native-mount acceptance is claimed.
+mount authorization fails before user code starts. Neither the backend profile nor
+the DSW builder has a setting for one. Do not add OSS `Datasets` mounts by hand as a
+workaround, change the role, or make the bucket public. CPFS mounts and OSS object
+transfers are independent and remain the supported paths. No native-mount acceptance
+is claimed.
 
-PAI does not implement periodic full checkpoint-upload snapshots, pre-job CPU
-data preparation, offline CPU result recovery or managed remote Run deletion.
-It does support backend-resident checkpoint registration/restoration and normal
-worker metric/result transfer. Unsupported requirements are rejected before
-work; a missing result upload does not silently launch a CPU recovery job.
+PAI does not upload periodic full checkpoints. It supports backend-resident checkpoint
+registration/restoration and normal worker metric/result transfer. With a `collector`
+configured, three zero-GPU CPU jobs run on explicit request: `data publish` prepares a
+dataset before training ([data](data.md#pai-preparation-using-an-existing-image)),
+`run sync` recovers results after training ([recovery](recovery.md#native-cpu-sync-recovery))
+and `admin execute` removes an Attempt's bytes ([deletion](resource-deletion.md)). A
+missing result upload never starts a CPU job by itself.
 
 ## DSW builder without enterprise ACR
 
@@ -190,46 +194,13 @@ choices, not requirements for an unrelated Slurm installation.
 Follow [build publication](builds.md#pai-dsw-publisher);
 existing Runtime/Run image references are never rewritten when defaults change.
 
-## Private result archival
+## Result objects
 
-An optional `oss_archive` block in the private artifact-store configuration
-archives newly sealed result objects:
-
-```json
-{
-  "oss_archive": {
-    "bucket": "YOUR_APPROVED_ARCHIVE_BUCKET",
-    "region": "YOUR_REGION",
-    "user": "YOUR_RAM_USER",
-    "credentials_file": "/etc/ml-exp/oss-archive-credentials.json"
-  }
-}
-```
-
-The private credential file contains `workspace_user`, `region`,
-`access_key_id`, `access_key_secret` and optional `security_token`. Server SDK
-access uses the approved personal RAM user's existing permissions; it does not
-assume the DSW service role. Keep builder-only credentials separate.
-
-The immutable destination is
-`users/USER/results/ml-expd/PROJECT/RUN/ATTEMPT/ARCHIVE_SHA256.tar`. Collection
-streams into OSS multipart storage and checks actual object SHA256/size without
-creating another full local archive. Lost responses reuse the exact verified
-object; conflicts are never overwritten. Failures remain diagnostic and retry
-after 60 seconds, without restarting training.
-
-The Attempt's `/collection` response includes `oss_archive` status and progress.
-Authenticated `/api/runs/PROJECT/RUN/attempts/ATTEMPT/oss-archive/download` returns
-a five-minute signed URL and the file/hash receipt. It remains available after
-the temporary platform archive is released. Downloading does not delete OSS.
-
-For new archive-enabled receipts, an ACK is recorded immediately but temporary
-archive release waits for OSS verification. An operator's local expiry deadline
-still applies: failed archival can become `SOURCE_EXPIRED`. OSS copies are outside client-ACK release,
-local expiry and managed Run deletion. Delete them separately under the approved
-personal prefix. A personal storage budget is advisory unless independently
-enforced; this integration does not change bucket ACL/policy or lifecycle rules.
-It does not synchronize whole checkpoints, datasets, Git trees or environments.
+A result archive is uploaded in parts below the `prefix` of the backend's `artifacts`
+block, at `PREFIX/results/PROJECT/RUN/ATTEMPT/ARCHIVE_SHA256/parts/NUMBER`. A
+release-enabled ACK deletes those parts and `--keep` leaves them. There is no second
+long-term copy, and no timer expires them. After a release, what remains is your
+download and the original `OUTPUT_DIR` on CPFS. See [recovery](recovery.md#collect-and-download).
 
 For optional SSH machines see [debug sessions](debug-sessions.md); for storage
 transfer configuration see [data](data.md). Provider reference:

@@ -147,15 +147,35 @@ fn evidence_requires_exact_sealed_identity_and_immutable_terminal_receipt() {
             error: None,
             stdout_sha256: Some("2".repeat(64)),
             stderr_sha256: Some("2".repeat(64)),
+            stdout_dropped_bytes: 0,
+            stderr_dropped_bytes: 0,
         },
         training: Training::Completed,
-        publication: Publication::NotImplemented,
         download_available: false,
         runtime_environment_sha256: None,
     });
     completed.validate_scope(&scope, "12345").unwrap();
     completed.validate_config(&config).unwrap();
     completed.follows(&prepared).unwrap();
+    // One rule for every launch command: dropped output is a marker, not a failure.
+    assert!(!prepared.worker.succeeded());
+    assert!(completed.worker.succeeded());
+    let mut decided = completed.worker.clone();
+    let process = &mut decided.receipt.as_mut().unwrap().process;
+    process.stdout_dropped_bytes = 1;
+    process.stderr_dropped_bytes = 1;
+    assert!(decided.succeeded());
+    decided.receipt.as_mut().unwrap().process.error = Some(Diagnostic {
+        stage: "LOG_CAPTURE".into(),
+        code: "LOG_SYNC_FAILED".into(),
+    });
+    assert!(!decided.succeeded());
+    let mut decided = completed.worker.clone();
+    decided.receipt.as_mut().unwrap().process.stdout_sha256 = None;
+    assert!(!decided.succeeded());
+    let mut decided = completed.worker.clone();
+    decided.receipt.as_mut().unwrap().training = Training::Failed;
+    assert!(!decided.succeeded());
     let mut with_logs = completed.clone();
     with_logs.stdout = Window {
         text: "original\n".into(),

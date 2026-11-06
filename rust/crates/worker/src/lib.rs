@@ -41,6 +41,8 @@ pub struct Execution {
     pub error: Option<Failure>,
     pub stdout_sha256: Option<String>,
     pub stderr_sha256: Option<String>,
+    pub stdout_dropped_bytes: u64,
+    pub stderr_dropped_bytes: u64,
 }
 
 impl Execution {

@@ -2,7 +2,7 @@
 use ml_exp_client::{Client, artifacts};
 use ml_exp_core::artifacts::{
     ArchiveReceipt,
-    publication::{Bundle, CONTRACT, State},
+    publication::{Bundle, CONTRACT, SkipReason, Skipped, State},
 };
 use serde_json::{Value, json};
 use std::{
@@ -92,8 +92,11 @@ fn fixture() -> (Vec<u8>, State) {
     std::fs::write(root.path().join("weights.bin"), b"weights").unwrap();
     let directory = ml_exp_io::directory::Directory::open(root.path(), false).unwrap();
     let mut file = tempfile::tempfile().unwrap();
-    let (sha256, bytes, files) =
+    let (sha256, bytes, files, mut skipped) =
         ml_exp_io::artifacts::pack(&directory, &mut file, &Default::default()).unwrap();
+    assert_eq!(skipped, Skipped::default());
+    skipped.add(".venv/bin/python", SkipReason::SymbolicLink);
+    skipped.unlisted = 2;
     use std::io::{Seek, SeekFrom};
     file.seek(SeekFrom::Start(0)).unwrap();
     let mut body = Vec::new();
@@ -112,9 +115,32 @@ fn fixture() -> (Vec<u8>, State) {
         intent_sha256: format!("sha256:{}", "1".repeat(64)),
         config_sha256: format!("sha256:{}", "2".repeat(64)),
         archive,
+        skipped,
     })
     .unwrap();
     (body, state)
+}
+fn assert_skip_list(skipped: &Value) {
+    assert_eq!(
+        *skipped,
+        json!({"paths":[{"path":".venv/bin/python","reason":"symbolic_link"}],"unlisted":2})
+    );
+}
+#[test]
+fn the_file_listing_shows_what_the_archive_left_out() {
+    let (_, state) = fixture();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let expected = state.clone();
+    let worker = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        read(&mut socket);
+        reply(&mut socket, &expected);
+    });
+    let client = Client::new(&format!("http://{addr}"), "synthetic-token".into()).unwrap();
+    let listed = artifacts::files(&client, ACTION, &health()).unwrap();
+    assert_skip_list(&listed["skipped"]);
+    worker.join().unwrap();
 }
 #[test]
 fn selected_file_is_durable_only_after_whole_archive_verification_and_never_acks() {
@@ -162,7 +188,9 @@ fn selected_file_is_durable_only_after_whole_archive_verification_and_never_acks
             assert!(!target.exists());
             assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
         } else {
-            assert_eq!(result.unwrap()["acknowledgement_sent"], false);
+            let result = result.unwrap();
+            assert_eq!(result["acknowledgement_sent"], false);
+            assert_skip_list(&result["archive_skipped"]);
             assert_eq!(std::fs::read(&target).unwrap(), b"weights");
             assert_eq!(
                 artifacts::download_file(&client, ACTION, "weights.bin", &target, &health())
@@ -216,6 +244,7 @@ fn streamed_download_verifies_then_acknowledges_once_and_reuses_saved_bytes_afte
     let result = artifacts::download(&client, ACTION, &target, true, &health()).unwrap();
     assert_eq!(result["reused_existing_archive"], true);
     assert_eq!(result["local_archive_verified"], true);
+    assert_skip_list(&result["skipped"]);
     worker.join().unwrap();
 }
 #[test]

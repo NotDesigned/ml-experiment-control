@@ -7,7 +7,7 @@ pub fn list(client: &Client, action: &str, health: &Value) -> Result<Value, Erro
     let value = observe(client, action, false, health)?;
     let (_, state) = validate(&plan(action, "artifacts", None)?, value)?;
     Ok(
-        json!({"submission_id":action,"source":"verified_result_archive", "files":state.bundle.archive.files,
+        json!({"submission_id":action,"source":"verified_result_archive", "files":state.bundle.archive.files,"skipped":state.bundle.skipped,
         "archive_sha256":state.bundle.archive.sha256,"download_available":state.available().map_err(|_| invalid())?,
         "acknowledgement_required":false,"scheduler_mutation_performed":false}),
     )
@@ -171,6 +171,6 @@ pub fn download(
     }
     Ok(
         json!({"submission_id":action,"source":"verified_result_archive","file":record,"local_file":output,
-        "local_file_verified":true,"reused_existing_file":reused,"acknowledgement_sent":false,"scheduler_mutation_performed":false}),
+        "local_file_verified":true,"reused_existing_file":reused,"archive_skipped":state.bundle.skipped,"acknowledgement_sent":false,"scheduler_mutation_performed":false}),
     )
 }

@@ -320,7 +320,7 @@ pub(crate) fn extend(document: &mut Value) {
     insert(
         "/api/admin/runs/{project}/{run}/retire",
         "post",
-        "Retire records only after scoped cleanup; retain small audit evidence",
+        "Retire a terminal Run and keep small audit evidence. Removes no bytes and later plans are refused, so run scoped cleanup first",
         Some(confirmation),
     );
     insert(

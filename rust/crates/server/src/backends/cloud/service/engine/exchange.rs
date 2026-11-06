@@ -151,6 +151,7 @@ impl Service {
         let job = request
             .job(&execution.job)
             .map_err(why!(cloud::Error::configuration()))?;
+        let job = self.with_result_limits(&execution.backend_id, job)?;
         let check = || self.still_live(&guard, &execution.job.project, &execution.job.run_id);
         let status = self.submit_once_or_reconcile(
             collector,
@@ -160,7 +161,7 @@ impl Service {
             cancelled,
         )?;
         let mut view = self.get(action, now)?;
-        view["synchronization"] = json!({"request_id":request.request_id,"resources":{"gpus":0,"cpus":2,"memory_gb":4},"max_time_seconds":600,"job":status,"training_replayed":false});
+        view["synchronization"] = json!({"request_id":request.request_id,"resources":{"gpus":job.gpus,"cpus":job.cpus,"memory_gb":job.memory_gb},"max_time_seconds":job.max_time_seconds,"job":status,"training_replayed":false});
         Ok(view)
     }
     pub(super) fn restore_reference(

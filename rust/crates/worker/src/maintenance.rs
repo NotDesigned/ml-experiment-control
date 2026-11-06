@@ -1,8 +1,9 @@
 //! Descriptor-confined, resumable removal after explicit administration. The
-//! active managed-worker lock is held; exact target directories are quarantined
-//! before deleting regular leaves. Receipts survive alongside process metadata.
+//! active managed-worker lock is held and each target is deleted through its
+//! retained inode. Receipts survive alongside process metadata. A link or special
+//! file in a target is removed itself and never followed or opened.
 use ml_exp_core::maintenance::Plan;
-use ml_exp_io::directory::{Directory, LockOptions};
+use ml_exp_io::directory::{Directory, EntryType, LockOptions};
 use serde::{Deserialize, Serialize};
 use std::{ffi::OsStr, io};
 fn invalid() -> io::Error {
@@ -12,7 +13,7 @@ fn invalid() -> io::Error {
 #[serde(deny_unknown_fields)]
 struct Target {
     path: String,
-    inode: Option<(u64, u64)>,
+    inode: Option<u64>,
     done: bool,
 }
 #[derive(Serialize, Deserialize)]
@@ -37,10 +38,8 @@ fn inspect(root: &Directory, depth: usize, budget: &mut usize) -> io::Result<()>
     }
     for name in root.entry_names_limited(1000000)? {
         *budget += 1;
-        if let Ok(directory) = root.child(&name, false) {
-            inspect(&directory, depth + 1, budget)?;
-        } else {
-            root.open_regular_read(&name)?;
+        if root.entry_type(&name)? == Some(EntryType::Directory) {
+            inspect(&root.child(&name, false)?, depth + 1, budget)?;
         }
     }
     Ok(())
@@ -52,11 +51,12 @@ fn remove(root: &Directory, depth: usize, budget: &mut usize) -> io::Result<()> 
     root.source_mode(false)?;
     for name in root.entry_names_limited(1000000)? {
         *budget += 1;
-        if let Ok(directory) = root.child(&name, false) {
+        if root.entry_type(&name)? == Some(EntryType::Directory) {
+            let directory = root.child(&name, false)?;
             remove(&directory, depth + 1, budget)?;
             root.remove_staged_empty_child(&directory)?;
         } else {
-            root.remove_staged_regular(&name)?;
+            root.remove_non_directory(&name)?;
         }
     }
     Ok(())
@@ -109,12 +109,7 @@ pub fn run(plan: &Plan) -> io::Result<serde_json::Value> {
                     if parent.entry_exists(OsStr::new(&name))? {
                         let directory = parent.child(OsStr::new(&name), false)?;
                         inspect(&directory, 0, &mut 0)?;
-                        if matches!(plan.selection, ml_exp_core::maintenance::Selection::Outputs)
-                            && directory.entry_exists(OsStr::new("checkpoints"))?
-                        {
-                            return Err(io::Error::other("CHECKPOINTS_MUST_BE_REMOVED_SEPARATELY"));
-                        }
-                        Some(directory.identity()?)
+                        Some(directory.identity()?.1)
                     } else {
                         None
                     }
@@ -127,13 +122,6 @@ pub fn run(plan: &Plan) -> io::Result<serde_json::Value> {
                 inode,
                 done: false,
             });
-        }
-        if let ml_exp_core::maintenance::Selection::Checkpoint { checkpoint } = &plan.selection {
-            let (context, manifest) =
-                ml_exp_core::checkpoints::validate_document(checkpoint, None, None)
-                    .map_err(|_| invalid())?;
-            let state = Directory::open(std::path::Path::new(&context.state_root), false)?;
-            ml_exp_io::checkpoints::verify_sealed(&state, &manifest).map_err(|_| invalid())?;
         }
         let saved = Saved {
             plan: plan.clone(),
@@ -152,42 +140,22 @@ pub fn run(plan: &Plan) -> io::Result<serde_json::Value> {
         }
         let target = &saved.targets[index];
         if let Some(inode) = target.inode {
-            let temporary = format!(".ml-expd-delete-{id}-{index}");
-            let directory = if root.entry_exists(OsStr::new(&temporary))? {
-                root.child(OsStr::new(&temporary), false)?
-            } else {
-                let (parent, name) = match parent(&root, &target.path) {
-                    Ok(value) => value,
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                        saved.targets[index].done = true;
-                        store.replace_regular(OsStr::new(&name), &serde_json::to_vec(&saved)?)?;
-                        continue;
+            match parent(&root, &target.path) {
+                Ok((parent, leaf)) if parent.entry_exists(OsStr::new(&leaf))? => {
+                    let directory = parent.child(OsStr::new(&leaf), false)?;
+                    if directory.identity()?.1 != inode {
+                        return Err(invalid());
                     }
-                    Err(e) => return Err(e),
-                };
-                if !parent.entry_exists(OsStr::new(&name))? {
-                    saved.targets[index].done = true;
-                    store.replace_regular(
-                        OsStr::new(&format!("{id}.json")),
-                        &serde_json::to_vec(&saved)?,
-                    )?;
-                    continue;
+                    // The reviewed plan and worker lock already fence execution.
+                    // Delete through this retained exact inode, keeping its
+                    // original pathname attached; CPFS needs no directory rename.
+                    remove(&directory, 0, &mut 0)?;
+                    parent.remove_staged_empty_child(&directory)?;
                 }
-                let directory = parent.child(OsStr::new(&name), false)?;
-                if directory.identity()? != inode {
-                    return Err(invalid());
-                }
-                // The reviewed plan and worker lock already fence execution.
-                // Delete through this retained exact inode, keeping its
-                // original pathname attached; CPFS needs no directory rename.
-                // Old quarantined operations above remain resumable.
-                directory
-            };
-            if directory.identity()? != inode {
-                return Err(invalid());
+                Ok(_) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
             }
-            remove(&directory, 0, &mut 0)?;
-            root.remove_staged_empty_child(&directory)?;
         }
         saved.targets[index].done = true;
         store.replace_regular(OsStr::new(&name), &serde_json::to_vec(&saved)?)?;
@@ -195,4 +163,234 @@ pub fn run(plan: &Plan) -> io::Result<serde_json::Value> {
     saved.complete = true;
     store.replace_regular(OsStr::new(&name), &serde_json::to_vec(&saved)?)?;
     plan.receipt().map_err(|_| invalid())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ml_exp_core::{
+        checkpoints::{self, Context},
+        launch,
+        maintenance::Selection,
+        managed::Config,
+    };
+    use serde_json::json;
+    use std::{
+        collections::BTreeMap,
+        fs,
+        os::unix::fs::{MetadataExt, PermissionsExt, symlink},
+        path::Path,
+    };
+
+    fn config(attempt: &Path) -> Config {
+        let identity = launch::Identity {
+            project: "demo".into(),
+            run_id: "train".into(),
+            attempt_id: "attempt-001".into(),
+        };
+        let manifest = launch::Manifest {
+            contract: launch::CONTRACT.into(),
+            identity: identity.clone(),
+            environment: BTreeMap::from([(
+                "OUTPUT_DIR".into(),
+                attempt.join("outputs").to_str().unwrap().into(),
+            )]),
+            argv: vec!["/bin/true".into()],
+            workdir: "/tmp".into(),
+            timeout_seconds: 60,
+        };
+        let bytes = manifest.encode().unwrap();
+        fs::create_dir_all(attempt.join("worker")).unwrap();
+        fs::write(attempt.join("worker/launch-manifest.json"), &bytes).unwrap();
+        fs::write(attempt.join("worker/.managed-launch.lock"), b"").unwrap();
+        Config {
+            manifest_path: attempt.join("launch-manifest.json"),
+            endpoint: String::new(),
+            attempt_root: attempt.join("worker"),
+            workdir: "/tmp".into(),
+            maximum_timeout_seconds: 60,
+            base_environment: BTreeMap::new(),
+            local_binding: Some(launch::Binding {
+                identity,
+                sha256: ml_exp_core::slurm::helper::sha256_bytes(&bytes)[7..].into(),
+            }),
+            output_directory: Some(attempt.join("outputs")),
+            runtime_environment: Vec::new(),
+            checkpoint_restore: None,
+            datasets: Vec::new(),
+            data_preparation: None,
+        }
+    }
+    fn plan(config: &Config, selection: Selection, request: char) -> Plan {
+        Plan {
+            contract: "native-storage-maintenance.v1".into(),
+            config: config.clone(),
+            selection,
+            request_id: request.to_string().repeat(32),
+        }
+    }
+    fn sealed_generation(attempt: &Path) -> serde_json::Value {
+        let generation = attempt.join("state/checkpoints/step-4");
+        fs::create_dir_all(&generation).unwrap();
+        fs::write(generation.join("state.bin"), b"weights").unwrap();
+        let ready = json!({"step":4,"files":[{"path":"checkpoints/step-4/state.bin","bytes":7,
+            "sha256":"9a129038d9a00aed0cf6a7ea059ca50a813449061ab87848cf1a13eafdf33b2c"}]});
+        let state = Directory::open(&attempt.join("state"), false).unwrap();
+        ml_exp_io::checkpoints::verify(&state, &checkpoints::manifest(&ready).unwrap(), true)
+            .unwrap();
+        let context = Context {
+            project: "demo".into(),
+            run_id: "train".into(),
+            attempt_id: "attempt-001".into(),
+            source_id: format!("source.{}", "a".repeat(64)),
+            image_id: format!("sha256:{}", "b".repeat(64)),
+            storage_scope: format!("sha256:{}", "c".repeat(64)),
+            state_root: attempt.join("state").to_str().unwrap().into(),
+        };
+        checkpoints::document(&context, &ready).unwrap()
+    }
+
+    #[test]
+    fn outputs_state_and_one_generation_are_removed_independently() {
+        let temp = tempfile::tempdir().unwrap();
+        let attempt = temp.path().join("runs/demo/train/attempts/attempt-001");
+        let config = config(&attempt);
+        // A user's own checkpoints directory is an ordinary result, not a refusal.
+        fs::create_dir_all(attempt.join("outputs/checkpoints")).unwrap();
+        fs::write(attempt.join("outputs/checkpoints/kept.pt"), b"weights").unwrap();
+        let document = sealed_generation(&attempt);
+        fs::create_dir_all(attempt.join("state/checkpoints/step-8")).unwrap();
+        fs::write(attempt.join("state/checkpoints/step-8/other"), b"x").unwrap();
+
+        let outputs = plan(&config, Selection::Outputs, 'a');
+        assert_eq!(run(&outputs).unwrap()["paths"], json!(["outputs"]));
+        assert!(!attempt.join("outputs").exists());
+        assert!(attempt.join("state/checkpoints/step-4/state.bin").exists());
+
+        let generation = plan(
+            &config,
+            Selection::Checkpoint {
+                checkpoint: Box::new(document),
+            },
+            'b',
+        );
+        assert_eq!(
+            run(&generation).unwrap()["paths"],
+            json!(["state/checkpoints/step-4"])
+        );
+        assert!(!attempt.join("state/checkpoints/step-4").exists());
+        assert!(attempt.join("state/checkpoints/step-8/other").exists());
+
+        let state = plan(&config, Selection::State, 'c');
+        assert_eq!(run(&state).unwrap()["paths"], json!(["state"]));
+        assert!(!attempt.join("state").exists());
+        assert!(attempt.join("worker/launch-manifest.json").exists());
+        // A repeated plan returns its saved receipt and removes nothing new.
+        assert!(run(&outputs).is_ok());
+    }
+
+    #[test]
+    fn a_corrupt_generation_is_deleted_without_proof_of_its_content() {
+        let temp = tempfile::tempdir().unwrap();
+        let attempt = temp.path().join("runs/demo/train/attempts/attempt-001");
+        let config = config(&attempt);
+        let document = sealed_generation(&attempt);
+        let generation = attempt.join("state/checkpoints/step-4");
+        fs::set_permissions(&generation, fs::Permissions::from_mode(0o700)).unwrap();
+        let file = generation.join("state.bin");
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::write(&file, b"damaged, and a different size").unwrap();
+        fs::write(generation.join("extra"), b"not in the manifest").unwrap();
+        let selection = Selection::Checkpoint {
+            checkpoint: Box::new(document),
+        };
+        assert_eq!(
+            run(&plan(&config, selection, 'a')).unwrap()["paths"],
+            json!(["state/checkpoints/step-4"])
+        );
+        assert!(!generation.exists());
+    }
+
+    #[test]
+    fn links_and_special_files_are_removed_and_what_they_point_at_stays() {
+        let temp = tempfile::tempdir().unwrap();
+        let outside = temp.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("kept"), b"not ours").unwrap();
+        let attempt = temp.path().join("runs/demo/train/attempts/attempt-001");
+        let config = config(&attempt);
+        let outputs = attempt.join("outputs");
+        fs::create_dir_all(outputs.join("nested")).unwrap();
+        fs::write(outputs.join("nested/result.bin"), b"x").unwrap();
+        symlink(&outside, outputs.join("to-directory")).unwrap();
+        symlink(outside.join("kept"), outputs.join("nested/to-file")).unwrap();
+        symlink("/absent", outputs.join("dangling")).unwrap();
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(outputs.join("nested/pipe"))
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert_eq!(
+            run(&plan(&config, Selection::Outputs, 'a')).unwrap()["paths"],
+            json!(["outputs"])
+        );
+        assert!(fs::symlink_metadata(&outputs).is_err());
+        assert_eq!(fs::read(outside.join("kept")).unwrap(), b"not ours");
+    }
+
+    #[test]
+    fn a_failed_read_refuses_the_plan_instead_of_passing_a_directory_as_a_file() {
+        if ml_exp_io::directory::effective_uid() == 0 {
+            // Root opens a mode 000 directory, so there is no failed read to observe.
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let attempt = temp.path().join("runs/demo/train/attempts/attempt-001");
+        let config = config(&attempt);
+        let locked = attempt.join("outputs/locked");
+        fs::create_dir_all(&locked).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        let plan = plan(&config, Selection::Outputs, 'a');
+        assert_eq!(
+            run(&plan).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert!(locked.exists());
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
+        run(&plan).unwrap();
+        assert!(!attempt.join("outputs").exists());
+    }
+
+    #[test]
+    fn a_resumed_removal_binds_the_target_by_inode_alone() {
+        let temp = tempfile::tempdir().unwrap();
+        let attempt = temp.path().join("runs/demo/train/attempts/attempt-001");
+        let config = config(&attempt);
+        fs::create_dir_all(attempt.join("state")).unwrap();
+        let plan = plan(&config, Selection::State, 'a');
+        let inode = fs::metadata(attempt.join("state")).unwrap().ino();
+        let store = attempt.join("worker/.storage-maintenance");
+        fs::create_dir(&store).unwrap();
+        let saved = |inode| {
+            serde_json::to_vec(&Saved {
+                plan: plan.clone(),
+                targets: vec![Target {
+                    path: "state".into(),
+                    inode: Some(inode),
+                    done: false,
+                }],
+                complete: false,
+            })
+            .unwrap()
+        };
+        let name = store.join(format!("{}.json", plan.id().unwrap()));
+        fs::write(&name, saved(inode + 1)).unwrap();
+        assert!(run(&plan).is_err());
+        assert!(attempt.join("state").exists());
+        fs::write(&name, saved(inode)).unwrap();
+        run(&plan).unwrap();
+        assert!(!attempt.join("state").exists());
+    }
 }

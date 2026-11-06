@@ -23,7 +23,8 @@ fn staged_attempt_exists_before_submission_and_reuses_original_files_after_resta
     let path = attempt(root.path());
     let bytes = fs::read(path.join("attempt.json")).unwrap();
     assert_eq!(bytes, request.prepared_content().unwrap().0.as_bytes());
-    assert!(path.join("inputs").is_dir() && path.join("outputs").is_dir());
+    assert!(path.join("state").is_dir());
+    assert!(!path.join("inputs").exists() && !path.join("outputs").exists());
     assert_eq!(calls(root.path()), 0);
     drop(helper);
     let mut config = config(root.path());
@@ -75,17 +76,17 @@ fn preexisting_attempt_is_never_adopted_or_repaired() {
 }
 #[test]
 fn damaged_shared_evidence_never_starts_a_scheduler_submission() {
-    for change in ["manifest", "marker", "missing-outputs", "symlink-inputs"] {
+    for change in ["manifest", "marker", "missing-state", "symlink-state"] {
         let (root, helper, request) = staged_fixture();
         assert_eq!(handle(&helper, &request).outcome, ReplyOutcome::Prepared);
         let path = attempt(root.path());
         match change {
             "manifest" => fs::write(path.join("attempt.json"), b"{}").unwrap(),
             "marker" => fs::write(path.join(".native-staging.json"), b"{}").unwrap(),
-            "missing-outputs" => fs::remove_dir(path.join("outputs")).unwrap(),
-            "symlink-inputs" => {
-                fs::remove_dir(path.join("inputs")).unwrap();
-                std::os::unix::fs::symlink(root.path(), path.join("inputs")).unwrap();
+            "missing-state" => fs::remove_dir(path.join("state")).unwrap(),
+            "symlink-state" => {
+                fs::remove_dir(path.join("state")).unwrap();
+                std::os::unix::fs::symlink(root.path(), path.join("state")).unwrap();
             }
             _ => unreachable!(),
         }
@@ -102,6 +103,106 @@ fn damaged_shared_evidence_never_starts_a_scheduler_submission() {
             "{change}"
         );
     }
+}
+#[test]
+fn shared_damage_found_just_before_start_leaves_the_attempt_able_to_submit() {
+    let (root, helper, request) = staged_fixture();
+    assert_eq!(handle(&helper, &request).outcome, ReplyOutcome::Prepared);
+    let submit = Request::submit(request.intent().clone()).unwrap();
+    let worker = attempt(root.path()).join("worker");
+    assert_eq!(
+        helper
+            .submit_after(&submit, || fs::create_dir(&worker).unwrap())
+            .unwrap(),
+        ReplyOutcome::Unknown {
+            reason: UnknownReason::StorageUnavailable
+        }
+    );
+    assert_eq!(calls(root.path()), 0);
+    assert!(!claim(root.path()).join("submit.started.json").exists());
+    fs::remove_dir(&worker).unwrap();
+    assert_eq!(handle(&helper, &request).outcome, ReplyOutcome::Prepared);
+    assert_eq!(
+        handle(&helper, &submit).outcome,
+        ReplyOutcome::Submitted {
+            job_id: "12345".into()
+        }
+    );
+    assert_eq!(calls(root.path()), 1);
+}
+/// A Run whose one dataset is a sealed tree holding `tokens.bin`, which contains "abcd".
+fn request_with_dataset(root: &Path) -> (Request, PathBuf) {
+    let base = request_at(root);
+    let (manifest, script) = base.prepared_content().unwrap();
+    let sha256 = "b".repeat(64);
+    let tree = root
+        .join("data/demo")
+        .join(format!("asset.{sha256}"))
+        .join("tree");
+    fs::create_dir_all(&tree).unwrap();
+    let file = tree.join("tokens.bin");
+    fs::write(&file, b"abcd").unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o400)).unwrap();
+    fs::set_permissions(&tree, fs::Permissions::from_mode(0o500)).unwrap();
+    let mut document: Value = serde_json::from_str(manifest).unwrap();
+    document["native_datasets"] = json!([{
+        "name": "tokens",
+        "receipt": {
+            "contract": ml_exp_core::datasets::CONTRACT,
+            "project": "demo",
+            "target": target(),
+            "asset_id": format!("asset.{sha256}"),
+            "definition": {
+                "sha256": sha256,
+                "archive_bytes": 4096,
+                "files": [{
+                    "path": "tokens.bin",
+                    "bytes": 4,
+                    "sha256": "88d4266fd4e6338d13b845fcf289579d209c897823b9217da3e161936f031589",
+                }],
+            },
+            "root": tree.to_str().unwrap(),
+        },
+    }]);
+    let manifest = document.to_string();
+    let mut intent = base.intent().clone();
+    intent.manifest_sha256 = helper::sha256_bytes(manifest.as_bytes());
+    (
+        Request::prepare(intent, manifest, script.into()).unwrap(),
+        tree,
+    )
+}
+#[test]
+fn submission_checks_dataset_files_and_sizes_and_leaves_their_content_to_the_job() {
+    let (root, helper, _) = staged_fixture();
+    let (request, tree) = request_with_dataset(root.path());
+    assert_eq!(handle(&helper, &request).outcome, ReplyOutcome::Prepared);
+    let file = tree.join("tokens.bin");
+    let rewrite = |bytes: &[u8]| {
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::write(&file, bytes).unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o400)).unwrap();
+    };
+    let submit = Request::submit(request.intent().clone()).unwrap();
+    rewrite(b"abc");
+    assert_eq!(
+        handle(&helper, &submit).outcome,
+        ReplyOutcome::Unknown {
+            reason: UnknownReason::StorageUnavailable
+        }
+    );
+    assert_eq!(calls(root.path()), 0);
+    assert!(!claim(root.path()).join("submit.started.json").exists());
+    // The same size with other content is the job's own hash to refuse.
+    rewrite(b"abcx");
+    assert_eq!(
+        handle(&helper, &submit).outcome,
+        ReplyOutcome::Submitted {
+            job_id: "12345".into()
+        }
+    );
+    assert_eq!(calls(root.path()), 1);
+    fs::set_permissions(&tree, fs::Permissions::from_mode(0o700)).unwrap();
 }
 #[test]
 fn replaced_shared_root_or_changed_configuration_cannot_be_opened_after_restart() {
@@ -142,7 +243,7 @@ fn staged_request_cannot_use_a_foreign_scope_or_directory_even_with_matching_byt
 }
 
 #[test]
-fn changed_output_directory_after_dispatch_does_not_erase_the_known_submission() {
+fn changed_state_directory_after_dispatch_does_not_erase_the_known_submission() {
     let (root, helper, request) = staged_fixture();
     assert_eq!(handle(&helper, &request).outcome, ReplyOutcome::Prepared);
     let submit = Request::submit(request.intent().clone()).unwrap();
@@ -152,7 +253,7 @@ fn changed_output_directory_after_dispatch_does_not_erase_the_known_submission()
             job_id: "12345".into()
         }
     );
-    fs::remove_dir(attempt(root.path()).join("outputs")).unwrap();
+    fs::remove_dir(attempt(root.path()).join("state")).unwrap();
     for operation in [submit, Request::inspect(request.intent().clone()).unwrap()] {
         assert_eq!(
             handle(&helper, &operation).outcome,
@@ -165,11 +266,11 @@ fn changed_output_directory_after_dispatch_does_not_erase_the_known_submission()
 }
 
 #[test]
-fn missing_outputs_after_dispatch_still_allow_owned_observation_and_single_cancel() {
+fn missing_state_after_dispatch_still_allows_owned_observation_and_single_cancel() {
     let (root, helper, request) = staged_fixture();
     assert_eq!(handle(&helper, &request).outcome, ReplyOutcome::Prepared);
     handle(&helper, &Request::submit(request.intent().clone()).unwrap());
-    fs::remove_dir(attempt(root.path()).join("outputs")).unwrap();
+    fs::remove_dir(attempt(root.path()).join("state")).unwrap();
     drop(helper);
     for (name, body) in [
         ("sacct", "cat \"$EVIDENCE\""),
@@ -368,7 +469,7 @@ fn managed_launch_is_staged_with_exact_local_binding_and_keeps_control_outputs_f
     assert_eq!(package.manifest.argv, vec!["python", "train.py"]);
     assert_eq!(config.runtime_environment, vec!["CUDA_VISIBLE_DEVICES"]);
     assert!(!attempt(root.path()).join("worker").exists());
-    assert!(!attempt(root.path()).join("outputs/payload").exists());
+    assert!(!attempt(root.path()).join("outputs").exists());
     assert_eq!(
         handle(&helper, &Request::submit(request.intent().clone()).unwrap()).outcome,
         ReplyOutcome::Submitted {
@@ -379,7 +480,7 @@ fn managed_launch_is_staged_with_exact_local_binding_and_keeps_control_outputs_f
 }
 #[test]
 fn changed_launch_package_or_preexisting_worker_never_dispatches() {
-    for change in ["config", "launch", "control", "payload"] {
+    for change in ["config", "launch", "control", "outputs", "state"] {
         let (root, helper, request) = staged_fixture();
         assert_eq!(handle(&helper, &request).outcome, ReplyOutcome::Prepared);
         let path = attempt(root.path());
@@ -387,7 +488,8 @@ fn changed_launch_package_or_preexisting_worker_never_dispatches() {
             "config" => fs::write(path.join("managed-config.json"), b"{}").unwrap(),
             "launch" => fs::write(path.join("launch-manifest.json"), b"{}").unwrap(),
             "control" => fs::create_dir(path.join("worker")).unwrap(),
-            "payload" => fs::create_dir(path.join("outputs/payload")).unwrap(),
+            "outputs" => fs::create_dir(path.join("outputs")).unwrap(),
+            "state" => fs::write(path.join("state/stale"), b"").unwrap(),
             _ => unreachable!(),
         }
         let submit = Request::submit(request.intent().clone()).unwrap();

@@ -1,6 +1,6 @@
 #![cfg(unix)]
 use ml_exp_core::launch;
-use ml_exp_worker::managed::{self, Config, Error, Phase, Publication, Training};
+use ml_exp_worker::managed::{self, Config, Error, Phase, Training};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -143,6 +143,28 @@ fn managed_child() {
             private_file(&lock, b"replacement lock\n");
         }
         "complete" => {}
+        mode @ ("flood" | "flood-and-kill-worker") => {
+            let flood = vec![b'x'; 9 * 1024 * 1024];
+            let mut out = std::io::stdout();
+            out.write_all(&flood).unwrap();
+            out.write_all(b"\nFLOOD_END\n").unwrap();
+            out.flush().unwrap();
+            let mut err = std::io::stderr();
+            err.write_all(&flood).unwrap();
+            err.write_all(b"\nFLOOD_END\n").unwrap();
+            err.flush().unwrap();
+            if mode == "flood-and-kill-worker" {
+                let log = output.join("stderr.log");
+                let started = Instant::now();
+                while !fs::read(&log).unwrap().ends_with(b"FLOOD_END\n")
+                    && started.elapsed() < Duration::from_secs(3)
+                {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                // SAFETY: this sealed fixture's parent is the worker under test.
+                unsafe { libc::kill(libc::getppid(), libc::SIGKILL) };
+            }
+        }
         mode => panic!("unknown synthetic fixture mode: {mode}"),
     }
 }
@@ -159,7 +181,12 @@ fn sealed_training_executes_once_with_explicit_environment_and_durable_receipt()
     let receipt = result.receipt.unwrap();
     assert!(receipt.succeeded());
     assert_eq!(receipt.training, Training::Completed);
-    assert_eq!(receipt.publication, Publication::NotImplemented);
+    assert!(
+        serde_json::to_value(&receipt)
+            .unwrap()
+            .get("publication")
+            .is_none()
+    );
     assert!(!receipt.download_available);
     assert_eq!(receipt.identity.project, "demo");
     assert_eq!(receipt.identity.run_id, "train");
@@ -464,6 +491,65 @@ fn post_execution_storage_failure_keeps_started_unknown_and_prevents_replay() {
 }
 
 #[test]
+fn a_flooded_log_exits_successfully_and_the_receipt_records_what_it_dropped() {
+    let fixture = Fixture::new("flood");
+    fixture.initialize();
+    let executed = fixture.cli(None);
+    assert!(
+        executed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&executed.stderr)
+    );
+    let reply: Value = serde_json::from_slice(&executed.stdout).unwrap();
+    assert_eq!(reply["receipt"]["training"], "COMPLETED");
+    let process = &reply["receipt"]["process"];
+    assert!(process["error"].is_null());
+    let seam = ml_exp_io::process::SEAM;
+    for stream in ["stdout", "stderr"] {
+        let log = fs::read(
+            fixture
+                .config
+                .attempt_root
+                .join(format!("outputs/{stream}.log")),
+        )
+        .unwrap();
+        assert!(log.len() <= 8 * 1024 * 1024);
+        assert_eq!(log[4 * 1024 * 1024..][..seam.len()], *seam);
+        assert!(
+            log[log.len() - 4096..]
+                .windows(b"FLOOD_END".len())
+                .any(|bytes| bytes == b"FLOOD_END")
+        );
+        assert_eq!(
+            process[format!("{stream}_sha256").as_str()],
+            format!("{:x}", Sha256::digest(&log))
+        );
+        assert!(process[format!("{stream}_dropped_bytes").as_str()].as_u64() > Some(0));
+    }
+    assert_eq!(fixture.count(), 1);
+}
+
+#[test]
+fn killing_the_worker_leaves_the_end_of_the_log_on_disk() {
+    let fixture = Fixture::new("flood-and-kill-worker");
+    fixture.initialize();
+    let executed = fixture.cli(None);
+    assert!(!executed.status.success());
+    let log = fs::read(fixture.config.attempt_root.join("outputs/stderr.log")).unwrap();
+    assert!(log.len() <= 8 * 1024 * 1024);
+    assert!(log.ends_with(b"FLOOD_END\n"));
+    let seam = ml_exp_io::process::SEAM;
+    assert_eq!(log[4 * 1024 * 1024..][..seam.len()], *seam);
+    assert!(
+        !fixture
+            .config
+            .attempt_root
+            .join("managed-receipt.json")
+            .exists()
+    );
+}
+
+#[test]
 fn operator_cli_only_loads_private_config_and_can_initialize_run_and_inspect() {
     let fixture = Fixture::new("complete");
     let initialized = fixture.cli(Some("--initialize"));
@@ -507,9 +593,10 @@ fn operator_cli_only_loads_private_config_and_can_initialize_run_and_inspect() {
 #[test]
 fn local_sealed_launch_bootstraps_once_and_freezes_only_approved_runtime_environment() {
     let mut f = Fixture::new("complete");
-    let outputs = f._root.path().join("shared-outputs");
-    private_directory(&outputs);
-    f.config.output_directory = Some(outputs.join("payload"));
+    let shared = f._root.path().join("shared-attempt");
+    private_directory(&shared);
+    let outputs = shared.join("outputs");
+    f.config.output_directory = Some(outputs.clone());
     f.config.runtime_environment = vec!["CUDA_VISIBLE_DEVICES".into()];
     f.document["environment"]["OUTPUT_DIR"] = json!(f.config.output_path());
     f.document["environment"]["EXPECTED_CUDA"] = json!("3,5");
@@ -543,7 +630,7 @@ fn local_sealed_launch_bootstraps_once_and_freezes_only_approved_runtime_environ
     assert!(observation["receipt"]["runtime_environment_sha256"].is_string());
     assert_eq!(f.count(), 1);
     assert_eq!(
-        fs::read(outputs.join("payload/weights.bin")).unwrap(),
+        fs::read(outputs.join("weights.bin")).unwrap(),
         b"synthetic model weights"
     );
     assert!(!f.config.attempt_root.join("outputs").exists());

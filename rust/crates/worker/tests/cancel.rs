@@ -86,3 +86,67 @@ fn cli_term_and_int_cancel_process_groups_and_publish_receipts() {
         );
     }
 }
+
+fn caught(pid: u32, signal: i32) -> bool {
+    fs::read_to_string(format!("/proc/{pid}/status")).is_ok_and(|status| {
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix("SigCgt:"))
+            .and_then(|mask| u64::from_str_radix(mask.trim(), 16).ok())
+            .is_some_and(|mask| mask & (1 << (signal - 1)) != 0)
+    })
+}
+
+/// A Complete past its SSH limit must keep going, or a dataset that takes longer than
+/// the limit would restart from nothing on every retry. TERM still stops it.
+#[test]
+fn the_data_helper_outlives_a_lost_ssh_session_and_still_stops_on_term() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let config = root.path().join("data.json");
+    fs::write(
+        &config,
+        format!(
+            r#"{{"root":"{}","target":{{"backend_id":"slurm","profile_sha256":"sha256:{}","storage_scope":"sha256:{}"}}}}"#,
+            root.path().display(),
+            "1".repeat(64),
+            "2".repeat(64)
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
+    // The open stdin holds the helper waiting for a request that does not come.
+    let mut helper = Worker(
+        Command::new(env!("CARGO_BIN_EXE_ml-exp-worker-rs"))
+            .args(["data-helper", "--stdio", "--config"])
+            .arg(&config)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let pid = helper.0.id();
+    let start = Instant::now();
+    while !caught(pid, libc::SIGHUP) {
+        assert!(helper.0.try_wait().unwrap().is_none());
+        assert!(start.elapsed() < Duration::from_secs(5));
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // SAFETY: this is the exact helper Child PID, which remains owned and unreaped
+    // here; the test signals only its own process.
+    assert_eq!(unsafe { libc::kill(pid as i32, libc::SIGHUP) }, 0);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(helper.0.try_wait().unwrap().is_none());
+    // SAFETY: as above.
+    assert_eq!(unsafe { libc::kill(pid as i32, libc::SIGTERM) }, 0);
+    let start = Instant::now();
+    let status = loop {
+        if let Some(status) = helper.0.try_wait().unwrap() {
+            break status;
+        }
+        assert!(start.elapsed() < Duration::from_secs(10));
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(status.code(), Some(1));
+}
