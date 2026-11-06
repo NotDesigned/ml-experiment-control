@@ -39,7 +39,7 @@ with declared inputs and metrics.
 ## Integrate or develop
 
 - [API resource reference](http_contract.md#api-resource-reference): resources, identities and diagnostic endpoints.
-- [HTTP contract](http_contract.md): auth, protocol 2 and errors.
+- [HTTP contract](http_contract.md): auth and errors.
 - [Backend capabilities](backends.md): matching and server preparation contracts.
 - [Architecture](architecture.md): crates, module boundaries and execution locations.
 - [Compatibility and upgrades](architecture.md#compatibility-and-upgrades).

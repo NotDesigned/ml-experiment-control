@@ -156,13 +156,9 @@ fn environment_url_and_token_candidates_drive_the_real_read_only_request() {
             1
         );
         assert!(!request.contains("saved-test-secret"));
-        assert_eq!(
-            request.matches("x-ml-expd-client-protocol: 2\r\n").count(),
-            1
-        );
         socket
             .write_all(
-                b"HTTP/1.1 200 OK\r\nContent-Length: 68\r\nConnection: close\r\n\r\n{\"ok\":true,\"min_client_protocol_version\":2,\"api_protocol_version\":2}",
+                b"HTTP/1.1 200 OK\r\nContent-Length: 29\r\nConnection: close\r\n\r\n{\"ok\":true,\"capabilities\":[]}",
             )
             .unwrap();
     });
@@ -175,10 +171,7 @@ fn environment_url_and_token_candidates_drive_the_real_read_only_request() {
             .output()
             .unwrap(),
     );
-    assert_eq!(
-        displayed,
-        serde_json::json!({"ok":true,"min_client_protocol_version":2,"api_protocol_version":2})
-    );
+    assert_eq!(displayed, serde_json::json!({"ok":true,"capabilities":[]}));
     server.join().unwrap();
 
     let conflict = command(temp.path())
@@ -223,7 +216,7 @@ fn environment_token_file_does_not_use_an_ambient_system_proxy() {
         );
         socket
             .write_all(
-                b"HTTP/1.1 200 OK\r\nContent-Length: 68\r\nConnection: close\r\n\r\n{\"ok\":true,\"min_client_protocol_version\":2,\"api_protocol_version\":2}",
+                b"HTTP/1.1 200 OK\r\nContent-Length: 29\r\nConnection: close\r\n\r\n{\"ok\":true,\"capabilities\":[]}",
             )
             .unwrap();
     });
@@ -238,10 +231,7 @@ fn environment_token_file_does_not_use_an_ambient_system_proxy() {
             .output()
             .unwrap(),
     );
-    assert_eq!(
-        displayed,
-        serde_json::json!({"ok":true,"min_client_protocol_version":2,"api_protocol_version":2})
-    );
+    assert_eq!(displayed, serde_json::json!({"ok":true,"capabilities":[]}));
     server.join().unwrap();
 }
 
@@ -283,7 +273,7 @@ fn environment_token_file_and_xdg_config_paths_remain_supported() {
 }
 
 #[test]
-fn state_preflight_rejects_misdirected_credentials_before_the_handshake() {
+fn state_preflight_rejects_misdirected_credentials_before_any_request() {
     use serde_json::json;
     let temp = tempfile::tempdir().unwrap();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -337,12 +327,7 @@ fn real_status_cli_preserves_json_evidence_and_has_a_human_summary() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let base = format!("http://{}/ml-expd", listener.local_addr().unwrap());
-        let mut responses = vec![("/api/health".to_string(), {
-            let mut health = fixture["health"].clone();
-            health["api_protocol_version"] = json!(2);
-            health["min_client_protocol_version"] = json!(2);
-            health
-        })];
+        let mut responses = vec![("/api/health".to_string(), { fixture["health"].clone() })];
         responses.extend(fixture["requests"].as_array().unwrap().iter().map(|p| {
             let path = p.as_str().unwrap();
             (path.to_owned(), fixture["responses"][path].clone())
@@ -410,8 +395,6 @@ fn real_logs_and_metrics_commands_follow_the_original_saved_attempt() {
         saved["server"] = json!(&base);
         write_atomic(&state, &serde_json::to_vec(&saved).unwrap(), true).unwrap();
         let mut health = fixture["health"].clone();
-        health["api_protocol_version"] = json!(2);
-        health["min_client_protocol_version"] = json!(2);
         let mut responses = vec![("/api/health".to_string(), health)];
         responses.extend(fixture["requests"].as_array().unwrap().iter().map(|p| {
             let path = p.as_str().unwrap();

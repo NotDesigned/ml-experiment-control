@@ -34,9 +34,6 @@ pub mod state;
 pub mod submission;
 pub mod tracking;
 
-pub const API_PROTOCOL_VERSION: u32 = 2;
-pub const CLIENT_PROTOCOL_HEADER: &str = "X-ML-Expd-Client-Protocol";
-
 pub mod capacity;
 pub mod maintenance;
 pub mod preparation;

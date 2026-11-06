@@ -163,7 +163,7 @@ ml-exp run continue PREPARATION_ID --project my-study --confirmation 'PREPARE PR
 
 Low-level source, Runtime, Run and submission APIs remain available. The new
 one-config workflow requires `server-experiment-preparation.v1`; older clients
-continue to use the existing low-level protocol-2 endpoints.
+continue to use the existing low-level endpoints.
 
 ## Data delivery diagnosis
 

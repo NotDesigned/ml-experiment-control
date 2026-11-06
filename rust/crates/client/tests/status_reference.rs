@@ -240,7 +240,6 @@ fn real_http_status_keeps_queue_training_and_publication_independent() {
                 );
                 let request = request.to_lowercase();
                 assert!(request.contains("authorization: bearer synthetic-status-token\r\n"));
-                assert!(request.contains("x-ml-expd-client-protocol: 2\r\n"));
                 let value = &responses[path.as_str().unwrap()];
                 let (status, code, body) = if let Some(error) = value.get("$error") {
                     (

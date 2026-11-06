@@ -705,7 +705,7 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         .recv_timeout(std::time::Duration::from_secs(10))
         .expect("native cloud startup");
     let client = ml_exp_client::Client::new(&format!("http://{address}"), token.into()).unwrap();
-    let health = client.negotiate().unwrap();
+    let health = client.health().unwrap();
     assert_eq!(health["scheduler_mutations"], false);
     let capabilities = health["capabilities"].as_array().unwrap();
     assert!(capabilities.iter().any(|v| v == "source-archive.v1"));
@@ -792,7 +792,6 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         let response = http
             .get(format!("http://{address}{path}"))
             .bearer_auth(token)
-            .header(ml_exp_core::CLIENT_PROTOCOL_HEADER, "2")
             .send()
             .unwrap();
         assert_eq!(response.status().as_u16(), 503);
@@ -853,7 +852,6 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         let response = http
             .get(format!("http://{address}{download_path}"))
             .bearer_auth(&download_channel.token)
-            .header(ml_exp_core::CLIENT_PROTOCOL_HEADER, "2")
             .send()
             .unwrap();
         assert_eq!(response.status().as_u16(), 200);
@@ -866,26 +864,22 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
             304
         );
     }
-    for (credential, path, protocol, status) in [
-        ("wrong", download_path, "2", 401),
+    for (credential, path) in [
+        ("wrong", download_path),
         (
             download_channel.token.as_str(),
             "/api/worker-exchange/demo/download-inventory/attempt-002/package",
-            "2",
-            401,
         ),
-        (download_channel.token.as_str(), "/api/health", "2", 401),
-        (download_channel.token.as_str(), download_path, "1", 426),
+        (download_channel.token.as_str(), "/api/health"),
     ] {
         assert_eq!(
             http.get(format!("http://{address}{path}"))
                 .bearer_auth(credential)
-                .header(ml_exp_core::CLIENT_PROTOCOL_HEADER, protocol)
                 .send()
                 .unwrap()
                 .status()
                 .as_u16(),
-            status
+            401
         );
     }
     assert_eq!(
@@ -895,7 +889,6 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     let post = |token: &str, path: &str, body: Vec<u8>| {
         http.post(format!("http://{address}{path}"))
             .bearer_auth(token)
-            .header(ml_exp_core::CLIENT_PROTOCOL_HEADER, "2")
             .header("content-type", "application/json")
             .body(body)
             .send()
@@ -939,15 +932,14 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     // The diagnostic capability reads only its exact Attempt, without a global
     // API token or a mutation packet. It grants no ordinary API access.
     let status_path = format!("{path}/status");
-    let get_status = |token: &str, path: &str, protocol: &str| {
+    let get_status = |token: &str, path: &str| {
         http.get(format!("http://{address}{path}"))
             .bearer_auth(token)
-            .header(ml_exp_core::CLIENT_PROTOCOL_HEADER, protocol)
             .send()
             .unwrap()
     };
     for _ in 0..2 {
-        let response = get_status(&channel.token, &status_path, "2");
+        let response = get_status(&channel.token, &status_path);
         assert_eq!(response.status().as_u16(), 200);
         let value: Value = serde_json::from_slice(&response.bytes().unwrap()).unwrap();
         assert_eq!(value["contract"], "sync-diagnostic-status.v1");
@@ -957,31 +949,22 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         assert!(!value.to_string().contains(&channel.token));
     }
     assert_eq!(
-        get_status("wrong-worker-token", &status_path, "2")
+        get_status("wrong-worker-token", &status_path)
             .status()
             .as_u16(),
         401
     );
     assert_eq!(
-        get_status(&channel.token, &status_path, "1")
-            .status()
-            .as_u16(),
-        426
-    );
-    assert_eq!(
         get_status(
             &channel.token,
-            "/api/worker-exchange/demo/train/attempt-002/status",
-            "2"
+            "/api/worker-exchange/demo/train/attempt-002/status"
         )
         .status()
         .as_u16(),
         401
     );
     assert_eq!(
-        get_status(&channel.token, "/api/health", "2")
-            .status()
-            .as_u16(),
+        get_status(&channel.token, "/api/health").status().as_u16(),
         401
     );
     assert_eq!(
@@ -993,7 +976,7 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     assert!(
         ml_exp_client::Client::new(&format!("http://{address}"), channel.token.clone())
             .unwrap()
-            .negotiate()
+            .health()
             .is_err()
     );
     let records = client

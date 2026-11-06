@@ -62,9 +62,9 @@ enum Command {
         #[command(subcommand)]
         command: Data,
     },
-    /// Validate the authenticated protocol handshake (no job submission).
+    /// Validate the authenticated connection (no job submission).
     Check,
-    /// Read a protocol-2 JSON endpoint under /api/.
+    /// Read a JSON endpoint under /api/.
     Get { path: String },
     /// Create, submit or observe an experiment through explicit native operations.
     Run {
@@ -982,14 +982,14 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             )?;
             if let Some(target) = target {
                 // Reject incomplete or conflicting local identities before even
-                // reading the credential or sending the handshake.
+                // reading the credential or sending the health request.
                 observation::begin(&plan.base_url, saved.as_ref(), target.selection())?;
             }
             let token = credentials::load_token(plan.token_source)?;
             let client = Client::new(&plan.base_url, token)?;
             match command {
                 Command::Backend { executor, refresh } => {
-                    client.negotiate()?;
+                    client.health()?;
                     Output::Json(if let Some(executor) = executor {
                         let path = format!("/api/backends/{executor}/capacity");
                         if refresh {
@@ -1002,7 +1002,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     })
                 }
                 Command::Admin { .. } => {
-                    let health = client.negotiate()?;
+                    let health = client.health()?;
                     Output::Json(ml_exp_client::administration::execute(
                         &client,
                         admin_plan.ok_or("admin plan unavailable")?,
@@ -1010,7 +1010,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     )?)
                 }
                 Command::Debug { .. } => {
-                    let health = client.negotiate()?;
+                    let health = client.health()?;
                     Output::Json(ml_exp_client::debug::execute(
                         &client,
                         debug_plan.ok_or("debug plan unavailable")?,
@@ -1018,7 +1018,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     )?)
                 }
                 Command::Environment { .. } => {
-                    let health = client.negotiate()?;
+                    let health = client.health()?;
                     Output::Json(ml_exp_client::runtime::execute(
                         &client,
                         runtime_plan.ok_or("runtime plan unavailable")?,
@@ -1026,7 +1026,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     )?)
                 }
                 Command::Data { command } => {
-                    let health = client.negotiate()?;
+                    let health = client.health()?;
                     Output::Json(match command {
                         Data::Diagnose { project,executor,asset,request_id,provider:true,lines,.. } => {
                             if !(1..=2000).contains(&lines) {
@@ -1056,10 +1056,10 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                         } => datasets::show(&client, &project, &executor, &asset, &health)?,
                     })
                 }
-                Command::Check => Output::Json(client.negotiate()?),
+                Command::Check => Output::Json(client.health()?),
                 Command::Get { path } => Output::Json(client.get(&path)?),
                 Command::Project { .. } => {
-                    let health = client.negotiate()?;
+                    let health = client.health()?;
                     Output::Json(projects::execute(
                         &client,
                         project_plan.as_ref().expect("validated project plan"),
@@ -1067,7 +1067,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     )?)
                 }
                 Command::Source { command } => {
-                    let health = client.negotiate()?;
+                    let health = client.health()?;
                     Output::Json(match command {
                         Source::Import { project, directory } => {
                             sources::import_directory(&client, &project, &directory, &health)?
@@ -1118,11 +1118,11 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 Command::Run {
                     command: Run::LocalStatus { project, run },
                 } => {
-                    client.negotiate()?;
+                    client.health()?;
                     Output::Json(ml_exp_client::local::status(&client, &project, &run)?)
                 }
                 Command::Run { command } => {
-                    let health = client.negotiate()?;
+                    let health = client.health()?;
                     match command {
                         Run::Batch {
                             project, state_dir, ..

@@ -160,7 +160,6 @@ impl Reader {
                         offset / ml_exp_core::multipart::PART_BYTES
                     ))
                     .bearer_auth(token)
-                    .header(ml_exp_core::CLIENT_PROTOCOL_HEADER, "2")
                     .timeout(remaining)
                     .body("{}")
                     .send()

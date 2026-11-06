@@ -13,7 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 fn health() -> Value {
-    json!({"min_client_protocol_version":2,"api_protocol_version":2,"capabilities":["project-lifecycle.v1"]})
+    json!({"capabilities":["project-lifecycle.v1"]})
 }
 fn record(project: &str, state: &str) -> Value {
     json!({"project":project,"project_file":"/approved/project.yaml","state":state,"source":"MANUAL","registered_at":"first","updated_at":"now","state_reason":"test"})
@@ -117,13 +117,6 @@ fn authenticated(request: &Request, method: &str, path: &str) {
         request
             .head
             .matches("authorization: bearer project-test-secret\r\n")
-            .count(),
-        1
-    );
-    assert_eq!(
-        request
-            .head
-            .matches("x-ml-expd-client-protocol: 2\r\n")
             .count(),
         1
     );
@@ -353,7 +346,7 @@ fn typed_library_posts_preserve_redirect_409_and_invalid_identity_boundaries() {
     }
 }
 #[test]
-fn protocol_or_capability_failure_never_sends_the_planned_post() {
+fn invalid_health_or_a_missing_capability_never_sends_the_planned_post() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let client = Client::new(&base, "project-test-secret".into()).unwrap();
@@ -362,11 +355,7 @@ fn protocol_or_capability_failure_never_sends_the_planned_post() {
         expected_revision: Some(0),
     })
     .unwrap();
-    for health in [
-        json!({}),
-        json!({"min_client_protocol_version":2,"api_protocol_version":2}),
-        json!({"min_client_protocol_version":2,"api_protocol_version":2,"capabilities":["training-submit.v1"]}),
-    ] {
+    for health in [json!({}), json!({"capabilities":["training-submit.v1"]})] {
         assert!(projects::execute(&client, &plan, &health).is_err());
     }
     no_repeat(&listener);

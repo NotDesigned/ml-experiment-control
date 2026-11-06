@@ -47,7 +47,6 @@ fn send(
     let response = http
         .post(format!("{}/artifacts", channel.url))
         .bearer_auth(&channel.token)
-        .header(ml_exp_core::CLIENT_PROTOCOL_HEADER, "2")
         .header("content-type", "application/json")
         .body(body)
         .send()

@@ -4,7 +4,7 @@ The default implementation on `main` is native Rust. See the
 [latest release](https://github.com/NotDesigned/ml-experiment-control/releases/latest) for the current version.
 The client, API, worker and state machines are Rust programs; optional image
 build/copy operations retain a narrow Python bridge, and W&B uses its official
-SDK process. The HTTP protocol remains **2**.
+SDK process.
 
 Submit code, a Dockerfile and data to an existing HTTP API; run experiments on
 SSH Slurm/Apptainer, SenseCore ACP or Alibaba PAI DLC; retrieve verified results.

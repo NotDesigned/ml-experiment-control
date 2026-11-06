@@ -38,7 +38,6 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
-use ml_exp_core::{API_PROTOCOL_VERSION, CLIENT_PROTOCOL_HEADER};
 use ml_exp_io::read_private;
 use serde_json::json;
 use std::{path::Path, sync::Arc};
@@ -70,12 +69,8 @@ impl Auth {
 }
 
 /// Pure HTTP-boundary policy. It never reads configuration or dispatches a request.
-fn access_policy(
-    token: &str,
-    headers: &HeaderMap,
-    method: &Method,
-    path: &str,
-) -> Result<(), StatusCode> {
+/// Exactly one Authorization header, compared in constant time.
+fn authorized(token: &str, headers: &HeaderMap) -> bool {
     let authorization: Vec<_> = headers.get_all("authorization").iter().collect();
     let supplied = if authorization.len() == 1 {
         authorization[0]
@@ -85,15 +80,7 @@ fn access_policy(
     } else {
         None
     };
-    if !supplied.is_some_and(|supplied| bool::from(supplied.as_bytes().ct_eq(token.as_bytes()))) {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
-    let protocols: Vec<_> = headers.get_all(CLIENT_PROTOCOL_HEADER).iter().collect();
-    let bootstrap = protocols.is_empty() && method == Method::GET && path == "/api/health";
-    if !(bootstrap || protocols.len() == 1 && protocols[0] == "2") {
-        return Err(StatusCode::UPGRADE_REQUIRED);
-    }
-    Ok(())
+    supplied.is_some_and(|supplied| bool::from(supplied.as_bytes().ct_eq(token.as_bytes())))
 }
 
 pub(crate) struct AppState {
@@ -117,32 +104,14 @@ async fn guard(State(state): State<Arc<AppState>>, request: Request, next: Next)
                 && matches!(parts[6], "status" | "package")
         }
     {
-        let protocols: Vec<_> = request
-            .headers()
-            .get_all(CLIENT_PROTOCOL_HEADER)
-            .iter()
-            .collect();
-        if protocols.len() == 1 && protocols[0] == "2" {
-            return next.run(request).await;
-        }
+        return next.run(request).await;
+    }
+    if !authorized(&state.auth.token, request.headers()) {
         return (
-            StatusCode::UPGRADE_REQUIRED,
-            Json(json!({"detail":"client protocol 2 required"})),
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"detail":"authentication required"})),
         )
             .into_response();
-    }
-    if let Err(status) = access_policy(
-        &state.auth.token,
-        request.headers(),
-        request.method(),
-        request.uri().path(),
-    ) {
-        let message = if status == StatusCode::UNAUTHORIZED {
-            "authentication required"
-        } else {
-            "client protocol 2 required"
-        };
-        return (status, Json(json!({"detail":message}))).into_response();
     }
     next.run(request).await
 }
@@ -184,7 +153,6 @@ fn health_document(
     }
     json!({
         "status":"ok", "server_version":env!("CARGO_PKG_VERSION"),
-        "api_protocol_version":API_PROTOCOL_VERSION, "min_client_protocol_version":2,
         "openapi_path":"/api/v2/openapi.json", "capabilities":capabilities,
         "projects":projects, "workspace_id":workspace_id, "local_reads_configured":reads,
         "source_archive_limits":sources.map(sources::Service::limits),
@@ -309,26 +277,13 @@ fn schema_document() -> serde_json::Value {
             "409":{"description":"Evidence, deletion fence or journal identity cannot be validated"},
             "413":{"description":"Evidence history or response exceeds its explicit read budget"},
             "422":{"description":"Invalid identity or query"},
-            "426":{"description":"Client protocol 2 required"},
             "429":{"description":"Four read operations are already in flight; retry later"},
             "501":{"description":"Isolated read configuration is not enabled"},
             "504":{"description":"Observation deadline elapsed; blocking filesystem I/O may still finish"}
         }}})
     };
-    let exact = || {
-        vec![
-            parameter("protocol"),
-            parameter("project"),
-            parameter("identity"),
-        ]
-    };
-    let run = || {
-        vec![
-            parameter("protocol"),
-            parameter("project"),
-            parameter("run"),
-        ]
-    };
+    let exact = || vec![parameter("project"), parameter("identity")];
+    let run = || vec![parameter("project"), parameter("run")];
     let query = |name: &str, schema: serde_json::Value, description: &str| json!({"in":"query","name":name,"schema":schema,"description":description});
     let mut logs = exact();
     logs.extend([
@@ -353,20 +308,19 @@ fn schema_document() -> serde_json::Value {
     let mut document = json!({"openapi":"3.1.0", "info":{"title":"ML-Expd Rust isolated preview", "version":env!("CARGO_PKG_VERSION"),
     "description":"Experiment GETs only observe approved isolated evidence. Explicit project lifecycle POSTs update their dedicated registry ledger. Separately configured native submissions can prepare, authorize, execute once and reconcile the original owned job. The optional artifact path explicitly collects backend results, streams exact archives and accepts verified ACKs; original outputs and checkpoints remain. Collection JSON alone never establishes download availability."},
     "components":{"securitySchemes":{"bearer":{"type":"http","scheme":"bearer"}},"parameters":{
-        "protocol":{"in":"header","name":CLIENT_PROTOCOL_HEADER,"required":true,"schema":{"type":"integer","const":2}},
         "project":{"in":"path","name":"project","required":true,"schema":{"type":"string"}},
         "run":{"in":"path","name":"run","required":true,"schema":{"type":"string"}},
         "attempt":{"in":"path","name":"attempt","required":true,"schema":{"type":"string","pattern":"^attempt-[0-9]{3,}$"}},
         "submission":{"in":"path","name":"identity","required":true,"schema":{"type":"string","pattern":"^action-[a-f0-9]{16}$"}},
         "identity":{"in":"path","name":"identity","required":true,"schema":{"type":"string"},"description":"Exact Run::Attempt identity, e.g. train::attempt-001"}
     }},"security":[{"bearer":[]}],"paths":{
-        "/api/health":{"get":{"description":"Authenticated bootstrap with active project count; protocol header may be omitted only here","responses":{"200":{"description":"Enabled capabilities and incomplete training readiness"},"401":{"description":"Authentication required"},"409":{"description":"Project lifecycle evidence is unavailable"},"429":{"description":"Local observation concurrency is full"},"504":{"description":"Observation deadline elapsed; underlying I/O can continue"}}}},
-        "/api/readiness":operation("Preview readiness; training remains incomplete",vec![parameter("protocol")]),
-        "/api/observer":operation("Local background observer progress and sanitized failure; never performs a provider query",vec![parameter("protocol")]),
+        "/api/health":{"get":{"description":"Authenticated health with active project count","responses":{"200":{"description":"Enabled capabilities and incomplete training readiness"},"401":{"description":"Authentication required"},"409":{"description":"Project lifecycle evidence is unavailable"},"429":{"description":"Local observation concurrency is full"},"504":{"description":"Observation deadline elapsed; underlying I/O can continue"}}}},
+        "/api/readiness":operation("Preview readiness; training remains incomplete",vec![]),
+        "/api/observer":operation("Local background observer progress and sanitized failure; never performs a provider query",vec![]),
         "/api/runs/{project}/{run}/tracking":operation("Frozen W&B destination and local publication cursors; never queries cloud or creates a binding",run()),
-        "/api/v2/openapi.json":operation("This static preview contract",vec![parameter("protocol")]),
-        "/api/projects":operation("List only configured projects, without filesystem paths or private configuration",vec![parameter("protocol")]),
-        "/api/submissions/{identity}":operation("Read one committed Submission from existing isolated Action storage; never repairs or submits",vec![parameter("protocol"),parameter("submission")]),
+        "/api/v2/openapi.json":operation("This static preview contract",vec![]),
+        "/api/projects":operation("List only configured projects, without filesystem paths or private configuration",vec![]),
+        "/api/submissions/{identity}":operation("Read one committed Submission from existing isolated Action storage; never repairs or submits",vec![parameter("submission")]),
         "/api/runs/{project}/{run}":operation("Current explicitly bound Attempt and independent evidence layers; missing scheduler evidence is unknown",run()),
         "/api/runs/{project}/{run}/attempts":operation("Verified Attempt manifests; no latest-attempt guessing",run()),
         "/api/runs/{project}/{run}/attempts/{attempt}/collection":operation("Read process completion separately from unobserved artifact publication; never starts collection",collection),
@@ -384,7 +338,7 @@ fn schema_document() -> serde_json::Value {
     let post = |description: &str, body: serde_json::Value, parameters: Vec<serde_json::Value>| {
         json!({"post":{
         "description":description,"parameters":parameters,"requestBody":{"required":true,"description":"Strict JSON mapping; at most 64 KiB","content":{"application/json":{"schema":body}}},
-        "responses":{"200":{"description":"Durable operation result with the original identity and state"},"401":{"description":"Bearer authentication required"},"403":{"description":"Operation is disabled by the operator"},"404":{"description":"Exact configured identity is unavailable"},"409":{"description":"Operation state conflict, binding mismatch or invalid durable evidence"},"413":{"description":"Request exceeds the 64 KiB body limit"},"422":{"description":"Invalid or unsupported request"},"426":{"description":"Client protocol 2 required"},"429":{"description":"Local operation concurrency is full; no operation admitted"},"500":{"description":"Operation may have changed state, including after timeout or response failure; query the original identity before deciding whether to retry"},"501":{"description":"Operation was not explicitly configured"},"503":{"description":"Operation lock or transition context is unavailable"}}}})
+        "responses":{"200":{"description":"Durable operation result with the original identity and state"},"401":{"description":"Bearer authentication required"},"403":{"description":"Operation is disabled by the operator"},"404":{"description":"Exact configured identity is unavailable"},"409":{"description":"Operation state conflict, binding mismatch or invalid durable evidence"},"413":{"description":"Request exceeds the 64 KiB body limit"},"422":{"description":"Invalid or unsupported request"},"429":{"description":"Local operation concurrency is full; no operation admitted"},"500":{"description":"Operation may have changed state, including after timeout or response failure; query the original identity before deciding whether to retry"},"501":{"description":"Operation was not explicitly configured"},"503":{"description":"Operation lock or transition context is unavailable"}}}})
     };
     let paths = document["paths"]
         .as_object_mut()
@@ -395,7 +349,7 @@ fn schema_document() -> serde_json::Value {
             "run_id":{"type":"string"},"execution_id":{"type":"string","pattern":"^[0-9a-f]{32}$"},
             "metrics_schema":{"type":"object"},"evaluation":{"type":"object"},"parameters":{"type":"object"},
             "seed":{"type":"integer","minimum":0},"wandb":{"type":["object","null"]}}}),
-        vec![parameter("protocol"), parameter("project")],
+        vec![parameter("project")],
     );
     register_local["post"]["requestBody"]["description"] =
         json!("Strict local definition, normalized at most 64 KiB; HTTP body at most 128 KiB");
@@ -426,7 +380,6 @@ fn schema_document() -> serde_json::Value {
     );
 
     let checkpoint_parameters = vec![
-        parameter("protocol"),
         parameter("project"),
         parameter("run"),
         json!({"name":"attempt","in":"path","required":true,"schema":{"type":"string","pattern":"^attempt-[0-9]{3,}$"}}),
@@ -451,13 +404,12 @@ fn schema_document() -> serde_json::Value {
         "/api/submissions/{identity}/artifacts".into(),
         operation(
             "Read exact native bundle and retention metadata; no backend payload read",
-            vec![parameter("protocol"), parameter("submission")],
+            vec![parameter("submission")],
         ),
     );
     let mut stream = operation(
         "Stream the exact backend tar with bounded memory and no API disk spool; this GET sends no ACK",
         vec![
-            parameter("protocol"),
             parameter("submission"),
             json!({"in":"path","name":"sha256","required":true,"schema":{"type":"string","pattern":"^[a-f0-9]{64}$"}}),
         ],
@@ -469,14 +421,14 @@ fn schema_document() -> serde_json::Value {
         "/api/submissions/{identity}/artifacts/{sha256}".into(),
         stream,
     );
-    paths.insert("/api/project-lifecycle".into(),operation("Observe the existing lifecycle registry and audit tail without repairing its pending journal",vec![parameter("protocol")]));
-    paths.insert("/api/project-lifecycle/register".into(),post("Register one configured approved daemon manifest path; this does not discover arbitrary client paths or import a source tree",register_body,vec![parameter("protocol")]));
+    paths.insert("/api/project-lifecycle".into(),operation("Observe the existing lifecycle registry and audit tail without repairing its pending journal",vec![]));
+    paths.insert("/api/project-lifecycle/register".into(),post("Register one configured approved daemon manifest path; this does not discover arbitrary client paths or import a source tree",register_body,vec![]));
     paths.insert(
         "/api/project-lifecycle/unregister-all".into(),
         post(
             "Remove all daemon tracking registrations; research files, artifacts and jobs remain",
             lifecycle_body.clone(),
-            vec![parameter("protocol")],
+            vec![],
         ),
     );
     for action in ["pause", "resume", "archive", "restore", "unregister"] {
@@ -485,14 +437,13 @@ fn schema_document() -> serde_json::Value {
             post(
                 "Change daemon project tracking only; archive requires a nonempty reason",
                 lifecycle_body.clone(),
-                vec![parameter("protocol"), parameter("project")],
+                vec![parameter("project")],
             ),
         );
     }
     paths.insert("/api/runs/{project}/{run}/submission".into(),operation("Read the original native preparation slot after response loss; never creates an identity",run()));
     let data_parameters = || {
         vec![
-            parameter("protocol"),
             parameter("project"),
             json!({"in":"path","name":"executor","required":true,"schema":{"type":"string"}}),
         ]
@@ -539,7 +490,7 @@ fn schema_document() -> serde_json::Value {
         json!({"type":"object","additionalProperties":false,"required":["run_id","runtime_id","executor","command","resources","walltime_seconds","seed"],"properties":{
             "run_id":{"type":"string"},"runtime_id":{"type":"string"},"executor":{"type":"string"},"command":{"type":"array","minItems":1,"maxItems":128,"items":{"type":"string"}},
             "resources":{"type":"object","additionalProperties":false,"required":["gpus","memory_gb"],"properties":{"gpus":{"type":"integer","minimum":1},"cpus":{"type":"integer","minimum":1,"default":8},"nodes":{"type":"integer","const":1,"default":1},"memory_gb":{"type":"integer","minimum":1}}},
-            "walltime_seconds":{"type":"integer","minimum":1,"maximum":3600000},"seed":{"type":"integer"},"wandb":{"type":"object","additionalProperties":false,"properties":{"enabled":{"type":"boolean","default":true},"preparation_enabled":{"type":"boolean","default":false},"entity":{"type":["string","null"]},"project":{"type":["string","null"]}}},"data":{"type":"array","maxItems":32,"items":{"type":"object","additionalProperties":false,"required":["name","asset_id"],"properties":{"name":{"type":"string"},"asset_id":{"type":"string"}}}},"parameters":{"type":"object"},"evaluation":{"type":"object"},"metrics_schema":{"type":"object"},"artifacts":{"type":"object","additionalProperties":false,"properties":{"required_files":{"type":"array","items":{"type":"string"},"maxItems":20000}}}}}),vec![parameter("protocol"),parameter("project")]));
+            "walltime_seconds":{"type":"integer","minimum":1,"maximum":3600000},"seed":{"type":"integer"},"wandb":{"type":"object","additionalProperties":false,"properties":{"enabled":{"type":"boolean","default":true},"preparation_enabled":{"type":"boolean","default":false},"entity":{"type":["string","null"]},"project":{"type":["string","null"]}}},"data":{"type":"array","maxItems":32,"items":{"type":"object","additionalProperties":false,"required":["name","asset_id"],"properties":{"name":{"type":"string"},"asset_id":{"type":"string"}}}},"parameters":{"type":"object"},"evaluation":{"type":"object"},"metrics_schema":{"type":"object"},"artifacts":{"type":"object","additionalProperties":false,"properties":{"required_files":{"type":"array","items":{"type":"string"},"maxItems":20000}}}}}),vec![parameter("project")]));
     paths.insert("/api/runs/{project}/{run}/submissions".into(),post("Prepare the first authored Run/Attempt with trusted source and materialized-image receipts; never submits a scheduler job",json!({"type":"object","additionalProperties":false,"properties":{"max_gpu_hours":{"type":"number","default":0},"reason":{"type":"string","default":""}}}),run()));
     for (name, description, body) in [
         (
@@ -593,11 +544,7 @@ fn schema_document() -> serde_json::Value {
             json!({"type":"object","additionalProperties":false}),
         ),
     ] {
-        let mut operation = post(
-            description,
-            body,
-            vec![parameter("protocol"), parameter("submission")],
-        );
+        let mut operation = post(description, body, vec![parameter("submission")]);
         operation["post"]["requestBody"]["description"] =
             json!("Strict JSON mapping; at most 8 MiB including a complete download proof");
         operation["post"]["responses"]["413"]["description"] =
@@ -683,7 +630,7 @@ mod tests {
     use tower::ServiceExt;
     const TOKEN: &str = "native-test-token-000000000000000000000000";
     #[tokio::test]
-    async fn boundary_requires_auth_and_protocol_and_never_claims_training() {
+    async fn boundary_requires_auth_and_never_claims_training() {
         let make = || {
             app(
                 Auth {
@@ -715,19 +662,13 @@ mod tests {
         let data: serde_json::Value =
             serde_json::from_slice(&to_bytes(response.into_body(), 65536).await.unwrap()).unwrap();
         assert_eq!(data["scheduler_mutations"], false);
-        assert_eq!(data["api_protocol_version"], 2);
-        for (path, protocol, status) in [
-            ("/api/readiness", "", 426),
-            ("/api/readiness", "1", 426),
-            ("/api/readiness", "2", 200),
-            ("/api/actions/execute", "2", 501),
-        ] {
+        assert!(data["capabilities"].is_array());
+        for (path, status) in [("/api/readiness", 200), ("/api/actions/execute", 501)] {
             let response = make()
                 .oneshot(
                     Request::builder()
                         .uri(path)
                         .header("authorization", format!("Bearer {TOKEN}"))
-                        .header(CLIENT_PROTOCOL_HEADER, protocol)
                         .body(Body::empty())
                         .unwrap(),
                 )
@@ -743,10 +684,7 @@ mod tests {
             (Method::GET, true, StatusCode::OK),
             (Method::POST, true, StatusCode::METHOD_NOT_ALLOWED),
         ] {
-            let mut request = Request::builder()
-                .method(method)
-                .uri("/api/readiness")
-                .header(CLIENT_PROTOCOL_HEADER, "2");
+            let mut request = Request::builder().method(method).uri("/api/readiness");
             if authorization {
                 request = request.header("authorization", format!("Bearer {TOKEN}"));
             }
@@ -763,34 +701,24 @@ mod tests {
         }
     }
     #[tokio::test]
-    async fn duplicate_auth_and_protocol_headers_are_rejected() {
-        for duplicate in ["authorization", CLIENT_PROTOCOL_HEADER] {
-            let mut request = Request::builder()
-                .uri("/api/readiness")
-                .header("authorization", format!("Bearer {TOKEN}"))
-                .header(CLIENT_PROTOCOL_HEADER, "2")
-                .body(Body::empty())
-                .unwrap();
-            let value = request.headers().get(duplicate).unwrap().clone();
-            request.headers_mut().append(duplicate, value);
-            let response = app(
-                Auth {
-                    token: TOKEN.into(),
-                },
-                None,
-            )
-            .oneshot(request)
-            .await
+    async fn duplicate_authorization_headers_are_rejected() {
+        let mut request = Request::builder()
+            .uri("/api/readiness")
+            .header("authorization", format!("Bearer {TOKEN}"))
+            .body(Body::empty())
             .unwrap();
-            assert_eq!(
-                response.status(),
-                if duplicate == "authorization" {
-                    StatusCode::UNAUTHORIZED
-                } else {
-                    StatusCode::UPGRADE_REQUIRED
-                }
-            );
-        }
+        let value = request.headers().get("authorization").unwrap().clone();
+        request.headers_mut().append("authorization", value);
+        let response = app(
+            Auth {
+                token: TOKEN.into(),
+            },
+            None,
+        )
+        .oneshot(request)
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
     #[test]
     fn token_file_validation_is_safe() {
@@ -898,10 +826,8 @@ mod schema_tests {
         }
         assert!(paths.contains_key("/api/attempts/{project}/{identity}/metrics"));
         assert!(paths.contains_key("/api/runs/{project}/{run}/attempts/{attempt}/collection"));
-        assert_eq!(
-            schema["components"]["parameters"]["protocol"]["schema"]["const"],
-            2
-        );
+        // A reference to a removed component would leave the contract unresolvable.
+        assert!(!schema.to_string().contains("parameters/protocol"));
         let health = super::health_document(1, "isolated", true, false, None, None);
         assert!(
             !health["capabilities"]

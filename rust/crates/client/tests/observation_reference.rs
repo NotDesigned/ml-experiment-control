@@ -161,11 +161,6 @@ fn effect_shell_follows_only_the_original_preparation_and_submission_over_get() 
                 }
                 let headers = String::from_utf8(headers).unwrap();
                 assert!(headers.starts_with(&expected));
-                assert!(
-                    headers
-                        .to_lowercase()
-                        .contains("x-ml-expd-client-protocol: 2\r\n")
-                );
                 let body = serde_json::to_vec(&reply).unwrap();
                 write!(
                     stream,

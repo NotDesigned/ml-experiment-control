@@ -70,7 +70,6 @@ pub fn main_from(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         let response = http
             .post(format!("{}/ready", channel.url))
             .bearer_auth(&channel.token)
-            .header(ml_exp_core::CLIENT_PROTOCOL_HEADER, "2")
             .header("Content-Type", "application/json")
             .body(serde_json::to_vec(&receipt)?)
             .send()?;

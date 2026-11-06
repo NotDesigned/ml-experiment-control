@@ -80,7 +80,7 @@ Do not start replacements while the original allocation is uncertain.
 
 ## HTTP API
 
-All routes use the normal bearer authentication and protocol-2 header.
+All routes use the normal bearer authentication.
 
 | Method | Path | Meaning |
 | --- | --- | --- |

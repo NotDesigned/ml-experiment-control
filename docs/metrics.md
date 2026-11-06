@@ -306,4 +306,4 @@ not provided by `attach`. Do not stop a live training process to switch tracking
 The initial chain is 64 zeroes. Each exact packet ACK supplies the next chain
 and offset. The official client owns packet encoding and recovery state. The
 capability is `native-local-metrics.v1`; all endpoints require the usual bearer
-authentication and protocol 2 header.
+authentication.

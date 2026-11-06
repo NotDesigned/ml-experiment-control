@@ -80,10 +80,6 @@ impl Client {
             .http
             .request(plan.method.clone(), endpoint)
             .bearer_auth(&self.token)
-            .header(
-                ml_exp_core::CLIENT_PROTOCOL_HEADER,
-                ml_exp_core::API_PROTOCOL_VERSION.to_string(),
-            )
             .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
             .timeout(plan.timeout)
             .body(plan.body.clone())
@@ -91,7 +87,7 @@ impl Client {
             .map_err(|_| Error::Transport)?;
         self.decode(response)
     }
-    pub fn negotiate(&self) -> Result<serde_json::Value, Error> {
+    pub fn health(&self) -> Result<serde_json::Value, Error> {
         let health = self.get("/api/health")?;
         crate::session::validate_health(&health)?;
         Ok(health)
@@ -120,10 +116,6 @@ impl Client {
             .http
             .get(endpoint)
             .bearer_auth(&self.token)
-            .header(
-                ml_exp_core::CLIENT_PROTOCOL_HEADER,
-                ml_exp_core::API_PROTOCOL_VERSION.to_string(),
-            )
             .send()
             .map_err(|_| Error::Transport)?;
         self.decode(response)
@@ -138,7 +130,6 @@ impl Client {
             .http
             .post(endpoint)
             .bearer_auth(&self.token)
-            .header(ml_exp_core::CLIENT_PROTOCOL_HEADER, "2")
             .header("content-type", "application/json")
             .body(bytes)
             .send()
@@ -164,10 +155,6 @@ impl Client {
         };
         let response = request
             .bearer_auth(&self.token)
-            .header(
-                ml_exp_core::CLIENT_PROTOCOL_HEADER,
-                ml_exp_core::API_PROTOCOL_VERSION.to_string(),
-            )
             .send()
             .map_err(|_| Error::Transport)?;
         self.decode(response)
@@ -188,10 +175,6 @@ impl Client {
         };
         let response = request
             .bearer_auth(&self.token)
-            .header(
-                ml_exp_core::CLIENT_PROTOCOL_HEADER,
-                ml_exp_core::API_PROTOCOL_VERSION.to_string(),
-            )
             .timeout(Duration::from_secs(150))
             .send()
             .map_err(|_| Error::Transport)?;
@@ -210,10 +193,6 @@ impl Client {
             .http
             .post(endpoint)
             .bearer_auth(&self.token)
-            .header(
-                ml_exp_core::CLIENT_PROTOCOL_HEADER,
-                ml_exp_core::API_PROTOCOL_VERSION.to_string(),
-            )
             .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
             .timeout(Duration::from_secs(600))
             .body(reqwest::blocking::Body::sized(file, plan.bytes()))
@@ -237,10 +216,6 @@ impl Client {
         };
         let response = request
             .bearer_auth(&self.token)
-            .header(
-                ml_exp_core::CLIENT_PROTOCOL_HEADER,
-                ml_exp_core::API_PROTOCOL_VERSION.to_string(),
-            )
             .timeout(Duration::from_secs(330))
             .send()
             .map_err(|_| Error::Transport)?;
@@ -280,10 +255,6 @@ impl Client {
             .http
             .get(endpoint)
             .bearer_auth(&self.token)
-            .header(
-                ml_exp_core::CLIENT_PROTOCOL_HEADER,
-                ml_exp_core::API_PROTOCOL_VERSION.to_string(),
-            )
             .timeout(Duration::from_secs(3600))
             .send()
             .map_err(|_| Error::Transport)?;
@@ -375,7 +346,7 @@ mod tests {
     }
 
     #[test]
-    fn sends_exact_prefix_auth_and_protocol_once_and_refuses_redirect() {
+    fn sends_exact_prefix_and_auth_once_and_refuses_redirect() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}/ml-expd", listener.local_addr().unwrap());
         let thread = std::thread::spawn(move || {
@@ -386,10 +357,6 @@ mod tests {
                 request
                     .matches("authorization: bearer native-test\r\n")
                     .count(),
-                1
-            );
-            assert_eq!(
-                request.matches("x-ml-expd-client-protocol: 2\r\n").count(),
                 1
             );
             socket.write_all(b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/leak\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();

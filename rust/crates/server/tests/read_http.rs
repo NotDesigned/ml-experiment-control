@@ -242,7 +242,7 @@ fn selected(attempt: Option<&str>) -> Selection<'_> {
     }
 }
 fn headers() -> String {
-    format!("Authorization: Bearer {TOKEN}\r\nX-ML-Expd-Client-Protocol: 2\r\n")
+    format!("Authorization: Bearer {TOKEN}\r\n")
 }
 
 #[test]
@@ -264,7 +264,7 @@ fn saved_submission_reads_committed_identity_without_bootstrap_or_latest_guess()
     for _restart in 0..2 {
         let server = fixture.server();
         let client = server.client();
-        let health = client.negotiate().unwrap();
+        let health = client.health().unwrap();
         let submission = client.get(&format!("/api/submissions/{id}")).unwrap();
         assert_eq!(submission["attempt_id"], "attempt-001");
         assert_eq!(submission["status"], "PREPARED");
@@ -312,15 +312,7 @@ fn saved_submission_reads_committed_identity_without_bootstrap_or_latest_guess()
                 .0,
             422
         );
-        assert_eq!(
-            server
-                .raw(
-                    &format!("/api/submissions/{id}"),
-                    "X-ML-Expd-Client-Protocol: 2\r\n"
-                )
-                .0,
-            401
-        );
+        assert_eq!(server.raw(&format!("/api/submissions/{id}"), "").0, 401);
     }
     let mut foreign = plan.clone();
     foreign["action_id"] = json!("action-1111111111111111");
@@ -367,7 +359,7 @@ fn native_clients_pin_exact_attempt_and_keep_scientific_metric_dimensions() {
     fixture.journal_matching();
     let server = fixture.server();
     let client = server.client();
-    let health = client.negotiate().unwrap();
+    let health = client.health().unwrap();
     assert_eq!(health["workspace_id"], fixture.workspace);
     assert_eq!(health["scheduler_mutations"], false);
     assert_eq!(client.get("/api/projects").unwrap()[0]["project"], "demo");
@@ -450,7 +442,7 @@ fn watch_resolves_current_once_then_keeps_attempt_across_real_http_rounds() {
     let fixture = Fixture::new();
     let server = fixture.server();
     let client = server.client();
-    let health = client.negotiate().unwrap();
+    let health = client.health().unwrap();
     let elapsed = Cell::new(Duration::ZERO);
     let rounds = Cell::new(0);
     let result = watch::observe_with(
@@ -480,33 +472,15 @@ fn watch_resolves_current_once_then_keeps_attempt_across_real_http_rounds() {
 }
 
 #[test]
-fn authentication_protocol_and_query_errors_never_echo_request_credentials() {
+fn authentication_and_query_errors_never_echo_request_credentials() {
     let fixture = Fixture::new();
     let server = fixture.server();
     assert_eq!(server.raw("/api/projects", "").0, 401);
-    assert_eq!(
-        server
-            .raw(
-                "/api/projects",
-                &format!("Authorization: Bearer {TOKEN}\r\n")
-            )
-            .0,
-        426
-    );
-    assert_eq!(
-        server
-            .raw("/api/health", &format!("Authorization: Bearer {TOKEN}\r\n"))
-            .0,
-        200
-    );
-    for added in [
-        format!("Authorization: Bearer {TOKEN}\r\n"),
-        "X-ML-Expd-Client-Protocol: 2\r\n".into(),
-    ] {
-        let response = server.raw("/api/projects", &(headers() + &added));
-        assert!(matches!(response.0, 401 | 426));
-        assert!(!response.1.to_string().contains(TOKEN));
-    }
+    assert_eq!(server.raw("/api/projects", &headers()).0, 200);
+    assert_eq!(server.raw("/api/health", &headers()).0, 200);
+    let response = server.raw("/api/projects", &(headers() + &headers()));
+    assert_eq!(response.0, 401);
+    assert!(!response.1.to_string().contains(TOKEN));
     for path in [
         "/api/projects?unknown=yes",
         "/api/attempts/demo/train::attempt-001/logs?lines=1&lines=2",

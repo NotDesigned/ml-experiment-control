@@ -162,7 +162,7 @@ from the installed builder may need fresh preparation; inspect diagnostics and
 reconcile effects first. Do not mutate that record, reuse an old confirmation or
 replay an uncertain build.
 
-The HTTP protocol is negotiated independently of the package version; see the
-[HTTP contract](http_contract.md). An upgrade does not imply database restoration,
+Client and server come from one release; see the [HTTP contract](http_contract.md).
+An upgrade does not imply database restoration,
 automatic rollback, resource cleanup or a GPU run. Operators follow the
 [operator guide](operator-guide.md).

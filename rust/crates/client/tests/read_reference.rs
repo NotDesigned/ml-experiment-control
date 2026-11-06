@@ -271,10 +271,6 @@ fn real_http_reads_keep_prefix_credentials_identity_and_unmodified_metric_dimens
                         .count(),
                     1
                 );
-                assert_eq!(
-                    headers.matches("x-ml-expd-client-protocol: 2\r\n").count(),
-                    1
-                );
                 let response = &responses[path.as_str().unwrap()];
                 let (status, body) = if let Some(error) = response.get("$error") {
                     (

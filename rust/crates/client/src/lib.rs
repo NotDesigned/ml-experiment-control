@@ -45,7 +45,7 @@ pub enum Error {
     Http(Box<ml_exp_core::diagnostic::HttpFailure>),
     #[error("API response failed size, format or identity validation")]
     Response,
-    #[error("daemon did not provide a supported protocol-2 handshake")]
+    #[error("daemon did not provide a valid health document")]
     Protocol,
     #[error(
         "project change outcome is not confirmed; query project list before retrying; no automatic replay was attempted: {0}"

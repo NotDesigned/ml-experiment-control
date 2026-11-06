@@ -198,7 +198,6 @@ impl Transport for Https {
             .client
             .post(&channel.url)
             .bearer_auth(&channel.token)
-            .header(ml_exp_core::CLIENT_PROTOCOL_HEADER, "2")
             .header("content-type", "application/json")
             .body(bytes)
             .send()

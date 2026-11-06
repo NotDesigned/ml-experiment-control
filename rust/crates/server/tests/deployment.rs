@@ -184,7 +184,6 @@ fn single_config_initializes_once_then_supports_restart_without_reinitializing()
         let result = client
             .get(format!("{url}/api/projects"))
             .bearer_auth(TOKEN)
-            .header(ml_exp_core::CLIENT_PROTOCOL_HEADER, "2")
             .send()
             .unwrap();
         assert!(result.status().is_success());

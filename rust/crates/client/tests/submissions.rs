@@ -97,7 +97,7 @@ fn checkpoint_free_retry_requires_exact_parent() {
     assert!(submissions::response(&plan, wrong).is_err());
 }
 fn health() -> Value {
-    json!({"api_protocol_version":2,"min_client_protocol_version":2,"capabilities":["native-submissions.v1"],"scheduler_mutations":true})
+    json!({"capabilities":["native-submissions.v1"],"scheduler_mutations":true})
 }
 fn response() -> Value {
     json!({"submission_id":ID,"project":"demo","run_id":"train","attempt_id":"attempt-001","operation":"SUBMIT_RUN","status":"PREPARED","confirmation":format!("EXECUTE {ID}"),"execution":{"status":"PREPARED","revision":0}})
@@ -307,7 +307,6 @@ fn one_post_is_sent_and_lost_or_foreign_response_never_replays_it() {
                 "post /api/runs/demo/train/submissions http/1.1\r\n"
             }));
             assert!(head.contains("authorization: bearer synthetic-token"));
-            assert!(head.contains("x-ml-expd-client-protocol: 2"));
             let size: usize = head
                 .lines()
                 .find_map(|line| line.strip_prefix("content-length: "))

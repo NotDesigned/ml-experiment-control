@@ -50,7 +50,7 @@ fn acknowledgement_failure_keeps_verified_bytes_and_exposes_sanitized_server_dia
     worker.join().unwrap();
 }
 fn health() -> Value {
-    json!({"api_protocol_version":2,"min_client_protocol_version":2,"capabilities":["native-artifacts.v1"]})
+    json!({"capabilities":["native-artifacts.v1"]})
 }
 fn read(socket: &mut TcpStream) -> (String, Value) {
     socket.set_nonblocking(false).unwrap();
@@ -66,7 +66,6 @@ fn read(socket: &mut TcpStream) -> (String, Value) {
     }
     let h = String::from_utf8(h).unwrap().to_lowercase();
     assert!(h.contains("authorization: bearer synthetic-token"));
-    assert!(h.contains("x-ml-expd-client-protocol: 2"));
     let n = h
         .lines()
         .find_map(|l| l.strip_prefix("content-length: "))

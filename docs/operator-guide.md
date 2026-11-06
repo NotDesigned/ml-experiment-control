@@ -239,7 +239,7 @@ controller designed for it.
 
 ### Routes
 
-Send normal auth/protocol headers and use the installed OpenAPI request bodies:
+Send the normal auth header and use the installed OpenAPI request bodies:
 
 ```text
 GET  /api/project-lifecycle

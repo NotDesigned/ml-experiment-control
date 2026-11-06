@@ -336,7 +336,6 @@ mod tests {
             path: &str,
             bytes: Vec<u8>,
             auth: bool,
-            protocol: bool,
         ) -> (StatusCode, Value) {
             let mut request = Request::builder()
                 .method(method)
@@ -344,9 +343,6 @@ mod tests {
                 .header("content-type", "application/json");
             if auth {
                 request = request.header("authorization", format!("Bearer {TOKEN}"));
-            }
-            if protocol {
-                request = request.header(ml_exp_core::CLIENT_PROTOCOL_HEADER, "2");
             }
             let response = self
                 .router
@@ -373,7 +369,7 @@ mod tests {
             .await
         }
         async fn get(&self, path: &str) -> Value {
-            let (status, value) = self.raw(Method::GET, path, Vec::new(), true, true).await;
+            let (status, value) = self.raw(Method::GET, path, Vec::new(), true).await;
             assert_eq!(status, StatusCode::OK, "{value}");
             value
         }
@@ -458,21 +454,15 @@ mod tests {
     async fn rejected_http_bodies_auth_queries_and_paths_do_not_mutate_or_echo() {
         let fixture = Fixture::new();
         let initial = fixture.files();
-        for (auth, protocol, expected) in [
-            (false, true, StatusCode::UNAUTHORIZED),
-            (true, false, StatusCode::UPGRADE_REQUIRED),
-        ] {
-            let response = fixture
-                .raw(
-                    Method::POST,
-                    "/api/project-lifecycle/demo/pause",
-                    b"{}".to_vec(),
-                    auth,
-                    protocol,
-                )
-                .await;
-            assert_eq!(response.0, expected);
-        }
+        let response = fixture
+            .raw(
+                Method::POST,
+                "/api/project-lifecycle/demo/pause",
+                b"{}".to_vec(),
+                false,
+            )
+            .await;
+        assert_eq!(response.0, StatusCode::UNAUTHORIZED);
         for (path, value, expected) in [
             (
                 "/api/project-lifecycle/demo/pause",

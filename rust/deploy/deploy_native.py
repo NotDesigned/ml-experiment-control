@@ -143,7 +143,7 @@ def health(settings):
     client = json.loads(Path(settings["client_config"]).read_text())
     token = Path(client["token_file"]).read_text().strip()
     request = urllib.request.Request(client["url"] + "/api/health", headers={
-        "Authorization": "Bearer " + token, "X-ML-Expd-Client-Protocol": "2"})
+        "Authorization": "Bearer " + token})
     with urllib.request.urlopen(request, timeout=10) as response:
         return json.load(response)
 

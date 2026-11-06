@@ -38,7 +38,6 @@ fn download_bytes(
         .get(url)
         .bearer_auth(token)
         .timeout(timeout)
-        .header(ml_exp_core::CLIENT_PROTOCOL_HEADER, "2")
         .send()
         .map_err(|_| download_error("request", None))?;
     let status = response.status().as_u16();

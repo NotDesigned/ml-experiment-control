@@ -1,11 +1,11 @@
 # HTTP contract
 
-## Negotiate and authenticate
+## Discover and authenticate
 
-The current protocol is 2. `GET /api/health` returns `server_version`,
-`api_protocol_version`, `min_client_protocol_version`, `capabilities`, enabled
-policy and `openapi_path` (`/api/v2/openapi.json`). Package versions alone do not
-prove a capability is available.
+Client and server come from one release. `GET /api/health` returns
+`server_version`, `capabilities`, enabled policy and `openapi_path`
+(`/api/v2/openapi.json`). Package versions alone do not prove a capability is
+available.
 Platform metrics are accepted and queried independently of W&B. Without the
 optional SDK, publication reports `WANDB_SDK_NOT_INSTALLED`; it does not rewrite
 the frozen Run route or discard accepted records.
@@ -23,12 +23,10 @@ Every normal API request sends:
 
 ```text
 Authorization: Bearer <private token>
-X-ML-Expd-Client-Protocol: 2
 ```
 
-Only headerless health GET may bootstrap protocol discovery; it still requires
-configured authentication. Invalid/unsupported protocol receives HTTP 426 before
-dispatch. A proxy must retain Authorization, protocol headers and the API prefix.
+A missing, wrong or repeated Authorization header receives HTTP 401 before
+dispatch. A proxy must retain Authorization and the API prefix.
 
 The daemon token file must be regular, daemon-owned, mode 0600 or stricter, with
 at least 32 non-whitespace characters. This is shared-token authentication, not
@@ -143,14 +141,13 @@ For a complete install-to-results example use the [client quickstart](api-quicks
 This section is a lookup table for custom clients, Runtime reuse and diagnosis;
 request/response bodies are defined by the installed `GET /api/v2/openapi.json`.
 Paths are relative to the API base. `P`, `R`, `A`, `S` denote returned project,
-Run, Attempt and Submission IDs, not filesystem paths. `GET /api/health` is the
-protocol-discovery exception to the headers above.
+Run, Attempt and Submission IDs, not filesystem paths.
 
 ### Discover, import and build
 
 | Method/path | Resource or purpose |
 |---|---|
-| `GET /api/health` | Installed version, protocol, capabilities and policy |
+| `GET /api/health` | Installed version, capabilities and policy |
 | `GET /api/readiness` | Per-backend submission availability and evidence; no provider request |
 | `GET /api/executors` | Configured resource/backend choices |
 | `GET /api/backends/EXECUTOR_ID/capacity` | Cached capacity with its original observation time |

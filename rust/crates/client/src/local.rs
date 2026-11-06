@@ -262,7 +262,7 @@ pub fn attach(
         return Err(invalid());
     }
     save(&state, &saved)?;
-    let health = client.negotiate()?;
+    let health = client.health()?;
     if !health["capabilities"]
         .as_array()
         .is_some_and(|a| a.iter().any(|v| v == "native-local-metrics.v1"))

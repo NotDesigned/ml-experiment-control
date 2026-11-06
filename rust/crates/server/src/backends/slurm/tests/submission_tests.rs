@@ -920,7 +920,6 @@ async fn http_request(app: axum::Router, method: &str, path: &str, body: &str) -
                     "authorization",
                     "Bearer synthetic-native-submission-http-token-00000000",
                 )
-                .header("x-ml-expd-client-protocol", "2")
                 .header("content-type", "application/json")
                 .body(axum::body::Body::from(body.to_owned()))
                 .unwrap(),

@@ -42,7 +42,7 @@ update never changes connection defaults or a server installation. Clients throu
 0.1.15 need the new installer once; see the
 [native usage guide](../rust/README.md#client-configuration).
 
-`ml-exp check` validates the authenticated protocol handshake and returns the
+`ml-exp check` validates the authenticated connection and returns the
 server's version, capabilities and source limits. `ml-exp backend` lists executors.
 For per-backend submission availability read `ml-exp get /api/readiness`. It makes
 no provider request and starts no job. `training=INCOMPLETE` there is acceptance
@@ -72,7 +72,7 @@ tokens, signed URLs or raw TLS or network exceptions.
 | `cannot read or write private client configuration` | Check the path, ownership and permissions of the settings or token file |
 | `saved credentials belong to a different API URL` | Run `config set` for this URL, or supply explicit environment credentials |
 | `HTTP request failed` | Check the address, DNS, certificate, routing and service with the operator. TLS, DNS, refused and timed-out connections all report this |
-| `daemon did not provide a supported protocol-2 handshake` | The address is not a compatible ML-Expd API, or a proxy altered it |
+| `daemon did not provide a valid health document` | The address is not an ML-Expd API of this release, or a proxy altered it |
 
 The client trusts the public WebPKI roots built into it. A certificate from a
 private CA is not accepted, and there is no option to disable verification; give

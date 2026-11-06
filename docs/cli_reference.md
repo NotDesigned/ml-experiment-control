@@ -7,7 +7,7 @@ commands do not require SSH, Docker or cloud credentials.
 | Group | Purpose |
 | --- | --- |
 | `config` | Save or inspect the API connection |
-| `check` | Validate the protocol handshake and read API capabilities |
+| `check` | Validate the connection and read API capabilities |
 | `backend` | List executors, read cached capacity or request a refresh |
 | `source` | Upload immutable source or inspect its identity |
 | `project` | Register and manage Project tracking |

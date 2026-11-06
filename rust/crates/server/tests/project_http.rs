@@ -171,7 +171,7 @@ impl Server {
         stream
             .set_write_timeout(Some(Duration::from_secs(10)))
             .unwrap();
-        write!(stream,"POST {path} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {TOKEN}\r\nX-ML-Expd-Client-Protocol: 2\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",self.address,body.len()).unwrap();
+        write!(stream,"POST {path} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {TOKEN}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",self.address,body.len()).unwrap();
         stream.write_all(body).unwrap();
         let mut bytes = Vec::new();
         stream
@@ -217,7 +217,7 @@ fn native_cli_lifecycle_and_auto_discovered_reads_survive_restart_without_resurr
     fixture.initialize_projects();
     let server = Server::start(&fixture, true);
     let client = server.client();
-    let health = client.negotiate().unwrap();
+    let health = client.health().unwrap();
     assert!(
         health["capabilities"]
             .as_array()
@@ -283,7 +283,7 @@ fn native_cli_lifecycle_and_auto_discovered_reads_survive_restart_without_resurr
             },
         );
         assert_eq!(result["active"], active);
-        assert_eq!(client.negotiate().unwrap()["projects"], usize::from(active));
+        assert_eq!(client.health().unwrap()["projects"], usize::from(active));
     }
     let current = revision(&client, &health);
     let before = fixture.ledger_bytes();
@@ -317,7 +317,7 @@ fn native_cli_lifecycle_and_auto_discovered_reads_survive_restart_without_resurr
     drop(server);
     let server = Server::start(&fixture, true);
     let client = server.client();
-    let health = client.negotiate().unwrap();
+    let health = client.health().unwrap();
     assert_eq!(health["projects"], 0);
     assert!(
         lifecycle(&client, &health)["projects"]
@@ -363,7 +363,7 @@ fn existing_lifecycle_ledger_is_not_implicitly_enabled_without_the_cli_flag() {
     let science = fixture.science_bytes();
     let server = Server::start(&fixture, false);
     let client = server.client();
-    let health = client.negotiate().unwrap();
+    let health = client.health().unwrap();
     assert!(
         !health["capabilities"]
             .as_array()
