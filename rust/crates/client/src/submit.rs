@@ -5,6 +5,7 @@ use crate::{
     Client, Error, observation, preparations, presentation, read, runtime, sources, submissions,
 };
 use ml_exp_core::{canonical, identity, preparation};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     path::{Path, PathBuf},
@@ -56,6 +57,36 @@ pub struct Hooks<'a> {
     /// Keep showing the backend's status until the job ends.
     pub follow: bool,
     pub follow_poll: Duration,
+}
+
+/// The last submission from this machine, so short commands need no identifiers.
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Latest {
+    pub project: String,
+    pub run_id: String,
+    pub submission_id: String,
+}
+const LATEST: &str = "latest.json";
+/// Only a convenience: failing to save this must not disturb a submission.
+fn remember(directory: &Path, spec: &Spec, plan: &Plan, submission: &str) {
+    let latest = Latest {
+        project: spec.project.clone(),
+        run_id: plan.run_id.clone(),
+        submission_id: submission.to_owned(),
+    };
+    if let Ok(bytes) = serde_json::to_vec(&latest) {
+        let _ = ml_exp_io::write_atomic(&directory.join(LATEST), &bytes, false);
+    }
+}
+pub fn latest(directory: &Path) -> Result<Latest, Error> {
+    let none = || {
+        Error::Observation(
+            "no submission from this machine yet; use `ml-exp submit`, or name one with --project and --run",
+        )
+    };
+    let bytes = ml_exp_io::read_private(&directory.join(LATEST), 4096, true).map_err(|_| none())?;
+    serde_json::from_slice(&bytes).map_err(|_| none())
 }
 
 /// `90`, `90s`, `10m`, `2h` or `1d`.
@@ -633,11 +664,7 @@ fn outcome(spec: &Spec, plan: &Plan, state: &Path, submission: &Value, existing:
         "job_state": job_state(submission),
         "already_submitted": existing,
         "state_file": state.to_string(),
-        "next": [
-            format!("ml-exp run status --state {state}"),
-            format!("ml-exp run logs --state {state}"),
-            format!("ml-exp run download {id} --output results.tar"),
-        ],
+        "next": ["ml-exp status", "ml-exp logs", "ml-exp results"],
     })
 }
 
@@ -694,6 +721,7 @@ pub fn run(
         executor,
         &name,
     )?;
+    ml_exp_io::create_private_dir(state_directory).map_err(|_| Error::Config)?;
     let state = state_directory.join(format!("{}.json", plan.preparation_id));
     let path = format!(
         "/api/projects/{}/experiment-preparations/{}",
@@ -710,6 +738,7 @@ pub fn run(
     {
         let current = show(client, id, &health)?;
         if dispatched(&current["status"]) {
+            remember(state_directory, spec, &plan, id);
             let current = observe(client, id, current, &health)?;
             let current = watch(client, spec, &plan, id, current, &health, &mut hooks);
             return Ok(outcome(spec, &plan, &state, &current, true));
@@ -731,9 +760,9 @@ pub fn run(
     }
     let source_id = publish(client, spec, archive, &health, hooks.progress)?;
     let request = request(spec, &plan, &source_id)?;
-    ml_exp_io::create_private_dir(state_directory).map_err(|_| Error::Config)?;
     preparations::prepare(client, &spec.project, &request, &state, &health)?;
     let id = prepared(client, spec, &plan, &health, &mut hooks)?;
+    remember(state_directory, spec, &plan, &id);
     let current = match dispatch(client, &id, &health) {
         Ok(current) => current,
         Err(Error::SubmissionOutcomeUnknown(_)) => {

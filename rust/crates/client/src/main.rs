@@ -24,28 +24,6 @@ struct Args {
 }
 #[derive(Subcommand)]
 enum Command {
-    /// Read scheduler allocation evidence, or explicitly refresh the cache.
-    Backend {
-        executor: Option<String>,
-        #[arg(long, requires = "executor")]
-        refresh: bool,
-    },
-    /// Plan and execute administrative payload removal or Run retirement.
-    Admin {
-        #[command(subcommand)]
-        command: ml_exp_client::administration::Command,
-    },
-    /// Create, inspect and stop an explicitly leased SSH debug machine.
-    Debug {
-        #[command(subcommand)]
-        command: ml_exp_client::debug::Command,
-    },
-    /// Build, inspect and reconcile a reusable Dockerfile environment.
-    #[command(name = "env")]
-    Environment {
-        #[command(subcommand)]
-        command: ml_exp_client::runtime::Command,
-    },
     /// Submit a source directory with its Dockerfile: confirm once, then build and send.
     #[command(
         after_help = "Repeating the same command finds the same job and sends nothing new. \
@@ -93,6 +71,59 @@ For every field and each separate step, see `ml-exp run start` and `ml-exp run e
         /// The command to run in the image, after `--`.
         #[arg(last = true, required = true)]
         command: Vec<String>,
+    },
+    /// Show the latest submission, or the one named with --project and --run.
+    Status {
+        #[command(flatten)]
+        target: Target,
+        #[arg(long)]
+        details: bool,
+        /// Observe the same Attempt without submitting or restarting it.
+        #[arg(long)]
+        watch: bool,
+        /// Observation budget; an in-flight HTTP read keeps its own timeout.
+        #[arg(long, default_value_t = 1800.0)]
+        seconds: f64,
+    },
+    /// Read the logs of the latest submission, or the one named with --project and --run.
+    Logs {
+        #[command(flatten)]
+        target: Target,
+        #[arg(long, default_value = "both", value_parser = ["both", "stdout", "stderr"])]
+        stream: String,
+        #[arg(long, default_value_t = 80)]
+        lines: i64,
+    },
+    /// Download and verify the results of the latest submission.
+    Results {
+        /// Named after the Run unless given.
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Keep the server's copy after downloading.
+        #[arg(long)]
+        keep: bool,
+    },
+    /// Read scheduler allocation evidence, or explicitly refresh the cache.
+    Backend {
+        executor: Option<String>,
+        #[arg(long, requires = "executor")]
+        refresh: bool,
+    },
+    /// Plan and execute administrative payload removal or Run retirement.
+    Admin {
+        #[command(subcommand)]
+        command: ml_exp_client::administration::Command,
+    },
+    /// Create, inspect and stop an explicitly leased SSH debug machine.
+    Debug {
+        #[command(subcommand)]
+        command: ml_exp_client::debug::Command,
+    },
+    /// Build, inspect and reconcile a reusable Dockerfile environment.
+    #[command(name = "env")]
+    Environment {
+        #[command(subcommand)]
+        command: ml_exp_client::runtime::Command,
     },
     /// Install a checksum-verified standalone native release.
     Update {
@@ -735,7 +766,78 @@ enum Output {
     Json(serde_json::Value),
     Text(String),
 }
-fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
+fn config_path(selected: Option<PathBuf>) -> PathBuf {
+    selected.unwrap_or_else(|| {
+        let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
+        let home = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(PathBuf::from);
+        config::default_config_path(xdg.as_deref(), home.as_deref())
+    })
+}
+fn submissions_directory(config: &std::path::Path) -> PathBuf {
+    config
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .join("submissions")
+}
+/// The short commands are the `run` commands, with the latest submission filled in.
+fn expand(command: Command, config: &std::path::Path) -> Result<Command, ml_exp_client::Error> {
+    let directory = submissions_directory(config);
+    let fill = |target: &mut Target| -> Result<(), ml_exp_client::Error> {
+        if target.state.is_none() && target.project.is_none() && target.run.is_none() {
+            let latest = ml_exp_client::submit::latest(&directory)?;
+            target.project = Some(latest.project);
+            target.run = Some(latest.run_id);
+        }
+        Ok(())
+    };
+    Ok(match command {
+        Command::Status {
+            mut target,
+            details,
+            watch,
+            seconds,
+        } => {
+            fill(&mut target)?;
+            Command::Run {
+                command: Run::Status {
+                    target,
+                    details,
+                    watch,
+                    seconds,
+                },
+            }
+        }
+        Command::Logs {
+            mut target,
+            stream,
+            lines,
+        } => {
+            fill(&mut target)?;
+            Command::Run {
+                command: Run::Logs {
+                    target,
+                    stream,
+                    lines,
+                },
+            }
+        }
+        Command::Results { output, keep } => {
+            let latest = ml_exp_client::submit::latest(&directory)?;
+            Command::Run {
+                command: Run::Download {
+                    output: output.unwrap_or_else(|| format!("{}.tar", latest.run_id).into()),
+                    submission: latest.submission_id,
+                    keep,
+                },
+            }
+        }
+        other => other,
+    })
+}
+fn run(mut args: Args) -> Result<(), Box<dyn std::error::Error>> {
+    args.command = expand(args.command, &config_path(args.config.clone()))?;
     if let Command::Backend {
         executor: Some(executor),
         ..
@@ -936,13 +1038,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         ),
         _ => None,
     };
-    let config = args.config.unwrap_or_else(|| {
-        let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
-        let home = std::env::var_os("HOME")
-            .or_else(|| std::env::var_os("USERPROFILE"))
-            .map(PathBuf::from);
-        config::default_config_path(xdg.as_deref(), home.as_deref())
-    });
+    let config = config_path(args.config);
     let settings = credentials::load_settings(&config)?;
     let result = match args.command {
         Command::Config {
@@ -1045,10 +1141,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                         run_id: run,
                         data,
                     };
-                    let states = config
-                        .parent()
-                        .unwrap_or(std::path::Path::new("."))
-                        .join("submissions");
+                    let states = submissions_directory(&config);
                     let value = ml_exp_client::submit::run(
                         &client,
                         &spec,

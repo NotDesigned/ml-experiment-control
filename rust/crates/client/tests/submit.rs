@@ -362,6 +362,20 @@ fn one_command_confirms_once_and_sends_one_job() {
 }
 
 #[test]
+fn the_latest_submission_is_remembered_for_the_short_commands() {
+    let files = Files::new();
+    let states = files.root.path().join("states");
+    assert!(submit::latest(&states).is_err());
+    let fake = Fake::start(World::new());
+    let value = files.run(&fake, true, &mut Vec::new()).unwrap();
+    let latest = submit::latest(&states).unwrap();
+    assert_eq!(latest.project, "demo");
+    assert_eq!(value["run_id"], latest.run_id);
+    assert_eq!(latest.submission_id, ID);
+    assert_eq!(value["next"][0], "ml-exp status");
+}
+
+#[test]
 fn repeating_the_command_after_it_was_sent_sends_nothing_new() {
     let files = Files::new();
     let fake = Fake::start(World::new());
