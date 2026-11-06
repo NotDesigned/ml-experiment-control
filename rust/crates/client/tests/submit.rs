@@ -1246,7 +1246,7 @@ fn retry_finishes_a_prepared_attempt_rather_than_starting_another() {
 #[test]
 fn repeating_submit_keeps_a_retry_even_after_another_run_became_the_latest() {
     let files = Files::new();
-    let fake = Fake::start(World::new());
+    let fake = Fake::start(ended());
     submitted_train(&files, &fake);
     let states = files.root.path().join("states");
     submit::retry(&fake.client(), &states, None, quiet(&mut |_| Ok(true))).unwrap();
@@ -1258,8 +1258,8 @@ fn repeating_submit_keeps_a_retry_even_after_another_run_became_the_latest() {
         r#"{"project":"demo","run_id":"other","submission_id":"action-other","unsettled":false}"#,
     )
     .unwrap();
-    let mut asked = Vec::new();
-    files.run(&fake, true, &mut asked).unwrap();
+    fake.world.lock().unwrap().preparation_submission = Some(ID);
+    submitted_train(&files, &fake);
     assert_eq!(
         submit::latest(&states).unwrap(),
         retried,
