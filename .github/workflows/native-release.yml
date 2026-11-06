@@ -227,6 +227,7 @@ jobs:
           native_version="${GITHUB_REF_NAME#native-v}"
           if [[ "$GITHUB_REF" != refs/tags/native-v* ]]; then native_version="$REQUESTED_VERSION"; fi
           chmod +x native-bin/*
+          chmod -R u+rw native-clients
           mkdir -p .ops
           python3 tools/build_native_release.py --binary-dir native-bin --client-dir native-clients --output .ops/native-dist --version "$native_version"
       - uses: actions/upload-artifact@v4
