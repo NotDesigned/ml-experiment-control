@@ -101,7 +101,7 @@ impl Store {
         // inode. Keep the logical authority and inode binding, which refuses
         // an empty or wrong mount at open.
         if actual.contract != expected.contract
-            || actual.target != expected.target
+            || !actual.target.same_store(&expected.target)
             || actual.identity.1 != expected.identity.1
         {
             return Err(invalid());
@@ -118,7 +118,7 @@ impl Store {
         .map_err(|_| invalid())?;
         state.validate().map_err(|_| invalid())?;
         if state.project != request.project
-            || state.target != request.target
+            || !state.target.same_store(&request.target)
             || state.asset_id != request.asset_id()
         {
             return Err(invalid());

@@ -188,7 +188,7 @@ impl Receipt {
         self.validate()?;
         if !root_path(data_root)
             || self.project != project
-            || &self.target != target
+            || !self.target.same_store(target)
             || self.root != format!("{data_root}/{project}/{}/tree", self.asset_id)
         {
             return Err(Error);
@@ -238,7 +238,7 @@ impl State {
         if let Some(ready) = &self.ready {
             ready.validate()?;
             if ready.project != self.project
-                || ready.target != self.target
+                || !ready.target.same_store(&self.target)
                 || ready.definition != self.definition
                 || ready.asset_id != self.asset_id
                 || self.parts.len() as u64 != self.definition.part_count()?
@@ -418,7 +418,7 @@ pub fn document_mounts(
     }
     for value in &values {
         if value.receipt.project != project
-            || &value.receipt.target != target
+            || !value.receipt.target.same_store(target)
             || value.receipt.root != format!("{project_data_root}/{}/tree", value.receipt.asset_id)
         {
             return Err(Error);
@@ -512,7 +512,7 @@ impl Reply {
         if self.version != 1
             || self.request_sha256 != request.digest()?
             || self.state.project != request.project
-            || self.state.target != request.target
+            || !self.state.target.same_store(&request.target)
             || self.state.asset_id != request.asset_id()
         {
             return Err(Error);
@@ -625,6 +625,17 @@ mod tests {
                 bytes: 5 * 1024 * 1024 * 1024 - 4096,
             }],
         }
+    }
+    #[test]
+    fn a_store_is_shared_by_every_executor_on_its_storage() {
+        let definition = oversized_receipt("demo", &target(), "/data");
+        let mut other = target();
+        other.backend_id = "other-shape".into();
+        other.profile_sha256 = format!("sha256:{}", "e".repeat(64));
+        assert!(target().same_store(&other));
+        assert!(definition.target.same_store(&other));
+        other.storage_scope = format!("sha256:{}", "f".repeat(64));
+        assert!(!target().same_store(&other), "another store is refused");
     }
     fn target() -> Target {
         Target {

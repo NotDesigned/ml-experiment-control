@@ -146,7 +146,7 @@ impl Config {
             state.validate()?;
             if state.definition != self.definition
                 || state.project != self.project
-                || state.target != self.target
+                || !state.target.same_store(&self.target)
             {
                 return Err(Error);
             }

@@ -74,10 +74,19 @@ impl Definition {
     }
     pub fn target(&self) -> cloud::Result<ml_exp_core::slurm::helper::Target> {
         let profile_sha256 = self.profile.digest()?;
+        // The storage alone, not the resources, so that every executor on it shares a store.
+        let storage = match &self.profile {
+            cloud::adapter::Profile::Pai(p) => {
+                serde_json::json!({"provider":"pai","region":p.region,"storage":p.storage})
+            }
+            cloud::adapter::Profile::Sensecore(p) => {
+                serde_json::json!({"provider":"sensecore","volume":p.storage_volume,"subdir":p.storage_subdir})
+            }
+        };
         let storage_scope = format!(
             "sha256:{}",
             ml_exp_core::canonical::digest(
-                &serde_json::json!({"profile":profile_sha256,"run_root":self.run_root})
+                &serde_json::json!({"storage":storage,"data_root":self.data_root()?})
             )
             .map_err(why!(cloud::Error::configuration()))?
         );

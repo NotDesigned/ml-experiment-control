@@ -54,6 +54,11 @@ pub struct Target {
     pub storage_scope: String,
 }
 impl Target {
+    /// Whether both name one dataset store. A store belongs to its storage, so every
+    /// executor on that storage can use it, whichever of them put the data there.
+    pub fn same_store(&self, other: &Self) -> bool {
+        self.storage_scope == other.storage_scope
+    }
     pub fn validate(&self) -> Result<()> {
         if !component(&self.backend_id)
             || !valid_digest(&self.profile_sha256)
