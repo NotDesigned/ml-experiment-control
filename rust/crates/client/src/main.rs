@@ -87,6 +87,9 @@ For every field and each separate step, see `ml-exp run start` and `ml-exp run e
         /// Skip the question. Required without a terminal.
         #[arg(long)]
         yes: bool,
+        /// Return after submitting rather than showing the job's status until it ends.
+        #[arg(long)]
+        detach: bool,
         /// The command to run in the image, after `--`.
         #[arg(last = true, required = true)]
         command: Vec<String>,
@@ -1017,6 +1020,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     run,
                     dockerfile,
                     yes,
+                    detach,
                     command,
                 } => {
                     let project = project.or_else(|| settings.project.clone()).ok_or(
@@ -1051,9 +1055,11 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                         &states,
                         ml_exp_client::submit::Hooks {
                             confirm: &mut |summary| confirm(summary, yes),
-                            progress: &mut |stage| eprintln!("{stage}..."),
-                            poll: std::time::Duration::from_secs(30),
+                            progress: &mut |line| eprintln!("{line}"),
+                            poll: std::time::Duration::from_secs(5),
                             deadline: std::time::Duration::from_secs(6 * 3600),
+                            follow: !detach,
+                            follow_poll: std::time::Duration::from_secs(30),
                         },
                     )?;
                     if args.json {

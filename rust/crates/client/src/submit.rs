@@ -1,7 +1,9 @@
 //! The common case in one command: pack the source, confirm once, prepare and submit.
 //! Every step is an existing operation. The identity comes from the inputs, so the
 //! same command finds the same Submission again and never sends a second job.
-use crate::{Client, Error, preparations, sources, submissions};
+use crate::{
+    Client, Error, observation, preparations, presentation, read, runtime, sources, submissions,
+};
 use ml_exp_core::{canonical, identity, preparation};
 use serde_json::{Value, json};
 use std::{
@@ -11,6 +13,10 @@ use std::{
 
 const DOCKERFILE_LIMIT: u64 = 256 * 1024;
 const REASON: &str = "ml-exp submit";
+/// Build progress is read on every poll, and the build is driven on every Nth.
+const ADVANCE_EVERY: u32 = 6;
+/// Failed reads in a row before watching stops. The job is not affected.
+const READ_FAILURES: u32 = 10;
 
 pub struct Spec {
     pub project: String,
@@ -47,6 +53,9 @@ pub struct Hooks<'a> {
     pub progress: &'a mut dyn FnMut(&str),
     pub poll: Duration,
     pub deadline: Duration,
+    /// Keep showing the backend's status until the job ends.
+    pub follow: bool,
+    pub follow_poll: Duration,
 }
 
 /// `90`, `90s`, `10m`, `2h` or `1d`.
@@ -369,16 +378,82 @@ fn stopped(view: &Value) -> Option<String> {
     }
     None
 }
-fn stage(view: &Value) -> String {
-    match view["runtime"]["status"].as_str() {
-        Some(status) if status != "READY" && status != "EXISTING" => {
-            format!("building the image ({status})")
-        }
-        _ => match view["phase"].as_str() {
-            Some("DATA_PREPARATION") => "preparing data".into(),
-            _ => "preparing".into(),
-        },
+/// The Runtime still being built, if any. Progress is read for this one.
+fn building(view: &Value) -> Option<&str> {
+    let runtime = &view["runtime"];
+    matches!(
+        runtime["status"].as_str(),
+        Some("PREPARED" | "EXECUTING" | "RECONCILE_REQUIRED")
+    )
+    .then(|| runtime["runtime_id"].as_str())
+    .flatten()
+}
+fn stage(view: &Value) -> &'static str {
+    if building(view).is_some() {
+        "building the image"
+    } else if view["phase"] == "DATA_PREPARATION" {
+        "preparing data"
+    } else {
+        "preparing"
     }
+}
+/// Only the lines not shown yet. Each read returns the end of the log, so the two
+/// reads overlap wherever the end of the old one is the start of the new one.
+pub fn new_lines<'a>(shown: &[String], current: &'a [String]) -> &'a [String] {
+    let overlap = (0..=shown.len().min(current.len()))
+        .rev()
+        .find(|size| shown[shown.len() - size..] == current[..*size])
+        .unwrap_or(0);
+    &current[overlap..]
+}
+#[derive(Default)]
+struct BuildView {
+    phase: String,
+    lines: Vec<String>,
+    warned: bool,
+}
+/// Best effort: a failed read only means less to show, and never affects the build.
+fn show_build(
+    client: &Client,
+    spec: &Spec,
+    runtime: &str,
+    health: &Value,
+    view: &mut BuildView,
+    progress: &mut dyn FnMut(&str),
+) {
+    let command = runtime::Command::Progress {
+        project: spec.project.clone(),
+        runtime: runtime.to_owned(),
+    };
+    let Some(value) = command
+        .plan()
+        .and_then(|plan| runtime::execute(client, plan, health))
+        .ok()
+    else {
+        return;
+    };
+    let state = &value["progress"];
+    if let Some(phase) = state["phase"].as_str().filter(|phase| *phase != view.phase) {
+        progress(&match state["message"].as_str() {
+            Some(message) => format!("[build] {phase}: {message}"),
+            None => format!("[build] {phase}"),
+        });
+        view.phase = phase.to_owned();
+    }
+    let lines: Vec<String> = value["lines"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|line| line.as_str().map(str::to_owned))
+        .collect();
+    for line in new_lines(&view.lines, &lines) {
+        progress(&format!("  {line}"));
+    }
+    view.lines = lines;
+    if state["no_progress_warning"] == true && !view.warned {
+        progress("[build] no new output for two minutes; it may still be working");
+    }
+    view.warned = state["no_progress_warning"] == true;
 }
 
 fn show(client: &Client, id: &str, health: &Value) -> Result<Value, Error> {
@@ -447,6 +522,105 @@ fn observe(client: &Client, id: &str, current: Value, health: &Value) -> Result<
     }
 }
 
+/// The scheduler's state, normalized, from either kind of backend.
+fn job_state(submission: &Value) -> Option<&str> {
+    submission
+        .pointer("/cloud_observation/observation/state")
+        .or_else(|| submission.pointer("/execution/result/observation/status/state"))
+        .and_then(Value::as_str)
+}
+fn finished(state: &str) -> bool {
+    matches!(
+        state,
+        "SUCCEEDED" | "FAILED" | "CANCELLED" | "TIMEOUT" | "PREEMPTED"
+    )
+}
+/// The backend's own words when it gives them, such as PAI's `EnvPreparing`.
+fn describe(submission: &Value) -> Option<String> {
+    let state = job_state(submission)?;
+    let observation = &submission["cloud_observation"]["observation"];
+    let own = observation["provider_state"]
+        .as_str()
+        .filter(|own| !own.eq_ignore_ascii_case(state));
+    let mut line = match own {
+        Some(own) => format!("[job] {state} ({own})"),
+        None => format!("[job] {state}"),
+    };
+    if let Some(reason) = observation["queue"]["reason"].as_str() {
+        line.push_str(&format!(": {reason}"));
+    }
+    Some(line)
+}
+/// Read-only. Stopping here, for any reason, leaves the job running.
+fn follow(
+    client: &Client,
+    id: &str,
+    current: Value,
+    health: &Value,
+    hooks: &mut Hooks<'_>,
+) -> Value {
+    (hooks.progress)("Ctrl-C stops watching; the job keeps running");
+    let refresh = |client: &Client| {
+        submissions::plan(submissions::Command::Refresh { submission: id })
+            .and_then(|plan| submissions::execute(client, &plan, health))
+    };
+    let mut latest = current;
+    let mut last = String::new();
+    let mut failures = 0;
+    loop {
+        match refresh(client) {
+            Ok(value) => {
+                failures = 0;
+                latest = value;
+                if let Some(line) = describe(&latest).filter(|line| *line != last) {
+                    (hooks.progress)(&line);
+                    last = line;
+                }
+                if job_state(&latest).is_some_and(finished) {
+                    return latest;
+                }
+            }
+            Err(_) if failures < READ_FAILURES => failures += 1,
+            Err(_) => {
+                (hooks.progress)(
+                    "stopped watching: the status cannot be read. The job keeps running",
+                );
+                return latest;
+            }
+        }
+        std::thread::sleep(hooks.follow_poll);
+    }
+}
+/// What the backend says went wrong, when a job ended without success.
+fn explain_failure(client: &Client, spec: &Spec, plan: &Plan, hooks: &mut Hooks<'_>) {
+    let selection = observation::Selection {
+        project: Some(&spec.project),
+        run: Some(&plan.run_id),
+        attempt: None,
+    };
+    if let Ok(value) = read::provider_diagnostics(client, None, selection, 40) {
+        (hooks.progress)(&presentation::provider_diagnostics(&value));
+    }
+}
+fn watch(
+    client: &Client,
+    spec: &Spec,
+    plan: &Plan,
+    id: &str,
+    current: Value,
+    health: &Value,
+    hooks: &mut Hooks<'_>,
+) -> Value {
+    if !hooks.follow || current["status"] != "VERIFIED" {
+        return current;
+    }
+    let latest = follow(client, id, current, health, hooks);
+    if job_state(&latest).is_some_and(|state| finished(state) && state != "SUCCEEDED") {
+        explain_failure(client, spec, plan, hooks);
+    }
+    latest
+}
+
 fn outcome(spec: &Spec, plan: &Plan, state: &Path, submission: &Value, existing: bool) -> Value {
     let id = submission["submission_id"].as_str().unwrap_or_default();
     let state = state.display();
@@ -456,6 +630,7 @@ fn outcome(spec: &Spec, plan: &Plan, state: &Path, submission: &Value, existing:
         "preparation_id": plan.preparation_id,
         "submission_id": id,
         "status": submission["status"],
+        "job_state": job_state(submission),
         "already_submitted": existing,
         "state_file": state.to_string(),
         "next": [
@@ -477,7 +652,7 @@ pub fn report(value: &Value) -> String {
             "Submitted"
         },
         text("run_id"),
-        text("status")
+        value["job_state"].as_str().unwrap_or(text("status"))
     )];
     lines.extend(
         value["next"]
@@ -494,7 +669,7 @@ pub fn run(
     client: &Client,
     spec: &Spec,
     state_directory: &Path,
-    hooks: Hooks<'_>,
+    mut hooks: Hooks<'_>,
 ) -> Result<Value, Error> {
     let health = client.health()?;
     let executors = client.get("/api/executors")?;
@@ -536,6 +711,7 @@ pub fn run(
         let current = show(client, id, &health)?;
         if dispatched(&current["status"]) {
             let current = observe(client, id, current, &health)?;
+            let current = watch(client, spec, &plan, id, current, &health, &mut hooks);
             return Ok(outcome(spec, &plan, &state, &current, true));
         }
     }
@@ -557,14 +733,7 @@ pub fn run(
     let request = request(spec, &plan, &source_id)?;
     ml_exp_io::create_private_dir(state_directory).map_err(|_| Error::Config)?;
     preparations::prepare(client, &spec.project, &request, &state, &health)?;
-    let id = prepared(
-        client,
-        spec,
-        &plan,
-        hooks.progress,
-        hooks.poll,
-        hooks.deadline,
-    )?;
+    let id = prepared(client, spec, &plan, &health, &mut hooks)?;
     let current = match dispatch(client, &id, &health) {
         Ok(current) => current,
         Err(Error::SubmissionOutcomeUnknown(_)) => {
@@ -573,6 +742,7 @@ pub fn run(
         }
         Err(error) => return Err(error),
     };
+    let current = watch(client, spec, &plan, &id, current, &health, &mut hooks);
     Ok(outcome(spec, &plan, &state, &current, false))
 }
 
@@ -620,44 +790,53 @@ fn prepared(
     client: &Client,
     spec: &Spec,
     plan: &Plan,
-    progress: &mut dyn FnMut(&str),
-    poll: Duration,
-    deadline: Duration,
+    health: &Value,
+    hooks: &mut Hooks<'_>,
 ) -> Result<String, Error> {
     let id = &plan.preparation_id;
     let confirmation = format!("PREPARE {id}");
     let started = Instant::now();
     let mut lost_replies = 0;
-    let mut last = String::new();
+    let mut last = "";
+    let mut runtime: Option<String> = None;
+    let mut build = BuildView::default();
+    let mut tick = 0;
     loop {
-        match preparations::advance(client, &spec.project, id, &confirmation) {
-            Ok(view) => {
-                lost_replies = 0;
-                if let Some(submission) = view["submission"]["submission_id"].as_str() {
-                    return Ok(submission.to_owned());
+        if tick % ADVANCE_EVERY == 0 {
+            match preparations::advance(client, &spec.project, id, &confirmation) {
+                Ok(view) => {
+                    lost_replies = 0;
+                    if let Some(submission) = view["submission"]["submission_id"].as_str() {
+                        return Ok(submission.to_owned());
+                    }
+                    if let Some(reason) = stopped(&view) {
+                        return Err(Error::Submit(format!(
+                            "{reason}. No training job was submitted"
+                        )));
+                    }
+                    let now = stage(&view);
+                    if now != last {
+                        (hooks.progress)(now);
+                        last = now;
+                    }
+                    runtime = building(&view).map(str::to_owned);
                 }
-                if let Some(reason) = stopped(&view) {
-                    return Err(Error::Submit(format!(
-                        "{reason}. No training job was submitted"
-                    )));
-                }
-                let now = stage(&view);
-                if now != last {
-                    progress(&now);
-                    last = now;
-                }
+                Err(Error::Transport) if lost_replies < 3 => lost_replies += 1,
+                Err(error) => return Err(error),
             }
-            Err(Error::Transport) if lost_replies < 3 => lost_replies += 1,
-            Err(error) => return Err(error),
         }
-        if started.elapsed() >= deadline {
+        tick += 1;
+        if let Some(runtime) = &runtime {
+            show_build(client, spec, runtime, health, &mut build, hooks.progress);
+        }
+        if started.elapsed() >= hooks.deadline {
             return Err(Error::Submit(
                 "still preparing, and no training job was submitted. \
                  Run this command again to keep waiting"
                     .into(),
             ));
         }
-        std::thread::sleep(poll);
+        std::thread::sleep(hooks.poll);
     }
 }
 
@@ -914,6 +1093,44 @@ mod tests {
         ] {
             assert!(stopped(&view).is_some(), "{view}");
         }
+    }
+    #[test]
+    fn only_new_log_lines_are_shown() {
+        let lines = |text: &[&str]| -> Vec<String> { text.iter().map(|s| s.to_string()).collect() };
+        let shown = lines(&["a", "b", "c"]);
+        assert!(new_lines(&shown, &lines(&["a", "b", "c"])).is_empty());
+        assert_eq!(new_lines(&shown, &lines(&["b", "c", "d"])), lines(&["d"]));
+        assert_eq!(new_lines(&shown, &lines(&["x", "y"])), lines(&["x", "y"]));
+        assert_eq!(new_lines(&[], &lines(&["a"])), lines(&["a"]));
+        assert!(new_lines(&shown, &[]).is_empty());
+        let repeated = lines(&["a", "a"]);
+        assert_eq!(
+            new_lines(&repeated, &lines(&["a", "a", "a"])),
+            lines(&["a"])
+        );
+    }
+    #[test]
+    fn the_job_line_uses_the_backends_own_words() {
+        let job = |state: &str, own: &str, queue: Value| {
+            json!({"cloud_observation":{"observation":
+                {"state":state,"provider_state":own,"queue":queue}}})
+        };
+        assert_eq!(
+            describe(&job("QUEUED", "EnvPreparing", Value::Null)).unwrap(),
+            "[job] QUEUED (EnvPreparing)"
+        );
+        assert_eq!(
+            describe(&job("RUNNING", "Running", Value::Null)).unwrap(),
+            "[job] RUNNING"
+        );
+        assert_eq!(
+            describe(&job("QUEUED", "Queuing", json!({"reason":"no quota"}))).unwrap(),
+            "[job] QUEUED (Queuing): no quota"
+        );
+        let slurm = json!({"execution":{"result":{"observation":{"status":{"state":"RUNNING"}}}}});
+        assert_eq!(job_state(&slurm), Some("RUNNING"));
+        assert_eq!(describe(&slurm).unwrap(), "[job] RUNNING");
+        assert!(describe(&json!({})).is_none());
     }
     #[test]
     fn a_job_that_may_exist_is_never_treated_as_unsent() {

@@ -16,6 +16,7 @@ use std::{
 };
 
 const ID: &str = "action-0123456789abcdef";
+const RUNTIME: &str = "runtime.3333333333333333333333333333333333333333333333333333333333333333";
 const IMAGE: &str = "docker.io/library/python@sha256:1111111111111111111111111111111111111111111111111111111111111111";
 
 /// What the fake server knows. `None` as a reply closes the socket without answering.
@@ -27,6 +28,10 @@ struct World {
     next_action: &'static str,
     build_failed: bool,
     lose_execute_reply: bool,
+    /// The backend's states, oldest first; the last one stays.
+    job_states: Vec<(&'static str, &'static str)>,
+    reads_down: bool,
+    progress_reads: usize,
 }
 impl World {
     fn new() -> Self {
@@ -38,6 +43,9 @@ impl World {
             next_action: "AUTHORIZE",
             build_failed: false,
             lose_execute_reply: false,
+            job_states: vec![("RUNNING", "Running"), ("SUCCEEDED", "Succeeded")],
+            reads_down: false,
+            progress_reads: 0,
         }
     }
     fn submission(&self) -> Value {
@@ -50,7 +58,7 @@ impl World {
         let id = path.rsplit('/').find(|p| p.starts_with("preparation-"));
         let ready = self.continues > self.continues_until_ready;
         json!({"project":"demo","preparation_id":id,"run_id":"train",
-            "runtime":{"runtime_id":"runtime.x",
+            "runtime":{"runtime_id":RUNTIME,
                 "status":if self.build_failed {"PREPARED"} else if ready {"READY"} else {"EXECUTING"},
                 "build_error":if self.build_failed {json!({"code":"BAD_DOCKERFILE"})} else {Value::Null}},
             "phase":"ENVIRONMENT_PREPARATION","status":"PREPARING",
@@ -64,7 +72,8 @@ impl World {
             ("GET", "/api/health") => (
                 200,
                 json!({"capabilities":["native-submissions.v1","source-archive.v1",
-                    "native-experiment-preparations.v1"],"scheduler_mutations":true}),
+                    "native-experiment-preparations.v1","native-runtime-builds.v1"],
+                    "scheduler_mutations":true}),
             ),
             ("GET", "/api/executors") => (
                 200,
@@ -121,7 +130,34 @@ impl World {
                 self.next_action = "NONE";
                 (200, self.submission())
             }
-            other => panic!("unexpected request {other:?}"),
+            ("POST", r) if r.ends_with("/refresh") => {
+                if self.reads_down {
+                    return Some((503, json!({"code":"BUSY"})));
+                }
+                let (state, own) = if self.job_states.len() > 1 {
+                    self.job_states.remove(0)
+                } else {
+                    self.job_states[0]
+                };
+                let mut value = self.submission();
+                value["cloud_observation"] = json!({"observation":{"job_id":"job",
+                    "provider_state":own,"state":state,"queue":null}});
+                (200, value)
+            }
+            ("GET", r) if r.ends_with("/progress") => {
+                self.progress_reads += 1;
+                let lines = if self.progress_reads == 1 {
+                    json!(["step 1"])
+                } else {
+                    json!(["step 1", "step 2"])
+                };
+                (
+                    200,
+                    json!({"runtime_id":RUNTIME,"lines":lines,
+                        "progress":{"phase":"BUILDING_ON_DSW","message":"Docker build running"}}),
+                )
+            }
+            _ => (404, json!({"code":"NOT_FOUND"})),
         })
     }
 }
@@ -264,6 +300,16 @@ impl Files {
         }
     }
     fn run(&self, fake: &Fake, answer: bool, asked: &mut Vec<String>) -> Result<Value, Error> {
+        self.drive(fake, answer, asked, false, &mut Vec::new())
+    }
+    fn drive(
+        &self,
+        fake: &Fake,
+        answer: bool,
+        asked: &mut Vec<String>,
+        follow: bool,
+        shown: &mut Vec<String>,
+    ) -> Result<Value, Error> {
         submit::run(
             &fake.client(),
             &self.spec(),
@@ -273,9 +319,11 @@ impl Files {
                     asked.push(summary.to_owned());
                     Ok(answer)
                 },
-                progress: &mut |_| {},
+                progress: &mut |line| shown.push(line.to_owned()),
                 poll: Duration::from_millis(1),
                 deadline: Duration::from_secs(5),
+                follow,
+                follow_poll: Duration::from_millis(1),
             },
         )
     }
@@ -430,10 +478,96 @@ fn an_unknown_executor_or_too_many_gpus_is_refused_before_the_question() {
                 progress: &mut |_| {},
                 poll: Duration::from_millis(1),
                 deadline: Duration::from_secs(5),
+                follow: false,
+                follow_poll: Duration::from_millis(1),
             },
         );
         assert!(result.is_err());
         assert_eq!(asked, 0);
     }
     assert_eq!(fake.mutations(), 0);
+}
+
+#[test]
+fn the_build_shows_its_phase_and_each_log_line_once() {
+    let files = Files::new();
+    let fake = Fake::start(World::new());
+    let mut shown = Vec::new();
+    files
+        .drive(&fake, true, &mut Vec::new(), false, &mut shown)
+        .unwrap();
+    let count = |text: &str| shown.iter().filter(|line| line.contains(text)).count();
+    assert_eq!(count("BUILDING_ON_DSW"), 1, "{shown:?}");
+    assert_eq!(count("step 1"), 1, "{shown:?}");
+    assert_eq!(count("step 2"), 1, "{shown:?}");
+}
+
+#[test]
+fn following_shows_the_backends_states_until_the_job_ends() {
+    let files = Files::new();
+    let mut world = World::new();
+    world.job_states = vec![
+        ("QUEUED", "EnvPreparing"),
+        ("RUNNING", "Running"),
+        ("SUCCEEDED", "Succeeded"),
+    ];
+    let fake = Fake::start(world);
+    let mut shown = Vec::new();
+    let value = files
+        .drive(&fake, true, &mut Vec::new(), true, &mut shown)
+        .unwrap();
+    assert_eq!(value["job_state"], "SUCCEEDED");
+    let jobs: Vec<&String> = shown
+        .iter()
+        .filter(|line| line.starts_with("[job]"))
+        .collect();
+    assert_eq!(
+        jobs,
+        [
+            "[job] QUEUED (EnvPreparing)",
+            "[job] RUNNING",
+            "[job] SUCCEEDED"
+        ]
+    );
+    assert_eq!(fake.count("POST", "/execute"), 1);
+    assert_eq!(fake.count("POST", "/refresh"), 3);
+}
+
+#[test]
+fn losing_the_status_stops_watching_and_touches_nothing() {
+    let files = Files::new();
+    let mut world = World::new();
+    world.reads_down = true;
+    let fake = Fake::start(world);
+    let mut shown = Vec::new();
+    let value = files
+        .drive(&fake, true, &mut Vec::new(), true, &mut shown)
+        .unwrap();
+    assert_eq!(value["status"], "VERIFIED");
+    assert!(
+        shown.iter().any(|line| line.contains("keeps running")),
+        "{shown:?}"
+    );
+    assert_eq!(fake.count("POST", "/execute"), 1);
+    assert_eq!(fake.count("POST", "/cancel"), 0);
+}
+
+#[test]
+fn repeating_the_command_goes_back_to_watching_the_same_job() {
+    let files = Files::new();
+    let mut world = World::new();
+    world.job_states = vec![("RUNNING", "Running"), ("FAILED", "Failed")];
+    let fake = Fake::start(world);
+    let mut shown = Vec::new();
+    files
+        .drive(&fake, true, &mut Vec::new(), false, &mut Vec::new())
+        .unwrap();
+    let mut asked = Vec::new();
+    let value = files
+        .drive(&fake, true, &mut asked, true, &mut shown)
+        .unwrap();
+    assert!(asked.is_empty());
+    assert_eq!(value["already_submitted"], true);
+    assert_eq!(value["job_state"], "FAILED");
+    assert_eq!(fake.count("POST", "/execute"), 1);
 }
