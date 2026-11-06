@@ -1,4 +1,5 @@
 use super::*;
+use ml_exp_core::records::{ActionKind, RunKind};
 
 /// Normalize retained provider evidence to the shared status contract. A read
 /// cannot infer an observation time or worker/process completion from it.
@@ -16,7 +17,8 @@ impl Service {
         &self,
         snapshot: &mut crate::experiments::Snapshot,
     ) -> cloud::Result<()> {
-        if !self.handles_run(&snapshot.project, &snapshot.run_id)? {
+        // The caller holds the deletion guard, and this is the Run it already read.
+        if RunKind::of(&snapshot.run.metadata) != RunKind::Cloud {
             return Ok(());
         }
         let attempts = snapshot
@@ -46,28 +48,11 @@ impl Service {
         self.apply_artifacts(snapshot)?;
         Ok(())
     }
-    pub fn handles_run(&self, project: &str, run: &str) -> cloud::Result<bool> {
-        let root = self.authority(project, run)?;
-        if !root.entry_exists(OsStr::new(run)).map_err(io)? {
-            return Ok(false);
-        }
-        let directory = root.child(OsStr::new(run), false).map_err(io)?;
-        if !directory
-            .entry_exists(OsStr::new("manifest.json"))
-            .map_err(io)?
-        {
-            return Ok(false);
-        }
-        Ok(
-            read(&directory, "manifest.json")?["native_creation"]["format"]
-                == "native-cloud-run.v1",
-        )
+    pub fn action_kind(&self, action: &str) -> cloud::Result<ActionKind> {
+        Ok(ActionKind::of(&self.actions.observe(action).map_err(op)?))
     }
     pub fn handles_action(&self, action: &str) -> cloud::Result<bool> {
-        Ok(
-            self.actions.observe(action).map_err(op)?["native_cloud"]["format"]
-                == "native-cloud-action.v1",
-        )
+        Ok(self.action_kind(action)? == ActionKind::Cloud)
     }
     pub(super) fn view(
         &self,
@@ -89,8 +74,7 @@ impl Service {
     /// Worker-reported evidence retained for one Submission. No provider request.
     /// `None` means the Action belongs to another backend service.
     pub fn submission_progress(&self, action: &str) -> cloud::Result<Option<Value>> {
-        let snapshot = self.actions.observe(action).map_err(op)?;
-        if snapshot["native_cloud"]["format"] != "native-cloud-action.v1" {
+        if !self.handles_action(action)? {
             return Ok(None);
         }
         let prepared = self.load(action)?;

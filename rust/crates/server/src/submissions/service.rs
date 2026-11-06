@@ -320,6 +320,11 @@ impl Service {
             .map_err(operations::Error::from)?;
         crate::renewal::decorate(&self.slots, view).map_err(why!(Error::Authority))
     }
+    pub fn action_kind(&self, action: &str) -> Result<ml_exp_core::records::ActionKind> {
+        Ok(ml_exp_core::records::ActionKind::of(
+            &self.actions.observe(action)?,
+        ))
+    }
     pub fn get(&self, action: &str, now: &str) -> Result<Value> {
         let prepared = self.load(action)?;
         let snapshot = self.actions.observe(action)?;

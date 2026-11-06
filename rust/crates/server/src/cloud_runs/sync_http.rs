@@ -70,8 +70,7 @@ async fn provider_diagnostics(
         OnTimeout::NoEffect,
         std::time::Duration::from_secs(120),
         move |api, _| {
-            api.cloud()
-                .ok_or_else(invalid)?
+            api.cloud_only()?
                 .provider_diagnostics(&project, &run, &attempt, lines)
                 .map_err(Into::into)
         },
@@ -95,8 +94,7 @@ async fn data_provider_diagnostics(
         OnTimeout::NoEffect,
         std::time::Duration::from_secs(120),
         move |api, _| {
-            api.cloud()
-                .ok_or_else(invalid)?
+            api.cloud_only()?
                 .data_provider_diagnostics(&project, &executor, &asset, &request, lines)
                 .map_err(Into::into)
         },
@@ -123,8 +121,7 @@ async fn diagnose_sync(
         },
         std::time::Duration::from_secs(120),
         move |api, now| {
-            api.cloud()
-                .ok_or_else(invalid)?
+            api.cloud_only()?
                 .sync_diagnostic(&action, &request, execute, &clock(now)?)
                 .map_err(Into::into)
         },
@@ -151,8 +148,7 @@ async fn diagnose_data(
         },
         std::time::Duration::from_secs(120),
         move |api, now| {
-            api.cloud()
-                .ok_or_else(invalid)?
+            api.cloud_only()?
                 .data_diagnostic(&project, &executor, &asset, &request, execute, &clock(now)?)
                 .map_err(Into::into)
         },
@@ -187,8 +183,7 @@ async fn show(
         return http_effect::failure(invalid());
     }
     http_effect::execute(state, OnTimeout::NoEffect, move |api, now| {
-        api.cloud()
-            .ok_or_else(invalid)?
+        api.cloud_only()?
             .sync_status(&action, &request, &clock(now)?)
             .map_err(Into::into)
     })
@@ -218,8 +213,7 @@ async fn retry(
         OnTimeout::Submission,
         std::time::Duration::from_secs(120),
         move |api, now| {
-            api.cloud()
-                .ok_or_else(invalid)?
+            api.cloud_only()?
                 .retry_sync(
                     &action,
                     &request,

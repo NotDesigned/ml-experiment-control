@@ -7,8 +7,12 @@ use crate::{
     experiments::{RunRef, Snapshot, Store},
     read_config,
     read_model::{self, LiveMetrics, LogQuery, MetricQuery},
+    runs::Owner,
 };
-use ml_exp_core::identity::{validate_attempt, validate_id, validate_observation_id};
+use ml_exp_core::{
+    identity::{validate_attempt, validate_id, validate_observation_id},
+    records::{ActionKind, RunKind},
+};
 use ml_exp_io::directory::Directory;
 use serde_json::Value;
 use std::{
@@ -384,19 +388,8 @@ impl Api {
             .map_err(why!(invalid_clock()))?
             .format(&time::format_description::well_known::Rfc3339)
             .map_err(why!(invalid_clock()))?;
-        if snapshot["native_cloud"]["format"] == "native-cloud-action.v1" {
-            return self
-                .cloud
-                .as_ref()
-                .ok_or_else(|| {
-                    error(
-                        501,
-                        "CLOUD_NOT_CONFIGURED",
-                        "cloud submission service is not configured",
-                    )
-                })?
-                .get(id, &now)
-                .map_err(Into::into);
+        if ActionKind::of(&snapshot) == ActionKind::Cloud {
+            return self.cloud_only()?.get(id, &now).map_err(Into::into);
         }
         if let Some(service) = &self.submissions {
             return service.get(id, &now).map_err(Into::into);
@@ -451,8 +444,8 @@ impl Api {
             ml_exp_core::observation::sanitized_outward(&value),
         ))
     }
-    fn locate_run(&self, project: &str, run: &str) -> Result<RunRef, Error> {
-        let reference = if self.discovery_projects.contains(project) {
+    fn find_run(&self, project: &str, run: &str) -> Result<Option<RunRef>, Error> {
+        Ok(if self.discovery_projects.contains(project) {
             self.store
                 .discover(project)?
                 .runs
@@ -461,13 +454,31 @@ impl Api {
                 .map(|entry| entry.reference)
         } else {
             self.runs.get(&(project.into(), run.into())).cloned()
-        };
-        reference.ok_or_else(|| {
+        })
+    }
+    fn locate_run(&self, project: &str, run: &str) -> Result<RunRef, Error> {
+        self.find_run(project, run)?.ok_or_else(|| {
             error(
                 404,
                 "EXPERIMENT_NOT_FOUND",
                 "the exact Run is unavailable in approved storage",
             )
+        })
+    }
+    /// Found through the read model, wherever the Project keeps its Runs. The fence
+    /// comes first so a deleted Run cannot read as one nobody created.
+    pub(crate) fn run_kind(&self, project: &str, run: &str) -> Result<RunKind, Error> {
+        let _guard = self
+            .fence
+            .existing_observation_guard(project, run)
+            .map_err(why!(error(
+                409,
+                "EXPERIMENT_EVIDENCE_UNAVAILABLE",
+                "Run is unavailable or deleted",
+            )))?;
+        Ok(match self.find_run(project, run)? {
+            Some(reference) => RunKind::of(&self.store.run(&reference, None)?.metadata),
+            None => RunKind::Authored,
         })
     }
     pub fn projects(&self, now_unix: f64) -> Result<Value, Error> {
@@ -617,6 +628,7 @@ impl Api {
     fn native_view(
         &self,
         mut value: Value,
+        kind: RunKind,
         project: &str,
         run: &str,
         attempt: Option<&str>,
@@ -627,24 +639,23 @@ impl Api {
             value["local_execution"] = local;
             return Ok(value);
         }
-        if let Some(cloud) = &self.cloud {
-            if cloud.handles_run(project, run)? {
-                let now = time::OffsetDateTime::from_unix_timestamp_nanos((now_unix * 1e9) as i128)
-                    .map_err(|_| invalid_query())?
-                    .format(&time::format_description::well_known::Rfc3339)
-                    .map_err(|_| invalid_query())?;
-                return cloud
-                    .project_view(value, project, run, attempt, &now)
-                    .map_err(Into::into);
-            }
-        }
-        let Some(service) = &self.submissions else {
+        // A read-only API still shows a Run whose owner it does not run.
+        let Ok(owner) = Owner::of_kind(kind, self.cloud(), self.submissions()) else {
             return Ok(value);
         };
+        owner.gate(project, run)?;
         let now = time::OffsetDateTime::from_unix_timestamp_nanos((now_unix * 1e9) as i128)
             .map_err(|_| invalid_query())?
             .format(&time::format_description::well_known::Rfc3339)
             .map_err(|_| invalid_query())?;
+        let service = match owner {
+            Owner::Cloud(cloud) => {
+                return cloud
+                    .project_view(value, project, run, attempt, &now)
+                    .map_err(Into::into);
+            }
+            Owner::Slurm(service) => service,
+        };
         let submission = match attempt
             .map(|attempt| service.for_attempt(project, run, attempt, &now))
             .unwrap_or_else(|| service.for_run(project, run, &now))
@@ -715,6 +726,7 @@ impl Api {
         if let Some(cloud) = &self.cloud {
             cloud.apply_observation(&mut snapshot)?;
         }
+        let kind = RunKind::of(&snapshot.run.metadata);
         let value = match query.view {
             View::Run => {
                 let attempt = snapshot.current_attempt_id.as_deref();
@@ -727,11 +739,12 @@ impl Api {
                         records: &records,
                     }),
                 )?;
-                self.native_view(value, &query.project, &query.run, None, now_unix)?
+                self.native_view(value, kind, &query.project, &query.run, None, now_unix)?
             }
             View::Attempts => read_model::run_attempts(&snapshot)?,
             View::Show { attempt } => self.native_view(
                 read_model::attempt_show(&snapshot, &attempt, now_unix)?,
+                kind,
                 &query.project,
                 &query.run,
                 Some(&attempt),
@@ -755,6 +768,7 @@ impl Api {
             }
             View::Collection { attempt } => self.native_view(
                 read_model::attempt_collection(&snapshot, &attempt, now_unix)?,
+                kind,
                 &query.project,
                 &query.run,
                 Some(&attempt),

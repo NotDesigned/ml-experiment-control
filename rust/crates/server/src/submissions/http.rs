@@ -5,6 +5,7 @@ use crate::{
     AppState,
     http_effect::{self, OnTimeout},
     read_api,
+    runs::Owner,
 };
 use axum::{
     Router,
@@ -69,14 +70,10 @@ async fn tracking(
         if let Some(value) = api.local_tracking_status(&project, &run)? {
             return Ok(value);
         }
-        if let Some(cloud) = api.cloud() {
-            if cloud.handles_run(&project, &run)? {
-                return cloud.tracking_status(&project, &run).map_err(Into::into);
-            }
+        match api.run_owner(&project, &run)? {
+            Owner::Cloud(cloud) => cloud.tracking_status(&project, &run).map_err(Into::into),
+            Owner::Slurm(slurm) => slurm.tracking_status(&project, &run).map_err(Into::into),
         }
-        service(api)?
-            .tracking_status(&project, &run)
-            .map_err(Into::into)
     })
     .await
 }
@@ -132,16 +129,14 @@ async fn checkpoint_get(
         return http_effect::failure(invalid());
     }
     http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
-        if let Some(cloud) = api.cloud() {
-            if cloud.handles_run(&project, &run)? {
-                return cloud
-                    .checkpoints(&project, &run, &attempt, id.as_deref())
-                    .map_err(Into::into);
-            }
+        match api.run_owner(&project, &run)? {
+            Owner::Cloud(cloud) => cloud
+                .checkpoints(&project, &run, &attempt, id.as_deref())
+                .map_err(Into::into),
+            Owner::Slurm(slurm) => slurm
+                .checkpoints(&project, &run, &attempt, id.as_deref())
+                .map_err(Into::into),
         }
-        service(api)?
-            .checkpoints(&project, &run, &attempt, id.as_deref())
-            .map_err(Into::into)
     })
     .await
 }
@@ -153,11 +148,7 @@ fn invalid() -> read_api::Error {
     }
 }
 pub(super) fn service(api: &read_api::Api) -> Result<Arc<Service>, read_api::Error> {
-    api.submissions().ok_or(read_api::Error {
-        status: 501,
-        code: "SUBMISSION_NOT_CONFIGURED",
-        detail: "native submissions are not explicitly configured",
-    })
+    api.submissions().ok_or_else(crate::runs::slurm_absent)
 }
 fn decode<T: serde::de::DeserializeOwned>(
     body: Result<Bytes, BytesRejection>,
@@ -263,16 +254,11 @@ async fn existing(
         return http_effect::failure(error);
     }
     http_effect::execute(state, OnTimeout::NoEffect, move |api, now| {
-        if let Some(cloud) = api.cloud() {
-            if cloud.handles_run(&project, &run)? {
-                return cloud
-                    .for_run(&project, &run, &clock(now)?)
-                    .map_err(Into::into);
-            }
+        let now = clock(now)?;
+        match api.run_owner(&project, &run)? {
+            Owner::Cloud(cloud) => cloud.for_run(&project, &run, &now).map_err(Into::into),
+            Owner::Slurm(slurm) => slurm.for_run(&project, &run, &now).map_err(Into::into),
         }
-        service(api)?
-            .for_run(&project, &run, &clock(now)?)
-            .map_err(Into::into)
     })
     .await
 }
@@ -304,25 +290,23 @@ async fn prepare(
             .format(&Rfc3339)
             .map_err(|_| invalid())?;
         let (_, identity) = crate::projects::transition_context().map_err(read_api::Error::from)?;
-        if let Some(cloud) = api.cloud() {
-            if cloud.handles_run(&project, &run)? {
-                return cloud
-                    .prepare(&project, &run, approval, &now, &expires, &identity)
-                    .map_err(Into::into);
-            }
+        match api.run_owner(&project, &run)? {
+            Owner::Cloud(cloud) => cloud
+                .prepare(&project, &run, approval, &now, &expires, &identity)
+                .map_err(Into::into),
+            Owner::Slurm(slurm) => slurm
+                .prepare(
+                    &project,
+                    &run,
+                    approval,
+                    Context {
+                        now: &now,
+                        expires: &expires,
+                        transition_id: &identity,
+                    },
+                )
+                .map_err(Into::into),
         }
-        service(api)?
-            .prepare(
-                &project,
-                &run,
-                approval,
-                Context {
-                    now: &now,
-                    expires: &expires,
-                    transition_id: &identity,
-                },
-            )
-            .map_err(Into::into)
     })
     .await
 }
@@ -465,7 +449,8 @@ async fn change(
                 expires: &expires,
                 transition_id: &transition,
             };
-            if let Some(cloud)=api.cloud(){if cloud.handles_action(&identity)?{
+            let service = match api.action_owner(&identity)? {
+                Owner::Cloud(cloud) => {
                 let cancelled=AtomicBool::new(false);
                 return match operation {
                     Operation::Renew(request)=>cloud.renew(&identity,request,context),
@@ -482,8 +467,9 @@ async fn change(
                     Operation::Acknowledge(request)=>cloud.acknowledge_artifacts(&identity,request.proof,request.release,&now),
                     Operation::DownloadTicket(part)=>cloud.download_ticket(&identity,part,&now),
                 }.map_err(Into::into);
-            }}
-            let service = service(api)?;
+                }
+                Owner::Slurm(slurm) => slurm,
+            };
             let refreshing = matches!(&operation,Operation::History | Operation::Refresh | Operation::Checkpoint | Operation::Collect | Operation::Acknowledge(_));
             match operation {
                 Operation::DownloadTicket(_)=>return Err(read_api::Error{status:422,code:"DIRECT_DOWNLOAD_UNAVAILABLE",detail:"this backend streams downloads through its gateway"}),
@@ -529,12 +515,10 @@ async fn artifact_metadata(
         return http_effect::failure(e);
     }
     http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
-        if let Some(cloud) = api.cloud() {
-            if cloud.handles_action(&identity)? {
-                return cloud.artifacts(&identity).map_err(Into::into);
-            }
+        match api.action_owner(&identity)? {
+            Owner::Cloud(cloud) => cloud.artifacts(&identity).map_err(Into::into),
+            Owner::Slurm(slurm) => slurm.artifacts(&identity).map_err(Into::into),
         }
-        service(api)?.artifacts(&identity).map_err(Into::into)
     })
     .await
 }

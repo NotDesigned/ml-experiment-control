@@ -69,11 +69,7 @@ async fn worker_read(
         });
     };
     http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
-        let cloud = api.cloud().ok_or(read_api::Error {
-            status: 501,
-            code: "WORKER_EXCHANGE_NOT_CONFIGURED",
-            detail: "cloud worker exchange is not configured",
-        })?;
+        let cloud = api.cloud_only()?;
         if uri.path().ends_with("/package") {
             cloud.worker_package(&project, &run, &attempt, &token)
         } else {
@@ -133,11 +129,7 @@ async fn artifact(
         OnTimeout::Effect,
         std::time::Duration::from_secs(3600),
         move |api, now| {
-            let cloud = api.cloud().ok_or(read_api::Error {
-                status: 501,
-                code: "WORKER_EXCHANGE_NOT_CONFIGURED",
-                detail: "cloud worker exchange is not configured",
-            })?;
+            let cloud = api.cloud_only()?;
             let now = time::OffsetDateTime::from_unix_timestamp(now as i64)
                 .map_err(|_| invalid())?
                 .format(&time::format_description::well_known::Rfc3339)
@@ -194,11 +186,7 @@ async fn receive(
         None => return http_effect::failure(invalid()),
     };
     http_effect::execute(state, OnTimeout::Effect, move |api, now| {
-        let cloud = api.cloud().ok_or(read_api::Error {
-            status: 501,
-            code: "WORKER_EXCHANGE_NOT_CONFIGURED",
-            detail: "cloud worker exchange is not configured",
-        })?;
+        let cloud = api.cloud_only()?;
         let now = time::OffsetDateTime::from_unix_timestamp(now as i64)
             .map_err(|_| invalid())?
             .format(&time::format_description::well_known::Rfc3339)
@@ -245,8 +233,7 @@ async fn dataset(
         });
     };
     http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
-        api.cloud()
-            .ok_or_else(invalid)?
+        api.cloud_only()?
             .dataset_ticket(&project, &run, &attempt, &token, &asset, part)
             .map_err(Into::into)
     })

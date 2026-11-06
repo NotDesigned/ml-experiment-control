@@ -2,6 +2,7 @@ use crate::{
     AppState,
     http_effect::{self, OnTimeout},
     read_api,
+    runs::Owner,
 };
 use axum::{
     Router,
@@ -18,13 +19,6 @@ fn invalid() -> read_api::Error {
         code: "INVALID_EXPERIMENT_PREPARATION",
         detail: "invalid experiment configuration or exact preparation identity",
     }
-}
-fn service(api: &read_api::Api) -> Result<Arc<crate::cloud_runs::Service>, read_api::Error> {
-    api.cloud().ok_or(read_api::Error {
-        status: 501,
-        code: "EXPERIMENT_PREPARATION_DISABLED",
-        detail: "native experiment preparation is not configured",
-    })
 }
 pub(crate) fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -52,20 +46,18 @@ async fn discover(
         return http_effect::failure(invalid());
     }
     http_effect::execute(state, OnTimeout::NoEffect, move |api, now| {
-        if let Some(cloud) = api.cloud() {
-            if let Some(value) = cloud.experiment_for_run(&project, &run)? {
-                return Ok(value);
-            }
-            if cloud.handles_run(&project, &run)? {
-                return cloud
-                    .for_run(&project, &run, &timestamp(now)?)
-                    .map_err(Into::into);
-            }
+        let preparation = match api.cloud() {
+            Some(cloud) => cloud.experiment_for_run(&project, &run)?,
+            None => None,
+        };
+        if let Some(value) = preparation {
+            return Ok(value);
         }
-        api.submissions()
-            .ok_or_else(invalid)?
-            .for_run(&project, &run, &timestamp(now)?)
-            .map_err(Into::into)
+        let now = timestamp(now)?;
+        match api.run_owner(&project, &run)? {
+            Owner::Cloud(cloud) => cloud.for_run(&project, &run, &now).map_err(Into::into),
+            Owner::Slurm(slurm) => slurm.for_run(&project, &run, &now).map_err(Into::into),
+        }
     })
     .await
 }
@@ -95,7 +87,7 @@ async fn prepare(
         return http_effect::failure(invalid());
     }
     http_effect::execute(state, OnTimeout::Effect, move |api, _| {
-        service(api)?
+        api.cloud_only()?
             .experiment_prepare(&project, request, api.submissions().as_deref())
             .map_err(Into::into)
     })
@@ -110,7 +102,7 @@ async fn show(
         return http_effect::failure(invalid());
     }
     http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
-        service(api)?
+        api.cloud_only()?
             .experiment_status(&project, &id)
             .map_err(Into::into)
     })
@@ -139,7 +131,7 @@ async fn advance(
         let expires = (timestamp + time::Duration::minutes(30))
             .format(&time::format_description::well_known::Rfc3339)
             .map_err(|_| invalid())?;
-        service(api)?
+        api.cloud_only()?
             .experiment_continue(
                 &project,
                 &id,

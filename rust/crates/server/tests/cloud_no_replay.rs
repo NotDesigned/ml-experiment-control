@@ -15,6 +15,7 @@ use ml_exp_core::{
 };
 use ml_exp_io::directory::{Directory, FileLock, LockOptions};
 use ml_exp_server::{
+    administration,
     backends::{
         cloud::{
             self,
@@ -25,9 +26,12 @@ use ml_exp_server::{
     },
     background::{Cycle, Polled},
     cloud_runs::{Service, Settings},
+    deletion::RunFence,
     operations::{ClaimContext, Store},
-    read_api::Api,
-    read_config, sources, submissions,
+    read_api::{self, Api},
+    read_config,
+    runs::Owner,
+    sources, submissions,
 };
 use serde_json::{Value, json};
 use std::{
@@ -2027,4 +2031,164 @@ async fn a_configured_cloud_service_can_read_a_slurm_run_in_an_explicit_run_proj
         assert!(f.provider.calls().is_empty());
         assert!(!ssh_calls.exists());
     }
+}
+
+fn refusal(result: Result<Owner, read_api::Error>) -> (u16, &'static str) {
+    let error = result.err().unwrap();
+    (error.status, error.code)
+}
+
+#[tokio::test]
+async fn a_run_or_action_reaches_its_own_backend_through_the_app() {
+    for kind in KINDS {
+        let f = Fixture::new(kind);
+        let cloud_service = Arc::new(f.open());
+        let (cloud_action, _) = f.authorized(&cloud_service, "cloud-run");
+        let (slurm, slurm_action, ssh_calls) = slurm_side(&f);
+        let app = routing_app(
+            &f,
+            routing_api(&f, Some(Arc::new(slurm)), Some(cloud_service)),
+        );
+        for (run, action) in [("cloud-run", &cloud_action), ("train", &slurm_action)] {
+            let (status, body) =
+                routed(&app, "GET", &format!("/api/runs/demo/{run}/submission"), "").await;
+            assert_eq!(status, 200, "{body}");
+            assert_eq!(body["submission_id"], action.as_str());
+            let (status, body) =
+                routed(&app, "GET", &format!("/api/submissions/{action}"), "").await;
+            assert_eq!(status, 200, "{body}");
+            assert_eq!(body["submission_id"], action.as_str());
+        }
+        let ticket = |action: &str| format!("/api/submissions/{action}/download-ticket");
+        let (status, body) = routed(&app, "POST", &ticket(&slurm_action), r#"{"part":0}"#).await;
+        assert_eq!(
+            (status, body["code"].as_str()),
+            (422, Some("DIRECT_DOWNLOAD_UNAVAILABLE"))
+        );
+        let (_, body) = routed(&app, "POST", &ticket(&cloud_action), r#"{"part":0}"#).await;
+        assert_ne!(body["code"], "DIRECT_DOWNLOAD_UNAVAILABLE");
+        assert!(f.provider.calls().is_empty());
+        assert!(!ssh_calls.exists());
+    }
+}
+
+#[test]
+fn an_owner_that_is_not_configured_answers_501_and_the_other_backend_is_never_asked() {
+    for kind in KINDS {
+        let f = Fixture::new(kind);
+        let cloud_service = Arc::new(f.open());
+        let (cloud_action, _) = f.authorized(&cloud_service, "cloud-run");
+        let (slurm, slurm_action, ssh_calls) = slurm_side(&f);
+
+        let slurm_only = routing_api(&f, Some(Arc::new(slurm)), None);
+        let absent = (501, "CLOUD_NOT_CONFIGURED");
+        assert_eq!(refusal(slurm_only.action_owner(&cloud_action)), absent);
+        assert_eq!(refusal(slurm_only.run_owner("demo", "cloud-run")), absent);
+        assert!(matches!(
+            slurm_only.action_owner(&slurm_action),
+            Ok(Owner::Slurm(_))
+        ));
+        assert!(matches!(
+            slurm_only.run_owner("demo", "train"),
+            Ok(Owner::Slurm(_))
+        ));
+
+        let cloud_only = routing_api(&f, None, Some(cloud_service));
+        let absent = (501, "SUBMISSION_NOT_CONFIGURED");
+        assert_eq!(refusal(cloud_only.action_owner(&slurm_action)), absent);
+        assert_eq!(refusal(cloud_only.run_owner("demo", "train")), absent);
+        assert!(matches!(
+            cloud_only.action_owner(&cloud_action),
+            Ok(Owner::Cloud(_))
+        ));
+        assert!(matches!(
+            cloud_only.run_owner("demo", "cloud-run"),
+            Ok(Owner::Cloud(_))
+        ));
+        assert!(f.provider.calls().is_empty());
+        assert!(!ssh_calls.exists());
+    }
+}
+
+/// A Run route that cannot read the manifest stops there. It used to be possible
+/// to reach the next backend by treating such a failure as "not mine".
+#[tokio::test]
+async fn a_run_that_cannot_be_read_or_is_deleted_has_no_owner() {
+    for kind in KINDS {
+        let f = Fixture::new(kind);
+        let cloud_service = Arc::new(f.open());
+        f.authorized(&cloud_service, "cloud-run");
+        let (slurm, _, ssh_calls) = slurm_side(&f);
+        let api = routing_api(&f, Some(Arc::new(slurm)), Some(cloud_service));
+        let app = routing_app(&f, api.clone());
+        assert_eq!(
+            refusal(api.action_owner("action-1111111111111111")).0,
+            404,
+            "an unknown Action keeps the reading service's own answer"
+        );
+        // Nobody created this Run, so Slurm's own admission gets to refuse it.
+        assert!(matches!(
+            api.run_owner("demo", "absent"),
+            Ok(Owner::Slurm(_))
+        ));
+
+        let manifest = f.run_directory("cloud-run").join("manifest.json");
+        let original = fs::read(&manifest).unwrap();
+        ml_exp_io::write_atomic(&manifest, b"{", true).unwrap();
+        let unreadable = (409, "EXPERIMENT_DISCOVERY_UNAVAILABLE");
+        assert_eq!(refusal(api.run_owner("demo", "cloud-run")), unreadable);
+        let (status, body) = routed(
+            &app,
+            "POST",
+            "/api/runs/demo/cloud-run/submissions",
+            r#"{"max_gpu_hours":1}"#,
+        )
+        .await;
+        assert_eq!((status, body["code"].as_str()), (409, Some(unreadable.1)));
+        ml_exp_io::write_atomic(&manifest, &original, true).unwrap();
+        assert!(matches!(
+            api.run_owner("demo", "cloud-run"),
+            Ok(Owner::Cloud(_))
+        ));
+
+        let fence = RunFence::new(&f.settings.registry_root);
+        for run in ["cloud-run", "train"] {
+            fence
+                .mark("demo", run, &serde_json::Map::new(), T_EXECUTE)
+                .unwrap();
+            assert_eq!(
+                refusal(api.run_owner("demo", run)),
+                (409, "EXPERIMENT_EVIDENCE_UNAVAILABLE")
+            );
+        }
+        assert!(f.provider.calls().is_empty());
+        assert!(!ssh_calls.exists());
+    }
+}
+
+#[test]
+fn administration_stops_when_it_cannot_tell_who_owns_an_action() {
+    let f = Fixture::new(Kind::Pai);
+    let cloud_service = Arc::new(f.open());
+    let (slurm, _, ssh_calls) = slurm_side(&f);
+    administration::Service::initialize(&f.settings).unwrap();
+    let service = administration::Service::open(
+        f.settings.clone(),
+        Some(Arc::new(slurm)),
+        Some(cloud_service),
+    )
+    .unwrap();
+    let error = service
+        .prepare(
+            "action-1111111111111111",
+            administration::Request {
+                request_id: REQUEST_A.into(),
+                selection: administration::Choice::Outputs,
+            },
+            T_EXECUTE,
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "ADMINISTRATION_BLOCKED");
+    assert!(f.provider.calls().is_empty());
+    assert!(!ssh_calls.exists());
 }

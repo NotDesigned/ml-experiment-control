@@ -162,6 +162,11 @@ impl Service {
             .map_err(why!(cloud::Error::evidence()))?;
         self.require_active(project)
     }
+    /// What a Run route confirms before it acts: this workspace, no tombstone, an
+    /// active Project, and the one discovered root that holds a cloud Run.
+    pub(crate) fn validate_run(&self, project: &str, run: &str) -> cloud::Result<()> {
+        self.authority(project, run).map(|_| ())
+    }
     pub(super) fn authority(&self, project: &str, run: &str) -> cloud::Result<Directory> {
         ml_exp_core::identity::validate_id(project)
             .and_then(|_| ml_exp_core::identity::validate_id(run))

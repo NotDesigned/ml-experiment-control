@@ -2,7 +2,7 @@ use super::{Error, Result, Runtime, transport::Sdk};
 use crate::background::Worker;
 use crate::records::{RecordGuard, RemoteHistoryEvidence, RemoteObservation, Store};
 use ml_exp_core::{
-    records::Scope,
+    records::{RunKind, Scope},
     tracking::{
         self,
         publication::{
@@ -88,13 +88,12 @@ impl Source for crate::read_api::Api {
         }
     }
     fn tracking_journal(&self, project: &str, run: &str) -> Result<Store> {
-        if let Some(service) = self.cloud() {
-            if service
-                .handles_run(project, run)
-                .map_err(why!(Error::Identity))?
-            {
-                return Source::tracking_journal(&*service, project, run);
-            }
+        if self.run_kind(project, run).map_err(why!(Error::Identity))? == RunKind::Cloud {
+            let service = self.cloud().ok_or(Error::Configuration)?;
+            service
+                .validate_run(project, run)
+                .map_err(why!(Error::Identity))?;
+            return Source::tracking_journal(&*service, project, run);
         }
         if let Some(store) = self
             .local_journal(project, run)

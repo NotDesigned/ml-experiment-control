@@ -2,7 +2,7 @@
 use super::*;
 
 impl Service {
-    pub(super) fn validate_workspace(&self, project: &str, run: &str) -> Result<()> {
+    pub(crate) fn validate_workspace(&self, project: &str, run: &str) -> Result<()> {
         let (_, workspace) =
             read_config::workspace(&self.settings.registry_root).map_err(why!(Error::Authority))?;
         if workspace != self.workspace {

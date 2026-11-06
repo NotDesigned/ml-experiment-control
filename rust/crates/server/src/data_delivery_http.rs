@@ -58,8 +58,7 @@ async fn download(
         None => return http_effect::failure(invalid()),
     };
     http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
-        api.cloud()
-            .ok_or_else(invalid)?
+        api.cloud_only()?
             .dataset_download(&project, &executor, &asset, request.part)
             .map_err(Into::into)
     })
@@ -107,8 +106,7 @@ async fn exchange(
             Err(_) => return http_effect::failure(invalid()),
         };
         http_effect::execute(state, OnTimeout::Effect, move |api, _| {
-            api.cloud()
-                .ok_or_else(invalid)?
+            api.cloud_only()?
                 .data_ready(&project, &executor, &asset, &token, receipt)
                 .map_err(Into::into)
         })
@@ -119,8 +117,7 @@ async fn exchange(
             _ => return http_effect::failure(invalid()),
         };
         http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
-            api.cloud()
-                .ok_or_else(invalid)?
+            api.cloud_only()?
                 .data_download_ticket(&project, &executor, &asset, &token, part)
                 .map_err(Into::into)
         })
@@ -155,8 +152,7 @@ async fn publish(
         return http_effect::failure(invalid());
     }
     http_effect::execute(state, OnTimeout::Effect, move |api, _| {
-        api.cloud()
-            .ok_or_else(invalid)?
+        api.cloud_only()?
             .publish_dataset(
                 &project,
                 &executor,
