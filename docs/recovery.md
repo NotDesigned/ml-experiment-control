@@ -59,7 +59,7 @@ GET /api/actions/ACTION_ID/diagnostics?refresh=true
 
 The bounded redacted response can include staging stdout/stderr, exit code,
 timeout and image phases. Slurm refresh reads the frozen preparation receipt;
-it never reruns conversion, the Action or a project controller. A late remote
+it never reruns conversion or the Action. A late remote
 READY event is separate evidence and does not rewrite the Action's saved failure.
 A new Action still rechecks the actual SIF. A missing receipt remains UNKNOWN.
 

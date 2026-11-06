@@ -54,8 +54,8 @@ fn no_op_preserves_raw_authority_and_mutation_has_one_exact_event() {
     assert_eq!(commit.payload["extra_top"], json!({"keep":true}));
     assert!(commit.payload["projects"][0].get("private_extra").is_none());
     assert_eq!(
-        original.payload()["projects"][0].get("state"),
-        None,
+        original.payload()["projects"][0]["state"],
+        "ACTIVE",
         "reducers cannot mutate their input"
     );
 }
