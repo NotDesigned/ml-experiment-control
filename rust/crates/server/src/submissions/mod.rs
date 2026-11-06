@@ -4,7 +4,7 @@
 pub mod config;
 pub(crate) mod http;
 mod service;
-pub use service::{Backend, Context, Error, Service};
+pub use service::{Backend, Context, Error, RuntimeBuilder, Service};
 
 mod artifact_http;
 pub(crate) mod dataset_http;

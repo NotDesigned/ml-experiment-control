@@ -475,7 +475,9 @@ fn open_api(
                     config.backends,
                     config.enabled,
                 )?
-                .with_runtime_builder(api.cloud())
+                .with_runtime_builder(api.cloud().map(|cloud| {
+                    cloud as std::sync::Arc<dyn ml_exp_server::submissions::RuntimeBuilder>
+                }))
                 .with_run_creation(config.creation)?
                 .with_tracking(tracking.unwrap_or_default()),
             );

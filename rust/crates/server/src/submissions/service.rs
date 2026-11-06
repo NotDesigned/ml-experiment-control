@@ -99,7 +99,12 @@ pub struct Service {
     enabled: bool,
     creation_roots: BTreeMap<String, Directory>,
     tracking: ml_exp_core::tracking::RoutingSettings,
-    runtime_builder: Option<Arc<crate::cloud_runs::Service>>,
+    runtime_builder: Option<Arc<dyn RuntimeBuilder>>,
+}
+/// A Runtime this backend does not list in its configuration but may have had
+/// built for it. This one question is all Slurm asks of whoever keeps the builds.
+pub trait RuntimeBuilder: Send + Sync {
+    fn slurm_runtime(&self, project: &str, executor: &str, id: &str) -> Result<Runtime>;
 }
 struct Facts {
     reference: RunRef,
@@ -469,10 +474,7 @@ impl Service {
 }
 
 impl Service {
-    pub fn with_runtime_builder(
-        mut self,
-        builder: Option<Arc<crate::cloud_runs::Service>>,
-    ) -> Self {
+    pub fn with_runtime_builder(mut self, builder: Option<Arc<dyn RuntimeBuilder>>) -> Self {
         self.runtime_builder = builder;
         self
     }
@@ -485,7 +487,6 @@ impl Service {
             .as_ref()
             .ok_or(Error::Authority)?
             .slurm_runtime(project, executor, id)
-            .map_err(why!(Error::Authority))
     }
 }
 

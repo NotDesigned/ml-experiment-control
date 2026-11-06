@@ -492,8 +492,23 @@ impl Service {
     }
 }
 
+impl crate::submissions::RuntimeBuilder for Service {
+    fn slurm_runtime(
+        &self,
+        project: &str,
+        executor: &str,
+        id: &str,
+    ) -> std::result::Result<
+        ml_exp_core::first_submission::native::Runtime,
+        crate::submissions::Error,
+    > {
+        self.materialized_runtime(project, executor, id)
+            .map_err(why!(crate::submissions::Error::Authority))
+    }
+}
+
 impl Service {
-    pub fn slurm_runtime(
+    fn materialized_runtime(
         &self,
         project: &str,
         executor: &str,
