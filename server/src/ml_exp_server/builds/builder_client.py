@@ -1,9 +1,7 @@
-"""Shared private image-builder identities, errors and Unix client."""
+"""Shared private image-builder identities and errors."""
 from __future__ import annotations
 
-import http.client
 import re
-import socket
 
 
 IMAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}$")
@@ -33,10 +31,3 @@ class BuildReceiptMissingError(ValueError):
     def __init__(self, message, *, retry_proof=None):
         super().__init__(message)
         self.retry_proof = retry_proof
-
-
-class UnixConnection(http.client.HTTPConnection):
-    def connect(self):
-        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.settimeout(self.timeout)
-        self.sock.connect(self.host)

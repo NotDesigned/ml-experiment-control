@@ -27,8 +27,23 @@ from .builds.image_build_context import BUILD_LOG, BUILD_PROGRESS, BUILD_CACHE
 from .builds.builder_client import IMAGE, MANIFEST_TYPE, BuildStorageError, BuildTransportError, BuildReceiptMissingError
 
 
+CONFIG_KEYS = frozenset({
+    "socket", "client_uid", "client_gid", "state_root", "native_worker_bin", "native_source_root",
+    "repository", "publisher", "allow_dockerfile_builds", "timeout_seconds",
+    "registry_auth_file", "registry_auth_hosts", "registry_blob_hosts", "docker", "skopeo",
+    "ephemeral_buildkit", "buildkit_image", "buildkit_http_proxy", "buildkit_network",
+    "build_storage_path", "build_expansion_factor", "build_reserve_bytes", "build_min_free_inodes",
+    "pai_dsw", "acr_fallback", "sensecore_mirror"})
+
+
 class ImageBuilder:
     def __init__(self, config: dict):
+        unknown = sorted(set(config) - CONFIG_KEYS)
+        if unknown:
+            raise ValueError("unknown builder configuration: " + ", ".join(unknown))
+        missing = [key for key in ("native_worker_bin", "native_source_root") if key not in config]
+        if missing:
+            raise ValueError("builder configuration lacks " + ", ".join(missing))
         self.config = config
         proxy = config.get("buildkit_http_proxy")
         if "buildkit_http_proxy" in config and (not isinstance(proxy, str) or not re.fullmatch(r"https?://[A-Za-z0-9._-]+:[0-9]{1,5}/?", proxy)):
@@ -36,8 +51,6 @@ class ImageBuilder:
         network = config.get("buildkit_network")
         if "buildkit_network" in config and (not isinstance(network, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", network)):
             raise ValueError("invalid private BuildKit network")
-        if config.get("docker_host"):
-            raise ValueError("remote Docker publishing was removed; use PAI DSW or local BuildKit")
         self.root = Path(config["state_root"])
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         if self.config.get("ephemeral_buildkit"):
@@ -49,12 +62,6 @@ class ImageBuilder:
         if str(request.get("operation", "")).startswith("native-"):
             from .builds.native_image import request as native_request
             return native_request(self, request)
-        if request.get("operation") == "health":
-            return {"status": "ok", "dockerfile_builds": bool(self.config.get("allow_dockerfile_builds"))
-                    and self.config.get("publisher") in {"buildkit", "pai-dsw"}}
-        if request.get('operation') == 'mirror':
-            from .builds.image_mirror import mirror
-            return mirror(self, request)
         raise ValueError("unsupported image packaging operation")
 
     def _publish_buildkit(self, tag: str, context: Path) -> str:

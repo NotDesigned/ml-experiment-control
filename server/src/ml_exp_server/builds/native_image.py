@@ -15,7 +15,7 @@ import stat
 import tempfile
 
 from .builder_client import IMAGE, PROJECT, BuildReceiptMissingError
-from .image_build_context import BUILD_LOG, BUILD_PROGRESS, BUILD_CACHE, BUILD_RETRY
+from .image_build_context import BUILD_LOG, BUILD_PROGRESS, BUILD_CACHE
 from ..dockerfile_build import inspect_dockerfile, INTERNAL
 from ..projects.source_revisions import _tree_digest
 from ..runs.execution_progress import record_progress, progress_view
@@ -145,7 +145,6 @@ def request(builder, value):
             if result.get("request") != frozen:
                 raise ValueError("native build receipt differs")
             return result
-        retried = definition.exists()
         atomic_json(definition, frozen)
         record_progress(progress, "PREPARING_CONTEXT", "Preparing the sealed native worker and source")
         with tempfile.TemporaryDirectory(prefix="native-build-", dir=builder.root) as directory:
@@ -174,8 +173,7 @@ def request(builder, value):
                     stream.write(f"\n!{INTERNAL}/\n!{INTERNAL}/**\n")
             tokens = [(var, var.set(data)) for var, data in (
                 (BUILD_LOG, log), (BUILD_PROGRESS, progress),
-                (BUILD_CACHE, builder.config["repository"] + ":native-cache-" + hashlib.sha256(value["project"].encode()).hexdigest()[:24]),
-                (BUILD_RETRY, identifier if retried else None))]
+                (BUILD_CACHE, builder.config["repository"] + ":native-cache-" + hashlib.sha256(value["project"].encode()).hexdigest()[:24]))]
             try:
                 tag = builder.config["repository"] + ":bundle-" + identifier
                 if builder.config.get("publisher") == "pai-dsw":

@@ -180,7 +180,7 @@ def publish_runtime(builder, tag, context, receipt):
     from .pai_build_recovery import observe_dsw_absence
     identity = receipt['bundle_id']
     scope = builder.config.get('acr_fallback', {})
-    enabled = bool(scope) and scope.get('repository', builder.config.get('repository')) == builder.config.get('repository')
+    enabled = bool(scope)
     path = journal(builder, identity)
     if path.exists():
         return publish(builder, context, receipt)
