@@ -165,12 +165,12 @@ impl Drop for Server {
     }
 }
 #[test]
-fn yaml_runs_are_not_local_and_missing_local_manifest_is_not_a_fallback() {
+fn other_runs_are_not_local_and_missing_local_manifest_is_not_a_fallback() {
     let f = Fixture::new();
     let api = f.api();
     let run = f.settings.projects[0].run_roots[0].join("remote");
     fs::create_dir(&run).unwrap();
-    put(&run.join("manifest.yaml"), &json!({"run_id":"remote"}));
+    put(&run.join("manifest.json"), &json!({"run_id":"remote"}));
     assert!(
         api.local_tracking_status("demo", "remote")
             .unwrap()

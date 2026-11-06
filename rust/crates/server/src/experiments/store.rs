@@ -27,7 +27,7 @@ pub enum Error {
 }
 type Result<T> = std::result::Result<T, Error>;
 
-/// Trusted operator configuration. Authored YAML cannot select a new filesystem
+/// Trusted operator configuration. An authored document cannot select a new filesystem
 /// root. Lifecycle registration and resolving approved roots remain outside this
 /// reader; every configured path must already exist.
 pub struct ProjectBinding {
@@ -86,24 +86,18 @@ fn check_sha(document: &Document, expected: Option<&str>) -> Result<()> {
 fn read(directory: &Directory, name: &OsStr, source: ManifestSource) -> Result<Document> {
     Ok(Document::decode(&directory.read_whole(name)?, source)?)
 }
-fn read_first(directory: &Directory, sources: &[ManifestSource]) -> Result<Document> {
-    for source in sources {
-        let name = OsStr::new(source.filename());
-        // An existing corrupt file must never silently fall back to another copy.
-        // Symlink/FIFO/directory entries are errors, not absence.
-        if directory.entry_exists(name)? {
-            return read(directory, name, *source);
-        }
+fn read_fixed(directory: &Directory, source: ManifestSource) -> Result<Document> {
+    let name = OsStr::new(source.filename());
+    // Symlink/FIFO/directory entries are errors, not absence.
+    if !directory.entry_exists(name)? {
+        return Err(Error::Missing);
     }
-    Err(Error::Missing)
+    read(directory, name, source)
 }
-const RUN_SOURCES: &[ManifestSource] = &[ManifestSource::RunYaml, ManifestSource::RunJson];
-const ATTEMPT_SOURCES: &[ManifestSource] =
-    &[ManifestSource::AttemptYaml, ManifestSource::AttemptJson];
 
 impl ProjectAnchor {
     fn project(&self, identity: &str) -> Result<Document> {
-        let document = read(&self.parent, &self.filename, ManifestSource::ProjectYaml)?;
+        let document = read(&self.parent, &self.filename, ManifestSource::ProjectJson)?;
         domain::validate_project(&document.metadata, identity)?;
         Ok(document)
     }
@@ -143,7 +137,6 @@ impl Store {
             &anchor.filename,
             &anchor.roots,
             &self.fence,
-            RUN_SOURCES,
         )
     }
 
@@ -199,7 +192,7 @@ impl Store {
             .existing_observation_guard(&reference.project, &reference.run_id)?;
         let anchor = self.project_anchor(&reference.project)?;
         let directory = anchor.run_directory(reference)?;
-        let document = read_first(&directory, RUN_SOURCES)?;
+        let document = read_fixed(&directory, ManifestSource::RunJson)?;
         domain::validate_run(&document.metadata, &reference.project, &reference.run_id)?;
         check_sha(&document, expected_raw_sha256)?;
         Ok(document)
@@ -216,12 +209,12 @@ impl Store {
             .existing_observation_guard(&reference.project, &reference.run_id)?;
         let anchor = self.project_anchor(&reference.project)?;
         let directory = anchor.run_directory(reference)?;
-        let run = read_first(&directory, RUN_SOURCES)?;
+        let run = read_fixed(&directory, ManifestSource::RunJson)?;
         domain::validate_run(&run.metadata, &reference.project, &reference.run_id)?;
         check_sha(&run, expected.run.as_deref())?;
         let attempts = directory.child(OsStr::new("attempts"), false)?;
         let attempt_directory = attempts.child(OsStr::new(attempt_id), false)?;
-        let attempt = read_first(&attempt_directory, ATTEMPT_SOURCES)?;
+        let attempt = read_fixed(&attempt_directory, ManifestSource::AttemptJson)?;
         check_sha(&attempt, expected.attempt.as_deref())?;
         let provenance = domain::validate_attempt(
             &run,
@@ -272,7 +265,7 @@ impl Store {
             .existing_observation_guard(&reference.project, &reference.run_id)?;
         let anchor = self.project_anchor(&reference.project)?;
         let directory = anchor.run_directory(reference)?;
-        let run = snapshot::manifest(&directory, RUN_SOURCES)?;
+        let run = snapshot::manifest(&directory, ManifestSource::RunJson)?;
         domain::validate_run(&run.metadata, &reference.project, &reference.run_id)?;
         let current_status = snapshot::evidence(
             &directory,
@@ -330,7 +323,7 @@ impl Store {
         for attempt_id in names {
             let root = attempts_directory.as_ref().ok_or(Error::Missing)?;
             let attempt_directory = root.child(OsStr::new(&attempt_id), false)?;
-            let manifest = snapshot::manifest(&attempt_directory, ATTEMPT_SOURCES)?;
+            let manifest = snapshot::manifest(&attempt_directory, ManifestSource::AttemptJson)?;
             let provenance = domain::validate_attempt(
                 &run,
                 &manifest,

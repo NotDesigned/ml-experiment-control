@@ -45,7 +45,7 @@ impl Fixture {
         private_directory(&project.join("runs/train"));
         private_directory(&project.join("runs/train/attempts"));
         write_json(
-            &project.join("research_project.yaml"),
+            &project.join("project.json"),
             &json!({"schema_version":1,"project":"demo","title":"Synthetic science"}),
         );
         let evaluation = json!({"protocol_id":"synthetic-protocol-v1"});
@@ -53,13 +53,13 @@ impl Fixture {
             "source_id":"source.fixture","image_id":"sha256:fixture","config_path":"config.json","seed":42,"campaign":"fixture",
             "created_at":"2026-10-27T00:00:00Z","evaluation":evaluation,"parameters":{"lr":0.001},
             "resources":{"gpus":1},"container":{"runtime_id":"runtime.fixture"},"backend":{"kind":"slurm"},"inputs":[]});
-        write_json(&project.join("runs/train/manifest.yaml"), &manifest);
+        write_json(&project.join("runs/train/manifest.json"), &manifest);
         for (attempt, state) in [("attempt-001", "SUCCEEDED"), ("attempt-002", "RUNNING")] {
             let directory = project.join("runs/train/attempts").join(attempt);
             private_directory(&directory);
             let mut attempt_manifest = manifest.clone();
             attempt_manifest["attempt_id"] = json!(attempt);
-            write_json(&directory.join("attempt.yaml"), &attempt_manifest);
+            write_json(&directory.join("attempt.json"), &attempt_manifest);
             write_json(
                 &directory.join("status.json"),
                 &json!({"project":"demo","run_id":"train","attempt_id":attempt,"state":state,
@@ -112,7 +112,7 @@ impl Fixture {
     }
     fn settings(&self) -> read_config::Settings {
         read_config::Settings::from_json(&serde_json::to_vec(&json!({"schema_version":1,"registry_root":self.registry,
-            "projects":[{"project":"demo","project_file":self.project.join("research_project.yaml"),"run_roots":[self.project.join("runs")],
+            "projects":[{"project":"demo","project_file":self.project.join("project.json"),"run_roots":[self.project.join("runs")],
                 "runs":[{"run_id":"train","root_index":0,"relative_components":["train"]}]}]})).unwrap()).unwrap()
     }
     fn journal(&self, seed: &str, config: &Value) {
@@ -540,7 +540,7 @@ fn authentication_protocol_and_query_errors_never_echo_request_credentials() {
     assert_eq!(missing.error_code, "EXPERIMENT_NOT_FOUND");
     // A bare token in ordinary metadata is refused, not leaked or replaced.
     write_json(
-        &fixture.project.join("research_project.yaml"),
+        &fixture.project.join("project.json"),
         &json!({"project":"demo","title":TOKEN}),
     );
     let response = server.raw("/api/projects", &headers());
@@ -549,7 +549,7 @@ fn authentication_protocol_and_query_errors_never_echo_request_credentials() {
     assert!(!response.1.to_string().contains(TOKEN));
     assert_eq!(server.raw("/api/projects", &headers()), response); // no automatic mutation or repair
     write_json(
-        &fixture.project.join("research_project.yaml"),
+        &fixture.project.join("project.json"),
         &json!({"project":"demo","title":"Synthetic science"}),
     );
     let journal = records::Store::open(&fixture.registry, &fixture.workspace).unwrap();
@@ -588,12 +588,12 @@ fn missing_locks_corrupt_canonical_and_file_aliases_fail_without_repair() {
     for variant in ["missing-lock", "corrupt-canonical", "symlink-canonical"] {
         let fixture = Fixture::new();
         let server = fixture.server();
-        let manifest = fixture.run().join("manifest.yaml");
+        let manifest = fixture.run().join("manifest.json");
         match variant {
             "missing-lock" => fs::remove_file(fixture.registry.join(".run-deletion.lock")).unwrap(),
             "corrupt-canonical" => {
                 write_json(
-                    &fixture.run().join("control_manifest.yaml"),
+                    &fixture.run().join("control_manifest.json"),
                     &fixture.manifest,
                 );
                 fs::write(&manifest, b"broken: [").unwrap();

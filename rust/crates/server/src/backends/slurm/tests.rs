@@ -391,7 +391,7 @@ fn lost_ssh_response_is_recovered_from_real_native_helper_ledger_without_second_
         .join("remote-helper/demo/runs/train/.submission-attempt-001");
     let (manifest, script) = prepare.prepared_content().unwrap();
     assert_eq!(
-        fs::read(claim.join("manifest.yaml")).unwrap(),
+        fs::read(claim.join("manifest.json")).unwrap(),
         manifest.as_bytes()
     );
     assert_eq!(

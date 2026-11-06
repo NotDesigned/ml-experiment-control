@@ -44,7 +44,7 @@ impl Fixture {
         let registry = temp.path().join("registry");
         let project = temp.path().join("project");
         private_dir(&project.join("runs"));
-        write(&project.join("research_project.yaml"), &source());
+        write(&project.join("project.json"), &source());
         read_config::initialize(&registry).unwrap();
         let fixture = Self {
             _temp: temp,
@@ -71,7 +71,7 @@ impl Fixture {
         .unwrap()
     }
     fn manifest(&self) -> PathBuf {
-        self.project.join("research_project.yaml")
+        self.project.join("project.json")
     }
     fn service(&self) -> Service {
         Service::open(&self.settings(true)).unwrap()

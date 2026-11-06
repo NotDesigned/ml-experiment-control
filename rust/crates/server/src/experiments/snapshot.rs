@@ -1,6 +1,6 @@
 //! Evidence reads. Only fixed names below an exact manifested Attempt
 //! are opened. File mtime is provenance, never a daemon heartbeat or freshness.
-use super::{Document, Error, Format, Provenance, parse_mapping};
+use super::{Document, Error, Provenance};
 use ml_exp_io::directory::Directory;
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -109,23 +109,20 @@ pub struct Snapshot {
 
 pub(super) fn manifest(
     directory: &Directory,
-    sources: &[super::ManifestSource],
+    source: super::ManifestSource,
 ) -> Result<Document, Error> {
-    for source in sources {
-        let name = OsStr::new(source.filename());
-        if !directory.entry_exists(name)? {
-            continue;
-        }
-        let mut file = directory.open_regular_read(name)?;
-        let length = file.metadata()?.len();
-        let mut bytes = Vec::new();
-        (&mut file).take(length + 1).read_to_end(&mut bytes)?;
-        if bytes.len() as u64 != length {
-            return Err(Error::BytesChanged);
-        }
-        return Ok(Document::decode(&bytes, *source)?);
+    let name = OsStr::new(source.filename());
+    if !directory.entry_exists(name)? {
+        return Err(Error::Missing);
     }
-    Err(Error::Missing)
+    let mut file = directory.open_regular_read(name)?;
+    let length = file.metadata()?.len();
+    let mut bytes = Vec::new();
+    (&mut file).take(length + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 != length {
+        return Err(Error::BytesChanged);
+    }
+    Ok(Document::decode(&bytes, source)?)
 }
 fn diagnostic(source: &str, code: EvidenceProblem, count: usize) -> Diagnostic {
     Diagnostic {
@@ -193,8 +190,7 @@ pub(super) fn evidence(
         if bytes.len() as u64 != before.len() {
             return Err(EvidenceProblem::Io);
         }
-        let map =
-            parse_mapping(&bytes, Format::Json).map_err(why!(EvidenceProblem::InvalidJson))?;
+        let map = ml_exp_core::json::mapping(&bytes).map_err(why!(EvidenceProblem::InvalidJson))?;
         if identity_conflict(&map, project, run, attempt) {
             return Err(EvidenceProblem::IdentityConflict);
         }
@@ -509,7 +505,7 @@ fn metrics(
                     .into_iter()
                     .filter(|line| !line.iter().all(u8::is_ascii_whitespace))
                 {
-                    let map = match parse_mapping(line, Format::Json) {
+                    let map = match ml_exp_core::json::mapping(line) {
                         Ok(map) => map,
                         Err(_) => {
                             result.diagnostics.push(diagnostic(

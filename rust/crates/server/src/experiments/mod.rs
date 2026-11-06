@@ -8,8 +8,8 @@ pub mod snapshot;
 mod store;
 
 pub use domain::{
-    Document, DocumentError, Format, ManifestSource, Provenance, parse_mapping, validate_attempt,
-    validate_project, validate_run,
+    Document, DocumentError, ManifestSource, Provenance, validate_attempt, validate_project,
+    validate_run,
 };
 pub use scanner::{Discovery, DiscoveryError, LocatedRun};
 pub use snapshot::{

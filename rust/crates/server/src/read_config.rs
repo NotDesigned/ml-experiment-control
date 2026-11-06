@@ -231,7 +231,7 @@ mod tests {
     use serde_json::json;
     #[test]
     fn canonical_discovery_defaults_without_locators_and_refuses_mixed_sources() {
-        let mut value = json!({"schema_version":1,"registry_root":"/isolated/registry","projects":[{"project":"demo","project_file":"/isolated/demo/project.yaml","run_roots":["/isolated/demo/runs"]}]});
+        let mut value = json!({"schema_version":1,"registry_root":"/isolated/registry","projects":[{"project":"demo","project_file":"/isolated/demo/project.json","run_roots":["/isolated/demo/runs"]}]});
         let parse =
             |value: &serde_json::Value| Settings::from_json(&serde_json::to_vec(value).unwrap());
         assert!(parse(&value).unwrap().projects[0].discovery_enabled());
@@ -249,7 +249,7 @@ mod tests {
     }
     #[test]
     fn pure_config_refuses_ambiguous_unsafe_and_duplicate_bindings() {
-        let value = json!({"schema_version":1,"registry_root":"/isolated/registry","projects":[{"project":"demo","project_file":"/isolated/demo/research_project.yaml","run_roots":["/isolated/demo/runs"],"runs":[{"run_id":"train","root_index":0,"relative_components":["train"]}]}]});
+        let value = json!({"schema_version":1,"registry_root":"/isolated/registry","projects":[{"project":"demo","project_file":"/isolated/demo/project.json","run_roots":["/isolated/demo/runs"],"runs":[{"run_id":"train","root_index":0,"relative_components":["train"]}]}]});
         assert!(Settings::from_json(&serde_json::to_vec(&value).unwrap()).is_ok());
         let mut cases = Vec::new();
         let mut v = value.clone();

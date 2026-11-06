@@ -94,8 +94,7 @@ impl Api {
         }
         let dir = root.child(OsStr::new(run), false).map_err(io)?;
         if !dir.entry_exists(OsStr::new("manifest.json")).map_err(io)? {
-            // Existing Slurm Runs can have only manifest.yaml. A local ingress
-            // directory, however, must retain its registered JSON manifest.
+            // A local ingress directory must retain its registered manifest.
             return if dir.entry_exists(OsStr::new("local-ingress")).map_err(io)? {
                 Err(invalid())
             } else {

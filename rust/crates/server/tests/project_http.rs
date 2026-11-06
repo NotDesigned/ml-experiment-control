@@ -42,7 +42,7 @@ impl Fixture {
             "{}",
             String::from_utf8_lossy(&initialized.stderr)
         );
-        let project = temp.path().join("demo/research_project.yaml");
+        let project = temp.path().join("demo/project.json");
         let runs = temp.path().join("demo/runs");
         let run = runs.join("state/instance-1/campaign-1/trial");
         let manifest = run.join("manifest.json");

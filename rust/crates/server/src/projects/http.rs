@@ -2,9 +2,7 @@
 //! configuration by Service; requests cannot import arbitrary files or code.
 use super::{Operation, Service, transition_context};
 use crate::{
-    AppState,
-    experiments::{Format, parse_mapping},
-    read_api,
+    AppState, read_api,
     read_http::{self, Access},
 };
 use axum::{
@@ -67,7 +65,7 @@ fn request<T: serde::de::DeserializeOwned>(
             detail: "project lifecycle body exceeds 64 KiB",
         });
     }
-    let value = parse_mapping(&bytes, Format::Json).map_err(|_| invalid())?;
+    let value = ml_exp_core::json::mapping(&bytes).map_err(|_| invalid())?;
     serde_json::from_value(Value::Object(value)).map_err(|_| invalid())
 }
 #[derive(Deserialize)]
@@ -309,7 +307,7 @@ mod tests {
             let temp = tempfile::tempdir().unwrap();
             let registry = temp.path().join("registry");
             crate::read_config::initialize(&registry).unwrap();
-            let project = temp.path().join("demo/research_project.yaml");
+            let project = temp.path().join("demo/project.json");
             fs::create_dir_all(temp.path().join("demo/runs")).unwrap();
             ml_exp_io::write_atomic(&project,&serde_json::to_vec(&json!({"schema_version":1,"project":"demo","title":"Synthetic lifecycle","run_roots":["runs"],"campaigns":[]})).unwrap(),true).unwrap();
             let settings=crate::read_config::Settings::from_json(&serde_json::to_vec(&json!({"schema_version":1,"registry_root":registry,"projects":[{"project":"demo","project_file":project,"run_roots":[temp.path().join("demo/runs")]}]})).unwrap()).unwrap();

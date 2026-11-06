@@ -71,7 +71,7 @@ impl Fixture {
     fn fresh() -> Self {
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path().join("projects");
-        let manifest = temporary.path().join("research_project.yaml");
+        let manifest = temporary.path().join("project.json");
         Self {
             _temporary: temporary,
             root,
@@ -544,7 +544,7 @@ impl ServiceFixture {
         for path in [&a, &b] {
             private_directory(&path.join("runs"));
             write(
-                &path.join("research_project.yaml"),
+                &path.join("project.json"),
                 &encoded(
                     &json!({"schema_version":1,"project":"demo","title":"Synthetic project","run_roots":["runs"]}),
                 ),
@@ -558,7 +558,7 @@ impl ServiceFixture {
         }
     }
     fn settings(&self, project: Option<&Path>) -> read_config::Settings {
-        let projects = project.map(|path| json!({"project":"demo","project_file":path.join("research_project.yaml"),"run_roots":[path.join("runs")],"runs":[],"discover_runs":false})).into_iter().collect::<Vec<_>>();
+        let projects = project.map(|path| json!({"project":"demo","project_file":path.join("project.json"),"run_roots":[path.join("runs")],"runs":[],"discover_runs":false})).into_iter().collect::<Vec<_>>();
         read_config::Settings::from_json(
             &serde_json::to_vec(
                 &json!({"schema_version":1,"registry_root":self.registry,"projects":projects}),
@@ -611,7 +611,7 @@ fn unregister_survives_restart_and_configuration_does_not_resurrect_it() {
     let settings = fixture.settings(Some(&fixture.a));
     Service::initialize(&settings, NOW, &transition_id(100)).unwrap();
     let service = Service::open(&settings).unwrap();
-    let manifest = fixture.a.join("research_project.yaml");
+    let manifest = fixture.a.join("project.json");
     let authored = fs::read(&manifest).unwrap();
     service
         .execute(
@@ -659,7 +659,7 @@ fn service_checks_approved_binding_under_the_mutation_lock_and_rejects_register_
     assert!(
         service
             .execute(
-                register(&fixture.b.join("research_project.yaml")),
+                register(&fixture.b.join("project.json")),
                 NOW,
                 &transition_id(101),
                 Some(1)
@@ -678,13 +678,7 @@ fn service_checks_approved_binding_under_the_mutation_lock_and_rejects_register_
         1,
     )
     .unwrap();
-    execute(
-        &store,
-        &register(&fixture.b.join("research_project.yaml")),
-        102,
-        2,
-    )
-    .unwrap();
+    execute(&store, &register(&fixture.b.join("project.json")), 102, 2).unwrap();
     let before = fixture.bytes();
     assert!(matches!(service.snapshot(), Err(Error::Binding)));
     assert!(matches!(

@@ -138,11 +138,11 @@ impl Fixture {
         };
         let manifest = json!({"schema_version":1,"identity_version":2,"project":"demo","run_id":"train","source_id":source_id,"image_id":image,"config_path":"config.json","seed":42,"campaign":"fixture",
             "backend":spec.backend,"storage":spec.storage,"resources":spec.resources,"execution":spec.execution,"command":spec.command,"container":{"runtime_id":runtime.runtime_id},"evaluation":{"protocol_id":"fixture"},"parameters":{},"inputs":[]});
-        write(&project.join("runs/train/manifest.yaml"), &manifest);
+        write(&project.join("runs/train/manifest.json"), &manifest);
         let mut attempt = manifest;
         attempt["attempt_id"] = json!("attempt-001");
         write(
-            &project.join("runs/train/attempts/attempt-001/attempt.yaml"),
+            &project.join("runs/train/attempts/attempt-001/attempt.json"),
             &attempt,
         );
         let status = json!({"project":"demo","run_id":"train","attempt_id":"attempt-001","state":"NOT_SUBMITTED"});
@@ -470,7 +470,7 @@ fn unapproved_resources_runtime_inputs_and_attempt_mismatches_fail_before_prepar
         if change == "nan" {
             request.max_gpu_hours = f64::NAN;
         }
-        for filename in ["manifest.yaml", "attempts/attempt-001/attempt.yaml"] {
+        for filename in ["manifest.json", "attempts/attempt-001/attempt.json"] {
             let path = f.root.path().join("project/runs/train").join(filename);
             let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
             match change {
@@ -574,7 +574,7 @@ fn generated_native_script_checks_actual_sif_bytes_before_starting_payload() {
     f.profile.data_root = format!("{mount}/data");
     f.runtime.sif_path = format!("{mount}/image.sif");
     let sif = PathBuf::from(&f.runtime.sif_path);
-    for filename in ["manifest.yaml", "attempts/attempt-001/attempt.yaml"] {
+    for filename in ["manifest.json", "attempts/attempt-001/attempt.json"] {
         let path = f.root.path().join("project/runs/train").join(filename);
         let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         value["backend"]["mount_root"] = json!(mount);
@@ -680,13 +680,13 @@ fn storage_corruption_and_frozen_authority_changes_prevent_dispatch() {
         let root = f.root.path();
         match change {
             "run" => {
-                let path = root.join("project/runs/train/manifest.yaml");
+                let path = root.join("project/runs/train/manifest.json");
                 let mut v: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
                 v["command"] = json!(["altered"]);
                 write(&path, &v);
             }
             "attempt" => {
-                let path = root.join("project/runs/train/attempts/attempt-001/attempt.yaml");
+                let path = root.join("project/runs/train/attempts/attempt-001/attempt.json");
                 let mut v: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
                 v["parameters"]["changed"] = json!(true);
                 write(&path, &v);
@@ -781,7 +781,7 @@ fn project_edit_leaves_a_running_attempt_observable_and_cancellable() {
         base_environment: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
         runtime_environment: Vec::new(),
     });
-    for filename in ["manifest.yaml", "attempts/attempt-001/attempt.yaml"] {
+    for filename in ["manifest.json", "attempts/attempt-001/attempt.json"] {
         let path = f.root.path().join("project/runs/train").join(filename);
         let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         value["execution"]["workdir"] = json!(workdir);
@@ -1564,7 +1564,7 @@ fn backend_checkpoint_registration_and_explicit_new_run_restore_are_scoped_and_i
         runtime_environment: Vec::new(),
     });
     let ready = json!({"step":4,"files":[{"path":"checkpoints/step-4/state.bin","bytes":7,"sha256":"9a129038d9a00aed0cf6a7ea059ca50a813449061ab87848cf1a13eafdf33b2c"}]});
-    for filename in ["manifest.yaml", "attempts/attempt-001/attempt.yaml"] {
+    for filename in ["manifest.json", "attempts/attempt-001/attempt.json"] {
         let path = f.root.path().join("project/runs/train").join(filename);
         let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         value["execution"]["workdir"] = json!(workdir);
@@ -1641,7 +1641,7 @@ fn backend_checkpoint_registration_and_explicit_new_run_restore_are_scoped_and_i
     let original = fs::read(
         f.root
             .path()
-            .join("project/runs/train/attempts/attempt-001/attempt.yaml"),
+            .join("project/runs/train/attempts/attempt-001/attempt.json"),
     )
     .unwrap();
     let mut request = creation_request(&f);
@@ -1771,7 +1771,7 @@ fn backend_checkpoint_registration_and_explicit_new_run_restore_are_scoped_and_i
         fs::read(
             f.root
                 .path()
-                .join("project/runs/train/attempts/attempt-001/attempt.yaml")
+                .join("project/runs/train/attempts/attempt-001/attempt.json")
         )
         .unwrap(),
         original
@@ -1787,7 +1787,7 @@ fn exact_worker_refresh_survives_restart_and_never_changes_submission_or_retrain
         base_environment: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
         runtime_environment: Vec::new(),
     });
-    for filename in ["manifest.yaml", "attempts/attempt-001/attempt.yaml"] {
+    for filename in ["manifest.json", "attempts/attempt-001/attempt.json"] {
         let path = f.root.path().join("project/runs/train").join(filename);
         let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         value["execution"]["workdir"] = json!(workdir);
@@ -1818,7 +1818,7 @@ fn exact_worker_refresh_survives_restart_and_never_changes_submission_or_retrain
     let bytes = fs::read(
         f.root
             .path()
-            .join("project/runs/train/attempts/attempt-001/attempt.yaml"),
+            .join("project/runs/train/attempts/attempt-001/attempt.json"),
     )
     .unwrap();
     let plan = ml_exp_core::slurm::staging::plan(
@@ -1892,7 +1892,7 @@ fn exact_worker_refresh_survives_restart_and_never_changes_submission_or_retrain
         fs::read(
             f.root
                 .path()
-                .join("project/runs/train/attempts/attempt-001/attempt.yaml")
+                .join("project/runs/train/attempts/attempt-001/attempt.json")
         )
         .unwrap(),
         bytes

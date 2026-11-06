@@ -28,8 +28,6 @@ libc.workspace = true
 axum = "0.8"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
 subtle = "2"
-yaml-rust2 = "0.13"
-regex.workspace = true
 tar.workspace = true
 flate2.workspace = true
 http-body-util = "0.1"

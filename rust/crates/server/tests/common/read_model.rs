@@ -41,7 +41,7 @@ pub fn attempt(id: &str) -> AttemptSnapshot {
         attempt_id: id.into(),
         manifest: document(
             json!({"identity_version":2,"project":"demo","run_id":"trial","attempt_id":id}),
-            ManifestSource::AttemptYaml,
+            ManifestSource::AttemptJson,
         ),
         provenance: Provenance {
             compared_fields_complete: false,

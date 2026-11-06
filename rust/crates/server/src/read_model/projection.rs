@@ -1,7 +1,5 @@
 use super::{Error, MetricQuery, Result, bounded, merge_metrics, metric_payload};
-use crate::experiments::{
-    AttemptSnapshot, EvidenceDocument, EvidenceProblem, LogTail, ManifestSource, Snapshot,
-};
+use crate::experiments::{AttemptSnapshot, EvidenceDocument, EvidenceProblem, LogTail, Snapshot};
 use ml_exp_core::{
     failures::{self, AssessmentContext},
     metrics::python_string,
@@ -303,15 +301,13 @@ fn state(attempt: &AttemptSnapshot) -> Value {
     let status = field(&attempt.status, "state");
     if truth(&status) {
         status
-    } else if attempt.manifest.source == ManifestSource::AttemptJson {
+    } else {
         attempt
             .manifest
             .metadata
             .get("state")
             .cloned()
             .unwrap_or(Value::Null)
-    } else {
-        Value::Null
     }
 }
 fn decision<'a>(snapshot: &'a Snapshot, attempt: &'a AttemptSnapshot) -> &'a EvidenceDocument {
@@ -971,16 +967,12 @@ pub fn attempt_collection(snapshot: &Snapshot, attempt_id: &str, now_unix: f64) 
     let exit_code = first_present(&[
         process["exit_code"].clone(),
         process["return_code"].clone(),
-        if attempt.manifest.source == ManifestSource::AttemptJson {
-            attempt
-                .manifest
-                .metadata
-                .get("return_code")
-                .cloned()
-                .unwrap_or(Value::Null)
-        } else {
-            Value::Null
-        },
+        attempt
+            .manifest
+            .metadata
+            .get("return_code")
+            .cloned()
+            .unwrap_or(Value::Null),
     ]);
     let exit_code = exit_code.as_i64().filter(|v| (-255..=255).contains(v));
     let terminal = matches!(

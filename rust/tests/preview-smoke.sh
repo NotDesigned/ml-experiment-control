@@ -39,10 +39,10 @@ mkdir -p "$preview_root/project/runs/train/attempts/attempt-001"
 cat > "$preview_root/project/project.json" <<'JSON'
 {"schema_version":1,"project":"demo","title":"Native smoke fixture","run_roots":["runs"]}
 JSON
-cat > "$preview_root/project/runs/train/manifest.yaml" <<'JSON'
+cat > "$preview_root/project/runs/train/manifest.json" <<'JSON'
 {"schema_version":1,"identity_version":2,"project":"demo","run_id":"train","source_id":"source.fixture","image_id":"sha256:fixture","config_path":"config.json","seed":42,"campaign":"fixture","evaluation":{"protocol_id":"fixture-protocol"},"parameters":{},"resources":{"gpus":0},"container":{"runtime_id":"runtime.fixture"},"backend":{"kind":"slurm"},"inputs":[]}
 JSON
-cat > "$preview_root/project/runs/train/attempts/attempt-001/attempt.yaml" <<'JSON'
+cat > "$preview_root/project/runs/train/attempts/attempt-001/attempt.json" <<'JSON'
 {"schema_version":1,"identity_version":2,"project":"demo","run_id":"train","attempt_id":"attempt-001","source_id":"source.fixture","image_id":"sha256:fixture","config_path":"config.json","seed":42,"campaign":"fixture","evaluation":{"protocol_id":"fixture-protocol"},"parameters":{},"resources":{"gpus":0},"container":{"runtime_id":"runtime.fixture"},"backend":{"kind":"slurm"},"inputs":[]}
 JSON
 cat > "$preview_root/project/runs/train/status.json" <<'JSON'
@@ -135,7 +135,7 @@ grep -q '"source_id"' "$preview_root/source-lookup.json"
 grep -q 'synthetic source' "$preview_root/source/train.py"
 
 # Metadata writes are an explicit separate mode; approved files are read only.
-sha256sum "$preview_root/project/project.json" "$preview_root/project/runs/train/manifest.yaml" > "$preview_root/research.before"
+sha256sum "$preview_root/project/project.json" "$preview_root/project/runs/train/manifest.json" > "$preview_root/research.before"
 if "$preview_bins/ml-exp" --config "$preview_root/client.json" project list > "$preview_root/disabled.log" 2>&1; then
   echo 'unconfigured project lifecycle unexpectedly available' >&2; exit 1
 fi
@@ -175,7 +175,7 @@ grep -q '"projects": \[\]' "$preview_root/empty-ledger.json"
 [[ "$(cat "$preview_root/empty-projects.json")" == '[]' ]]
 "$preview_bins/ml-exp" --config "$preview_root/client.json" project register "$preview_root/project/project.json" --expected-revision 6 > "$preview_root/registered.json"
 "$preview_bins/ml-exp" --config "$preview_root/client.json" run status --project demo --run train --json > "$preview_root/registered-status.json"
-sha256sum "$preview_root/project/project.json" "$preview_root/project/runs/train/manifest.yaml" > "$preview_root/research.after"
+sha256sum "$preview_root/project/project.json" "$preview_root/project/runs/train/manifest.json" > "$preview_root/research.after"
 cmp "$preview_root/research.before" "$preview_root/research.after"
 
 # A payload command can use any language; the platform here is three Rust binaries.

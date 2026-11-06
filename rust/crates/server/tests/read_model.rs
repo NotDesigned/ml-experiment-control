@@ -1,5 +1,5 @@
 use ml_exp_server::{
-    experiments::{Diagnostic, EvidenceDocument, EvidenceProblem, LogTail, ManifestSource},
+    experiments::{Diagnostic, EvidenceDocument, EvidenceProblem, LogTail},
     read_model::{self, LiveMetrics, LogQuery, LogStream, MetricFormat, MetricQuery},
 };
 use serde_json::{Value, json};
@@ -155,7 +155,6 @@ fn training_process_scheduler_and_unmigrated_publication_remain_independent() {
         read_model::attempt_collection(&snapshot, "attempt-001", 0.0).unwrap()["training"]["status"],
         "UNKNOWN"
     );
-    snapshot.attempts[0].manifest.source = ManifestSource::AttemptJson;
     snapshot.attempts[0]
         .manifest
         .metadata

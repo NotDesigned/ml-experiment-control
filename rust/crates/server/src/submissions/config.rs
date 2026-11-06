@@ -59,8 +59,7 @@ pub struct Ssh {
 impl Settings {
     pub fn from_slice(bytes: &[u8]) -> Result<Self, Error> {
         // The shared parser rejects duplicate keys before typed deserialization.
-        let value = crate::experiments::parse_mapping(bytes, crate::experiments::Format::Json)
-            .map_err(why!(Error::Configuration))?;
+        let value = ml_exp_core::json::mapping(bytes).map_err(why!(Error::Configuration))?;
         let settings: Self = serde_json::from_value(serde_json::Value::Object(value))
             .map_err(why!(Error::Configuration))?;
         if settings.schema_version != 1

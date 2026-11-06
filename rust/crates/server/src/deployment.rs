@@ -139,8 +139,7 @@ impl Settings {
                 )
                 .map_err(why!(at("project_definition")))?;
             let mapping =
-                crate::experiments::parse_mapping(&bytes, crate::experiments::Format::Yaml)
-                    .map_err(why!(at("project_definition")))?;
+                ml_exp_core::json::mapping(&bytes).map_err(why!(at("project_definition")))?;
             let definition = ml_exp_core::projects::ProjectDefinition::from_value(
                 &serde_json::Value::Object(mapping),
             )
