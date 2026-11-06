@@ -111,7 +111,7 @@ fn files() -> FrozenFiles {
 }
 
 #[test]
-fn prepared_authorized_and_claimed_snapshots_keep_the_plan_and_the_idempotency_key() {
+fn prepared_and_claimed_snapshots_keep_the_plan_and_the_idempotency_key() {
     let plan = &action_plan();
     let root = tempfile::tempdir().unwrap();
     let store = Store::open(root.path()).unwrap();
@@ -120,16 +120,6 @@ fn prepared_authorized_and_claimed_snapshots_keep_the_plan_and_the_idempotency_k
     assert_eq!(prepared["execution"]["status"], "PREPARED");
     assert_eq!(prepared["execution"]["revision"], 1);
     assert_eq!(prepared["unnamed_extra"], json!({"preserve": true}));
-    let authorized = store
-        .authorize(id, "actor:test", "approved explicitly", NOW, &uid(2))
-        .unwrap();
-    assert_eq!(authorized["execution"]["status"], "AUTHORIZED");
-    assert_eq!(authorized["execution"]["revision"], 2);
-    assert_eq!(authorized["execution"]["authorization_actor"], "actor:test");
-    assert_eq!(
-        authorized["execution"]["authorized_intent_digest"],
-        plan["intent_digest"]
-    );
     let claimed = store
         .claim(
             id,
@@ -139,10 +129,25 @@ fn prepared_authorized_and_claimed_snapshots_keep_the_plan_and_the_idempotency_k
                 now: NOW,
                 transition_id: &uid(3),
                 pid: 123,
+                reason: "approved explicitly",
             },
         )
         .unwrap();
     assert!(claimed.execute);
+    assert_eq!(claimed.snapshot["execution"]["status"], "EXECUTING");
+    assert_eq!(claimed.snapshot["execution"]["revision"], 2);
+    assert_eq!(
+        claimed.snapshot["execution"]["execution_reason"],
+        "approved explicitly"
+    );
+    assert_eq!(
+        claimed.snapshot["journal"][1]["payload"]["reason"],
+        "approved explicitly"
+    );
+    assert_eq!(
+        claimed.snapshot["journal"][1]["payload"]["intent_digest"],
+        plan["intent_digest"]
+    );
     assert_eq!(claimed.snapshot["execution"]["next_action"], "WAIT");
     assert_eq!(
         claimed.snapshot["execution"]["resolution"],
@@ -187,9 +192,6 @@ fn competing_claims_dispatch_exactly_once_and_restart_only_reconciles() {
     let plan = &action_plan();
     let id = plan["action_id"].as_str().unwrap();
     store.save_plan(plan, NOW, &uid(1)).unwrap();
-    store
-        .authorize(id, "actor:test", "approved", NOW, &uid(2))
-        .unwrap();
     let barrier = Arc::new(Barrier::new(2));
     let mut threads = Vec::new();
     for index in 0..2 {
@@ -207,13 +209,14 @@ fn competing_claims_dispatch_exactly_once_and_restart_only_reconciles() {
                     now: NOW,
                     transition_id: &uid(index + 3),
                     pid: 123,
+                    reason: "",
                 },
             )
         }));
     }
     let results: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
     assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
-    assert_eq!(store.database().journal(id, 100).unwrap().len(), 3);
+    assert_eq!(store.database().journal(id, 100).unwrap().len(), 2);
     let reopened = Store::open(root.path()).unwrap();
     let recovered = reopened.recover_interrupted(NOW, &uid(6)).unwrap();
     assert_eq!(recovered.len(), 1);
@@ -233,7 +236,8 @@ fn competing_claims_dispatch_exactly_once_and_restart_only_reconciles() {
             ClaimContext {
                 now: NOW,
                 transition_id: &uid(8),
-                pid: 123
+                pid: 123,
+                reason: "",
             }
         ),
         Err(Error::Decision(operations::Error::State(_)))
@@ -255,15 +259,15 @@ fn sqlite_cas_and_failed_audit_insert_leave_state_and_events_atomic() {
             &uid(1),
         )
         .unwrap();
-    let mut authorized = first.clone();
-    authorized["status"] = json!("AUTHORIZED");
+    let mut claimed = first.clone();
+    claimed["status"] = json!("EXECUTING");
     // The duplicate audit identity fails *after* the state UPSERT; transaction
     // rollback must leave neither a newer revision nor a partial audit event.
     assert!(matches!(
         db.commit(
             id,
-            &authorized,
-            &json!({"event":"authorized"}),
+            &claimed,
+            &json!({"event":"execution_started"}),
             Some("PREPARED"),
             &uid(1)
         ),
@@ -275,14 +279,14 @@ fn sqlite_cas_and_failed_audit_insert_leave_state_and_events_atomic() {
     let mut threads = Vec::new();
     for index in 0..2 {
         let db = db.clone();
-        let authorized = authorized.clone();
+        let claimed = claimed.clone();
         let barrier = barrier.clone();
         threads.push(std::thread::spawn(move || {
             barrier.wait();
             db.commit(
                 id,
-                &authorized,
-                &json!({"event":"authorized"}),
+                &claimed,
+                &json!({"event":"execution_started"}),
                 Some("PREPARED"),
                 &uid(index + 2),
             )
@@ -301,9 +305,6 @@ fn missing_action_lock_is_never_recreated_after_bootstrap_or_on_reopen() {
     let plan = action_plan();
     let id = plan["action_id"].as_str().unwrap();
     store.save_plan(&plan, NOW, &uid(1)).unwrap();
-    store
-        .authorize(id, "actor:test", "approved", NOW, &uid(2))
-        .unwrap();
     let lock = root.path().join(".actions.lock");
     fs::remove_file(&lock).unwrap();
     assert!(store.snapshot(id, NOW, &uid(3)).is_err());
@@ -317,7 +318,8 @@ fn missing_action_lock_is_never_recreated_after_bootstrap_or_on_reopen() {
                 ClaimContext {
                     now: NOW,
                     transition_id: &uid(3),
-                    pid: 123
+                    pid: 123,
+                    reason: "",
                 }
             )
             .is_err()
@@ -372,7 +374,7 @@ fn revision_mismatch_and_corrupted_json_are_never_repaired_silently() {
 }
 
 #[test]
-fn published_plan_without_initial_execution_can_authorize_after_restart() {
+fn published_plan_without_initial_execution_can_be_claimed_after_restart() {
     let root = tempfile::tempdir().unwrap();
     let store = Store::open(root.path()).unwrap();
     let plan = &action_plan();
@@ -383,12 +385,95 @@ fn published_plan_without_initial_execution_can_authorize_after_restart() {
         serde_json::to_vec(plan).unwrap(),
     )
     .unwrap();
-    let authorized = store
-        .authorize(id, "actor:test", "approved after restart", NOW, &uid(1))
+    // The bootstrap row and the claim are two audit events under one request's identity,
+    // and event keys are unique, so they must not share a transition ID.
+    let claimed = store
+        .claim(
+            id,
+            &format!("EXECUTE {id}"),
+            &files(),
+            ClaimContext {
+                now: NOW,
+                transition_id: &uid(1),
+                pid: 123,
+                reason: "approved after restart",
+            },
+        )
         .unwrap();
-    assert_eq!(authorized["execution"]["status"], "AUTHORIZED");
-    assert_eq!(authorized["execution"]["revision"], 2);
-    assert_eq!(authorized["journal"].as_array().unwrap().len(), 2);
+    assert!(claimed.execute);
+    assert_eq!(claimed.snapshot["execution"]["status"], "EXECUTING");
+    assert_eq!(claimed.snapshot["execution"]["revision"], 2);
+    assert_eq!(claimed.snapshot["journal"].as_array().unwrap().len(), 2);
+    assert_ne!(
+        claimed.snapshot["journal"][0]["transition_id"],
+        claimed.snapshot["journal"][1]["transition_id"]
+    );
+    assert_eq!(claimed.snapshot["journal"][0]["event"], "action_prepared");
+    assert_eq!(claimed.snapshot["journal"][1]["transition_id"], uid(1));
+}
+
+#[test]
+fn a_claim_past_the_gate_commits_nothing() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::open(root.path()).unwrap();
+    let mut plan = action_plan();
+    plan["gate_expires_at"] = json!(NOW);
+    let id = plan["action_id"].as_str().unwrap();
+    let prepared = store.save_plan(&plan, NOW, &uid(1)).unwrap();
+    assert!(matches!(
+        store.claim(
+            id,
+            &format!("EXECUTE {id}"),
+            &files(),
+            ClaimContext {
+                now: NOW,
+                transition_id: &uid(2),
+                pid: 123,
+                reason: "",
+            },
+        ),
+        Err(Error::Decision(operations::Error::Expired))
+    ));
+    assert_eq!(
+        store.observe(id).unwrap()["execution"],
+        prepared["execution"]
+    );
+    assert_eq!(store.database().journal(id, 100).unwrap().len(), 1);
+    assert!(
+        !store
+            .directory(id)
+            .unwrap()
+            .join("execution.claim")
+            .exists()
+    );
+}
+
+#[test]
+fn a_plan_that_is_not_ready_cannot_be_claimed() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::open(root.path()).unwrap();
+    let mut plan = action_plan();
+    plan["ready"] = json!(false);
+    let id = plan["action_id"].as_str().unwrap();
+    assert_eq!(
+        store.save_plan(&plan, NOW, &uid(1)).unwrap()["execution"]["status"],
+        "BLOCKED"
+    );
+    assert!(matches!(
+        store.claim(
+            id,
+            &format!("EXECUTE {id}"),
+            &files(),
+            ClaimContext {
+                now: NOW,
+                transition_id: &uid(2),
+                pid: 123,
+                reason: "",
+            },
+        ),
+        Err(Error::Decision(operations::Error::State(_)))
+    ));
+    assert_eq!(store.observe(id).unwrap()["execution"]["status"], "BLOCKED");
 }
 
 #[test]

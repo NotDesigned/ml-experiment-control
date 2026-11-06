@@ -268,7 +268,7 @@ fn lost_create_and_stop_replies_restart_absence_and_foreign_identity_never_repla
     assert_eq!(state.lock().unwrap().stops, 1);
 }
 #[test]
-fn cloud_runner_uses_existing_action_authorization_private_request_and_restart_reconciliation() {
+fn cloud_runner_uses_the_action_claim_private_request_and_restart_reconciliation() {
     use crate::{
         backends::cloud::action::Runner,
         operations::{ClaimContext, Execute, Store},
@@ -369,6 +369,7 @@ fn cloud_runner_uses_existing_action_authorization_private_request_and_restart_r
                     now,
                     transition_id: "22222222222222222222222222222222",
                     pid: std::process::id(),
+                    reason: "operator approved",
                 },
             },
             &guard,
@@ -380,13 +381,30 @@ fn cloud_runner_uses_existing_action_authorization_private_request_and_restart_r
         adapter: &adapter,
         outbox: &outbox,
     };
-    assert!(run(&runner).is_err());
+    let refused = runner.execute(
+        &request,
+        Execute {
+            action_id: id,
+            confirmation: "EXECUTE action-0000000000000000",
+            files: &files,
+            claim: ClaimContext {
+                now,
+                transition_id: "33333333333333333333333333333333",
+                pid: std::process::id(),
+                reason: "",
+            },
+        },
+        &guard,
+        &flag,
+    );
+    assert!(refused.is_err());
     assert_eq!(state.lock().unwrap().creates, 0);
-    actions
-        .authorize(id, "operator", "approved", now, &"3".repeat(32))
-        .unwrap();
     let unknown = run(&runner).unwrap();
     assert_eq!(unknown["execution"]["status"], "RECONCILE_REQUIRED");
+    assert_eq!(
+        unknown["execution"]["execution_reason"],
+        "operator approved"
+    );
     assert_eq!(state.lock().unwrap().creates, 1);
     assert!(run(&runner).is_err());
     assert_eq!(state.lock().unwrap().creates, 1);

@@ -1,5 +1,5 @@
 //! One reviewed configuration, a deterministic recovery URL, and private state.
-//! A lost response never causes an automatic authorize/execute or new Run ID.
+//! A lost response never causes an automatic execute or new Run ID.
 use crate::{Client, Error};
 use ml_exp_core::preparation::Request;
 use serde_json::{Value, json};

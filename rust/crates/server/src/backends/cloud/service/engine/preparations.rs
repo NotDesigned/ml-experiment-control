@@ -1,6 +1,6 @@
 //! Durable experiment setup over the same build and submission contracts.
 //! Continuing may build the environment and freeze an Action; it never
-//! authorizes or executes training. GET only reads retained evidence.
+//! executes training. GET only reads retained evidence.
 use super::*;
 use ml_exp_core::preparation::Request;
 #[derive(Serialize, Deserialize)]

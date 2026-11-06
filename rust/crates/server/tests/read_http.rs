@@ -260,7 +260,7 @@ fn saved_submission_reads_committed_identity_without_bootstrap_or_latest_guess()
         let submission = client.get(&format!("/api/submissions/{id}")).unwrap();
         assert_eq!(submission["attempt_id"], "attempt-001");
         assert_eq!(submission["status"], "PREPARED");
-        assert_eq!(submission["next_action"], "AUTHORIZE");
+        assert_eq!(submission["next_action"], "EXECUTE");
         assert!(submission.get("command_preview").is_none());
         let saved = json!({"server":format!("http://{}/ml-expd", server.address),"project":"demo","run_id":"train", "config_sha256":"synthetic",
             "submission":{"submission_id":id,"attempt_id":"attempt-001"}});

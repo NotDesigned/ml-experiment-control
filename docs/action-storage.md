@@ -7,7 +7,7 @@ and frozen provider request. Every Action is a Submission. SQLite uses WAL, `syn
 a 30-second busy timeout and owner-private files; keep it on local storage.
 
 Revision checks and execution claims run inside `BEGIN IMMEDIATE`. Two callers
-cannot both claim an authorized Action, and an event-insert failure rolls back
+cannot both claim a prepared Action, and an event-insert failure rolls back
 the state change. Cross-process locks still protect composite file operations.
 The `execution.claim` file is a best-effort audit artifact, not execution truth.
 

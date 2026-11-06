@@ -1,5 +1,5 @@
 //! The Slurm backend. `transport` is one bounded SSH invocation of the native
-//! Slurm helper: the caller must have persisted/authorized its immutable intent
+//! Slurm helper: the caller must have persisted its immutable intent
 //! before calling, and it does not select Attempts, consume budgets, retry or
 //! execute other command plans. `action` runs that intent; `service` sits above.
 mod transport;

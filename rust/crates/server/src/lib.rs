@@ -307,7 +307,7 @@ fn schema_document() -> serde_json::Value {
     let mut collection = run();
     collection.push(parameter("attempt"));
     let mut document = json!({"openapi":"3.1.0", "info":{"title":"ML-Expd native API", "version":env!("CARGO_PKG_VERSION"),
-    "description":"Experiment GETs only observe approved evidence. Explicit project lifecycle POSTs update their dedicated registry ledger. Separately configured native submissions can prepare, authorize, execute once and reconcile the original owned job. The optional artifact path explicitly collects backend results, streams exact archives and accepts verified ACKs; original outputs and checkpoints remain. Collection JSON alone never establishes download availability."},
+    "description":"Experiment GETs only observe approved evidence. Explicit project lifecycle POSTs update their dedicated registry ledger. Separately configured native submissions can prepare, execute once and reconcile the original owned job. The optional artifact path explicitly collects backend results, streams exact archives and accepts verified ACKs; original outputs and checkpoints remain. Collection JSON alone never establishes download availability."},
     "components":{"securitySchemes":{"bearer":{"type":"http","scheme":"bearer"}},"parameters":{
         "project":{"in":"path","name":"project","required":true,"schema":{"type":"string"}},
         "run":{"in":"path","name":"run","required":true,"schema":{"type":"string"}},
@@ -510,14 +510,9 @@ fn schema_document() -> serde_json::Value {
             json!({"type":"object","additionalProperties":false,"required":["confirmation"],"properties":{"confirmation":{"type":"string","pattern":"^CANCEL action-[a-f0-9]{16}$"}}}),
         ),
         (
-            "authorize",
-            "Authorize the original immutable preparation without submitting",
-            json!({"type":"object","additionalProperties":false,"properties":{"reason":{"type":"string","maxLength":4000,"default":""}}}),
-        ),
-        (
             "execute",
-            "Execute a previously authorized native Slurm Action once; response loss requires same-identity reconciliation",
-            json!({"type":"object","additionalProperties":false,"required":["confirmation"],"properties":{"confirmation":{"type":"string","pattern":"^EXECUTE action-[a-f0-9]{16}$"}}}),
+            "Execute a ready prepared native Action once, recording an optional reason; response loss requires same-identity reconciliation",
+            json!({"type":"object","additionalProperties":false,"required":["confirmation"],"properties":{"confirmation":{"type":"string","pattern":"^EXECUTE action-[a-f0-9]{16}$"},"reason":{"type":"string","maxLength":4000,"default":""}}}),
         ),
         (
             "reconcile",

@@ -1,7 +1,7 @@
 //! A batch is a collection of the ordinary recoverable preparation workflow.
-//! Every child identity is saved before sending its first request. No batch
-//! Preparation never authorizes training. Explicit batch dispatch is bounded
-//! and never replays an uncertain scheduler submission.
+//! Every child identity is saved before sending its first request. Preparation
+//! never starts training. Explicit batch dispatch is bounded and never replays an
+//! uncertain scheduler submission.
 use crate::{Client, Error, preparations, submissions};
 use ml_exp_core::preparation::{Batch, Request};
 use serde_json::{Value, json};
@@ -92,7 +92,7 @@ pub fn status(client: &Client, directory: &Path) -> Result<Value, Error> {
     Ok(json!({"project":project,"experiments":rows}))
 }
 /// One explicit preparation pass: build/reconcile environments, stage data and
-/// freeze each ordinary Submission. It cannot authorize or start training.
+/// freeze each ordinary Submission. It cannot start training.
 pub fn advance(client: &Client, directory: &Path, confirmation: &str) -> Result<Value, Error> {
     let bytes = ml_exp_io::read_private(&directory.join("batch.json"), 131072, true)
         .map_err(|_| invalid())?;
@@ -117,6 +117,12 @@ pub fn advance(client: &Client, directory: &Path, confirmation: &str) -> Result<
 }
 /// One explicit scheduling pass. The cap covers this saved batch; unknown
 /// executions consume a slot. A subsequent pass can submit the next children.
+///
+/// The claim file is written before the one request that can start a job, so a refusal
+/// the server gives after that also leaves a file. An expired gate is read from the view
+/// first: it never claims a slot, and it frees one a refused child was holding, because
+/// an Action still PREPARED past its gate cannot start. Any other refusal, such as a
+/// project edit, stays DISPATCH_ALREADY_REQUESTED until that gate expires.
 pub fn dispatch(
     client: &Client,
     directory: &Path,
@@ -170,30 +176,17 @@ pub fn dispatch(
             break;
         }
         let s = &row["submission"];
-        if !s["status"]
-            .as_str()
-            .is_some_and(|v| matches!(v, "PREPARED" | "AUTHORIZED"))
-        {
+        if s["status"] != "PREPARED" {
             continue;
         }
+        let expired = s["next_action"] == "REPREPARE";
         let action = s["submission_id"].as_str().ok_or_else(invalid)?.to_owned();
-        let mut current = s.clone();
-        if s["status"] == "PREPARED" {
-            current = submissions::execute(
-                client,
-                &submissions::plan(submissions::Command::Authorize {
-                    submission: &action,
-                    reason: confirmation,
-                })?,
-                health,
-            )?;
+        let execute = s["confirmation"].as_str().ok_or_else(invalid)?.to_owned();
+        if expired {
+            row["diagnostic"] =
+                json!("GATE_EXPIRED; nothing was sent; see `ml-exp run renew --help`");
+            continue;
         }
-        if current["status"] != "AUTHORIZED" {
-            return Err(Error::Observation(
-                "batch authorization is unresolved; inspect the original Submission",
-            ));
-        }
-        let confirmation = current["confirmation"].as_str().ok_or_else(invalid)?;
         let claim = std::ffi::OsString::from(format!("{action}.dispatch.json"));
         if directory_cap.entry_exists(&claim).map_err(|_| invalid())? {
             row["diagnostic"] =
@@ -204,7 +197,7 @@ pub fn dispatch(
         directory_cap
             .publish_new(
                 &claim,
-                &serde_json::to_vec(&json!({"submission_id":action,"confirmation":confirmation}))
+                &serde_json::to_vec(&json!({"submission_id":action,"confirmation":execute}))
                     .map_err(|_| invalid())?,
             )
             .map_err(|_| invalid())?;
@@ -212,7 +205,8 @@ pub fn dispatch(
             client,
             &submissions::plan(submissions::Command::Execute {
                 submission: &action,
-                confirmation,
+                confirmation: &execute,
+                reason: confirmation,
             })?,
             health,
         )?;

@@ -299,35 +299,25 @@ fn service_claims_only_reviewed_frozen_run_and_native_helper_submits_once() {
     f.tools(&f.prepared());
     assert!(
         service
-            .execute(
-                id,
-                &format!("EXECUTE {id}"),
-                context(2),
-                &AtomicBool::new(false)
-            )
-            .is_err()
-    );
-    service
-        .authorize(id, "actor:fixture", "reviewed", context(2))
-        .unwrap();
-    assert!(
-        service
-            .execute(id, "wrong", context(3), &AtomicBool::new(false))
+            .execute(id, "wrong", "", context(3), &AtomicBool::new(false))
             .is_err()
     );
     let done = service
         .execute(
             id,
             &format!("EXECUTE {id}"),
+            "reviewed",
             context(3),
             &AtomicBool::new(false),
         )
         .unwrap();
     assert_eq!(done["status"], "VERIFIED");
+    assert_eq!(done["execution"]["execution_reason"], "reviewed");
     service
         .execute(
             id,
             &format!("EXECUTE {id}"),
+            "",
             context(3),
             &AtomicBool::new(false),
         )
@@ -353,13 +343,11 @@ fn lost_response_reopens_same_slot_and_reconciles_without_second_sbatch() {
         .unwrap();
     let id = p["submission_id"].as_str().unwrap();
     f.tools(&f.prepared());
-    service
-        .authorize(id, "actor:fixture", "reviewed", context(2))
-        .unwrap();
     let result = service
         .execute(
             id,
             &format!("EXECUTE {id}"),
+            "",
             context(3),
             &AtomicBool::new(false),
         )
@@ -657,9 +645,6 @@ fn storage_corruption_and_frozen_authority_changes_prevent_dispatch() {
             .prepare("demo", "train", approval(), context(1))
             .unwrap();
         let id = p["submission_id"].as_str().unwrap();
-        service
-            .authorize(id, "actor:fixture", "reviewed", context(2))
-            .unwrap();
         let root = f.root.path();
         match change {
             "run" => {
@@ -717,6 +702,7 @@ fn storage_corruption_and_frozen_authority_changes_prevent_dispatch() {
                 .execute(
                     id,
                     &format!("EXECUTE {id}"),
+                    "",
                     context(3),
                     &AtomicBool::new(false)
                 )
@@ -735,7 +721,7 @@ fn edit_project_file(f: &Fixture) {
 }
 
 #[test]
-fn prepared_submission_is_not_reused_or_authorized_after_a_project_edit() {
+fn prepared_submission_is_not_reused_or_executed_after_a_project_edit() {
     let f = Fixture::new();
     let service = f.service("ledger", true);
     let prepared = service
@@ -748,8 +734,14 @@ fn prepared_submission_is_not_reused_or_authorized_after_a_project_edit() {
         Err(ServiceError::Conflict)
     ));
     assert!(matches!(
-        service.authorize(id, "actor:fixture", "reviewed", context(2)),
-        Err(ServiceError::Conflict)
+        service.execute(
+            id,
+            &format!("EXECUTE {id}"),
+            "",
+            context(2),
+            &AtomicBool::new(false)
+        ),
+        Err(ServiceError::Authority)
     ));
     assert_eq!(service.get(id, NOW).unwrap()["status"], "PREPARED");
     assert!(!f.root.path().join("calls").exists());
@@ -781,10 +773,9 @@ fn project_edit_leaves_a_running_attempt_observable_and_cancellable() {
     )
     .unwrap();
     fs::set_permissions(&scancel, fs::Permissions::from_mode(0o700)).unwrap();
-    service.authorize(id, "test", "", context(2)).unwrap();
     let submit = format!("EXECUTE {id}");
     service
-        .execute(id, &submit, context(3), &AtomicBool::new(false))
+        .execute(id, &submit, "", context(3), &AtomicBool::new(false))
         .unwrap();
     let plan = ml_exp_core::slurm::staging::plan(
         prepared.request.intent(),
@@ -823,7 +814,7 @@ fn project_edit_leaves_a_running_attempt_observable_and_cancellable() {
 
     // A repeated submit is refused by the first-spend gate. Nothing is replayed.
     assert!(matches!(
-        service.execute(id, &submit, context(3), &flag),
+        service.execute(id, &submit, "", context(3), &flag),
         Err(ServiceError::Conflict)
     ));
     let submissions = f.root.path().join("sbatch-calls");
@@ -856,9 +847,6 @@ fn interrupted_claim_recovery_is_explicit_and_never_submits_before_reconcile() {
         .prepare("demo", "train", approval(), context(1))
         .unwrap();
     let id = p["submission_id"].as_str().unwrap();
-    service
-        .authorize(id, "actor:fixture", "reviewed", context(2))
-        .unwrap();
     let private = f.prepared();
     let actions =
         crate::operations::Store::open_existing(f.settings.registry_root.join("actions")).unwrap();
@@ -874,6 +862,7 @@ fn interrupted_claim_recovery_is_explicit_and_never_submits_before_reconcile() {
                 now: NOW,
                 transition_id: "00000000000000000000000000000004",
                 pid: 123,
+                reason: "",
             },
         )
         .unwrap();
@@ -963,30 +952,8 @@ async fn native_http_preparation_restart_execute_and_reconcile_keep_one_submissi
     assert_eq!(status, 200);
     assert_eq!(recovered["submission_id"], id);
     assert_eq!(fs::read(f.slot()).unwrap(), original);
-    let payload = json!({"confirmation":format!("EXECUTE {id}")}).to_string();
-    assert_eq!(
-        http_request(
-            app.clone(),
-            "POST",
-            &format!("/api/submissions/{id}/execute"),
-            &payload
-        )
-        .await
-        .0,
-        409
-    );
+    let payload = json!({"confirmation":format!("EXECUTE {id}"),"reason":"reviewed"}).to_string();
     assert!(!f.root.path().join("sbatch-calls").exists());
-    assert_eq!(
-        http_request(
-            app.clone(),
-            "POST",
-            &format!("/api/submissions/{id}/authorize"),
-            r#"{"reason":"reviewed"}"#
-        )
-        .await
-        .0,
-        200
-    );
     let (status, done) = http_request(
         app.clone(),
         "POST",
@@ -996,6 +963,7 @@ async fn native_http_preparation_restart_execute_and_reconcile_keep_one_submissi
     .await;
     assert_eq!(status, 200, "{done}");
     assert_eq!(done["status"], "VERIFIED");
+    assert_eq!(done["execution"]["execution_reason"], "reviewed");
     // Deliberately discard this response and reconstruct the complete service.
     drop(app);
     let app = http_app(&f, true);
@@ -1093,7 +1061,8 @@ async fn native_http_rejects_untrusted_bodies_and_execution_disabled_by_operator
     for (operation, body) in [
         ("execute", r#"{"confirmation":"wrong"}"#),
         ("reconcile", r#"{"new_run":true}"#),
-        ("authorize", r#"{"actor":"admin"}"#),
+        // The request an older client sends: this route is gone, not merely strict.
+        ("authorize", r#"{"reason":"reviewed"}"#),
         ("cancel", "{}"),
     ] {
         assert_eq!(
@@ -1102,6 +1071,24 @@ async fn native_http_rejects_untrusted_bodies_and_execution_disabled_by_operator
                 "POST",
                 &format!("/api/submissions/{id}/{operation}"),
                 body
+            )
+            .await
+            .0,
+            422
+        );
+    }
+    let confirmation = format!("EXECUTE {id}");
+    for body in [
+        json!({"confirmation":confirmation,"reason":"bad\nreason"}),
+        json!({"confirmation":confirmation,"reason":"r".repeat(4001)}),
+        json!({"confirmation":confirmation,"actor":"admin"}),
+    ] {
+        assert_eq!(
+            http_request(
+                app.clone(),
+                "POST",
+                &format!("/api/submissions/{id}/execute"),
+                &body.to_string()
             )
             .await
             .0,
@@ -1129,6 +1116,11 @@ async fn native_http_rejects_untrusted_bodies_and_execution_disabled_by_operator
             .get("/api/submissions/{identity}/execute")
             .is_some()
     );
+    assert!(
+        schema["paths"]
+            .get("/api/submissions/{identity}/authorize")
+            .is_none()
+    );
 }
 #[test]
 fn api_refuses_submission_service_bound_to_another_source_instance_or_workspace() {
@@ -1151,9 +1143,6 @@ fn explicit_reconcile_recovers_a_dead_claim_without_replaying_submit() {
         .prepare("demo", "train", approval(), context(1))
         .unwrap();
     let id = prepared["submission_id"].as_str().unwrap();
-    service
-        .authorize(id, "actor:fixture", "reviewed", context(2))
-        .unwrap();
     let saved = f.prepared();
     f.tools(&saved);
     let store =
@@ -1170,6 +1159,7 @@ fn explicit_reconcile_recovers_a_dead_claim_without_replaying_submit() {
                 now: NOW,
                 transition_id: "00000000000000000000000000000004",
                 pid: 123,
+                reason: "",
             },
         )
         .unwrap();
@@ -1547,11 +1537,11 @@ fn backend_checkpoint_registration_and_explicit_new_run_restore_are_scoped_and_i
             .refresh_checkpoint(id, NOW, &AtomicBool::new(false))
             .is_err()
     );
-    service.authorize(id, "test", "", context(2)).unwrap();
     service
         .execute(
             id,
             &format!("EXECUTE {id}"),
+            "",
             context(3),
             &AtomicBool::new(false),
         )
@@ -1759,11 +1749,11 @@ fn exact_worker_refresh_survives_restart_and_never_changes_submission_or_retrain
     assert!(service.refresh(id, NOW, &AtomicBool::new(false)).is_err());
     let prepared = f.prepared();
     f.tools(&prepared);
-    service.authorize(id, "test", "", context(2)).unwrap();
     let submitted = service
         .execute(
             id,
             &format!("EXECUTE {id}"),
+            "",
             context(3),
             &AtomicBool::new(false),
         )
@@ -1864,9 +1854,6 @@ fn expired_unsubmitted_gate_renewal_preserves_identity_and_survives_response_los
         .prepare("demo", "train", approval(), context(1))
         .unwrap();
     let original = first["submission_id"].as_str().unwrap();
-    service
-        .authorize(original, "fixture", "owned", context(2))
-        .unwrap();
     let request = ml_exp_core::renewal::Request {
         request_id: "a".repeat(32),
         confirmation: format!("RENEW {original}"),
@@ -1892,18 +1879,30 @@ fn expired_unsubmitted_gate_renewal_preserves_identity_and_survives_response_los
     assert!(before.request == after.request);
     assert_eq!(before.definition_sha256, after.definition_sha256);
     let old = service.get(original, later().now).unwrap();
-    assert_eq!(old["status"], "AUTHORIZED");
+    assert_eq!(old["status"], "PREPARED");
     assert_eq!(old["replacement_submission_id"], id);
     assert_eq!(
         service.get(&id, later().now).unwrap()["renewed_from"],
         original
     );
-    assert!(
-        service
-            .authorize(original, "fixture", "expired", later())
-            .is_err()
-    );
     drop(service);
+    // The original stays refused past its gate, on a service that could execute it.
+    let enabled = f.service("ledger", true);
+    assert!(matches!(
+        enabled.execute(
+            original,
+            &format!("EXECUTE {original}"),
+            "expired",
+            later(),
+            &AtomicBool::new(false)
+        ),
+        Err(ServiceError::Runner(
+            crate::backends::slurm::action::Error::Action(crate::operations::Error::Decision(
+                ml_exp_core::operations::Error::Expired
+            ))
+        ))
+    ));
+    drop(enabled);
     let service = f.service("ledger", false);
     assert_eq!(
         service.renew(original, request.clone(), later()).unwrap()["submission_id"],
@@ -1917,4 +1916,68 @@ fn expired_unsubmitted_gate_renewal_preserves_identity_and_survives_response_los
     another.request_id = "b".repeat(32);
     assert!(service.renew(original, another, later()).is_err());
     assert!(!f.root.path().join("calls").exists());
+}
+
+#[test]
+fn an_expired_execute_makes_no_provider_call_and_renew_still_works() {
+    let f = Fixture::new();
+    let service = f.service("ledger", true);
+    let first = service
+        .prepare("demo", "train", approval(), context(1))
+        .unwrap();
+    let original = first["submission_id"].as_str().unwrap();
+    f.tools(&f.prepared());
+    let later = |transition_id: &'static str| Context {
+        now: "2026-10-28T02:00:00Z",
+        expires: "2026-10-28T02:30:00Z",
+        transition_id,
+    };
+    assert!(matches!(
+        service.execute(
+            original,
+            &format!("EXECUTE {original}"),
+            "too late",
+            later("00000000000000000000000000000004"),
+            &AtomicBool::new(false)
+        ),
+        Err(ServiceError::Runner(
+            crate::backends::slurm::action::Error::Action(crate::operations::Error::Decision(
+                ml_exp_core::operations::Error::Expired
+            ))
+        ))
+    ));
+    let unchanged = service.get(original, later("").now).unwrap();
+    assert_eq!(unchanged["status"], "PREPARED");
+    assert_eq!(unchanged["next_action"], "REPREPARE");
+    assert!(unchanged["execution"]["started_at"].is_null());
+    assert!(!f.root.path().join("calls").exists());
+    assert!(!f.root.path().join("sbatch-calls").exists());
+    let renewed = service
+        .renew(
+            original,
+            ml_exp_core::renewal::Request {
+                request_id: "a".repeat(32),
+                confirmation: format!("RENEW {original}"),
+            },
+            later("00000000000000000000000000000005"),
+        )
+        .unwrap();
+    assert_eq!(renewed["status"], "PREPARED");
+    assert_eq!(renewed["next_action"], "EXECUTE");
+    // The replacement is one job, sent once.
+    let id = renewed["submission_id"].as_str().unwrap();
+    let done = service
+        .execute(
+            id,
+            &format!("EXECUTE {id}"),
+            "renewed",
+            later("00000000000000000000000000000006"),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert_eq!(done["status"], "VERIFIED");
+    assert_eq!(
+        fs::read_to_string(f.root.path().join("sbatch-calls")).unwrap(),
+        "call\n"
+    );
 }

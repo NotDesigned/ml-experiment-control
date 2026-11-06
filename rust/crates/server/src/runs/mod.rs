@@ -118,9 +118,11 @@ pub struct Context<'a> {
 pub enum Operation {
     DownloadTicket(u64),
     Sync(ml_exp_core::cloud::exchange::Sync),
-    Authorize(String),
     Renew(ml_exp_core::renewal::Request),
-    Execute(String),
+    Execute {
+        confirmation: String,
+        reason: String,
+    },
     Cancel(String),
     Retry(ml_exp_core::first_submission::native::retry::Request),
     Reconcile,
@@ -155,11 +157,11 @@ pub fn apply(
         Owner::Cloud(cloud) => match operation {
             Operation::DownloadTicket(part) => cloud.download_ticket(action, part, now),
             Operation::Sync(request) => cloud.synchronize(action, &request, now, &cancelled),
-            Operation::Authorize(reason) => cloud.authorize(action, &reason, now, transition),
             Operation::Renew(request) => cloud.renew(action, request, context),
-            Operation::Execute(confirmation) => {
-                cloud.execute(action, &confirmation, now, transition, &cancelled)
-            }
+            Operation::Execute {
+                confirmation,
+                reason,
+            } => cloud.execute(action, &confirmation, &reason, now, transition, &cancelled),
             Operation::Cancel(confirmation) => cloud.cancel(action, &confirmation, now, &cancelled),
             Operation::Retry(request) => cloud.retry(action, request, now, &cancelled),
             Operation::Reconcile => cloud.reconcile(action, now, transition, &cancelled),
@@ -198,13 +200,11 @@ pub fn apply(
                         "CPU cloud synchronization is not configured for this submission",
                     ));
                 }
-                Operation::Authorize(reason) => {
-                    slurm.authorize(action, "bearer-client", &reason, context)
-                }
                 Operation::Renew(request) => slurm.renew(action, request, context),
-                Operation::Execute(confirmation) => {
-                    slurm.execute(action, &confirmation, context, &cancelled)
-                }
+                Operation::Execute {
+                    confirmation,
+                    reason,
+                } => slurm.execute(action, &confirmation, &reason, context, &cancelled),
                 Operation::Cancel(confirmation) => {
                     slurm.cancel(action, &confirmation, now, &cancelled)
                 }

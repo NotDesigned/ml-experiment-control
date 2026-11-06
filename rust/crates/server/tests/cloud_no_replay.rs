@@ -52,7 +52,6 @@ use std::{
 
 const T_CREATE: &str = "2026-10-29T00:00:00Z";
 const T_PREPARE: &str = "2026-10-29T00:01:00Z";
-const T_AUTHORIZE: &str = "2026-10-29T00:02:00Z";
 const T_EXECUTE: &str = "2026-10-29T00:03:00Z";
 const T_RECONCILE: &str = "2026-10-29T00:04:00Z";
 const GATE_EXPIRES: &str = "2026-10-29T01:01:00Z";
@@ -368,9 +367,9 @@ impl Fixture {
     fn run_directory(&self, run: &str) -> std::path::PathBuf {
         self.temp.path().join("runs").join(run)
     }
-    /// A Run with an authorized first Action, ready to spend. The provider row
+    /// A Run with a prepared first Action, ready to spend. The provider row
     /// is bound to this Run's job, though no provider request has been sent.
-    fn authorized(&self, service: &Service, run: &str) -> (String, Execution) {
+    fn ready(&self, service: &Service, run: &str) -> (String, Execution) {
         let request: CreateRun = serde_json::from_value(json!({"run_id":run,
             "runtime_id":self.runtime.runtime_id,"executor":self.executor,"command":["python","train.py"],
             "resources":{"gpus":1,"cpus":8,"memory_gb":64},"walltime_seconds":300,"seed":42}))
@@ -379,10 +378,6 @@ impl Fixture {
         let prepared = self.prepare(service, run);
         assert_eq!(prepared["status"], "PREPARED");
         let action = prepared["submission_id"].as_str().unwrap().to_owned();
-        let authorized = service
-            .authorize(&action, "owned fixture", T_AUTHORIZE, &self.transition())
-            .unwrap();
-        assert_eq!(authorized["status"], "AUTHORIZED");
         let slot = self
             .settings
             .registry_root
@@ -415,6 +410,7 @@ impl Fixture {
         service.execute(
             action,
             &format!("EXECUTE {action}"),
+            "owned fixture",
             T_EXECUTE,
             &self.transition(),
             &AtomicBool::new(false),
@@ -459,6 +455,7 @@ impl Fixture {
                     now: T_EXECUTE,
                     transition_id: &self.transition(),
                     pid: std::process::id(),
+                    reason: "owned fixture",
                 },
             )
             .unwrap();
@@ -504,7 +501,7 @@ fn execute_creates_once_and_a_second_execute_makes_no_second_create() {
     for kind in KINDS {
         let f = Fixture::new(kind);
         let service = f.open();
-        let (action, _) = f.authorized(&service, "train");
+        let (action, _) = f.ready(&service, "train");
         assert!(f.provider.calls().is_empty());
         let view = f.execute(&service, &action).unwrap();
         assert_eq!(view["status"], "VERIFIED");
@@ -527,7 +524,7 @@ fn a_lost_reply_is_reconciled_after_reopen_with_one_create() {
         let f = Fixture::new(kind);
         f.provider.world().lose_create_reply = true;
         let service = f.open();
-        let (action, _) = f.authorized(&service, "train");
+        let (action, _) = f.ready(&service, "train");
         let view = f.execute(&service, &action).unwrap();
         assert_eq!(view["status"], "RECONCILE_REQUIRED");
         assert_eq!(view["next_action"], "RECONCILE");
@@ -582,7 +579,7 @@ fn a_failed_read_after_a_confirmed_create_recovers_with_one_create() {
         // The create's own ownership read succeeds; the next read does not.
         f.provider.world().gets_left = Some(1);
         let service = f.open();
-        let (action, _) = f.authorized(&service, "train");
+        let (action, _) = f.ready(&service, "train");
         let view = f.execute(&service, &action).unwrap();
         assert_eq!(view["status"], "RECONCILE_REQUIRED");
         assert_eq!(view["cloud_observation"]["phase"], "OWNED");
@@ -611,7 +608,7 @@ fn absence_after_started_stays_reconcile_only() {
         let f = Fixture::new(kind);
         f.provider.world().lose_create_reply = true;
         let service = f.open();
-        let (action, _) = f.authorized(&service, "train");
+        let (action, _) = f.ready(&service, "train");
         assert_eq!(
             f.execute(&service, &action).unwrap()["status"],
             "RECONCILE_REQUIRED"
@@ -630,16 +627,11 @@ fn absence_after_started_stays_reconcile_only() {
                 f.execute(&service, &action).unwrap_err().code,
                 "CLOUD_ACTION_UNAVAILABLE"
             );
-            // Neither preparing again nor authorizing again opens a way back to create.
+            // Preparing again opens no way back to create either.
             let prepared = f.prepare(&service, "train");
             assert_eq!(prepared["reused"], true);
             assert_eq!(prepared["submission_id"], action.as_str());
             assert_eq!(prepared["status"], "RECONCILE_REQUIRED");
-            assert!(
-                service
-                    .authorize(&action, "again", T_AUTHORIZE, &f.transition())
-                    .is_err()
-            );
             assert_eq!(f.provider.creates(), 1);
         }
     }
@@ -650,7 +642,7 @@ fn a_claim_that_died_before_its_durable_start_never_creates() {
     for kind in KINDS {
         let f = Fixture::new(kind);
         let service = f.open();
-        let (action, execution) = f.authorized(&service, "train");
+        let (action, execution) = f.ready(&service, "train");
         drop(service);
         f.die_after_claim(&action, &execution);
         let service = f.open();
@@ -680,7 +672,7 @@ fn a_claim_that_died_after_its_create_recovers_with_one_create() {
         let f = Fixture::new(kind);
         f.provider.world().lose_create_reply = true;
         let service = f.open();
-        let (action, execution) = f.authorized(&service, "train");
+        let (action, execution) = f.ready(&service, "train");
         drop(service);
         let outbox = f.die_after_claim(&action, &execution);
         let slot = Outbox::slot(&execution.job).unwrap();
@@ -724,7 +716,7 @@ fn retry_is_refused_on_absent_or_non_terminal_evidence() {
         let service = f.open();
         let flag = AtomicBool::new(false);
         // Never spent: there is no effect record, and no provider request is made.
-        let (never, _) = f.authorized(&service, "never");
+        let (never, _) = f.ready(&service, "never");
         assert_eq!(
             service
                 .retry(&never, retry_request("never"), T_RECONCILE, &flag)
@@ -735,7 +727,7 @@ fn retry_is_refused_on_absent_or_non_terminal_evidence() {
         assert!(f.provider.calls().is_empty());
 
         f.provider.world().lose_create_reply = true;
-        let (action, _) = f.authorized(&service, "train");
+        let (action, _) = f.ready(&service, "train");
         assert_eq!(
             f.execute(&service, &action).unwrap()["status"],
             "RECONCILE_REQUIRED"
@@ -801,7 +793,7 @@ fn a_sensecore_job_that_may_still_run_cannot_be_retried() {
         let f = Fixture::new(Kind::Sensecore);
         let service = f.open();
         let flag = AtomicBool::new(false);
-        let (action, _) = f.authorized(&service, "train");
+        let (action, _) = f.ready(&service, "train");
         f.execute(&service, &action).unwrap();
         let next = f.run_directory("train").join("attempts/attempt-002");
         f.provider.world().row["state"] = json!(raw);
@@ -831,7 +823,7 @@ fn renew_is_refused_once_started() {
         let f = Fixture::new(kind);
         let service = f.open();
         // The control: an expired gate that never started does renew.
-        let (control, _) = f.authorized(&service, "control");
+        let (control, _) = f.ready(&service, "control");
         let renewed = service
             .renew(&control, renewal(&control), expired_gate(&f.transition()))
             .unwrap();
@@ -841,13 +833,13 @@ fn renew_is_refused_once_started() {
         assert!(f.provider.calls().is_empty());
 
         f.provider.world().lose_create_reply = true;
-        let (uncertain, _) = f.authorized(&service, "uncertain");
+        let (uncertain, _) = f.ready(&service, "uncertain");
         assert_eq!(
             f.execute(&service, &uncertain).unwrap()["status"],
             "RECONCILE_REQUIRED"
         );
         f.provider.world().lose_create_reply = false;
-        let (verified, _) = f.authorized(&service, "verified");
+        let (verified, _) = f.ready(&service, "verified");
         assert_eq!(
             f.execute(&service, &verified).unwrap()["status"],
             "VERIFIED"
@@ -870,6 +862,119 @@ fn renew_is_refused_once_started() {
     }
 }
 
+/// The cloud Runner writes its outbox entry before its claim, and renew refuses once an
+/// entry exists. An expired execute has to stop ahead of the Runner, or it would make
+/// the very command that replaces its gate refuse.
+#[test]
+fn an_expired_execute_makes_no_provider_call_and_leaves_renew_working() {
+    for kind in KINDS {
+        let f = Fixture::new(kind);
+        let service = f.open();
+        let (action, execution) = f.ready(&service, "train");
+        let refused = service
+            .execute(
+                &action,
+                &format!("EXECUTE {action}"),
+                "too late",
+                T_GATE_EXPIRED,
+                &f.transition(),
+                &AtomicBool::new(false),
+            )
+            .unwrap_err();
+        assert_eq!(refused.code, "CLOUD_ACTION_UNAVAILABLE");
+        assert!(!refused.uncertain);
+        assert!(f.provider.calls().is_empty());
+        assert_eq!(f.provider.creates(), 0);
+        let view = service.get(&action, T_GATE_EXPIRED).unwrap();
+        assert_eq!(view["status"], "PREPARED");
+        assert_eq!(view["next_action"], "REPREPARE");
+        assert!(view["execution"]["started_at"].is_null());
+        assert!(view.get("cloud_observation").is_none(), "no outbox entry");
+        let outbox =
+            Outbox::open(&f.settings.registry_root.join("cloud-submissions/effects")).unwrap();
+        assert!(outbox.optional_status(&execution.job).unwrap().is_none());
+
+        let renewed = service
+            .renew(&action, renewal(&action), expired_gate(&f.transition()))
+            .unwrap();
+        assert_eq!(renewed["status"], "PREPARED");
+        assert_eq!(renewed["renewed_from"], action.as_str());
+        assert_eq!(renewed["next_action"], "EXECUTE");
+        assert!(f.provider.calls().is_empty());
+    }
+}
+
+/// A request the claim would refuse leaves no outbox entry either, whichever part of it
+/// is wrong. These cannot arrive over HTTP, which refuses them first.
+#[test]
+fn a_bad_confirmation_or_reason_leaves_no_outbox_entry() {
+    for kind in KINDS {
+        let f = Fixture::new(kind);
+        let service = f.open();
+        let (action, execution) = f.ready(&service, "train");
+        let good = format!("EXECUTE {action}");
+        for (confirmation, reason) in [("wrong", ""), (good.as_str(), "bad\nreason")] {
+            assert!(
+                service
+                    .execute(
+                        &action,
+                        confirmation,
+                        reason,
+                        T_EXECUTE,
+                        &f.transition(),
+                        &AtomicBool::new(false),
+                    )
+                    .is_err()
+            );
+        }
+        let outbox =
+            Outbox::open(&f.settings.registry_root.join("cloud-submissions/effects")).unwrap();
+        assert!(outbox.optional_status(&execution.job).unwrap().is_none());
+        assert!(f.provider.calls().is_empty());
+    }
+}
+
+/// Execute stays safe to repeat once its gate has passed: a verified Action answers from
+/// its record, and an uncertain one is still sent to reconcile. Neither creates again.
+#[test]
+fn repeating_execute_after_the_gate_passes_never_creates_again() {
+    for kind in KINDS {
+        let f = Fixture::new(kind);
+        let service = f.open();
+        let again = |action: &str| {
+            service.execute(
+                action,
+                &format!("EXECUTE {action}"),
+                "a different reason",
+                T_GATE_EXPIRED,
+                &f.transition(),
+                &AtomicBool::new(false),
+            )
+        };
+        f.provider.world().lose_create_reply = true;
+        let (uncertain, _) = f.ready(&service, "uncertain");
+        assert_eq!(
+            f.execute(&service, &uncertain).unwrap()["status"],
+            "RECONCILE_REQUIRED"
+        );
+        assert_eq!(
+            again(&uncertain).unwrap_err().code,
+            "CLOUD_ACTION_UNAVAILABLE"
+        );
+        assert_eq!(f.provider.creates(), 1);
+
+        f.provider.world().lose_create_reply = false;
+        let (verified, _) = f.ready(&service, "verified");
+        let first = f.execute(&service, &verified).unwrap();
+        assert_eq!(first["status"], "VERIFIED");
+        assert_eq!(first["execution"]["execution_reason"], "owned fixture");
+        let repeated = again(&verified).unwrap();
+        assert_eq!(repeated["status"], "VERIFIED");
+        assert_eq!(repeated["execution"]["execution_reason"], "owned fixture");
+        assert_eq!(f.provider.creates(), 2);
+    }
+}
+
 /// The pointer is the last write of a renewal. Rewinding it and refusing new files
 /// in the slot directory stops a repeat exactly there, because every earlier record
 /// already matches and writes nothing. CI runs this as an ordinary user: root ignores
@@ -879,7 +984,7 @@ fn a_renewal_whose_pointer_write_fails_is_uncertain_and_a_repeat_finishes_it() {
     for kind in KINDS {
         let f = Fixture::new(kind);
         let service = f.open();
-        let (old, _) = f.authorized(&service, "train");
+        let (old, _) = f.ready(&service, "train");
         let slots = f.settings.registry_root.join("cloud-submissions/slots");
         let pointer = slots.join(format!(
             "{}.json",
@@ -954,7 +1059,7 @@ fn an_observed_job_costs_one_provider_read_per_cycle() {
     for kind in KINDS {
         let f = Fixture::new(kind);
         let service = Arc::new(f.open());
-        let (action, _) = f.authorized(&service, "train");
+        let (action, _) = f.ready(&service, "train");
         assert_eq!(f.execute(&service, &action).unwrap()["status"], "VERIFIED");
         let (calls, reads) = (f.provider.calls().len(), f.provider.reads());
         let mut observer = observer(service.clone());
@@ -979,7 +1084,7 @@ fn a_provider_outage_is_read_at_the_same_rate_and_never_creates() {
     for kind in KINDS {
         let f = Fixture::new(kind);
         let service = Arc::new(f.open());
-        let (action, _) = f.authorized(&service, "train");
+        let (action, _) = f.ready(&service, "train");
         f.execute(&service, &action).unwrap();
         let reads = f.provider.reads();
         f.provider.world().down = true;
@@ -1003,7 +1108,7 @@ fn a_read_refused_after_the_provider_call_backs_off_to_the_cap() {
     for kind in KINDS {
         let f = Fixture::new(kind);
         let service = Arc::new(f.open());
-        let (action, _) = f.authorized(&service, "train");
+        let (action, _) = f.ready(&service, "train");
         f.execute(&service, &action).unwrap();
         service
             .refresh(&action, T_RECONCILE, &AtomicBool::new(false))
@@ -1031,7 +1136,7 @@ fn a_job_that_vanishes_under_the_observer_is_never_created_again() {
     for kind in KINDS {
         let f = Fixture::new(kind);
         let service = Arc::new(f.open());
-        let (action, _) = f.authorized(&service, "train");
+        let (action, _) = f.ready(&service, "train");
         f.execute(&service, &action).unwrap();
         let reads = f.provider.reads();
         f.provider.world().exists = false;
@@ -1047,7 +1152,7 @@ fn an_action_awaiting_reconcile_is_not_sampled_at_all() {
         let f = Fixture::new(kind);
         f.provider.world().lose_create_reply = true;
         let service = Arc::new(f.open());
-        let (action, _) = f.authorized(&service, "train");
+        let (action, _) = f.ready(&service, "train");
         let view = f.execute(&service, &action).unwrap();
         assert_eq!(view["status"], "RECONCILE_REQUIRED");
         let calls = f.provider.calls().len();
@@ -1062,7 +1167,7 @@ fn a_terminal_job_leaves_the_observer_at_the_next_discovery() {
     for kind in KINDS {
         let f = Fixture::new(kind);
         let service = Arc::new(f.open());
-        let (action, _) = f.authorized(&service, "train");
+        let (action, _) = f.ready(&service, "train");
         f.execute(&service, &action).unwrap();
         let reads = f.provider.reads();
         f.provider.world().terminal = true;
@@ -1122,7 +1227,7 @@ fn slurm_parts(f: &Fixture) -> (helper::Target, native::Runtime, native::Profile
     };
     (target, runtime, profile)
 }
-/// The Slurm service over the same registry with one real authorized Action.
+/// The Slurm service over the same registry with one real prepared Action.
 fn slurm_side(f: &Fixture) -> (slurm_service::Service, String, std::path::PathBuf) {
     let run = f.run_directory("train");
     fs::create_dir_all(run.join("attempts/attempt-001")).unwrap();
@@ -1190,11 +1295,8 @@ fn slurm_side(f: &Fixture) -> (slurm_service::Service, String, std::path::PathBu
             open_gate(&f.transition()),
         )
         .unwrap();
+    assert_eq!(prepared["status"], "PREPARED");
     let action = prepared["submission_id"].as_str().unwrap().to_owned();
-    let authorized = service
-        .authorize(&action, "tester", "owned", open_gate(&f.transition()))
-        .unwrap();
-    assert_eq!(authorized["status"], "AUTHORIZED");
     (service, action, calls)
 }
 /// The service, and an SSH program that only records that it was called.
@@ -1274,7 +1376,7 @@ fn an_action_given_to_the_other_backend_is_refused_with_no_provider_call() {
     for kind in KINDS {
         let f = Fixture::new(kind);
         let cloud_service = f.open();
-        let (cloud_action, _) = f.authorized(&cloud_service, "cloud-run");
+        let (cloud_action, _) = f.ready(&cloud_service, "cloud-run");
         let (slurm, slurm_action, ssh_calls) = slurm_side(&f);
         let flag = AtomicBool::new(false);
         assert!(cloud_service.handles_action(&cloud_action).unwrap());
@@ -1282,10 +1384,10 @@ fn an_action_given_to_the_other_backend_is_refused_with_no_provider_call() {
 
         let a = cloud_action.as_str();
         stops_at_slurm_load(slurm.get(a, T_EXECUTE));
-        stops_at_slurm_load(slurm.authorize(a, "tester", "note", open_gate(&f.transition())));
         stops_at_slurm_load(slurm.execute(
             a,
             &format!("EXECUTE {a}"),
+            "tester",
             open_gate(&f.transition()),
             &flag,
         ));
@@ -1296,19 +1398,18 @@ fn an_action_given_to_the_other_backend_is_refused_with_no_provider_call() {
         stops_at_slurm_load(slurm.renew(a, renewal(a), expired_gate(&f.transition())));
         assert_eq!(
             cloud_service.get(a, T_EXECUTE).unwrap()["status"],
-            "AUTHORIZED"
+            "PREPARED"
         );
 
         let a = slurm_action.as_str();
         stops_at_cloud_load(cloud_service.get(a, T_EXECUTE));
-        stops_at_cloud_load(cloud_service.authorize(a, "note", T_AUTHORIZE, &f.transition()));
         stops_at_cloud_load(f.execute(&cloud_service, a));
         stops_at_cloud_load(cloud_service.reconcile(a, T_EXECUTE, &f.transition(), &flag));
         stops_at_cloud_load(cloud_service.refresh(a, T_EXECUTE, &flag));
         stops_at_cloud_load(cloud_service.cancel(a, &format!("CANCEL {a}"), T_EXECUTE, &flag));
         stops_at_cloud_load(cloud_service.retry(a, retry_request("train"), T_EXECUTE, &flag));
         stops_at_cloud_load(cloud_service.renew(a, renewal(a), expired_gate(&f.transition())));
-        assert_eq!(slurm.get(a, T_EXECUTE).unwrap()["status"], "AUTHORIZED");
+        assert_eq!(slurm.get(a, T_EXECUTE).unwrap()["status"], "PREPARED");
 
         assert!(f.provider.calls().is_empty());
         assert!(!ssh_calls.exists());
@@ -1673,7 +1774,7 @@ fn a_changed_result_job_limit_keeps_each_recorded_job_and_reaches_only_new_ones(
     let mut c = CopyFixture::new(Kind::Pai, 1);
     c.config = with_result_job(&c.config, json!({"max_time_seconds":3600}));
     let service = c.open();
-    let (action, _) = c.f.authorized(&service, "train");
+    let (action, _) = c.f.ready(&service, "train");
     assert_eq!(
         c.f.execute(&service, &action).unwrap()["status"],
         "VERIFIED"
@@ -1774,7 +1875,7 @@ fn a_maintenance_job_takes_the_configured_limit_and_keeps_it_once_recorded() {
     let mut c = CopyFixture::new(Kind::Pai, 1);
     c.config = with_result_job(&c.config, json!({"max_time_seconds":3600}));
     let service = c.open();
-    let (action, _) = c.f.authorized(&service, "train");
+    let (action, _) = c.f.ready(&service, "train");
     c.f.execute(&service, &action).unwrap();
     c.provider.world().rows[0]["Status"] = json!("Failed");
     let plan = service
@@ -1818,7 +1919,7 @@ fn every_maintenance_plan_of_an_attempt_runs_as_its_own_job_once() {
             c.config = serde_json::to_vec(&config).unwrap();
         }
         let service = c.open();
-        let (action, _) = c.f.authorized(&service, "train");
+        let (action, _) = c.f.ready(&service, "train");
         c.f.execute(&service, &action).unwrap();
         c.provider.set_state("FAILED");
         let plan = |selection, request: &str| {
@@ -2344,7 +2445,7 @@ fn attempt_diagnostics_read_through_the_run_outbox_and_keep_their_keys() {
     for kind in KINDS {
         let f = Fixture::new(kind);
         let service = f.open();
-        let (action, _) = f.authorized(&service, "train");
+        let (action, _) = f.ready(&service, "train");
         let unread = service
             .provider_diagnostics("demo", "train", "attempt-001", 50)
             .unwrap();
@@ -2548,7 +2649,7 @@ async fn a_run_or_action_reaches_its_own_backend_through_the_app() {
     for kind in KINDS {
         let f = Fixture::new(kind);
         let cloud_service = Arc::new(f.open());
-        let (cloud_action, _) = f.authorized(&cloud_service, "cloud-run");
+        let (cloud_action, _) = f.ready(&cloud_service, "cloud-run");
         let (slurm, slurm_action, ssh_calls) = slurm_side(&f);
         let app = routing_app(
             &f,
@@ -2594,7 +2695,7 @@ fn an_owner_that_is_not_configured_answers_501_and_the_other_backend_is_never_as
     for kind in KINDS {
         let f = Fixture::new(kind);
         let cloud_service = Arc::new(f.open());
-        let (cloud_action, _) = f.authorized(&cloud_service, "cloud-run");
+        let (cloud_action, _) = f.ready(&cloud_service, "cloud-run");
         let (slurm, slurm_action, ssh_calls) = slurm_side(&f);
 
         let slurm_only = routing_api(&f, Some(Arc::new(slurm)), None);
@@ -2634,7 +2735,7 @@ async fn a_bad_sibling_cannot_stop_a_healthy_run_in_its_project() {
     for kind in KINDS {
         let f = Fixture::new(kind);
         let cloud_service = Arc::new(f.open());
-        let (cloud_action, _) = f.authorized(&cloud_service, "cloud-run");
+        let (cloud_action, _) = f.ready(&cloud_service, "cloud-run");
         let (slurm, _, ssh_calls) = slurm_side(&f);
         let api = routing_api(&f, Some(Arc::new(slurm)), Some(cloud_service));
         let app = routing_app(&f, api.clone());
@@ -2680,7 +2781,7 @@ async fn a_run_that_cannot_be_read_or_is_deleted_has_no_owner() {
     for kind in KINDS {
         let f = Fixture::new(kind);
         let cloud_service = Arc::new(f.open());
-        f.authorized(&cloud_service, "cloud-run");
+        f.ready(&cloud_service, "cloud-run");
         let (slurm, _, ssh_calls) = slurm_side(&f);
         let api = routing_api(&f, Some(Arc::new(slurm)), Some(cloud_service));
         let app = routing_app(&f, api.clone());
@@ -2735,7 +2836,7 @@ async fn a_run_that_cannot_be_read_or_is_deleted_has_no_owner() {
 fn a_run_retires_after_its_bytes_and_takes_no_later_plan() {
     let c = CopyFixture::new(Kind::Pai, 1);
     let service = c.open();
-    let (action, _) = c.f.authorized(&service, "train");
+    let (action, _) = c.f.ready(&service, "train");
     c.f.execute(&service, &action).unwrap();
     c.provider.world().rows[0]["Status"] = json!("Failed");
     let plan = |request: &str| {
@@ -2801,7 +2902,7 @@ fn a_lost_reply_keeps_one_create_through_the_one_dispatch() {
         let f = Fixture::new(kind);
         f.provider.world().lose_create_reply = true;
         let service = Arc::new(f.open());
-        let (action, _) = f.authorized(&service, "train");
+        let (action, _) = f.ready(&service, "train");
         let apply = |operation| {
             let transition = f.transition();
             runs::apply(
@@ -2815,7 +2916,10 @@ fn a_lost_reply_keeps_one_create_through_the_one_dispatch() {
                 },
             )
         };
-        let execute = || Operation::Execute(format!("EXECUTE {action}"));
+        let execute = || Operation::Execute {
+            confirmation: format!("EXECUTE {action}"),
+            reason: "owned fixture".into(),
+        };
         let view = apply(execute()).unwrap();
         assert_eq!(view["status"], "RECONCILE_REQUIRED");
         assert_eq!(f.provider.creates(), 1);

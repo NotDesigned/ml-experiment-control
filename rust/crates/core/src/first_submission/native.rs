@@ -41,7 +41,7 @@ pub fn project_run(mut run: Value, submission: &Value) -> Result<Value> {
         return Ok(run);
     }
     let (state, detail, at) = match submission["status"].as_str() {
-        Some("PREPARED" | "AUTHORIZED") => return Ok(run),
+        Some("PREPARED") => return Ok(run),
         Some("EXECUTING" | "RECONCILE_REQUIRED") => (
             json!("UNKNOWN"),
             json!({"diagnostic":"SUBMISSION_UNCERTAIN","submission_id":id}),

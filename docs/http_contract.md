@@ -122,9 +122,9 @@ runs before filtering or sampling. Unknown query parameters are refused. See
 [metrics](metrics.md) for explicit result summaries and scoped requirements.
 
 `ml-exp run cancel` and `ml-exp run retry` POST
-`/api/submissions/ID/cancel` and `/api/submissions/ID/retry`. Authorization and
-dispatch use `/api/submissions/ID/authorize` and `/api/submissions/ID/execute`, with
-the exact returned confirmation. Observation uses `GET /api/submissions/ID`; explicit
+`/api/submissions/ID/cancel` and `/api/submissions/ID/retry`. Dispatch uses
+`/api/submissions/ID/execute`, with the exact returned confirmation and an optional
+`reason`, recorded with the execution. Observation uses `GET /api/submissions/ID`; explicit
 `/api/submissions/ID/reconcile` never resubmits the operation. Retry creates a new
 Attempt in the same frozen Run from an explicit checkpoint or `--from-start`; it does
 not select a checkpoint or submit. See [recovery](recovery.md).
@@ -194,8 +194,7 @@ routes to retrieve datasets.
 | `POST /api/runs/P/R/submissions` | Preflight and GPU-hour budget review |
 | `GET /api/runs/P/R/preparation` | Find the original preparation after a lost reply |
 | `GET /api/runs/P/R/submission` | Find the original Submission after a lost reply |
-| `POST /api/submissions/S/authorize` | Authorize current prepared gates |
-| `POST /api/submissions/S/execute` | Submit using returned confirmation |
+| `POST /api/submissions/S/execute` | Submit using returned confirmation and optional reason |
 | `GET /api/submissions/S` | Durable state and next action |
 | `POST /api/submissions/S/reconcile` | Resolve an uncertain original submission |
 | `POST /api/submissions/S/refresh` / `/history` | Sample evidence; ingest the next metrics page |

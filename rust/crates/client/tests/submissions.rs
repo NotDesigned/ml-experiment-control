@@ -186,13 +186,10 @@ fn cpu_input_preparation_is_scoped_progress_and_cannot_impersonate_a_training_ac
             project: "demo",
             run: "train",
         },
-        Command::Authorize {
-            submission: ID,
-            reason: "test",
-        },
         Command::Execute {
             submission: ID,
             confirmation: "EXECUTE action-0123456789abcdef",
+            reason: "test",
         },
     ] {
         let plan = submissions::plan(command).unwrap();
@@ -231,8 +228,9 @@ fn plans_reject_invalid_identity_budget_reason_and_confirmation_without_io() {
         .is_err()
     );
     assert!(
-        submissions::plan(Command::Authorize {
+        submissions::plan(Command::Execute {
             submission: ID,
+            confirmation: "EXECUTE action-0123456789abcdef",
             reason: "bad\nreason"
         })
         .is_err()
@@ -240,7 +238,16 @@ fn plans_reject_invalid_identity_budget_reason_and_confirmation_without_io() {
     assert!(
         submissions::plan(Command::Execute {
             submission: ID,
-            confirmation: "wrong"
+            confirmation: "EXECUTE action-0123456789abcdef",
+            reason: &"r".repeat(4001)
+        })
+        .is_err()
+    );
+    assert!(
+        submissions::plan(Command::Execute {
+            submission: ID,
+            confirmation: "wrong",
+            reason: ""
         })
         .is_err()
     );
@@ -418,6 +425,7 @@ fn disabled_or_missing_capability_prevents_mutation_before_connecting() {
     let plan = submissions::plan(Command::Execute {
         submission: ID,
         confirmation: "EXECUTE action-0123456789abcdef",
+        reason: "",
     })
     .unwrap();
     for field in ["capabilities", "scheduler_mutations"] {

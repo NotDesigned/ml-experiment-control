@@ -99,26 +99,11 @@ impl Service {
         result["reused"] = json!(reused);
         Ok(result)
     }
-    pub fn authorize(
-        &self,
-        action: &str,
-        reason: &str,
-        now: &str,
-        transition: &str,
-    ) -> cloud::Result<Value> {
-        let _lock = self.lock()?;
-        let prepared = self.load(action)?;
-        self.check(&prepared)?;
-        let snapshot = self
-            .actions
-            .authorize(action, "bearer-client", reason, now, transition)
-            .map_err(op)?;
-        self.view(&prepared, snapshot, now)
-    }
     pub fn execute(
         &self,
         action: &str,
         confirmation: &str,
+        reason: &str,
         now: &str,
         transition: &str,
         cancelled: &AtomicBool,
@@ -134,7 +119,13 @@ impl Service {
         let prepared = self.load(action)?;
         let execution = &prepared.execution;
         let adapter = self.execution_adapter(execution)?;
-        if self.actions.observe(action).map_err(op)?["execution"]["status"] == "AUTHORIZED" {
+        let snapshot = self.actions.observe(action).map_err(op)?;
+        if snapshot["execution"]["status"] == "PREPARED" {
+            // The Runner writes its outbox entry before its claim, and renew refuses once
+            // an entry exists. A request the claim would refuse must stop here, so that
+            // an expired gate leaves nothing behind and `run renew` still replaces it.
+            ml_exp_core::operations::check_request(&snapshot, confirmation, reason, now)
+                .map_err(|error| op(error.into()))?;
             let root = self.authority(&execution.job.project, &execution.job.run_id)?;
             let run = root
                 .child(OsStr::new(&execution.job.run_id), false)
@@ -180,6 +171,7 @@ impl Service {
                     now,
                     transition_id: transition,
                     pid: std::process::id(),
+                    reason,
                 },
             },
             &check,

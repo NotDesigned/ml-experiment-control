@@ -30,8 +30,9 @@ struct World {
     build_failed: bool,
     lose_execute_reply: bool,
     /// The request is lost on the way, so the server never acts on it.
-    authorize_never_arrives: bool,
     execute_never_arrives: bool,
+    /// The server answers and refuses, as it does after a project edit.
+    execute_refused: bool,
     /// Cloud reports through its observation; Slurm through the Submission's result.
     cloud: bool,
     /// Whether the server's background polling reports a Slurm job's later states.
@@ -55,6 +56,7 @@ struct World {
     preparation_submission: Option<&'static str>,
     action: &'static str,
     attempt: &'static str,
+    run_id: String,
 }
 impl World {
     fn new() -> Self {
@@ -63,11 +65,11 @@ impl World {
             continues: 0,
             continues_until_ready: 1,
             status: "PREPARED",
-            next_action: "AUTHORIZE",
+            next_action: "EXECUTE",
             build_failed: false,
             lose_execute_reply: false,
-            authorize_never_arrives: false,
             execute_never_arrives: false,
+            execute_refused: false,
             cloud: true,
             polling: true,
             restarted: false,
@@ -84,11 +86,12 @@ impl World {
             preparation_submission: None,
             action: ID,
             attempt: "attempt-001",
+            run_id: "train".into(),
         }
     }
     fn submission(&self) -> Value {
         let (state, own) = self.job_states[0];
-        let mut value = json!({"submission_id":self.action,"project":"demo","run_id":"train",
+        let mut value = json!({"submission_id":self.action,"project":"demo","run_id":self.run_id,
             "attempt_id":self.attempt,
             "operation":"SUBMIT_RUN","status":self.status,"next_action":self.next_action,
             "confirmation":format!("EXECUTE {}",self.action),
@@ -124,7 +127,7 @@ impl World {
     fn view(&self, path: &str) -> Value {
         let id = path.rsplit('/').find(|p| p.starts_with("preparation-"));
         let ready = self.continues > self.continues_until_ready;
-        json!({"project":"demo","preparation_id":id,"run_id":"train",
+        json!({"project":"demo","preparation_id":id,"run_id":self.run_id,
             "runtime":{"runtime_id":RUNTIME,
                 "status":if self.build_failed || (self.restarted && !ready) {"RECONCILE_REQUIRED"} else if ready {"READY"} else {"EXECUTING"},
                 "build_error":if self.build_failed {
@@ -215,6 +218,9 @@ impl World {
                 }
                 (200, value)
             }
+            ("GET", r) if r.starts_with("/api/runs/") && r.ends_with("/submission") => {
+                (200, self.submission())
+            }
             ("POST", r) if r.ends_with("/cancel") => (200, self.submission()),
             ("POST", r) if r.ends_with("/retry") => {
                 let (state, _) = self.job_states[0];
@@ -240,20 +246,15 @@ impl World {
                 self.action = SECOND;
                 self.attempt = "attempt-002";
                 self.status = "PREPARED";
-                self.next_action = "AUTHORIZE";
-                (200, self.submission())
-            }
-            ("POST", r) if r.ends_with("/authorize") => {
-                if self.authorize_never_arrives {
-                    return None;
-                }
-                self.status = "AUTHORIZED";
                 self.next_action = "EXECUTE";
                 (200, self.submission())
             }
             ("POST", r) if r.ends_with("/execute") => {
                 if self.execute_never_arrives {
                     return None;
+                }
+                if self.execute_refused {
+                    return Some((409, json!({"code":"SUBMISSION_EVIDENCE_UNAVAILABLE"})));
                 }
                 self.status = "EXECUTING";
                 self.next_action = "RECONCILE";
@@ -358,6 +359,14 @@ impl Fake {
         let (.., body) = requests
             .iter()
             .find(|(m, path, _)| m == "POST" && path.ends_with("/experiment-preparations"))
+            .unwrap();
+        serde_json::from_slice(body).unwrap()
+    }
+    fn execute_request(&self) -> Value {
+        let requests = self.requests.lock().unwrap();
+        let (.., body) = requests
+            .iter()
+            .find(|(m, path, _)| m == "POST" && path.ends_with("/execute"))
             .unwrap();
         serde_json::from_slice(body).unwrap()
     }
@@ -488,7 +497,10 @@ fn one_command_confirms_once_and_sends_one_job() {
         assert!(asked[0].contains(shown), "{shown}");
     }
     assert_eq!(fake.count("POST", "/execute"), 1);
-    assert_eq!(fake.count("POST", "/authorize"), 1);
+    assert_eq!(
+        fake.execute_request(),
+        json!({"confirmation":format!("EXECUTE {ID}"),"reason":"ml-exp submit"})
+    );
     let request = fake.prepared_request();
     assert_eq!(request["runtime"]["base_image"], IMAGE);
     assert_eq!(
@@ -561,7 +573,6 @@ fn repeating_after_a_lost_reply_observes_the_original_job() {
     let value = files.run(&fake, true, &mut asked).unwrap();
     assert!(asked.is_empty());
     assert_eq!(fake.count("POST", "/execute"), 0);
-    assert_eq!(fake.count("POST", "/authorize"), 0);
     assert_eq!(fake.count("POST", "/reconcile"), 1);
     assert_eq!(value["already_submitted"], true);
 }
@@ -575,7 +586,6 @@ fn a_failed_build_stops_rather_than_building_again() {
     let error = files.run(&fake, true, &mut Vec::new()).unwrap_err();
     assert!(error.to_string().contains("BAD_DOCKERFILE"), "{error}");
     assert_eq!(fake.count("POST", "/continue"), 1);
-    assert_eq!(fake.count("POST", "/authorize"), 0);
     assert_eq!(fake.count("POST", "/execute"), 0);
 }
 
@@ -587,7 +597,6 @@ fn an_expired_submission_says_what_to_do_and_sends_no_job() {
     let fake = Fake::start(world);
     let error = files.run(&fake, true, &mut Vec::new()).unwrap_err();
     assert!(error.to_string().contains("run renew"), "{error}");
-    assert_eq!(fake.count("POST", "/authorize"), 0);
     assert_eq!(fake.count("POST", "/execute"), 0);
 }
 
@@ -882,26 +891,25 @@ fn declining_a_retry_creates_nothing() {
 
 #[test]
 fn a_lost_request_that_sent_nothing_is_not_reported_as_submitted() {
-    for lost_at_authorize in [true, false] {
-        let files = Files::new();
-        let mut world = World::new();
-        world.authorize_never_arrives = lost_at_authorize;
-        world.execute_never_arrives = !lost_at_authorize;
-        let fake = Fake::start(world);
-        let error = files.run(&fake, true, &mut Vec::new()).unwrap_err();
-        assert!(
-            error.to_string().contains("no job has been sent"),
-            "{error}"
-        );
-        // Repeating after the network recovers finishes it, with one job.
-        {
-            let mut world = fake.world.lock().unwrap();
-            world.authorize_never_arrives = false;
-            world.execute_never_arrives = false;
-        }
-        let value = files.run(&fake, true, &mut Vec::new()).unwrap();
-        assert_eq!(value["status"], "VERIFIED");
-    }
+    let files = Files::new();
+    let mut world = World::new();
+    world.execute_never_arrives = true;
+    let fake = Fake::start(world);
+    let error = files.run(&fake, true, &mut Vec::new()).unwrap_err();
+    assert!(
+        error.to_string().contains("no job has been sent"),
+        "{error}"
+    );
+    // Repeating after the network recovers finishes it, with one job.
+    fake.world.lock().unwrap().execute_never_arrives = false;
+    let value = files.run(&fake, true, &mut Vec::new()).unwrap();
+    assert_eq!(value["status"], "VERIFIED");
+    assert_eq!(
+        fake.count("POST", "/execute"),
+        2,
+        "one lost and one that arrived"
+    );
+    assert_eq!(fake.count("POST", "/reconcile"), 0);
 }
 
 #[test]
@@ -1012,12 +1020,12 @@ fn a_job_stays_reachable_when_its_executor_has_gone() {
 fn a_changed_limit_shows_and_runs_what_was_already_prepared() {
     let files = Files::new();
     let mut world = World::new();
-    world.authorize_never_arrives = true;
+    world.execute_never_arrives = true;
     let fake = Fake::start(world);
     assert!(files.run(&fake, true, &mut Vec::new()).is_err());
     {
         let mut world = fake.world.lock().unwrap();
-        world.authorize_never_arrives = false;
+        world.execute_never_arrives = false;
         world.cpu_limit = 4;
     }
     let mut asked = Vec::new();
@@ -1113,7 +1121,7 @@ fn a_checkpoint_is_not_silently_ignored_for_an_attempt_already_prepared() {
     let files = Files::new();
     let fake = Fake::start(ended());
     submitted_train(&files, &fake);
-    fake.world.lock().unwrap().status = "AUTHORIZED";
+    fake.world.lock().unwrap().status = "PREPARED";
     let states = files.root.path().join("states");
     let text = submit::retry(
         &fake.client(),
@@ -1225,7 +1233,7 @@ fn retry_finishes_a_prepared_attempt_rather_than_starting_another() {
     submitted_train(&files, &fake);
     {
         let mut world = fake.world.lock().unwrap();
-        world.status = "AUTHORIZED";
+        world.status = "PREPARED";
         world.next_action = "EXECUTE";
     }
     let states = files.root.path().join("states");
@@ -1248,6 +1256,119 @@ fn repeating_submit_after_a_retry_keeps_the_newer_attempt_as_the_latest() {
         submit::latest(&states).unwrap().submission_id.as_deref(),
         Some(SECOND)
     );
+}
+
+/// One saved batch with one child, and the fake answering for that child.
+struct SavedBatch {
+    root: tempfile::TempDir,
+    fake: Fake,
+    client: Client,
+    health: Value,
+}
+impl SavedBatch {
+    fn new() -> Self {
+        let batch: ml_exp_core::preparation::Batch = serde_json::from_value(json!({
+            "request_id":"b".repeat(32),
+            "experiment":{"request_id":"a".repeat(32),
+                "run":{"run_id":"trial","runtime_id":RUNTIME,"executor":"dlc","command":["train"],
+                    "resources":{"gpus":1,"cpus":2,"memory_gb":4},"walltime_seconds":300,"seed":42},
+                "approval":{"max_gpu_hours":1.0,"reason":"test"}}}))
+        .unwrap();
+        let child = batch.expand("demo").unwrap().remove(0);
+        let mut world = World::new();
+        world.prepared = true;
+        world.continues = 2;
+        world.run_id = child.run["run_id"].as_str().unwrap().to_owned();
+        let fake = Fake::start(world);
+        let client = fake.client();
+        let health = client.health().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let manifest = json!({"contract":"native-batch.v1","server":client.base_url(),
+            "project":"demo","batch":batch});
+        ml_exp_io::directory::Directory::open(root.path(), false)
+            .unwrap()
+            .publish_new(
+                std::ffi::OsStr::new("batch.json"),
+                &serde_json::to_vec(&manifest).unwrap(),
+            )
+            .unwrap();
+        Self {
+            root,
+            fake,
+            client,
+            health,
+        }
+    }
+    fn dispatch(&self) -> Result<Value, Error> {
+        ml_exp_client::batch::dispatch(
+            &self.client,
+            self.root.path(),
+            1,
+            &format!("SUBMIT BATCH {}", "b".repeat(32)),
+            &self.health,
+        )
+    }
+    fn claim_file(&self) -> bool {
+        self.root
+            .path()
+            .join(format!("{ID}.dispatch.json"))
+            .exists()
+    }
+}
+
+#[test]
+fn a_batch_sends_a_ready_child_once_with_its_reason() {
+    let batch = SavedBatch::new();
+    let state = batch.dispatch().unwrap();
+    assert_eq!(state["experiments"][0]["submission"]["status"], "VERIFIED");
+    assert_eq!(state["occupied_slots"], 1);
+    assert!(batch.claim_file());
+    assert_eq!(
+        batch.fake.execute_request(),
+        json!({"confirmation":format!("EXECUTE {ID}"),
+            "reason":format!("SUBMIT BATCH {}", "b".repeat(32))})
+    );
+    assert_eq!(batch.fake.mutations(), 1, "no other step");
+    let again = batch.dispatch().unwrap();
+    assert_eq!(again["occupied_slots"], 1);
+    assert_eq!(batch.fake.count("POST", "/execute"), 1);
+}
+
+#[test]
+fn a_batch_child_past_its_gate_writes_no_claim_and_takes_no_slot() {
+    let batch = SavedBatch::new();
+    batch.fake.world.lock().unwrap().next_action = "REPREPARE";
+    let state = batch.dispatch().unwrap();
+    assert_eq!(state["occupied_slots"], 0);
+    let diagnostic = state["experiments"][0]["diagnostic"].as_str().unwrap();
+    assert!(diagnostic.starts_with("GATE_EXPIRED"), "{diagnostic}");
+    assert!(!batch.claim_file());
+    assert_eq!(batch.fake.mutations(), 0);
+}
+
+#[test]
+fn a_refused_batch_child_holds_its_slot_only_until_its_gate_expires() {
+    let batch = SavedBatch::new();
+    batch.fake.world.lock().unwrap().execute_refused = true;
+    assert!(matches!(batch.dispatch(), Err(Error::Http(_))));
+    assert!(batch.claim_file());
+    // The client cannot tell this refusal from a request still in flight, so it is not
+    // sent again and it keeps the slot.
+    let state = batch.dispatch().unwrap();
+    assert_eq!(state["occupied_slots"], 1);
+    let diagnostic = state["experiments"][0]["diagnostic"].as_str().unwrap();
+    assert!(
+        diagnostic.starts_with("DISPATCH_ALREADY_REQUESTED"),
+        "{diagnostic}"
+    );
+    assert_eq!(batch.fake.count("POST", "/execute"), 1);
+    // Past the gate nothing can start from this Action, so the slot is free again.
+    batch.fake.world.lock().unwrap().next_action = "REPREPARE";
+    let state = batch.dispatch().unwrap();
+    assert_eq!(state["occupied_slots"], 0);
+    let diagnostic = state["experiments"][0]["diagnostic"].as_str().unwrap();
+    assert!(diagnostic.starts_with("GATE_EXPIRED"), "{diagnostic}");
+    assert_eq!(batch.fake.count("POST", "/execute"), 1);
 }
 
 #[test]

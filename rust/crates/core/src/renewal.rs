@@ -1,5 +1,5 @@
 //! Explicit replacement of an expired, never-started submission gate. The
-//! scientific identity and scheduler token stay unchanged; authorization does not.
+//! scientific identity and scheduler token stay unchanged; the gate does not.
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
@@ -40,10 +40,7 @@ pub fn eligible(snapshot: &Value, now: &str) -> Result<(), &'static str> {
         .ok_or("renewal expiry")?;
     if snapshot["operation"] != "SUBMIT_RUN"
         || at < expires
-        || !matches!(
-            snapshot["execution"]["status"].as_str(),
-            Some("PREPARED" | "AUTHORIZED")
-        )
+        || snapshot["execution"]["status"].as_str() != Some("PREPARED")
         || !snapshot["execution"]["started_at"].is_null()
         || !snapshot["execution"]["result"].is_null()
         || !snapshot["cancellation"].is_null()
@@ -58,7 +55,7 @@ mod tests {
     use serde_json::json;
     #[test]
     fn renewal_never_grants_authority_over_a_possible_execution() {
-        let original = json!({"operation":"SUBMIT_RUN","gate_expires_at":"2026-10-29T00:30:00Z","execution":{"status":"AUTHORIZED","started_at":null,"result":null}});
+        let original = json!({"operation":"SUBMIT_RUN","gate_expires_at":"2026-10-29T00:30:00Z","execution":{"status":"PREPARED","started_at":null,"result":null}});
         assert!(eligible(&original, "2026-10-29T00:30:00Z").is_ok());
         assert!(eligible(&original, "2026-10-29T00:29:59Z").is_err());
         for state in [
