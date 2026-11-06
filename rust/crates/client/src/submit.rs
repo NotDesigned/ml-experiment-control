@@ -6,8 +6,9 @@ use crate::{
 };
 use ml_exp_core::{canonical, identity, preparation};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -19,6 +20,7 @@ const ADVANCE_EVERY: u32 = 6;
 /// Failed reads in a row before watching stops. The job is not affected.
 const READ_FAILURES: u32 = 10;
 
+#[derive(Default)]
 pub struct Spec {
     pub project: String,
     pub executor: String,
@@ -32,6 +34,175 @@ pub struct Spec {
     pub seed: i64,
     pub run_id: Option<String>,
     pub data: Vec<(String, String)>,
+    pub env: BTreeMap<String, String>,
+    /// Further Run fields from a configuration file, such as `metrics_schema`.
+    pub extra: Map<String, Value>,
+    pub request_id: Option<String>,
+    pub max_gpu_hours: Option<f64>,
+    pub reason: Option<String>,
+}
+
+/// What the command line gave. Anything it leaves out can come from a file or the
+/// saved settings, and the command line wins.
+#[derive(Default)]
+pub struct Options {
+    pub project: Option<String>,
+    pub executor: Option<String>,
+    pub directory: PathBuf,
+    pub dockerfile: Option<String>,
+    pub command: Vec<String>,
+    pub gpus: Option<u32>,
+    pub cpus: Option<u32>,
+    pub memory_gb: Option<u32>,
+    pub walltime_seconds: Option<u64>,
+    pub seed: Option<i64>,
+    pub run_id: Option<String>,
+    pub data: Vec<(String, String)>,
+    pub env: Vec<(String, String)>,
+}
+
+/// The experiment file `run start` reads, with everything `submit` derives optional.
+/// A fixed source or Runtime is refused: `submit` always packs the directory.
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct File {
+    request_id: Option<String>,
+    #[serde(default)]
+    runtime: FileRuntime,
+    #[serde(default)]
+    run: FileRun,
+    #[serde(default)]
+    approval: FileApproval,
+}
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileRuntime {
+    dockerfile: Option<String>,
+}
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileApproval {
+    max_gpu_hours: Option<f64>,
+    reason: Option<String>,
+}
+#[derive(Default, Deserialize)]
+struct FileRun {
+    executor: Option<String>,
+    command: Option<Vec<String>>,
+    #[serde(default)]
+    resources: FileResources,
+    walltime_seconds: Option<u64>,
+    seed: Option<i64>,
+    run_id: Option<String>,
+    #[serde(default)]
+    env: BTreeMap<String, String>,
+    #[serde(default)]
+    data: Vec<FileData>,
+    #[serde(flatten)]
+    extra: Map<String, Value>,
+}
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileResources {
+    gpus: Option<u32>,
+    cpus: Option<u32>,
+    memory_gb: Option<u32>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileData {
+    name: String,
+    asset_id: String,
+}
+
+/// Merge the command line, an optional experiment file and the saved settings.
+pub fn spec(
+    options: Options,
+    file: Option<&[u8]>,
+    saved_project: Option<&str>,
+    saved_executor: Option<&str>,
+) -> Result<Spec, Error> {
+    let file: File = match file {
+        Some(bytes) => {
+            let value = ml_exp_core::json::mapping(bytes)
+                .map_err(|_| Error::Submit("the experiment file is not a JSON object".into()))?;
+            serde_json::from_value(Value::Object(value)).map_err(|error| {
+                Error::Submit(format!(
+                    "the experiment file is not usable: {error}. \
+                     `submit` derives the source and base image itself; \
+                     use `ml-exp run start` to fix them"
+                ))
+            })?
+        }
+        None => File::default(),
+    };
+    if file.run.extra.contains_key("runtime_id") {
+        return Err(Error::Submit(
+            "run.runtime_id is not used by `submit`, which builds from the directory; \
+             use `ml-exp run start` to reuse a Runtime"
+                .into(),
+        ));
+    }
+    let needed = |what: &str| Error::Submit(format!("nothing says {what}"));
+    let mut data: Vec<(String, String)> = file
+        .run
+        .data
+        .into_iter()
+        .map(|input| (input.name, input.asset_id))
+        .collect();
+    data.extend(options.data);
+    let mut env = file.run.env;
+    env.extend(options.env);
+    let command = if options.command.is_empty() {
+        file.run.command.unwrap_or_default()
+    } else {
+        options.command
+    };
+    if command.is_empty() {
+        return Err(needed("what to run: put the command after `--`"));
+    }
+    Ok(Spec {
+        project: options
+            .project
+            .or_else(|| saved_project.map(str::to_owned))
+            .ok_or_else(|| {
+                needed("which Project: pass --project, or save one with `ml-exp config set --project P`")
+            })?,
+        executor: options
+            .executor
+            .or(file.run.executor)
+            .or_else(|| saved_executor.map(str::to_owned))
+            .ok_or_else(|| {
+                needed(
+                    "which executor: pass --executor, or save one with `ml-exp config set --executor E`; \
+                     `ml-exp backend` lists them",
+                )
+            })?,
+        directory: options.directory,
+        dockerfile: options
+            .dockerfile
+            .or(file.runtime.dockerfile)
+            .unwrap_or_else(|| "Dockerfile".into()),
+        command,
+        gpus: options
+            .gpus
+            .or(file.run.resources.gpus)
+            .ok_or_else(|| needed("how many GPUs: pass --gpus"))?,
+        cpus: options.cpus.or(file.run.resources.cpus),
+        memory_gb: options.memory_gb.or(file.run.resources.memory_gb),
+        walltime_seconds: options
+            .walltime_seconds
+            .or(file.run.walltime_seconds)
+            .ok_or_else(|| needed("how long it may run: pass --time"))?,
+        seed: options.seed.or(file.run.seed).unwrap_or(0),
+        run_id: options.run_id.or(file.run.run_id),
+        data,
+        env,
+        extra: file.run.extra,
+        request_id: file.request_id,
+        max_gpu_hours: file.approval.max_gpu_hours,
+        reason: file.approval.reason,
+    })
 }
 
 /// Everything derived before anything is sent.
@@ -69,13 +240,8 @@ pub struct Latest {
 }
 const LATEST: &str = "latest.json";
 /// Only a convenience: failing to save this must not disturb a submission.
-fn remember(directory: &Path, spec: &Spec, plan: &Plan, submission: &str) {
-    let latest = Latest {
-        project: spec.project.clone(),
-        run_id: plan.run_id.clone(),
-        submission_id: submission.to_owned(),
-    };
-    if let Ok(bytes) = serde_json::to_vec(&latest) {
+fn remember(directory: &Path, latest: &Latest) {
+    if let Ok(bytes) = serde_json::to_vec(latest) {
         let _ = ml_exp_io::write_atomic(&directory.join(LATEST), &bytes, false);
     }
 }
@@ -108,6 +274,15 @@ pub fn parse_time(value: &str) -> Result<u64, String> {
         .and_then(|n| n.checked_mul(factor))
         .filter(|seconds| *seconds > 0)
         .ok_or_else(|| "use a time such as 90s, 10m, 2h or 1d".into())
+}
+
+/// `KEY=VALUE`.
+pub fn parse_env(value: &str) -> Result<(String, String), String> {
+    value
+        .split_once('=')
+        .filter(|(key, _)| !key.is_empty())
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .ok_or_else(|| "use KEY=VALUE".into())
 }
 
 /// `NAME=asset.HASH`.
@@ -285,6 +460,13 @@ pub fn plan(
         .ok_or(Error::Response)?
         .to_owned();
     let (gpus, cpus, memory_gb) = resources(spec, &chosen, &executor["limits"])?;
+    ml_exp_core::environment::validate(&spec.env).map_err(|_| {
+        Error::Submit(
+            "an environment variable has an invalid or reserved name; \
+             the platform sets directories, Run identity and ML_EXPD_ names itself"
+                .into(),
+        )
+    })?;
     // The reason and display text stay out: only what changes the job is identity.
     let identity = canonical::digest(&json!([
         "ml-exp-submit.v1",
@@ -302,9 +484,14 @@ pub fn plan(
         spec.seed,
         spec.run_id,
         spec.data,
+        spec.env,
+        spec.extra,
     ]))
     .map_err(|_| Error::Response)?;
-    let request_id = identity[..32].to_owned();
+    let request_id = spec
+        .request_id
+        .clone()
+        .unwrap_or_else(|| identity[..32].to_owned());
     let run_id = match &spec.run_id {
         Some(run) => run.clone(),
         None => format!("{}-{}", slug(directory_name), &identity[..8]),
@@ -321,8 +508,19 @@ pub fn plan(
         gpus,
         cpus,
         memory_gb,
-        max_gpu_hours: (f64::from(gpus) * spec.walltime_seconds as f64 / 36.0).ceil() / 100.0,
+        max_gpu_hours: spec
+            .max_gpu_hours
+            .unwrap_or((f64::from(gpus) * spec.walltime_seconds as f64 / 36.0).ceil() / 100.0),
     })
+}
+impl Plan {
+    fn latest(&self, spec: &Spec, submission: &str) -> Latest {
+        Latest {
+            project: spec.project.clone(),
+            run_id: self.run_id.clone(),
+            submission_id: submission.to_owned(),
+        }
+    }
 }
 fn slug(name: &str) -> String {
     let cleaned: String = name
@@ -363,12 +561,18 @@ fn request(spec: &Spec, plan: &Plan, source_id: &str) -> Result<preparation::Req
         "walltime_seconds": spec.walltime_seconds,
         "seed": spec.seed,
     });
+    if !spec.env.is_empty() {
+        run["env"] = json!(spec.env);
+    }
     if !spec.data.is_empty() {
         run["data"] = spec
             .data
             .iter()
             .map(|(name, asset)| json!({"name": name, "asset_id": asset}))
             .collect();
+    }
+    if let Value::Object(run) = &mut run {
+        run.extend(spec.extra.clone());
     }
     let request: preparation::Request = serde_json::from_value(json!({
         "request_id": plan.request_id,
@@ -379,7 +583,10 @@ fn request(spec: &Spec, plan: &Plan, source_id: &str) -> Result<preparation::Req
             "dockerfile": spec.dockerfile,
         },
         "run": run,
-        "approval": {"max_gpu_hours": plan.max_gpu_hours, "reason": REASON},
+        "approval": {
+            "max_gpu_hours": plan.max_gpu_hours,
+            "reason": spec.reason.as_deref().unwrap_or(REASON),
+        },
     }))
     .map_err(|_| Error::Response)?;
     request
@@ -623,10 +830,10 @@ fn follow(
     }
 }
 /// What the backend says went wrong, when a job ended without success.
-fn explain_failure(client: &Client, spec: &Spec, plan: &Plan, hooks: &mut Hooks<'_>) {
+fn explain_failure(client: &Client, project: &str, run: &str, hooks: &mut Hooks<'_>) {
     let selection = observation::Selection {
-        project: Some(&spec.project),
-        run: Some(&plan.run_id),
+        project: Some(project),
+        run: Some(run),
         attempt: None,
     };
     if let Ok(value) = read::provider_diagnostics(client, None, selection, 40) {
@@ -635,8 +842,8 @@ fn explain_failure(client: &Client, spec: &Spec, plan: &Plan, hooks: &mut Hooks<
 }
 fn watch(
     client: &Client,
-    spec: &Spec,
-    plan: &Plan,
+    project: &str,
+    run: &str,
     id: &str,
     current: Value,
     health: &Value,
@@ -647,7 +854,7 @@ fn watch(
     }
     let latest = follow(client, id, current, health, hooks);
     if job_state(&latest).is_some_and(|state| finished(state) && state != "SUCCEEDED") {
-        explain_failure(client, spec, plan, hooks);
+        explain_failure(client, project, run, hooks);
     }
     latest
 }
@@ -738,9 +945,17 @@ pub fn run(
     {
         let current = show(client, id, &health)?;
         if dispatched(&current["status"]) {
-            remember(state_directory, spec, &plan, id);
+            remember(state_directory, &plan.latest(spec, id));
             let current = observe(client, id, current, &health)?;
-            let current = watch(client, spec, &plan, id, current, &health, &mut hooks);
+            let current = watch(
+                client,
+                &spec.project,
+                &plan.run_id,
+                id,
+                current,
+                &health,
+                &mut hooks,
+            );
             return Ok(outcome(spec, &plan, &state, &current, true));
         }
     }
@@ -762,7 +977,7 @@ pub fn run(
     let request = request(spec, &plan, &source_id)?;
     preparations::prepare(client, &spec.project, &request, &state, &health)?;
     let id = prepared(client, spec, &plan, &health, &mut hooks)?;
-    remember(state_directory, spec, &plan, &id);
+    remember(state_directory, &plan.latest(spec, &id));
     let current = match dispatch(client, &id, &health) {
         Ok(current) => current,
         Err(Error::SubmissionOutcomeUnknown(_)) => {
@@ -771,8 +986,144 @@ pub fn run(
         }
         Err(error) => return Err(error),
     };
-    let current = watch(client, spec, &plan, &id, current, &health, &mut hooks);
+    let current = watch(
+        client,
+        &spec.project,
+        &plan.run_id,
+        &id,
+        current,
+        &health,
+        &mut hooks,
+    );
     Ok(outcome(spec, &plan, &state, &current, false))
+}
+
+/// Stop the latest job, after saying which one.
+pub fn cancel(client: &Client, directory: &Path, hooks: Hooks<'_>) -> Result<Value, Error> {
+    let health = client.health()?;
+    let latest = latest(directory)?;
+    let id = &latest.submission_id;
+    let current = show(client, id, &health)?;
+    let question = format!(
+        "Cancel {} ({}), now {}",
+        latest.run_id,
+        current["attempt_id"].as_str().unwrap_or("unknown attempt"),
+        describe(&current).unwrap_or_else(|| current["status"].to_string())
+    );
+    if !(hooks.confirm)(&question)? {
+        return Err(Error::Observation("not cancelled; nothing was sent"));
+    }
+    submissions::execute(
+        client,
+        &submissions::plan(submissions::Command::Cancel {
+            submission: id,
+            confirmation: &format!("CANCEL {id}"),
+        })?,
+        &health,
+    )
+}
+
+/// Run the latest job's Run again as a new Attempt, from a checkpoint or the start.
+/// Repeating this after a lost reply finds the same Attempt. Once its job may exist,
+/// only observing is left, as in `submit`.
+pub fn retry(
+    client: &Client,
+    directory: &Path,
+    checkpoint: Option<String>,
+    mut hooks: Hooks<'_>,
+) -> Result<Value, Error> {
+    use ml_exp_core::{
+        checkpoints::Reference,
+        first_submission::native::retry::{Request, StartFrom},
+    };
+    let health = client.health()?;
+    let latest = latest(directory)?;
+    let parent = &latest.submission_id;
+    let current = show(client, parent, &health)?;
+    let attempt = current["attempt_id"]
+        .as_str()
+        .ok_or(Error::Response)?
+        .to_owned();
+    let summary = &current["preflight_summary"];
+    let spend = summary["max_gpu_hours"].as_f64().unwrap_or(0.0);
+    let question = format!(
+        "Run {} again after {attempt}, from {}\n  resources {}\n  spend     up to {spend} more GPU hours",
+        latest.run_id,
+        checkpoint.as_deref().unwrap_or("the start"),
+        summary["resources"],
+    );
+    if !(hooks.confirm)(&question)? {
+        return Err(Error::Observation("not submitted; nothing was sent"));
+    }
+    let start = StartFrom {
+        run_id: latest.run_id.clone(),
+        attempt_id: attempt.clone(),
+    };
+    let request = Request {
+        confirmation: String::new(),
+        restart_from: checkpoint.is_none().then_some(start),
+        resume_from: checkpoint.map(|checkpoint_id| Reference {
+            run_id: latest.run_id.clone(),
+            attempt_id: attempt.clone(),
+            checkpoint_id,
+        }),
+        max_gpu_hours: spend,
+        reason: REASON.into(),
+    };
+    submissions::execute(
+        client,
+        &submissions::plan(submissions::Command::Retry {
+            submission: parent,
+            request: &request,
+        })?,
+        &health,
+    )?;
+    let prepared = submissions::execute(
+        client,
+        &submissions::plan(submissions::Command::Prepare {
+            project: &latest.project,
+            run: &latest.run_id,
+            max_gpu_hours: spend,
+            reason: REASON,
+        })?,
+        &health,
+    )?;
+    let id = prepared["submission_id"]
+        .as_str()
+        .ok_or(Error::Response)?
+        .to_owned();
+    let next = Latest {
+        submission_id: id.clone(),
+        ..latest
+    };
+    remember(directory, &next);
+    let sent = match dispatch(client, &id, &health) {
+        Ok(sent) => sent,
+        Err(Error::SubmissionOutcomeUnknown(_)) => {
+            let current = show(client, &id, &health)?;
+            observe(client, &id, current, &health)?
+        }
+        Err(error) => return Err(error),
+    };
+    let sent = watch(
+        client,
+        &next.project,
+        &next.run_id,
+        &id,
+        sent,
+        &health,
+        &mut hooks,
+    );
+    Ok(json!({
+        "project": next.project,
+        "run_id": next.run_id,
+        "attempt_id": sent["attempt_id"],
+        "submission_id": id,
+        "status": sent["status"],
+        "job_state": job_state(&sent),
+        "already_submitted": false,
+        "next": ["ml-exp status", "ml-exp logs", "ml-exp results"],
+    }))
 }
 
 fn read_dockerfile(directory: &Path, name: &str) -> Result<String, Error> {
@@ -885,8 +1236,7 @@ mod tests {
             memory_gb: None,
             walltime_seconds: 600,
             seed: 0,
-            run_id: None,
-            data: vec![],
+            ..Spec::default()
         }
     }
     fn planned(spec: &Spec) -> Plan {
@@ -914,6 +1264,155 @@ mod tests {
         for text in ["", "0", "m", "10x", "-5m", "1.5h", "99999999999999999999d"] {
             assert!(parse_time(text).is_err(), "{text}");
         }
+    }
+    #[test]
+    fn the_command_line_wins_over_the_file_and_the_file_over_the_saved_settings() {
+        let file = br#"{"request_id":"11111111111111111111111111111111",
+            "runtime":{"dockerfile":"docker/Dockerfile"},
+            "run":{"executor":"from-file","command":["from-file"],
+                "resources":{"gpus":2,"cpus":3,"memory_gb":4},"walltime_seconds":60,"seed":7,
+                "run_id":"file-run","env":{"A":"file","B":"file"},
+                "data":[{"name":"x","asset_id":"asset.x"}],
+                "metrics_schema":{"definitions":{}}},
+            "approval":{"max_gpu_hours":9.0,"reason":"because"}}"#;
+        let merged = spec_of(
+            Options {
+                project: Some("p".into()),
+                gpus: Some(1),
+                env: vec![("A".into(), "line".into())],
+                ..Options::default()
+            },
+            Some(file),
+        )
+        .unwrap();
+        assert_eq!(merged.gpus, 1);
+        assert_eq!(merged.cpus, Some(3));
+        assert_eq!(merged.executor, "from-file");
+        assert_eq!(merged.command, ["from-file"]);
+        assert_eq!(merged.dockerfile, "docker/Dockerfile");
+        assert_eq!(merged.walltime_seconds, 60);
+        assert_eq!(merged.seed, 7);
+        assert_eq!(merged.run_id.as_deref(), Some("file-run"));
+        assert_eq!(merged.env["A"], "line");
+        assert_eq!(merged.env["B"], "file");
+        assert_eq!(merged.data, [("x".to_owned(), "asset.x".to_owned())]);
+        assert!(merged.extra.contains_key("metrics_schema"));
+        assert_eq!(
+            merged.request_id.as_deref(),
+            Some("11111111111111111111111111111111")
+        );
+        assert_eq!(merged.max_gpu_hours, Some(9.0));
+        assert_eq!(merged.reason.as_deref(), Some("because"));
+    }
+    fn spec_of(options: Options, file: Option<&[u8]>) -> Result<Spec, Error> {
+        super::spec(options, file, Some("saved-project"), Some("saved-executor"))
+    }
+    fn complete() -> Options {
+        Options {
+            gpus: Some(1),
+            walltime_seconds: Some(60),
+            command: vec!["run".into()],
+            ..Options::default()
+        }
+    }
+    #[test]
+    fn saved_settings_fill_what_is_left_and_defaults_are_stated() {
+        let merged = spec_of(complete(), None).unwrap();
+        assert_eq!(merged.project, "saved-project");
+        assert_eq!(merged.executor, "saved-executor");
+        assert_eq!(merged.dockerfile, "Dockerfile");
+        assert_eq!(merged.seed, 0);
+    }
+    #[test]
+    fn whatever_is_missing_is_named() {
+        let cases: [(Options, &str); 3] = [
+            (
+                Options {
+                    gpus: None,
+                    ..complete()
+                },
+                "--gpus",
+            ),
+            (
+                Options {
+                    walltime_seconds: None,
+                    ..complete()
+                },
+                "--time",
+            ),
+            (
+                Options {
+                    command: vec![],
+                    ..complete()
+                },
+                "--",
+            ),
+        ];
+        for (options, word) in cases {
+            let text = spec_of(options, None).err().unwrap().to_string();
+            assert!(text.contains(word), "{text}");
+        }
+        let text = super::spec(complete(), None, None, Some("e"))
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(text.contains("--project"), "{text}");
+        let text = super::spec(complete(), None, Some("p"), None)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(text.contains("--executor"), "{text}");
+    }
+    #[test]
+    fn a_file_cannot_fix_what_submit_derives() {
+        for file in [
+            &br#"{"runtime":{"source_id":"source.x"}}"#[..],
+            br#"{"runtime":{"base_image":"x"}}"#,
+            br#"{"run":{"runtime_id":"runtime.x"}}"#,
+            br#"{"run":{"resources":{"nodes":2}}}"#,
+            br#"{"unknown":true}"#,
+            b"[]",
+        ] {
+            assert!(spec_of(complete(), Some(file)).is_err());
+        }
+    }
+    #[test]
+    fn extra_fields_and_environment_change_the_job_and_reach_the_request() {
+        let base = planned(&spec());
+        let mut with_env = spec();
+        with_env.env.insert("KEY".into(), "value".into());
+        assert_ne!(planned(&with_env).request_id, base.request_id);
+        let mut with_extra = spec();
+        with_extra
+            .extra
+            .insert("metrics_schema".into(), json!({"definitions":{}}));
+        assert_ne!(planned(&with_extra).request_id, base.request_id);
+        let request = request(
+            &with_env,
+            &planned(&with_env),
+            &format!("source.{}", "2".repeat(64)),
+        )
+        .unwrap();
+        assert_eq!(request.run["env"]["KEY"], "value");
+        let mut reserved = spec();
+        reserved.env.insert("OUTPUT_DIR".into(), "x".into());
+        assert!(
+            plan(
+                &reserved,
+                "https://api.example",
+                &"a".repeat(64),
+                &format!("FROM {PINNED}\n"),
+                &json!({"executor_id":"pai-h200","limits":{}}),
+                "source"
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    fn environment_reads_key_equals_value() {
+        assert_eq!(parse_env("A=b=c"), Ok(("A".to_owned(), "b=c".to_owned())));
+        assert!(parse_env("A").is_err());
+        assert!(parse_env("=b").is_err());
     }
     #[test]
     fn data_names_an_uploaded_asset() {

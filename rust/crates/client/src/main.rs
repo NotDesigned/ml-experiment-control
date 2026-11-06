@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use ml_exp_client::{
     Client, artifacts, config, credentials, datasets, observation, presentation, projects, read,
     session, sources, status, submissions, watch,
@@ -9,7 +9,8 @@ use std::{io::Read, path::PathBuf};
 #[command(
     name = "ml-exp",
     version,
-    about = "Submit experiments, inspect progress and retrieve verified results"
+    about = "Submit experiments, inspect progress and retrieve verified results",
+    after_help = "Every command, including recovery and administration: ml-exp --help-all"
 )]
 struct Args {
     #[arg(long, global = true, env = "ML_EXPD_API_URL")]
@@ -35,10 +36,10 @@ For every field and each separate step, see `ml-exp run start` and `ml-exp run e
         #[arg(default_value = ".")]
         directory: PathBuf,
         #[arg(long)]
-        gpus: u32,
+        gpus: Option<u32>,
         /// Longest the job may run, such as 90s, 10m, 2h or 1d.
         #[arg(long, value_parser = ml_exp_client::submit::parse_time)]
-        time: u64,
+        time: Option<u64>,
         /// Uses the saved project unless given.
         #[arg(long)]
         project: Option<String>,
@@ -55,13 +56,22 @@ For every field and each separate step, see `ml-exp run start` and `ml-exp run e
         /// An uploaded dataset, as NAME=asset.HASH. Training reads it through DATASETS_JSON.
         #[arg(long, value_parser = ml_exp_client::submit::parse_data)]
         data: Vec<(String, String)>,
-        #[arg(long, default_value_t = 0)]
-        seed: i64,
+        /// An environment variable for the job, as KEY=VALUE.
+        #[arg(long, value_parser = ml_exp_client::submit::parse_env)]
+        env: Vec<(String, String)>,
+        /// 0 unless given.
+        #[arg(long)]
+        seed: Option<i64>,
         /// Names the Run. Derived from the directory and the inputs unless given.
         #[arg(long)]
         run: Option<String>,
-        #[arg(long, default_value = "Dockerfile")]
-        dockerfile: String,
+        /// Dockerfile inside the directory, `Dockerfile` unless given.
+        #[arg(long)]
+        dockerfile: Option<String>,
+        /// An experiment file for what the options do not cover, such as metrics,
+        /// W&B or scheduling. Options given here win.
+        #[arg(long)]
+        file: Option<PathBuf>,
         /// Skip the question. Required without a terminal.
         #[arg(long)]
         yes: bool,
@@ -69,7 +79,7 @@ For every field and each separate step, see `ml-exp run start` and `ml-exp run e
         #[arg(long)]
         detach: bool,
         /// The command to run in the image, after `--`.
-        #[arg(last = true, required = true)]
+        #[arg(last = true)]
         command: Vec<String>,
     },
     /// Show the latest submission, or the one named with --project and --run.
@@ -103,6 +113,24 @@ For every field and each separate step, see `ml-exp run start` and `ml-exp run e
         #[arg(long)]
         keep: bool,
     },
+    /// Cancel the latest submission, after saying which one.
+    Cancel {
+        /// Skip the question. Required without a terminal.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Run the latest submission's Run again, from the start or a checkpoint.
+    Retry {
+        /// A checkpoint from `ml-exp run checkpoints`. From the start unless given.
+        #[arg(long)]
+        checkpoint: Option<String>,
+        /// Skip the question. Required without a terminal.
+        #[arg(long)]
+        yes: bool,
+        /// Return after submitting rather than showing the job's status until it ends.
+        #[arg(long)]
+        detach: bool,
+    },
     /// Read scheduler allocation evidence, or explicitly refresh the cache.
     Backend {
         executor: Option<String>,
@@ -110,11 +138,13 @@ For every field and each separate step, see `ml-exp run start` and `ml-exp run e
         refresh: bool,
     },
     /// Plan and execute administrative payload removal or Run retirement.
+    #[command(hide = true)]
     Admin {
         #[command(subcommand)]
         command: ml_exp_client::administration::Command,
     },
     /// Create, inspect and stop an explicitly leased SSH debug machine.
+    #[command(hide = true)]
     Debug {
         #[command(subcommand)]
         command: ml_exp_client::debug::Command,
@@ -126,6 +156,7 @@ For every field and each separate step, see `ml-exp run start` and `ml-exp run e
         command: ml_exp_client::runtime::Command,
     },
     /// Install a checksum-verified standalone native release.
+    #[command(hide = true)]
     Update {
         /// Exact native version; omitted selects the latest stable native release.
         #[arg(long)]
@@ -139,8 +170,10 @@ For every field and each separate step, see `ml-exp run start` and `ml-exp run e
         command: Data,
     },
     /// Validate the authenticated connection (no job submission).
+    #[command(hide = true)]
     Check,
     /// Read a JSON endpoint under /api/.
+    #[command(hide = true)]
     Get { path: String },
     /// Create, submit or observe an experiment through explicit native operations.
     Run {
@@ -148,11 +181,13 @@ For every field and each separate step, see `ml-exp run start` and `ml-exp run e
         command: Run,
     },
     /// Register and manage daemon tracking; research files and jobs are unchanged.
+    #[command(hide = true)]
     Project {
         #[command(subcommand)]
         command: Project,
     },
     /// Pack and publish immutable source, or inspect an exact source identity.
+    #[command(hide = true)]
     Source {
         #[command(subcommand)]
         command: Source,
@@ -1112,55 +1147,75 @@ fn run(mut args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     cpus,
                     memory,
                     data,
+                    env,
                     seed,
                     run,
                     dockerfile,
+                    file,
                     yes,
                     detach,
                     command,
                 } => {
-                    let project = project.or_else(|| settings.project.clone()).ok_or(
-                        "no Project: pass --project, or save one with `ml-exp config set --project P`",
-                    )?;
-                    let executor = executor.or_else(|| settings.executor.clone()).ok_or(
-                        "no executor: pass --executor, or save one with `ml-exp config set --executor E`; `ml-exp backend` lists them",
-                    )?;
-                    ml_exp_core::identity::validate_id(&project)?;
-                    ml_exp_core::identity::validate_id(&executor)?;
-                    let spec = ml_exp_client::submit::Spec {
-                        project,
-                        executor,
-                        directory,
-                        dockerfile,
-                        command,
-                        gpus,
-                        cpus,
-                        memory_gb: memory,
-                        walltime_seconds: time,
-                        seed,
-                        run_id: run,
-                        data,
-                    };
-                    let states = submissions_directory(&config);
-                    let value = ml_exp_client::submit::run(
-                        &client,
-                        &spec,
-                        &states,
-                        ml_exp_client::submit::Hooks {
-                            confirm: &mut |summary| confirm(summary, yes),
-                            progress: &mut |line| eprintln!("{line}"),
-                            poll: std::time::Duration::from_secs(5),
-                            deadline: std::time::Duration::from_secs(6 * 3600),
-                            follow: !detach,
-                            follow_poll: std::time::Duration::from_secs(30),
+                    let file = file
+                        .map(|path| {
+                            std::fs::read(&path).map_err(|_| {
+                                format!("cannot read the experiment file {}", path.display())
+                            })
+                        })
+                        .transpose()?;
+                    let spec = ml_exp_client::submit::spec(
+                        ml_exp_client::submit::Options {
+                            project,
+                            executor,
+                            directory,
+                            dockerfile,
+                            command,
+                            gpus,
+                            cpus,
+                            memory_gb: memory,
+                            walltime_seconds: time,
+                            seed,
+                            run_id: run,
+                            data,
+                            env,
                         },
+                        file.as_deref(),
+                        settings.project.as_deref(),
+                        settings.executor.as_deref(),
                     )?;
-                    if args.json {
-                        Output::Json(value)
-                    } else {
-                        Output::Text(ml_exp_client::submit::report(&value))
-                    }
+                    ml_exp_core::identity::validate_id(&spec.project)?;
+                    ml_exp_core::identity::validate_id(&spec.executor)?;
+                    report(
+                        ml_exp_client::submit::run(
+                            &client,
+                            &spec,
+                            &submissions_directory(&config),
+                            hooks(&mut |summary| confirm(summary, yes), &mut printed, !detach),
+                        )?,
+                        args.json,
+                    )
                 }
+                Command::Cancel { yes } => {
+                    let value = ml_exp_client::submit::cancel(
+                        &client,
+                        &submissions_directory(&config),
+                        hooks(&mut |summary| confirm(summary, yes), &mut printed, false),
+                    )?;
+                    Output::Json(value)
+                }
+                Command::Retry {
+                    checkpoint,
+                    yes,
+                    detach,
+                } => report(
+                    ml_exp_client::submit::retry(
+                        &client,
+                        &submissions_directory(&config),
+                        checkpoint,
+                        hooks(&mut |summary| confirm(summary, yes), &mut printed, !detach),
+                    )?,
+                    args.json,
+                ),
                 Command::Backend { executor, refresh } => {
                     client.health()?;
                     Output::Json(if let Some(executor) = executor {
@@ -1490,6 +1545,31 @@ fn run(mut args: Args) -> Result<(), Box<dyn std::error::Error>> {
     }
     Ok(())
 }
+type Confirm<'a> = &'a mut dyn FnMut(&str) -> Result<bool, ml_exp_client::Error>;
+fn hooks<'a>(
+    confirm: Confirm<'a>,
+    progress: &'a mut dyn FnMut(&str),
+    follow: bool,
+) -> ml_exp_client::submit::Hooks<'a> {
+    ml_exp_client::submit::Hooks {
+        confirm,
+        progress,
+        poll: std::time::Duration::from_secs(5),
+        deadline: std::time::Duration::from_secs(6 * 3600),
+        follow,
+        follow_poll: std::time::Duration::from_secs(30),
+    }
+}
+fn printed(line: &str) {
+    eprintln!("{line}");
+}
+fn report(value: serde_json::Value, json: bool) -> Output {
+    if json {
+        Output::Json(value)
+    } else {
+        Output::Text(ml_exp_client::submit::report(&value))
+    }
+}
 /// Show what will be spent and ask, once. No terminal means no one can answer.
 fn confirm(summary: &str, yes: bool) -> Result<bool, ml_exp_client::Error> {
     use std::io::{IsTerminal, Write};
@@ -1510,7 +1590,25 @@ fn confirm(summary: &str, yes: bool) -> Result<bool, ml_exp_client::Error> {
         .map_err(|_| ml_exp_client::Error::Observation("not submitted: no answer"))?;
     Ok(matches!(answer.trim(), "y" | "Y" | "yes"))
 }
+/// The default help lists what most people need. This one hides nothing.
+fn help_all() -> std::process::ExitCode {
+    let mut command = Args::command();
+    let names: Vec<String> = command
+        .get_subcommands()
+        .map(|sub| sub.get_name().to_owned())
+        .collect();
+    for name in names {
+        command = command.mut_subcommand(name, |sub| sub.hide(false));
+    }
+    if command.print_help().is_err() {
+        return std::process::ExitCode::FAILURE;
+    }
+    std::process::ExitCode::SUCCESS
+}
 fn main() -> std::process::ExitCode {
+    if std::env::args().nth(1).as_deref() == Some("--help-all") {
+        return help_all();
+    }
     match run(Args::parse()) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {

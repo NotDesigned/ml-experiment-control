@@ -16,6 +16,7 @@ use std::{
 };
 
 const ID: &str = "action-0123456789abcdef";
+const SECOND: &str = "action-fedcba9876543210";
 const RUNTIME: &str = "runtime.3333333333333333333333333333333333333333333333333333333333333333";
 const IMAGE: &str = "docker.io/library/python@sha256:1111111111111111111111111111111111111111111111111111111111111111";
 
@@ -32,6 +33,8 @@ struct World {
     job_states: Vec<(&'static str, &'static str)>,
     reads_down: bool,
     progress_reads: usize,
+    action: &'static str,
+    attempt: &'static str,
 }
 impl World {
     fn new() -> Self {
@@ -46,13 +49,20 @@ impl World {
             job_states: vec![("RUNNING", "Running"), ("SUCCEEDED", "Succeeded")],
             reads_down: false,
             progress_reads: 0,
+            action: ID,
+            attempt: "attempt-001",
         }
     }
     fn submission(&self) -> Value {
-        json!({"submission_id":ID,"project":"demo","run_id":"train","attempt_id":"attempt-001",
+        json!({"submission_id":self.action,"project":"demo","run_id":"train",
+            "attempt_id":self.attempt,
             "operation":"SUBMIT_RUN","status":self.status,"next_action":self.next_action,
-            "confirmation":format!("EXECUTE {ID}"),
-            "execution":{"status":self.status,"revision":0}})
+            "confirmation":format!("EXECUTE {}",self.action),
+            "preflight_summary":{"resources":{"gpus":1},"max_gpu_hours":0.5},
+            "execution":{"status":self.status,"revision":0,
+                "result":{"submission":{"backend_job_id":"123"}}},
+            "cancellation":{"request_sha256":format!("sha256:{}","4".repeat(64)),"job_id":"123",
+                "requested_at":"2026-11-06T00:00:00Z","termination_verified":false,"observation":null}})
     }
     fn view(&self, path: &str) -> Value {
         let id = path.rsplit('/').find(|p| p.starts_with("preparation-"));
@@ -73,7 +83,8 @@ impl World {
                 200,
                 json!({"capabilities":["native-submissions.v1","source-archive.v1",
                     "native-experiment-preparations.v1","native-runtime-builds.v1",
-                    "native-scheduler-observation.v1"],
+                    "native-scheduler-observation.v1","native-attempt-retry.v1",
+                    "native-cancellation.v1"],
                     "scheduler_mutations":true}),
             ),
             ("GET", "/api/executors") => (
@@ -110,7 +121,33 @@ impl World {
                 self.continues += 1;
                 (200, self.view(r))
             }
-            ("GET", "/api/submissions/action-0123456789abcdef") => (200, self.submission()),
+            ("GET", r) if r == format!("/api/submissions/{}", self.action) => {
+                (200, self.submission())
+            }
+            ("POST", r) if r.ends_with("/cancel") => (200, self.submission()),
+            ("POST", r) if r.ends_with("/retry") => {
+                let request: ml_exp_core::first_submission::native::retry::Request =
+                    serde_json::from_slice(body).unwrap();
+                let (run, _) = request.parent().unwrap();
+                (
+                    200,
+                    json!({"parent_submission_id":self.action,"run_id":run,"attempt_id":"attempt-002",
+                        "request_sha256":request.identity(self.action).unwrap(),
+                        "resume_from":request.resume_from,"restart_from":request.restart_from,
+                        "max_gpu_hours":request.max_gpu_hours,"retry_state":"CREATED",
+                        "scheduler_mutation_performed":false,"next_action":"PREPARE_NEW_ACTION",
+                        "reused":false,"project":"demo","reserved_gpu_seconds":0,
+                        "run_sha256":format!("sha256:{}","5".repeat(64)),
+                        "attempt_sha256":format!("sha256:{}","6".repeat(64))}),
+                )
+            }
+            ("POST", r) if r.ends_with("/submissions") => {
+                self.action = SECOND;
+                self.attempt = "attempt-002";
+                self.status = "PREPARED";
+                self.next_action = "AUTHORIZE";
+                (200, self.submission())
+            }
             ("POST", r) if r.ends_with("/authorize") => {
                 self.status = "AUTHORIZED";
                 self.next_action = "EXECUTE";
@@ -296,8 +333,7 @@ impl Files {
             memory_gb: None,
             walltime_seconds: 600,
             seed: 0,
-            run_id: None,
-            data: vec![],
+            ..Spec::default()
         }
     }
     fn run(&self, fake: &Fake, answer: bool, asked: &mut Vec<String>) -> Result<Value, Error> {
@@ -586,4 +622,131 @@ fn repeating_the_command_goes_back_to_watching_the_same_job() {
     assert_eq!(value["already_submitted"], true);
     assert_eq!(value["job_state"], "FAILED");
     assert_eq!(fake.count("POST", "/execute"), 1);
+}
+
+fn submitted_train(files: &Files, fake: &Fake) {
+    let mut spec = files.spec();
+    spec.run_id = Some("train".into());
+    submit::run(
+        &fake.client(),
+        &spec,
+        &files.root.path().join("states"),
+        Hooks {
+            confirm: &mut |_| Ok(true),
+            progress: &mut |_| {},
+            poll: Duration::from_millis(1),
+            deadline: Duration::from_secs(5),
+            follow: false,
+            follow_poll: Duration::from_millis(1),
+        },
+    )
+    .unwrap();
+}
+
+#[test]
+fn cancel_says_what_it_will_stop_and_declining_sends_nothing() {
+    let files = Files::new();
+    let fake = Fake::start(World::new());
+    submitted_train(&files, &fake);
+    let states = files.root.path().join("states");
+    let mut asked = Vec::new();
+    let declined = submit::cancel(
+        &fake.client(),
+        &states,
+        Hooks {
+            confirm: &mut |question| {
+                asked.push(question.to_owned());
+                Ok(false)
+            },
+            progress: &mut |_| {},
+            poll: Duration::from_millis(1),
+            deadline: Duration::from_secs(5),
+            follow: false,
+            follow_poll: Duration::from_millis(1),
+        },
+    );
+    assert!(declined.is_err());
+    assert!(
+        asked[0].contains("train") && asked[0].contains("attempt-001"),
+        "{asked:?}"
+    );
+    assert_eq!(fake.count("POST", "/cancel"), 0);
+    submit::cancel(
+        &fake.client(),
+        &states,
+        Hooks {
+            confirm: &mut |_| Ok(true),
+            progress: &mut |_| {},
+            poll: Duration::from_millis(1),
+            deadline: Duration::from_secs(5),
+            follow: false,
+            follow_poll: Duration::from_millis(1),
+        },
+    )
+    .unwrap();
+    assert_eq!(fake.count("POST", "/cancel"), 1);
+}
+
+#[test]
+fn retry_creates_the_next_attempt_and_sends_exactly_one_new_job() {
+    let files = Files::new();
+    let fake = Fake::start(World::new());
+    submitted_train(&files, &fake);
+    let states = files.root.path().join("states");
+    assert_eq!(fake.count("POST", "/execute"), 1);
+    let mut asked = Vec::new();
+    let value = submit::retry(
+        &fake.client(),
+        &states,
+        None,
+        Hooks {
+            confirm: &mut |question| {
+                asked.push(question.to_owned());
+                Ok(true)
+            },
+            progress: &mut |_| {},
+            poll: Duration::from_millis(1),
+            deadline: Duration::from_secs(5),
+            follow: false,
+            follow_poll: Duration::from_millis(1),
+        },
+    )
+    .unwrap();
+    assert_eq!(asked.len(), 1);
+    assert!(
+        asked[0].contains("the start") && asked[0].contains("0.5"),
+        "{asked:?}"
+    );
+    assert_eq!(value["submission_id"], SECOND);
+    assert_eq!(fake.count("POST", "/retry"), 1);
+    assert_eq!(fake.count("POST", "/submissions"), 1);
+    assert_eq!(
+        fake.count("POST", "/execute"),
+        2,
+        "one original and one new job"
+    );
+    assert_eq!(submit::latest(&states).unwrap().submission_id, SECOND);
+}
+
+#[test]
+fn declining_a_retry_creates_nothing() {
+    let files = Files::new();
+    let fake = Fake::start(World::new());
+    submitted_train(&files, &fake);
+    let mutations = fake.mutations();
+    let declined = submit::retry(
+        &fake.client(),
+        &files.root.path().join("states"),
+        None,
+        Hooks {
+            confirm: &mut |_| Ok(false),
+            progress: &mut |_| {},
+            poll: Duration::from_millis(1),
+            deadline: Duration::from_secs(5),
+            follow: false,
+            follow_poll: Duration::from_millis(1),
+        },
+    );
+    assert!(declined.is_err());
+    assert_eq!(fake.mutations(), mutations);
 }
