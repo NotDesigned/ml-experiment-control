@@ -95,7 +95,7 @@ impl SqliteDatabase {
     }
 
     /// Explicit repository policy. Default preserves the existing mode,
-    /// including legacy DELETE-mode records databases.
+    /// including DELETE-mode records databases.
     pub fn with_wal(mut self) -> Self {
         self.wal = true;
         self

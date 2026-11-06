@@ -1,43 +1,37 @@
 # Alibaba PAI: DLC training and DSW debugging/builds
 
-> **Configuration names on this page are partly retained Python reference**
-> (`container_execution`, `server/examples`, `EXPERIMENTCTL_*`, YAML executors). The
-> provider behavior still applies. Configure a native PAI backend from the
-> [native deployment guide](../rust/README.md#deploying-a-native-service) and
-> [its example](../rust/deploy/pai.example.json).
-
 DLC runs experiments. DSW supplies optional temporary debug machines and CPU
 image builders. These are independent configurations: enabling a DLC executor
 does not enable DSW, allocate public compute, or create storage or IAM roles.
 
 ## DLC executor
 
-Use [executors/pai-dlc.yaml](https://github.com/NotDesigned/ml-experiment-control/blob/v1.5.1/server/examples/executors/pai-dlc.yaml) as one
-entry in the operator's executor catalogue. Set its region, workspace, quota,
-verified single-node capacity, GPU type and approved persistent storage. The
-adapter supports one worker with 1–8 GPUs. CPU and memory are requested per Run
-within that capacity; provider role/quota limits also apply. It does not
-implement multi-node distributed training.
+Copy one entry of `backends` from [the PAI example](../rust/deploy/pai.example.json)
+into the file named by `cloud_config` in the
+[deployment file](../rust/README.md#deploying-a-native-service). Set its `executor`,
+and in `profile` its `region`, `workspace_id`, `quota_id`, verified capacity
+(`max_gpus`, `max_cpus`, `max_memory_gb`), `gpu_type` and approved `storage`, plus
+`run_root` and `data_root`. The adapter supports one worker with 1–8 GPUs. CPU and
+memory are requested per Run within that capacity; provider role/quota limits also
+apply. It does not implement multi-node distributed training.
 
-The server includes the signed OpenAPI dependencies. Core-library-only users
-need its `pai` extra. Store credentials using
-[pai.json](https://github.com/NotDesigned/ml-experiment-control/blob/v1.5.1/server/examples/pai.json), selected by `EXPERIMENTCTL_PAI_CONFIG`:
+Store credentials in the file named by `credentials_file`, with the shape shown in
+the [deployment guide](../rust/README.md#deploying-a-native-service). The image
+builder reads its own PAI file, selected by `ML_EXP_PAI_CONFIG`.
 
 | Setting | Purpose |
 | --- | --- |
-| `region`, `workspace_id` | Exact approved PAI scope |
 | `access_key_id`, `access_key_secret` | Private host credentials |
 | `security_token` | Optional temporary-credential token |
-| `registry_auth_file` | Exact-host Docker pull credentials |
+| `registry_auth_file` | Backend setting: exact-host Docker pull credentials |
 
 Keep these outside source, experiment JSON and Git. The native CreateJob request
 receives credentials for the selected image registry; frozen Runs do not contain
 pull passwords. Runtime-role credentials are separate from host API credentials.
 
 `ResourceId` is mandatory: there is no silent public or pay-as-you-go fallback.
-On quotas that reject `ResourceConfig.GPUType`, use
-`gpu_type_from_quota: true`. Preflight verifies the quota's reported GPU type
-against the executor and then omits the per-pod GPU selector. The fixed quota and
+On quotas that reject `ResourceConfig.GPUType`, omit `gpu_type` from the profile,
+which also omits the per-pod GPU selector. The fixed quota and
 requested GPU count remain explicit.
 
 ### Duration and scheduling
@@ -47,7 +41,7 @@ value is preserved. Values above 24 hours are rejected before image construction
 or submission. The provider receives `JobMaxRunningTimeMinutes` and the worker
 receives the same effective timeout. Preparation budgets must cover GPU count
 multiplied by duration: 8 GPUs for the default day require 192 GPU-hours.
-Existing frozen Runs/preparations keep their original duration.
+A frozen Run or preparation keeps its duration.
 
 For longer training, save complete recovery state on CPFS and explicitly submit
 a subsequent Run with `resume_from`. Provider restart and paid Spot are disabled;
@@ -75,8 +69,7 @@ Priority is an integer from 1 to 9, with larger values scheduled at higher
 priority. The catalogue advertises these options; clients check
 `pai-idle-resources.v1` before sending them. Other backends reject these options.
 
-Each Run freezes its choice. Old Runs lacking the permission marker retain their
-native fields when read or retried; create a new Run to use the corrected policy.
+Each Run freezes its choice; create a new Run to change it.
 Idle permission does not bypass role limits, increase the per-job GPU ceiling,
 guarantee admission, or enable Spot. Borrowed resources can be reclaimed.
 
@@ -116,15 +109,17 @@ original exact identity, with no automatic create retry.
 
 ### Approved CPFS personal workspace
 
-Configure these backend fields after the administrator approves the personal
-path, role and endpoint:
+Configure this block in the backend's `profile` after the administrator approves the
+personal path, role and endpoint:
 
-```yaml
-cpfs_uri: bmcpfs://cpfs-FILESYSTEM-TARGET.REGION.cpfs.aliyuncs.com/
-workspace_user: YOUR_RAM_USER
-data_role_arn: acs:ram::ACCOUNT_ID:role/pai-data-YOUR_RAM_USER
-filesystem_type: cpfs
-storage_id: IMMUTABLE_CPFS_FILESYSTEM_ID
+```json
+{
+  "storage": {
+    "cpfs_uri": "bmcpfs://cpfs-FILESYSTEM-TARGET.REGION.cpfs.aliyuncs.com/",
+    "workspace_user": "YOUR_RAM_USER",
+    "role_arn": "acs:ram::ACCOUNT_ID:role/pai-data-YOUR_RAM_USER"
+  }
+}
 ```
 
 | Container path | CPFS directory | Access |
@@ -209,7 +204,7 @@ archives newly sealed result objects:
     "bucket": "YOUR_APPROVED_ARCHIVE_BUCKET",
     "region": "YOUR_REGION",
     "user": "YOUR_RAM_USER",
-    "credentials_file": "/etc/ml-expd/oss-archive-credentials.json"
+    "credentials_file": "/etc/ml-exp/oss-archive-credentials.json"
   }
 }
 ```
@@ -233,8 +228,7 @@ the temporary platform archive is released. Downloading does not delete OSS.
 
 For new archive-enabled receipts, an ACK is recorded immediately but temporary
 archive release waits for OSS verification. An operator's local expiry deadline
-still applies: failed archival can become `SOURCE_EXPIRED`. Historical receipts
-are not automatically backfilled. OSS copies are outside client-ACK release,
+still applies: failed archival can become `SOURCE_EXPIRED`. OSS copies are outside client-ACK release,
 local expiry and managed Run deletion. Delete them separately under the approved
 personal prefix. A personal storage budget is advisory unless independently
 enforced; this integration does not change bucket ACL/policy or lifecycle rules.

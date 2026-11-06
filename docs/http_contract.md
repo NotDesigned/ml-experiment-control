@@ -72,7 +72,7 @@ reported and `NOT_REPORTED` otherwise, including for all Slurm Submissions.
 `GET /api/experiments/{project}/{run}/submissions` lists the current Attempt's cloud
 Submission for clients without saved state.
 
-Missing fields on older servers and null evidence mean unknown. A scheduler
+Null evidence means unknown. A scheduler
 terminal state is not overwritten by an earlier worker stage. The last received
 metric is not the largest step or best model, and an absent metric timestamp
 does not prove recent progress. These GETs do not refresh providers, create

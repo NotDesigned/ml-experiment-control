@@ -146,7 +146,7 @@ def build(binary_dir, output, version, client_dir=None):
         for name in BINARIES:
             tar.add(output / f"{name}-{TARGET}", arcname=f"bin/{name}", filter=metadata)
         for source, target in [(ROOT / "rust/README.md", "README.md"),
-                               (ROOT / "docs/rust-rewrite.md", "MIGRATION.md"),
+                               (ROOT / "docs/acceptance-status.md", "ACCEPTANCE-STATUS.md"),
                                (output / "native-release.json", "native-release.json"),
                                (release_info, "release-info.json")]:
             tar.add(source, arcname=target, filter=metadata)

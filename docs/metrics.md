@@ -114,7 +114,7 @@ not at every training step. Matching requirements must be satisfied together in
 the same protocol/checkpoint/dataset/variant/epoch/step context. A value from
 another context cannot fill a gap. Entirely unobserved contexts do not prove
 that evaluation ran. Without `required_when`, requirements apply to every
-observed context, preserving old schema behavior.
+observed context.
 
 Empty definitions allow arbitrary names with explicit units. A nonempty schema
 marks undeclared names; at most 256 definitions are accepted. Evaluation metadata
@@ -164,7 +164,7 @@ Workers read complete newline-terminated records roughly every five seconds,
 in batches of at most 64. Retry preserves event IDs and cursor without stopping
 training. A final uploaded root `metrics.jsonl` or `train_metrics.jsonl` can fill
 delivery gaps; journal-write failure prevents archive publication until retry.
-Stdout-only/old worker observations may be sampled and cannot reconstruct a full
+Stdout-only observations may be sampled and cannot reconstruct a full
 curve. Use a Runtime with `experiment-records.v1` for live delivery.
 
 Accepted metrics survive result archive ACK/release. The canonical journal and

@@ -1,4 +1,4 @@
-//! Source archive validation and exact legacy tree identities. Files, directory
+//! Source archive validation and exact tree identities. Files, directory
 //! observations, time and archive digests are explicit inputs. No source is run.
 use crate::{canonical, identity};
 use serde::{Deserialize, Serialize};

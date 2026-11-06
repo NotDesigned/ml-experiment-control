@@ -353,6 +353,17 @@ class Deploy(unittest.TestCase):
         self.assertEqual(self.cloud.stat().st_mode & 0o777, 0o600)
         self.assertEqual(json.loads(self.cloud.read_text())["builds"]["worker_sha256"], "sha256:new")
 
+    def test_deployment_example_is_complete_and_locks_are_under_the_registry(self):
+        tool = self.tool()
+        deploy = TOOL.parent
+        example = json.loads((deploy / "deployment.example.json").read_text())
+        self.assertEqual(set(example), set(tool.SETTINGS))
+        registry = json.loads((deploy / "reads.example.json").read_text())["registry_root"]
+        self.assertEqual(example["publisher_locks"], [f"{registry}/submissions/.publisher.lock",
+                                                      f"{registry}/cloud-submissions/.publisher.lock"])
+        for name in ("ml-expd.service", "ml-expd-builder.service"):
+            self.assertNotIn("ml-expd/", (deploy / name).read_text())
+
     def test_rollback_without_retained_install_refuses(self):
         result = self.run_tool("--rollback")
         self.assertEqual(result.returncode, 1)

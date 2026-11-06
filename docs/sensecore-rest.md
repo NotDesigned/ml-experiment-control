@@ -1,31 +1,21 @@
 # SenseCore REST and ACP
 
-> **Configuration names on this page are partly retained Python reference**
-> (`container_execution`, `server/examples`, `EXPERIMENTCTL_*`, YAML executors). The
-> provider behavior still applies. Configure a native SenseCore backend from the
-> [native deployment guide](../rust/README.md#deploying-a-native-service) and
-> [its example](../rust/deploy/sensecore.example.json).
-
 GPU training and zero-GPU data-image copy use signed HTTPS REST requests.
 No SCO executable or fallback is used. Client Bearer auth, REST AK/SK and
 registry credentials are independent.
 
 ## Private setup and request scope
 
-Provision a daemon/root-readable private JSON, normally
-`/etc/ml-expd/sensecore-rest.json`:
+Copy [the SenseCore example](../rust/deploy/sensecore.example.json) into the file named
+by `cloud_config` in the [deployment file](../rust/README.md#deploying-a-native-service).
+Its `credentials_file` is a private file owned by the service account:
 
 ```json
-{
-  "access_key_id": "YOUR_AK",
-  "access_key_secret": "YOUR_SK",
-  "subscription_name": "YOUR_EXISTING_SUBSCRIPTION",
-  "resource_group_name": "default"
-}
+{"provider":"sensecore","access_key_id":"YOUR_AK","access_key_secret":"YOUR_SK"}
 ```
 
-`EXPERIMENTCTL_SENSECORE_REST_CONFIG` overrides its path. Do not include it in
-Git, images, executor definitions or Runs. Configuration is HMAC-SHA256 signed
+Subscription, resource group, region, zones and workspace are in `profile.scope`. Do
+not include credentials in Git, images, configuration or Runs. Configuration is HMAC-SHA256 signed
 over `X-Date`. Requests verify TLS, reject redirects/non-SenseCore endpoints
 and bypass ambient proxies. Change keys deliberately and restart the service
 afterward. Errors expose bounded status/reason, not account payloads or keys.
@@ -48,9 +38,6 @@ it never authorizes a second create.
 
 ## Cluster choice
 
-Retained Python reference (no native route): read-only `GET /api/backends/sensecore/clusters?executor_id=ID` exposes the
-configured workspace pools, reported remaining cards, SPOT allowance and debug
-labels. Snapshots are cached for 25 seconds; stale/unknown evidence is explicit.
 Reported allowance is not a promise of immediate allocation.
 
 New GPU Runs default to `pool_selection: highest_spot`. Selection fetches ACTIVE
@@ -94,7 +81,7 @@ Historical images keep a longer startup command with quoted environment layers
 and inline JSON for input/restore/state/output manifests, followed by GNU
 `timeout`, `worker.py` and the frozen training argv. Those layers transport hashes
 and configuration; they do not build the image. Rebuild to obtain the new
-launcher; a server upgrade cannot change an immutable old image.
+launcher; a server upgrade cannot change an immutable image.
 
 ## Timeouts and failure evidence
 
@@ -103,7 +90,7 @@ launcher; a server upgrade cannot change an immutable old image.
 | Worker duration | Run `resources.max_time`, default `00:10:00`; GNU TERM, then KILL after 30s |
 | Startup manifest | 30-second launcher fetch before worker timer |
 | Data script | `data_preparation.timeout_seconds`, default 1200; separate CPU preparation when declared `before_job`, otherwise inside worker duration |
-| REST | Generic 30s; create 120s, configurable 10–600 via `EXPERIMENTCTL_SENSECORE_CREATE_TIMEOUT_SECONDS` |
+| REST | Backend `timeout_seconds`, default 30, range 1–120 |
 | Controller/build | Separate host operation budgets, not training duration; see [builds](builds.md) |
 
 Worker duration covers restore, inside-job data preparation, training and result
@@ -127,40 +114,17 @@ a bounded zero-GPU CPU job; it does not restart training. See
 
 ## Dataset publication and CPU copy
 
-For SenseCore, add the registry and bounded `data_delivery` configuration below
-to the private artifact-store JSON:
+SenseCore needs a `data_copier` profile on the backend, a zero-GPU profile in a debug
+CPU pool, and `builds.data_base_image` in the cloud configuration. Both are in
+[the example](../rust/deploy/sensecore.example.json).
 
-```json
-{
-  "upload_part_bytes": 16777216,
-  "data_registry": {
-    "repository": "REGISTRY_HOST/TEAM/ml-expd-data",
-    "base_image": "REGISTRY_HOST/TEAM/ml-expd-data@sha256:ACTUAL_64_HEX_DIGEST",
-    "registry_auth_file": "/etc/ml-expd/data-registry-auth.json",
-    "blob_hosts": ["ACTUAL_CCR_BLOB_HOST"]
-  },
-  "data_delivery": {
-    "aec2": "debug-CLUSTER_ID",
-    "worker_spec": "ACTUAL_CPU_SPEC.2c4g",
-    "gpus": 0, "cpus": 2, "memory_gb": 4,
-    "quota_type": "reserved",
-    "queue_timeout_seconds": 1800,
-    "copy_timeout_seconds": 1800
-  }
-}
-```
-
-Publish an ACP-compatible linux/amd64 Python/glibc/Bash base into this **same
-repository** first; `base_image` must be its immutable digest. The API reads base
-metadata and appends fixed dataset/worker layers through registry REST, without
-BuildKit. The daemon needs push/pull Docker auth in the private `registry_auth_file`;
-this file is distinct from the builder's auth unless deliberately provisioned for
-both. Give the service UID read access to this narrow credential, for example
-`root:ml-expd` mode 0640; retain the original root-only builder auth unchanged.
-Include only the required CCR host entry and do not copy unrelated registry logins.
-`blob_hosts` contains
-only the actual CCR blob redirect hostnames verified by the operator, without
-scheme, paths or wildcards; redirects use TLS and receive no registry credentials.
+Publish an ACP-compatible linux/amd64 glibc/Bash base first; `data_base_image` must be
+its immutable digest. The image builder publishes the data image from a CPU PAI DSW
+and copies it to CCR by digest through `sensecore_mirror`; see [builds](builds.md).
+Include only the required CCR host entry in its registry auth and do not copy unrelated
+registry logins. `registry_blob_hosts` contains only the actual CCR blob redirect
+hostnames verified by the operator, without scheme, paths or wildcards; redirects use
+TLS and receive no registry credentials.
 Workspace, storage mount and dataset root are derived from the chosen executor.
 Verify the CPU spec is exactly 2 CPUs, 4 GiB and 0 GPUs in the selected debug pool.
 Dataset uploads stream directly to backend storage. Runtime builds use

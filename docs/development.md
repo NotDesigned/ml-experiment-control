@@ -18,7 +18,7 @@ The executable smoke test uses private temporary state and local fake providers.
 Tests cover identities, state transitions, lost acknowledgements, concurrency,
 process control, archives, checkpoint recovery and metric publication. They do
 not prove that a cloud GPU or multi-node network is usable. Keep provider
-acceptance separate and inspect the [recorded limits](rust-rewrite.md).
+acceptance separate and inspect the [recorded limits](acceptance-status.md).
 
 The core receives values and returns decisions. Put filesystem, network, clock,
 randomness and process effects in the outer packages. Never replace uncertain

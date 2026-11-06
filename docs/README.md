@@ -42,12 +42,11 @@ with declared inputs and metrics.
 - [HTTP contract](http_contract.md): auth and errors.
 - [Backend capabilities](backends.md): matching and server preparation contracts.
 - [Architecture](architecture.md): crates, module boundaries and execution locations.
-- [Compatibility and upgrades](architecture.md#compatibility-and-upgrades).
-- [Acceptance status](rust-rewrite.md): what has and has not passed on real providers.
+- [Upgrades](architecture.md#upgrades).
+- [Acceptance status](acceptance-status.md): what has and has not passed on real providers.
 - [Platform checks](platform-checks.md): requirements, limits and policies.
 - [Development](development.md): tests, CI and releases.
 
 ## Retired Python service
 
-Tag `v1.5.1` preserves the Python service, its packages and its documentation. Its
-commands and configuration are not the native interface.
+Tag `v1.5.1` preserves the retired Python service and its documentation.

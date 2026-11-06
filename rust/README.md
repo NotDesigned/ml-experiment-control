@@ -1,12 +1,11 @@
 # Native ML-Expd
 
-The native implementation lives on `main`. Production uses the native service,
-published separately from the retired Python service. See the
+The native implementation lives on `main`. See the
 [latest release](https://github.com/NotDesigned/ml-experiment-control/releases/latest) for the current version.
-The production endpoint is `https://ml-exp.adscn.dev`; previous endpoints have been removed.
-Code implementation, automated verification, provider acceptance and production
-cutover are separate milestones. See [the migration status](../docs/rust-rewrite.md).
-Never initialize a new registry over existing production state.
+The production endpoint is `https://ml-exp.adscn.dev`.
+Code implementation, automated verification and provider acceptance are separate
+milestones. See [the acceptance status](../docs/acceptance-status.md). A release
+starts from an empty registry; see [clean start](../docs/operator-guide.md#clean-start).
 
 `GET /api/readiness` still reports `training=INCOMPLETE`: full backend GPU
 acceptance has not been recorded. A successful connection check is not training
@@ -20,9 +19,8 @@ Run ID in a canonical text identity (`ml_expd_identity_json`). This preserves
 original floating-point values even if W&B changes their numeric display. Only
 an exact identity match permits an adjacent finite fractional float in that
 display; integer IDs, changed parameters, arrays and missing fields remain
-checked. Older Runs without the text identity retain strict comparison. A
-blocked old Run needs a separately verified identity backfill; missing remote
-history never authorizes clearing reservations or replaying events.
+checked. Missing remote history never authorizes clearing reservations or replaying
+events.
 
 ## Structure
 
@@ -92,9 +90,9 @@ Download the installer from the [latest release](https://github.com/NotDesigned/
 exact version. The Windows installer
 adds its per-user directory to PATH; open a new terminal if needed.
 
-For clients through 0.1.15, use the new installer once: their old update manifest
-selects a retired executable name. Configuration is in `ml-exp/client.json` under
-XDG_CONFIG_HOME or `.config` in HOME (USERPROFILE on Windows). Later updates use the canonical `ml-exp` release entry.
+An earlier client cannot update itself to this release, so use the installer once.
+Configuration is in `ml-exp/client.json` under XDG_CONFIG_HOME or `.config` in HOME
+(USERPROFILE on Windows). Later updates use the canonical `ml-exp` release entry.
 Windows credential files must allow only the current user, SYSTEM and local
 Administrators. Client-created settings get a protected DACL; broad inherited
 credentials and reparse points are rejected. Windows uploads contain regular
@@ -158,7 +156,7 @@ key corresponding to your submitted public key.
 With background polling enabled, pending stops and deletes are reconciled
 automatically. Asynchronous deletion stays `DELETING` until provider absence
 is confirmed. Otherwise, use refresh to continue observing. Failed instances
-report `FAILED`; a missing old observation cannot prove a successful stop.
+report `FAILED`; a missing observation cannot prove a successful stop.
 `last_error` retains the last provider mutation error even after recovery;
 `state` gives the latest established outcome. If a create reply is lost, inspect
 list/refresh using the saved request identity instead of creating another machine.
@@ -332,8 +330,7 @@ silently. The client does not run an unattended queue.
 | Slurm result | Generated backend archive | Bounded direct stream, verification, ACK/release |
 
 Parts are 16 MiB and numbered from zero. The multipart protocol bounds each
-buffer and part count; it does not impose the old 4 GiB archive limit. It still
-has explicit metadata, part-count, provider and storage limits. Source packaging
+buffer and part count. It has explicit metadata, part-count, provider and storage limits. Source packaging
 has its own smaller source-only policy and is not a way to upload datasets.
 
 PAI workers can download approved OSS objects through signed part URLs into their
@@ -357,8 +354,7 @@ ml-exp run retry ACTION --run RUN --attempt attempt-001 --from-start
 
 Use `--checkpoint CHECKPOINT_ID` instead to restore saved state. A retry creates
 new Attempt metadata; it does not automatically submit training. Repeating the
-same request reuses that Attempt. Budget and legacy CPU-sync fields remain
-readable metadata and are optional. Unknown provider submissions must be
+same request reuses that Attempt. Unknown provider submissions must be
 reconciled before a retry; no special startup failure code is required.
 
 Cloud datasets can also be downloaded with `data download`; the client verifies
@@ -390,7 +386,7 @@ verifies the archive but retains only the selected file locally. It sends no ACK
 and authorizes no release. Repeating it verifies an existing destination instead
 of overwriting it. This implementation still transfers the entire archive; it
 does not yet replace direct recovery of original backend files when archive
-publication failed. That recovery path remains a separate migration requirement.
+publication failed.
 
 A result download verifies archive and member hashes, fsyncs the local file, then
 sends an ACK. Repeating the same command can reconcile a lost ACK without another
@@ -419,7 +415,6 @@ checkpoint and variant remain part of metric identity. Publication uses a durabl
 cursor separate from canonical ingestion, so W&B failure cannot erase metrics.
 Training sync is optional, normally enabled only when configured credentials and
 a usable destination exist; preparation tracking is controlled independently.
-Native 0.1.6 passed an official-cloud test using one zero-GPU DLC Run: ten event identities and sequences, eight loss observations and their steps, the final summary and finished state matched the durable journal. This does not verify handoff of the original Python publisher backlog.
 
 ## Deploying a native service
 
@@ -437,12 +432,12 @@ ml-exp update
 ```
 
 Take the installer and `X.Y.Z` from the [latest release](https://github.com/NotDesigned/ml-experiment-control/releases/latest).
-Existing Python release assets are separate. Native backend and migration
-acceptance limits are described in the [implementation status](../docs/rust-rewrite.md).
+Backend acceptance limits are described in the
+[acceptance status](../docs/acceptance-status.md).
 
 Server bundles contain the server, client and worker executables,
 a hash manifest and [deployment examples](deploy/server.example.json). Put private
-configuration under `/etc/ml-expd/native/`; token and provider credentials stay
+configuration under `/etc/ml-exp/`; token and provider credentials stay
 in separate files. A single deployment file refers to approved read, Slurm,
 cloud and optional tracking configurations. Omitted backends stay disabled.
 
@@ -453,7 +448,7 @@ These credentials are injected only into the provider request and never frozen
 in a Run, image build context or public status response.
 
 ```sh
-ml-expd-rs --config /etc/ml-expd/native/server.json
+ml-expd-rs --config /etc/ml-exp/server.json
 ```
 
 Copy [the Project example](deploy/project.example.json) to the configured
@@ -461,9 +456,9 @@ Project path and create its empty Run directory. Run these commands as the
 service account that will own the stores:
 
 ```sh
-ml-expd-rs --config /etc/ml-expd/native/server.json --check
-ml-expd-rs --config /etc/ml-expd/native/server.json --initialize
-ml-expd-rs --config /etc/ml-expd/native/server.json
+ml-expd-rs --config /etc/ml-exp/server.json --check
+ml-expd-rs --config /etc/ml-exp/server.json --initialize
+ml-expd-rs --config /etc/ml-exp/server.json
 ```
 
 `--check` reads local configuration, credentials and approved Project definitions.
@@ -474,7 +469,9 @@ creates all stores selected by this one configuration, with no provider jobs.
 It refuses an existing or partially initialized registry. It never repairs,
 resets or deletes one. The granular initialization commands in `--help` remain
 available for an operator to inspect and finish partial setup. Ordinary startup
-does not initialize missing stores.
+does not initialize missing stores. On a new host,
+[`deploy_native.py --first-install`](../docs/operator-guide.md#first-install) runs these
+commands as the service account, installs the bundle and starts the units.
 
 Select only the backends needed for this installation:
 
@@ -505,8 +502,7 @@ SenseCore uses `"provider":"sensecore"`. PAI may additionally specify
 `provider`. The exchange signing key is a separate private file of at least
 32 random bytes. Its public URL must reach this API over HTTPS from workers.
 Native credential files must be owned by the service account with mode `0600`
-(or `0400`). Group-readable credentials from an existing Python deployment need
-a separate private native copy; do not change the live deployment's originals.
+(or `0400`).
 Configuration preflight identifies provider credentials, registry auth, exchange,
 object storage, debug and builder configuration failures separately.
 
@@ -539,9 +535,7 @@ of an earlier uncertain submission, which must retain its original identity.
 
 The [API](deploy/ml-expd.service) and [builder](deploy/ml-expd-builder.service) systemd examples install no unit by themselves.
 Adjust their approved writable and read-only paths to the actual configuration.
-When attaching history, expose original paths read-only; allow writes only to
-the new native roots. Do not initialize a native marker over an original registry.
-Image building may use the separately configured Python effect adapter; its
+[builder.example.json](deploy/builder.example.json) configures the builder. Image building may use the separately configured Python effect adapter; its
 interpreter/dependencies are outside this native bundle. W&B similarly uses the
 optional official SDK process. Neither is required for basic API/client reads.
 
@@ -574,8 +568,8 @@ scheduler/container tools. They exercise real binaries, files, locks and sockets
 they do not establish that a real GPU, registry or provider storage works.
 TLS terminates at an operator reverse proxy; the native daemon binds loopback.
 Optional backend configuration is independent and credentials stay server-side.
-The development registry has a distinct marker and cannot be initialized over
-existing state. Retire only test-owned machines and scratch directories.
+A registry cannot be initialized over existing state. Retire only test-owned machines
+and scratch directories.
 
 Changing the `ssh` paths invalidates frozen submission authority.
 
@@ -590,8 +584,7 @@ controller eviction does not prove cancellation or permit resubmission.
 
 For SenseCore, `scope.zone` addresses the compute pool and NAS mount. Set
 `scope.workspace_zone` separately when the workspace lives in another zone of
-the same region; omission retains the original single-zone behavior and profile
-identity. Resource-spec `memory.allocatable` is GiB. A pool with an empty
+the same region; omission uses the compute zone. Resource-spec `memory.allocatable` is GiB. A pool with an empty
 `spot_status` has zero SPOT allowance; it does not invalidate the other pools.
 Reported allowance still does not establish idle GPU capacity.
 
@@ -605,7 +598,7 @@ that the container succeeded or that a failed job can safely be resubmitted.
 
 W&B errors distinguish missing SDK, authentication, remote Run, init,
 history read and writes without exposing exception messages or keys. Uncertain
-migrated sends remain reserved until remote proof; a missing Run is not permission
+sends remain reserved until remote proof; a missing Run is not permission
 to replay them. An operator may recover an explicitly selected zero-confirmation
 scope only after an atomic create-if-absent of its exact original W&B ID proves
 there was no earlier history, and must retain a recovery receipt.

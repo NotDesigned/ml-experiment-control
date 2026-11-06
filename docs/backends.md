@@ -91,31 +91,6 @@ Reservations, priorities, node flags and resource combinations can prevent
 allocation. `admission_guaranteed` is always false; no ETA, submission or provider
 mutation is performed by this GET.
 
-### SenseCore cluster list
-
-Retired Python route, described at tag `v1.5.1`: the native API has no such route. Native pool selection
-uses the operator's `spot_clusters` allowlist.
-
-`GET /api/backends/sensecore/clusters` reuses the existing workspace-binding
-REST query. Optionally pass `executor_id` to choose a configured SenseCore
-executor's workspace; by default the first SenseCore executor in sorted ID order
-is used, and its ID is returned. Only active bindings visible to that workspace
-are listed. No subscription, VPC, credentials or raw provider payload is exposed.
-
-Each item contains `name`, `zone`, `state`, `is_debug`,
-`reported_remaining_cards` (provider `reserved_number`) and
-`spot_allowance_cards` (complete sum of `spot_status[].spot_quota.device`).
-Absent/invalid remaining counts or any unreadable SPOT share yield null, not 0.
-These are distinct provider figures; they do not establish physical GPU
-utilization, a reliable occupied/total ratio, or availability of a particular
-worker spec. Normal and debug pools are labelled; listing a debug pool does not
-make it eligible for GPU ACP training. Existing highest-SPOT selection is unchanged.
-
-The same 25-second cache and OBSERVED/STALE/UNKNOWN semantics apply, with a
-`clusters: null` payload if no successful evidence exists. Missing configuration
-or unknown executor returns 404; a non-SenseCore selector returns 422. This GET
-does not create/stop a workload, change pool selection or refresh a frozen Run.
-
 ## Matching
 
 The experiment file names an explicit `executor` from `ml-exp backend`. The native
@@ -161,9 +136,7 @@ It retains all effect markers and never retries an uncertain effect. Client:
 ml-exp run continue PREPARATION_ID --project my-study --confirmation 'PREPARE PREPARATION_ID'
 ```
 
-Low-level source, Runtime, Run and submission APIs remain available. The new
-one-config workflow requires `server-experiment-preparation.v1`; older clients
-continue to use the existing low-level endpoints.
+Low-level source, Runtime, Run and submission APIs remain available.
 
 ## Data delivery diagnosis
 
@@ -181,7 +154,7 @@ Examples distinguish timeout, TLS, HTTP/length rejection, truncated download,
 archive/file SHA256 mismatch, archive-manifest mismatch and storage/network errors
 (with errno when available). Training does not start after delivery failure.
 
-Historical images retain their old worker. A generic failure produces
+A generic failure produces
 `INPUT_DELIVERY_FAILED_DETAILS_UNAVAILABLE`; the server cannot reconstruct an
 exception that was never recorded. Rebuild a Runtime for detailed diagnostics;
 do not resubmit historical GPU jobs automatically.
@@ -194,15 +167,14 @@ durable ACK; the whole archive and expanded files live only on shared storage.
 The backend validates archive/file hashes and atomically publishes the cache.
 A bounded read-only check permits reuse before GPU submission. GPU nodes need no
 external data access. New frozen inputs require the verified cache and fail closed
-if it disappears. Desktop staging has been removed. Old low-level Runs retain their frozen
-worker download behavior; upload data to a configured backend for new Runs.
+if it disappears. Upload data to a configured backend.
 
 ### Slurm compute nodes without Internet access
 
 Configure `backend.api_relay` on Slurm executors whose workers must use a connected
 private-network gateway. The gateway uses systemd's existing
 `systemd-socket-proxyd` with one fixed API destination; example user units are in
-`server/examples/slurm-api-relay/` at tag `v1.5.1`. Bind the socket to the gateway's private IP,
+`server/examples/slurm-api-relay/`. Bind the socket to the gateway's private IP,
 install both units in its `~/.config/systemd/user/`, and enable the socket:
 `systemctl --user enable --now ml-expd-api-relay.socket`. The user manager must
 remain running after SSH disconnect (linger).

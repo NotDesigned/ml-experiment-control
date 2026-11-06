@@ -82,8 +82,7 @@ pub struct Store {
 }
 
 /// Stored native paths were already resolved by trusted configuration. Reading
-/// the ledger never expands a home or follows an authored path. Legacy aliases
-/// need an operator-provided path resolver before importing that namespace.
+/// the ledger never expands a home or follows an authored path.
 pub fn canonical_path(path: &str) -> Result<PathEvidence, Error> {
     let p = Path::new(path);
     if !p.is_absolute()

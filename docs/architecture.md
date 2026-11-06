@@ -6,7 +6,7 @@ metrics, checkpoint contents and model selection. The platform does not interpre
 weights, choose hyperparameters or decide whether a scientific result is correct.
 
 The default implementation is the Rust workspace in `rust/`. What has passed on
-real providers is recorded separately in [acceptance status](rust-rewrite.md).
+real providers is recorded separately in [acceptance status](acceptance-status.md).
 
 ## Crates
 
@@ -141,26 +141,23 @@ Neither is an install path for the client or API. Two short launchers embedded i
 native jobs also use Python, inside the training image and only when those jobs
 run: `core/src/cloud/materialize.py` (PAI data materialization) and
 `server/src/cloud_runs/service/sync_diagnostic.py` (read-only diagnostics). Release
-and CI scripts and the `deploy_native.py` upgrade tool are operator tooling. Tag
-`v1.5.1` preserves the retired Python service.
+and CI scripts and the `deploy_native.py` install tool are operator tooling.
 
-## Compatibility and upgrades
+## Upgrades
 
-Existing Run/Attempt/source identities, routes, immutable image references,
-review digests, publication routes and saved client operation IDs remain frozen.
-The server reads only its native namespace; older namespaces stay on disk
-untouched and are not served. Unknown submissions
-and uncertain W&B sends stay reserved and are reconciled under their original
-identity, never replayed.
+This release starts from an empty registry and reads nothing older; see
+[clean start](operator-guide.md#clean-start). From there on, Run, Attempt and source
+identities, immutable image references, review digests, publication routes and
+saved client operation IDs stay frozen across upgrades. Unknown submissions and
+uncertain W&B sends stay reserved and are reconciled under their original identity,
+never replayed.
 
-Capabilities are both server- and image-specific. A Runtime receipt freezes the
-exact worker's declared features, so updating the API cannot add features to an
-immutable old image. New builds obtain current workers; old Attempts keep their
-original dispatch behavior and command contract. READY Runtime receipts keep
-their published identity. A not-yet-published Runtime whose frozen recipe differs
-from the installed builder may need fresh preparation; inspect diagnostics and
-reconcile effects first. Do not mutate that record, reuse an old confirmation or
-replay an uncertain build.
+A Runtime receipt freezes the exact worker hash, so updating the API cannot change
+what an immutable image does. New builds obtain the current worker; a started Attempt
+keeps its original command. READY Runtime receipts keep their published identity. A
+not-yet-published Runtime whose frozen recipe differs from the installed builder may
+need fresh preparation; inspect diagnostics and reconcile effects first. Do not
+mutate that record, reuse an old confirmation or replay an uncertain build.
 
 Client and server come from one release; see the [HTTP contract](http_contract.md).
 An upgrade does not imply database restoration,

@@ -13,7 +13,7 @@ The operator points `tracking_config` in the deployment file at a private JSON f
 {
   "schema_version": 1,
   "python": "/absolute/path/to/interpreter-with-wandb-sdk",
-  "api_key_file": "/etc/ml-expd/native/wandb.key"
+  "api_key_file": "/etc/ml-exp/wandb.key"
 }
 ```
 
@@ -109,10 +109,9 @@ summary value instead of falling back to unrelated history. Unrelated
 client-owned summary keys are not removed. Failed Attempts can retain valid
 measurements; filter `ml_expd/state` when comparing successful runs.
 
-Already-started publications keep their frozen v2/v3 mapping, including old
-prefixes or hashes. Finished W&B Runs are not reopened. Upgrading does not rename
-or replay historical points, reset confirmation cursors, or resend uncertain
-events. New publications use exact names. Checkpoint changes remain per-point
+Finished W&B Runs are not reopened. Upgrading does not rename or replay historical
+points, reset confirmation cursors, or resend uncertain events. Publications use
+exact names. Checkpoint changes remain per-point
 provenance. Numerator/denominator are metadata, not extra result metrics.
 
 ## What reaches W&B
@@ -178,9 +177,8 @@ uncertain repair only observes; it does not send again or clear reservations.
 Restart the API to resume incremental publication. Existing W&B panels are not
 recreated. Keep the pre-repair event list and actual remote confirmation evidence.
 
-A saved repair adds `history_repair` to publication state. Older servers cannot
-read that field; after a repair use a forward fix rather than a program downgrade
-or a database restore. This operation does not restart training or recover
+A saved repair adds `history_repair` to publication state. After a repair use a
+forward fix rather than a program downgrade or a database restore. This operation does not restart training or recover
 records that are missing from the canonical journal.
 
 Remote SDK pages may repeat the same physical row. Native 0.1.22 compares the

@@ -3,8 +3,7 @@
 The default publisher builds on a CPU PAI DSW instance and pushes to the
 configured registry, such as Docker Hub. An optional ACR Git build provides
 fallback when publishing to ACR. A local Docker/BuildKit publisher
-is also supported; remote Docker engines and SSH desktop tunnels have been
-removed. Building and training are separate: compatible authenticated images
+is also supported. Building and training are separate: compatible authenticated images
 can be used by any configured training backend.
 
 ## Dockerfile contract
@@ -66,8 +65,7 @@ With `ephemeral_buildkit: true`, each build owns its container/cache volume,
 pushes without loading the training image into Docker and cleans its exact
 resources after success/failure. A lease records the local builder;
 failed cleanup blocks later publication. No global prune is performed.
-`registry_cache: true` uses one inline cache tag per project; cache misses permit
-cold construction. Cached layers do not guarantee GPU capacity or fast cold pulls.
+Each project has one inline cache tag; cache misses permit cold construction. Cached layers do not guarantee GPU capacity or fast cold pulls.
 Slurm converts OCI to a digest/checksum-bound SIF on shared storage, retaining the
 SIF and removing the converter's private temporary OCI cache.
 
@@ -104,7 +102,7 @@ Configure the private image builder, not a DLC training executor:
   "allow_dockerfile_builds": true,
   "timeout_seconds": 1200,
   "repository": "docker.io/YOUR_ACCOUNT/RUNTIME",
-  "registry_auth_file": "/etc/ml-expd/build-docker/config.json",
+  "registry_auth_file": "/etc/ml-exp/build-docker/config.json",
   "pai_dsw": {
     "workspace_id": "WORKSPACE_ID",
     "quota_id": "QUOTA_ID",
@@ -114,18 +112,25 @@ Configure the private image builder, not a DLC training executor:
 }
 ```
 
-Merge this with the common peer UID/GID, source/state root and socket settings,
-replacing each example value:
+Merge this with the common settings, replacing each example value.
+[builder.example.json](../rust/deploy/builder.example.json) has the result:
 
 ```json
 {
-  "socket": "/run/ml-expd-builder/builder.sock",
+  "socket": "/run/ml-exp-builder/builder.sock",
   "client_uid": 10000,
   "client_gid": 10000,
-  "state_root": "/var/lib/ml-expd-builder",
-  "source_root": "/srv/ml-expd/projects/source-revisions/sources"
+  "state_root": "/var/lib/ml-exp/builder",
+  "native_worker_bin": "/opt/ml-exp/bin/ml-exp-worker-rs",
+  "native_source_root": "/var/lib/ml-exp/registry/source-revisions/sources"
 }
 ```
+
+`client_uid` and `client_gid` are the API service account's. `native_source_root` is
+`source-revisions/sources` under the daemon's `registry_root`. The builder refuses a
+configuration key it does not know, and requires `native_worker_bin` and
+`native_source_root`. Its PAI credentials file is selected by `ML_EXP_PAI_CONFIG`, as
+the [unit example](../rust/deploy/ml-expd-builder.service) shows.
 
 Omit local BuildKit options in DSW mode. PAI API credentials remain private;
 MCP upload/exec uses an isolated CLI profile. Signed REST creates, queries,
@@ -163,7 +168,6 @@ For an ACR Personal repository bound to a private build GitHub repository, add:
 ```json
 {
   "acr_fallback": {
-    "repository": "YOUR_ACR_HOST/NAMESPACE/RUNTIME",
     "git_repository": "https://github.com/YOUR_ACCOUNT/YOUR_PRIVATE_BUILD_REPO",
     "wait_seconds": 2700,
     "prefer": false
@@ -177,9 +181,8 @@ exact registry authentication/blob host allowlists as required. ACR Personal
 cannot use third-party private-base credentials through this Git build path;
 choose a compatible pinned base.
 
-The fallback repository must match the main `repository`. A Docker Hub build
-does not trigger the old ACR Git builder. Existing ACR intents can still be
-observed at their original repository after the default changes.
+The main `repository` must be the ACR repository the Git build publishes to. A saved
+ACR intent is still observed at the repository it recorded if that setting changes.
 
 Set `prefer: true` to build new runtime images directly through ACR while the
 DSW Docker engine is unavailable. Existing DSW leases still require confirmed
@@ -209,8 +212,7 @@ executor, so configure `sensecore_mirror` on the builder. Its fields are
 `target_repository`, plus `source_repository` when the source differs from the main
 `repository`, and optional `target_auth_hosts` and `target_blob_hosts`. The builder
 copies with Skopeo and verifies the digest; repeated requests reuse the copy. No API
-setting is involved, and image layers do not pass through the API disk. Old frozen
-image/delivery references remain unchanged.
+setting is involved, and image layers do not pass through the API disk.
 
 ## Local BuildKit storage
 
@@ -220,5 +222,3 @@ above, plus `docker` and `skopeo` executable paths (for example `/usr/bin/docker
 `/usr/bin/skopeo`). Set `build_storage_path` to the local Docker state filesystem,
 for example `/var/lib/docker`. The builder checks free bytes and inodes before downloading
 layers. Build logs distinguish space exhaustion from registry or build errors.
-Remote Docker probes, blob relays and desktop cache helpers are no longer
-provided.

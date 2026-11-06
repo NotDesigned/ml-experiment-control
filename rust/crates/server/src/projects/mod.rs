@@ -1,5 +1,5 @@
 //! Workspace-local project tracking, separate from research files and jobs.
-//! The core chooses transitions; the store owns a recoverable legacy JSON ledger.
+//! The core chooses transitions; the store owns a recoverable JSON ledger.
 pub(crate) mod http;
 mod service;
 mod store;

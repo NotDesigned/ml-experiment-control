@@ -1051,8 +1051,7 @@ pub fn run_summary(snapshot: &Snapshot, now_unix: f64) -> Result<Value> {
 }
 
 /// Public project-list DTO matches the established REST array member shape.
-/// Collector errors must be supplied explicitly once the native collector is
-/// migrated; this read service has no collector and makes no such observations.
+/// This read service has no collector and makes no collector observations.
 pub fn project_summary(project: &str, title: &str, rows: &[Value]) -> Result<Value> {
     ml_exp_core::identity::validate_id(project).map_err(why!(Error::Identity))?;
     if title.chars().count() > 2000 {

@@ -1,5 +1,5 @@
 //! Native Action binding and outcome reduction. No clocks, files or RPC calls.
-//! Legacy plans cannot acquire this execution protocol by interpretation.
+//! No other plan can acquire this execution protocol by interpretation.
 use super::helper::{self, OperationTag, Reply, ReplyOutcome, Request};
 use crate::{
     canonical,

@@ -1,6 +1,6 @@
-//! Rust owns Runtime identity, dispatch intent and reconciliation. The existing
-//! isolated builder may remain Python; its narrow native-image recipe receipt
-//! cannot be mistaken for a legacy Python-worker image.
+//! Rust owns Runtime identity, dispatch intent and reconciliation. The builder
+//! is a separate Python process; its narrow native-image recipe receipt cannot
+//! be mistaken for another image.
 use super::*;
 use ml_exp_core::cloud::{build::Definition, run::Runtime};
 #[derive(Deserialize)]
