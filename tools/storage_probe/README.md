@@ -6,9 +6,9 @@ two jobs at the same time, so that they land on different nodes:
 
 ```sh
 ml-exp submit tools/storage_probe --executor pai-native-cpu --gpus 0 --time 30m --run probe-a -- \
-  python3 probe.py --role a --note "two words"
+  python3 probe.py --role a --session first --note "two words"
 ml-exp submit tools/storage_probe --executor pai-native-cpu --gpus 0 --time 30m --run probe-b -- \
-  python3 probe.py --role b --note "two words"
+  python3 probe.py --role b --session first --note "two words"
 ```
 
 **Needs PR #132 on the server.** The default directory is `DATA_DIR`, which sits inside the
@@ -26,6 +26,7 @@ writes `storage-probe-a.json` or `-b.json` to its results. Read `findings` in bo
 | `mtime_ns`, `ctime_ns` | same | A stat check for registered directories must leave out what differs |
 | `root` | either | As root, read-only modes stop nothing, and hashing is what catches changes |
 | `stat_per_second` | recorded | Sets the file limit for registered directories |
+| `race_*` | exactly one wins | That way of creating cannot replace a lock across nodes |
 
 `command_chain` and `argv` show how the provider started the job. If a shell received one
 joined string, `--note` reaches the job split or quoted differently, and a long

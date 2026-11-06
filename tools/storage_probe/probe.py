@@ -11,8 +11,11 @@ It answers what the code assumes and no test can show:
 - is the job root, so that read-only permissions do not stop it writing?
 - how fast is stat, which decides how many files a stat check can cover?
 - does the provider wrap the command in one shell string?
+- when both sides race to create one name, does exactly one win, for each way of creating?
 """
 import argparse
+import ctypes
+import errno
 import fcntl
 import json
 import os
@@ -22,6 +25,77 @@ import sys
 import time
 
 STAT_FILES = 2000
+RACE_ROUNDS = 40
+RENAME_NOREPLACE = 1
+
+
+def create_exclusive(target, own):
+    os.close(os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+
+
+def make_directory(target, own):
+    os.mkdir(target)
+
+
+def hard_link(target, own):
+    own.write_text("x")
+    os.link(own, target)
+
+
+def rename_no_replace(target, own):
+    own.write_text("x")
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.renameat2(-100, os.fsencode(own), -100, os.fsencode(target), RENAME_NOREPLACE):
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code))
+
+
+CREATORS = {"o_excl": create_exclusive, "mkdir": make_directory,
+            "link": hard_link, "rename_noreplace": rename_no_replace}
+
+
+def attempt(create, target, own):
+    """What one try did: `won`, `lost`, or the errno that means this way does not work here."""
+    try:
+        create(target, own)
+    except FileExistsError:
+        return "lost"
+    except OSError as error:
+        return errno.errorcode.get(error.errno, str(error.errno))
+    return "won"
+
+
+def race(meeting, root, name, create):
+    """Both sides create one name at an agreed moment; the two results are compared per round."""
+    directory = root / f"race-{name}"
+    directory.mkdir(exist_ok=True)
+    mine = []
+    for number in range(RACE_ROUNDS):
+        start = time.time() + 0.5
+        if meeting.role == "a":
+            meeting.say(f"{name}-{number}-start", start)
+        else:
+            start = meeting.hear(f"{name}-{number}-start")
+        time.sleep(max(0, start - time.time()))
+        mine.append(attempt(create, directory / f"round-{number}",
+                            directory / f"own-{meeting.role}-{number}"))
+        meeting.say(f"{name}-{number}-done")
+        meeting.hear(f"{name}-{number}-done")
+    meeting.say(f"{name}-results", mine)
+    return {"mine": mine, "theirs": meeting.hear(f"{name}-results")}
+
+
+def race_finding(rounds):
+    pairs = list(zip(rounds["mine"], rounds["theirs"]))
+    both = sum(pair == ("won", "won") for pair in pairs)
+    none = sum("won" not in pair for pair in pairs)
+    other = sorted({word for pair in pairs for word in pair} - {"won", "lost"})
+    if other:
+        return f"UNSUPPORTED: {other}"
+    if both or none:
+        return f"NOT EXCLUSIVE: both won {both}, neither won {none} of {len(pairs)}"
+    won = sum(pair[0] == "won" for pair in pairs)
+    return f"exactly one wins in all {len(pairs)} (this side won {won})"
 
 
 class Meeting:
@@ -136,6 +210,8 @@ def verdict(result):
         findings[key] = "same" if file["mine"][key] == file["theirs"][key] else "DIFFERS"
     findings["root"] = "runs as root" if result["euid"] == 0 else f"runs as uid {result['euid']}"
     findings["stat_per_second"] = result["stat_per_second"]
+    for name, rounds in result["races"].items():
+        findings[f"race_{name}"] = race_finding(rounds)
     return findings
 
 
@@ -144,12 +220,14 @@ def main(arguments=None):
     parser.add_argument("--dir", default=os.environ.get("DATA_DIR"), type=Path,
                         help="shared directory; DATA_DIR unless given")
     parser.add_argument("--role", required=True, choices=["a", "b"])
+    parser.add_argument("--session", default="default",
+                        help="a new word for each pair of jobs, because old facts stay on disk")
     parser.add_argument("--timeout", type=float, default=1800)
     parser.add_argument("--note", default="", help="pass words with a space to see how the provider quotes them")
     args = parser.parse_args(arguments)
     if args.dir is None:
         parser.error("--dir is required when DATA_DIR is not set")
-    root = args.dir / "ml-exp-storage-probe"
+    root = args.dir / "ml-exp-storage-probe" / args.session
     root.mkdir(parents=True, exist_ok=True)
     meeting = Meeting(root, args.role, args.timeout)
     meeting.say("hello", socket.gethostname())
@@ -182,6 +260,7 @@ def main(arguments=None):
         "lock_held_by_a": lock_round(meeting, "a", lock, "lock-a"),
         "lock_held_by_b": lock_round(meeting, "b", lock, "lock-b"),
         "stat_per_second": stat_rate(root),
+        "races": {name: race(meeting, root, name, create) for name, create in CREATORS.items()},
     }
     result["findings"] = verdict(result)
     meeting.say("result", result)
