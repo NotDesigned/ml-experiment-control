@@ -131,6 +131,17 @@ impl Definition {
         }
         Ok(())
     }
+    /// Upload refuses what no Run could mount, before anyone spends the upload. The
+    /// client and the server's Begin both ask this. A definition that passes fits a
+    /// Run alone under any input name, Project and storage root. Several together can
+    /// still exceed the budget, so planning checks the actual mounts as well.
+    pub fn manifest_budget(&self) -> std::result::Result<(), ManifestsTooLarge> {
+        if serde_json::to_vec(self).is_ok_and(|bytes| bytes.len() <= MAX_DEFINITION_BYTES) {
+            Ok(())
+        } else {
+            Err(ManifestsTooLarge)
+        }
+    }
     pub fn asset_id(&self) -> String {
         format!("asset.{}", self.sha256)
     }
@@ -304,6 +315,12 @@ pub struct Mount {
 /// What the dataset mounts of one Run may serialize to, together. Each mount carries
 /// its full file inventory, and both backends freeze these bytes in launch metadata.
 pub const MAX_MANIFEST_BYTES: usize = 256 * 1024;
+/// What a mount takes around its definition, at most: the input name, Project, target,
+/// asset ID and a storage root of up to 4096 bytes.
+const MOUNT_ENVELOPE_BYTES: usize = 8 * 1024;
+/// About 2,000 files with 30-byte paths. Stored records can be larger, up to the
+/// 20,000 files [`Definition::validate`] accepts, but no upload starts one.
+pub const MAX_DEFINITION_BYTES: usize = MAX_MANIFEST_BYTES - MOUNT_ENVELOPE_BYTES;
 /// A Run's dataset mounts do not fit [`MAX_MANIFEST_BYTES`]. The unit [`Error`] cannot
 /// say so, and this refusal needs a code that tells the caller what to reduce.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -637,6 +654,45 @@ mod tests {
         assert_eq!(manifest_budget(&[mount(exact.clone())]), Ok(()));
         exact.root.push('x');
         assert_eq!(manifest_budget(&[mount(exact)]), Err(ManifestsTooLarge));
+    }
+    #[test]
+    fn a_definition_admitted_at_upload_fits_a_run_alone() {
+        let files = |count: usize| Definition {
+            sha256: "1".repeat(64),
+            archive_bytes: 1024 * 1024,
+            files: (0..count)
+                .map(|n| FileReceipt {
+                    path: format!("dataset/tasks/sample-{n:05}.bin"),
+                    sha256: "2".repeat(64),
+                    bytes: 128,
+                })
+                .collect(),
+        };
+        assert_eq!(files(1900).manifest_budget(), Ok(()));
+        assert_eq!(files(2000).manifest_budget(), Err(ManifestsTooLarge));
+        // Land exactly on the limit, then wrap it in the largest mount there can be.
+        let mut exact = files(1000);
+        let size = |d: &Definition| serde_json::to_vec(d).unwrap().len();
+        let room = MAX_DEFINITION_BYTES - size(&exact);
+        exact.files[0].path.push_str(&"x".repeat(room));
+        assert_eq!(size(&exact), MAX_DEFINITION_BYTES);
+        assert_eq!(exact.manifest_budget(), Ok(()));
+        let mut target = target();
+        target.backend_id = "b".repeat(128);
+        let mount = Mount {
+            name: "n".repeat(128),
+            receipt: Receipt {
+                contract: CONTRACT.into(),
+                project: "p".repeat(128),
+                target,
+                asset_id: exact.asset_id(),
+                root: format!("/{}", "r".repeat(4095)),
+                definition: exact.clone(),
+            },
+        };
+        assert_eq!(manifest_budget(&[mount]), Ok(()));
+        exact.files[0].path.push('x');
+        assert_eq!(exact.manifest_budget(), Err(ManifestsTooLarge));
     }
     #[test]
     fn datasets_above_four_gib_are_chunked_without_truncation() {

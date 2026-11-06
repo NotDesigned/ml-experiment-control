@@ -45,6 +45,19 @@ A cache is scoped to its executor/storage identity. An asset's presence on one
 backend does not prove readiness on another. Partial trees and hash mismatches
 are not accepted as ready data. Dataset directories remain outside results.
 
+A job killed during publication can leave a tree with no receipt. The next `Complete`
+verifies it, and if that fails, proves the uploaded parts against the archive hash,
+removes the tree and builds it again. The parts stay until the new tree is READY. A
+tree that has a receipt is never removed or rebuilt: a failed check on one is a
+failure, and the bytes stay as found. See [recovery](recovery.md#interrupted-dataset-publication).
+
+An upload's file list is limited to what one Run can mount: about 248 KiB, roughly
+2,000 files with 30-byte paths. `data upload` refuses a larger dataset after packing
+and before it sends anything; the server's Begin answers 422
+`DATASET_MANIFESTS_TOO_LARGE` for any other caller and for `data import-oss`. Package
+many small files into fewer. The same applies to an import recipe at Run creation,
+because a recipe does not go through Begin.
+
 ## Paths in the job
 
 Two variables point at data, with the same meaning on Slurm, SenseCore and PAI:
@@ -69,7 +82,8 @@ field even when the API has no READY receipt yet. The worker imports and
 verifies it on CPFS before starting training, or reuses an exact verified cache.
 This inline preparation consumes the allocated job's running time and resources.
 A Run's dataset manifests must fit 256 KiB together, and the full worker package,
-including checkpoint metadata, must fit 8 MiB. A larger set is refused with 422
+including checkpoint metadata, must fit 8 MiB. Each dataset passed the limit at upload,
+so a set that fails here holds several: it is refused with 422
 `DATASET_MANIFESTS_TOO_LARGE` when the Run is created or prepared, before any CPU
 copy job. `ready:null` alone does not prove that a physical cache is absent.
 
@@ -154,7 +168,7 @@ says `PROVIDER_DIAGNOSTICS_UNSUPPORTED`, with no provider call.
 
 The report contains current available bytes/inodes, marker/state identity and
 metadata hashes, modes/ownership, recorded part counts, part sizes, and an
-existing-lock nonblocking check. Part contents are not read. Up to 128 part
+existing-lock nonblocking check on the asset's own lock. Part contents are not read. Up to 128 part
 entries are included with an explicit truncation flag. A missing lock is never
 created. `statvfs` does not prove user-quota availability. The job logs its report
 in numbered, hashed parts, at most 19 lines, so a long report survives provider line

@@ -152,7 +152,9 @@ class ReadonlyDiagnostic(unittest.TestCase):
             with patch.object(diagnostic, "inspect", wraps=diagnostic.inspect) as reads:
                 report = diagnostic.diagnose(config)
             self.assertEqual(before, snapshot())
-            self.assertFalse((root / ".native-data.lock").exists())
+            lock = "demo/" + asset + ".lock"
+            self.assertFalse((root / lock).exists())
+            self.assertIn(lock, [row["path"] for row in report["checks"]])
             self.assertEqual(report["recorded_parts"], 1)
             self.assertFalse(report["ready_recorded"])
             self.assertEqual([part["size"] for part in report["parts"]], [5, 11])

@@ -232,7 +232,7 @@ def diagnose_data(config):
         slot = config["project"] + "/" + config["asset_id"] + "/"
         metadata = {}
         for path, limit, lock in [(".native-data.json", 4096, False),
-                                  (".native-data.lock", None, True),
+                                  (config["project"] + "/" + config["asset_id"] + ".lock", None, True),
                                   (slot + "state.json", 8 * 1024 * 1024, False)]:
             row, raw = inspect(root, path, limit, lock)
             report["checks"].append(row)

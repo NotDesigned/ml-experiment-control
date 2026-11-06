@@ -242,6 +242,13 @@ impl Service {
         command: Command,
         payload: &[u8],
     ) -> cloud::Result<Value> {
+        if let Command::Begin { definition } = &command {
+            definition.manifest_budget().map_err(|_| cloud::Error {
+                code: "DATASET_MANIFESTS_TOO_LARGE".into(),
+                http_status: Some(422),
+                uncertain: false,
+            })?;
+        }
         if !self.has_datasets() {
             return Err(cloud::Error::configuration());
         }

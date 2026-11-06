@@ -2136,6 +2136,55 @@ fn dataset_manifests_over_their_budget_are_refused_before_any_copy() {
 }
 
 #[test]
+fn a_dataset_no_run_could_mount_is_refused_at_begin_on_every_backend() {
+    let begin = |files: usize| ml_exp_core::datasets::Command::Begin {
+        definition: Definition {
+            sha256: "9".repeat(64),
+            archive_bytes: 1024 * 1024,
+            files: (0..files)
+                .map(|n| FileReceipt {
+                    path: format!("dataset/tasks/sample-{n:05}.bin"),
+                    bytes: 128,
+                    sha256: "f".repeat(64),
+                })
+                .collect(),
+        },
+    };
+    for kind in KINDS {
+        let c = CopyFixture::new(kind, 3);
+        let service = c.open();
+        let refused = service
+            .dataset_transfer("demo", c.f.executor, begin(5000), &[])
+            .unwrap_err();
+        assert_eq!(refused.code, "DATASET_MANIFESTS_TOO_LARGE");
+        assert_eq!(refused.http_status, Some(422));
+        assert!(!refused.uncertain);
+        // A definition that fits goes on to this fixture's refusal: it has no dataset
+        // storage configured.
+        let other = service
+            .dataset_transfer("demo", c.f.executor, begin(3), &[])
+            .unwrap_err();
+        assert_eq!(other.code, cloud::Error::configuration().code);
+        assert_eq!(c.provider.creates(), 0);
+    }
+    // This Slurm fixture has no data helper, so the refusal cannot have used SSH.
+    let f = Fixture::new(Kind::Pai);
+    let (slurm, _, _) = slurm_side(&f);
+    let transfer =
+        |files| slurm.dataset_transfer("demo", "slurm", begin(files), &[], &AtomicBool::new(false));
+    match transfer(5000) {
+        Err(slurm_service::Error::Admission(cause)) => {
+            assert_eq!(cause.0, ml_exp_core::datasets::ManifestsTooLarge::CAUSE);
+        }
+        other => panic!("expected the manifest refusal, got {other:?}"),
+    }
+    assert!(matches!(
+        transfer(3),
+        Err(slurm_service::Error::DatasetUnavailable)
+    ));
+}
+
+#[test]
 fn a_pai_run_over_the_manifest_budget_is_refused_before_it_exists() {
     let c = CopyFixture::new(Kind::Pai, 5000);
     let request = dataset_setup(&c)

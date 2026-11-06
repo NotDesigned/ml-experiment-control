@@ -2,7 +2,13 @@
 //! persistent data store. The callback contains a receipt, never dataset bytes.
 use clap::Parser;
 use ml_exp_core::datasets::import::{Config, DataChannel, Source};
-use std::{ffi::OsString, io::Read, path::PathBuf, process::ExitCode, sync::atomic::AtomicBool};
+use std::{
+    ffi::OsString,
+    io::Read,
+    path::PathBuf,
+    process::ExitCode,
+    sync::{Arc, atomic::AtomicBool},
+};
 const MAX_CONFIG_BYTES: usize = 8 * 1024 * 1024;
 #[derive(Parser)]
 struct Args {
@@ -36,6 +42,13 @@ fn config_bytes(args: &Args) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     }
     Ok(args.config_json.concat().into_bytes())
 }
+fn termination_flag() -> std::io::Result<Arc<AtomicBool>> {
+    let flag = Arc::new(AtomicBool::new(false));
+    for signal in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGINT] {
+        signal_hook::flag::register(signal, Arc::clone(&flag))?;
+    }
+    Ok(flag)
+}
 pub fn main_from(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     let args = match Args::try_parse_from(args) {
         Ok(a) => a,
@@ -67,18 +80,16 @@ pub fn main_from(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             serde_json::Value::Object(ml_exp_core::json::mapping(args.storage_json.as_bytes())?),
         )?;
         ml_exp_worker::cloud_data::scoped_cache(&config, &storage)?;
-        let receipt = ml_exp_worker::data_import::materialize(
-            &config,
-            &AtomicBool::new(false),
-            &mut |progress| {
+        let cancelled = termination_flag()?;
+        let receipt =
+            ml_exp_worker::data_import::materialize(&config, &cancelled, &mut |progress| {
                 println!(
                     "{}{}",
                     ml_exp_core::input_progress::MARKER,
                     serde_json::to_string(progress)?
                 );
                 Ok(())
-            },
-        )?;
+            })?;
         println!("ML_EXPD_DATA_READY={}", serde_json::to_string(&receipt)?);
         let http = reqwest::blocking::Client::builder()
             .no_proxy()
@@ -154,6 +165,12 @@ mod tests {
         let part = " ".repeat(MAX_CONFIG_BYTES / 2 + 1);
         let args = parse(&["--config-json", &part, "--config-json", &part]).unwrap();
         assert!(config_bytes(&args).is_err());
+    }
+    #[test]
+    fn a_term_signal_cancels_the_copy_instead_of_killing_it() {
+        let flag = termination_flag().unwrap();
+        signal_hook::low_level::raise(signal_hook::consts::SIGTERM).unwrap();
+        assert!(flag.load(std::sync::atomic::Ordering::Relaxed));
     }
     #[test]
     fn exactly_one_config_source_is_required() {

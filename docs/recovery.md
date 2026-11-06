@@ -106,6 +106,41 @@ Multipart transport is separately idempotent: GET the same session, resend missi
 identical parts and complete the same archive identity. Never discard a complete
 upload merely because publication returned 507; resolve storage capacity first.
 
+### Interrupted dataset publication
+
+Repeat the same `data upload`, or let the next Run's import reach `Complete`. Nothing
+needs clearing first.
+
+| What was left | What the next `Complete` does |
+| --- | --- |
+| A tree with no receipt that passes verification | Publishes it. Only the receipt was lost. |
+| A tree with no receipt that fails verification | Proves the parts against the archive hash, removes the tree and rebuilds. If the parts do not prove the archive, it fails and the tree stays. The parts stay until READY is saved. |
+| A tree with a receipt that fails verification | Fails, every time, and changes nothing. A published tree is never removed or rebuilt, and its parts are gone. Clearing it is an operator decision. |
+
+Script [data preparation](data.md) caches do not get this. A script is arbitrary code
+and may have had effects outside its tree, so running it again would replay an
+uncertain execution. Change its arguments or environment to get a new plan.
+
+On Slurm a `Complete` has 1200 seconds over SSH. Past that the API call fails, and the
+helper keeps going: it ignores the hangup from the lost session and holds the asset's
+lock until it finishes. A repeat `data upload` during that time fails after 10 seconds
+of waiting on the lock, and succeeds once the helper has saved READY. If the helper
+really died, the repeat finds what it left and rebuilds. A dataset that needs longer
+than 1200 seconds therefore takes more than one repeat, not a bigger limit. TERM or INT
+still cancels the helper, and it removes its own tree.
+
+Each asset has its own lock, `PROJECT/ASSET.lock` beside its directory, so a long import
+does not hold up another asset. Runs of the same asset wait on each other only while
+its tree is being built; hashing a tree that already has a receipt holds no lock. Two
+assets publishing at once can both pass the capacity check and then run out of room,
+which fails the job and removes the tree it was building.
+
+This relies on flock excluding across nodes on CPFS and NAS, which has not been tested.
+If it does not, the result is a failed job and not bad data: a tree reaches READY only
+after its bytes are hashed against the definition and it is confirmed complete at its
+final name, and every Run hashes it again at job start. The one state an operator has
+to clear is READY with a damaged or missing tree.
+
 ## Cancel or retry an exact Attempt
 
 Use the original native Submission (`ACTION`) and exact source Attempt:

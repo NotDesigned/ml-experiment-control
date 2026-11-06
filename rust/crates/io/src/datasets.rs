@@ -182,7 +182,8 @@ fn seal_tree(root: &Directory, generated: bool) -> io::Result<()> {
     }
     visit(root, 0, &mut 0, generated)
 }
-/// Cleanup is permitted only for the caller's own unpublished staging tree.
+/// Cleanup is permitted only for an unpublished tree: the caller's own staging, or
+/// one the caller has just confirmed no receipt covers.
 /// Traversal never follows a link; any unexpected type stops cleanup.
 pub fn remove_staging(parent: &Directory, tree: &Directory) -> io::Result<()> {
     fn visit(
