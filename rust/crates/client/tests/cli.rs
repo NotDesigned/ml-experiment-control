@@ -69,12 +69,12 @@ fn native_contract_validation_does_not_load_config_or_contact_http() {
 }
 
 #[test]
-fn default_preview_config_is_private_and_does_not_replace_existing_client_config() {
+fn default_config_is_private_and_leaves_the_python_client_config_alone() {
     let temp = tempfile::tempdir().unwrap();
-    let legacy = temp.path().join(".config/ml-expd/client.json");
-    create_private_dir(legacy.parent().unwrap()).unwrap();
-    let original = br#"{"url":"https://legacy.invalid","token":"legacy-test-secret"}"#;
-    write_atomic(&legacy, original, true).unwrap();
+    let python = temp.path().join(".config/ml-expd/client.json");
+    create_private_dir(python.parent().unwrap()).unwrap();
+    let original = br#"{"url":"https://python.invalid","token":"python-test-secret"}"#;
+    write_atomic(&python, original, true).unwrap();
 
     let displayed = json_output(
         command(temp.path())
@@ -102,33 +102,33 @@ fn default_preview_config_is_private_and_does_not_replace_existing_client_config
     assert_eq!(displayed["url"], "https://preview.invalid/ml-expd");
     assert_eq!(displayed["token_configured"], true);
     assert!(!displayed.to_string().contains("preview-test-secret"));
-    assert!(
-        temp.path()
-            .join(".config/ml-expd-rust/client.json")
-            .is_file()
-    );
-    assert_eq!(std::fs::read(&legacy).unwrap(), original);
+    assert!(temp.path().join(".config/ml-exp/client.json").is_file());
+    assert_eq!(std::fs::read(&python).unwrap(), original);
 
-    let explicit = json_output(
-        command(temp.path())
-            .arg("--config")
-            .arg(&legacy)
-            .args(["config", "show"])
-            .output()
-            .unwrap(),
-    );
-    assert_eq!(explicit["url"], "https://legacy.invalid");
-    assert!(!explicit.to_string().contains("legacy-test-secret"));
-    assert_eq!(std::fs::read(&legacy).unwrap(), original);
+    let explicit = command(temp.path())
+        .arg("--config")
+        .arg(&python)
+        .args(["config", "show"])
+        .output()
+        .unwrap();
+    assert!(!explicit.status.success());
+    assert!(explicit.stdout.is_empty());
+    assert!(!String::from_utf8_lossy(&explicit.stderr).contains("python-test-secret"));
+    assert_eq!(std::fs::read(&python).unwrap(), original);
 }
 
 #[test]
 fn environment_url_and_token_candidates_drive_the_real_read_only_request() {
     let temp = tempfile::tempdir().unwrap();
+    let saved_token = temp.path().join("saved-token");
+    write_atomic(&saved_token, b"saved-test-secret\n", true).unwrap();
     let config = temp.path().join("settings.json");
     write_atomic(
         &config,
-        br#"{"url":"https://saved.invalid","token":"saved-test-secret"}"#,
+        &serde_json::to_vec(
+            &serde_json::json!({"url":"https://saved.invalid","token_file":saved_token}),
+        )
+        .unwrap(),
         true,
     )
     .unwrap();
@@ -264,13 +264,8 @@ fn environment_token_file_and_xdg_config_paths_remain_supported() {
         .output()
         .unwrap();
     assert_eq!(json_output(output)["token_configured"], true);
-    assert!(xdg.join("ml-expd-rust/client.json").is_file());
-    assert!(
-        !temp
-            .path()
-            .join(".config/ml-expd-rust/client.json")
-            .exists()
-    );
+    assert!(xdg.join("ml-exp/client.json").is_file());
+    assert!(!temp.path().join(".config/ml-exp/client.json").exists());
 
     let ambiguous = command(temp.path())
         .env("ML_EXPD_API_URL", "https://preview.invalid")

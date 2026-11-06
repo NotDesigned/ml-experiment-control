@@ -44,7 +44,7 @@ enum Command {
         command: ml_exp_client::debug::Command,
     },
     /// Build, inspect and reconcile a reusable Dockerfile environment.
-    #[command(name = "env", alias = "runtime")]
+    #[command(name = "env")]
     Environment {
         #[command(subcommand)]
         command: ml_exp_client::runtime::Command,

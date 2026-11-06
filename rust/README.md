@@ -93,9 +93,8 @@ exact version. The Windows installer
 adds its per-user directory to PATH; open a new terminal if needed.
 
 For clients through 0.1.15, use the new installer once: their old update manifest
-selects a retired executable name. Configuration stays in the existing
-`ml-expd-rust/client.json` location under XDG_CONFIG_HOME or `.config` in HOME
-(USERPROFILE on Windows). Later updates use the canonical `ml-exp` release entry.
+selects a retired executable name. Configuration is in `ml-exp/client.json` under
+XDG_CONFIG_HOME or `.config` in HOME (USERPROFILE on Windows). Later updates use the canonical `ml-exp` release entry.
 Windows credential files must allow only the current user, SYSTEM and local
 Administrators. Client-created settings get a protected DACL; broad inherited
 credentials and reparse points are rejected. Windows uploads contain regular

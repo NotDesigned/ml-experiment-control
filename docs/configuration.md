@@ -18,7 +18,7 @@ neither command contacts the API. On POSIX systems give the token file's directo
 mode 0700 and the file mode 0600. Windows credential files must allow only the
 current user, SYSTEM and local Administrators.
 
-Settings are saved in `ml-expd-rust/client.json` under `$XDG_CONFIG_HOME`, or under
+Settings are saved in `ml-exp/client.json` under `$XDG_CONFIG_HOME`, or under
 `.config` in your home directory (`USERPROFILE` on Windows). Keep this file, token
 files, client state and downloads outside uploaded source.
 

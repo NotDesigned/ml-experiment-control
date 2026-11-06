@@ -196,10 +196,12 @@ fn cli_all_project_commands_use_the_baseline_routes_and_exactly_one_mutation() {
         let temp = tempfile::tempdir().unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}/ml-expd", listener.local_addr().unwrap());
+        let token = temp.path().join("token");
+        write_atomic(&token, b"project-test-secret\n", true).unwrap();
         let settings = temp.path().join("settings.json");
         write_atomic(
             &settings,
-            &serde_json::to_vec(&json!({"url":base,"token":"project-test-secret"})).unwrap(),
+            &serde_json::to_vec(&json!({"url":base,"token_file":token})).unwrap(),
             true,
         )
         .unwrap();
