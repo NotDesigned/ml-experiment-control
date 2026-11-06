@@ -167,7 +167,7 @@ impl Service {
         request: ArtifactRequest,
         now: &str,
     ) -> cloud::Result<Value> {
-        let _lock = self.lock()?;
+        let lock = self.lock()?;
         let prepared = self.worker_authority(project, run, attempt, token)?;
         let objects = self
             .objects
@@ -219,7 +219,7 @@ impl Service {
                 saved = Some(pending);
             }
         }
-        let mut saved = saved.ok_or_else(cloud::Error::evidence)?;
+        let saved = saved.ok_or_else(cloud::Error::evidence)?;
         let published = saved.state.is_some();
         match request.operation {
             ArtifactOperation::Prepare { .. } => Ok(
@@ -241,11 +241,31 @@ impl Service {
             }
             ArtifactOperation::Complete => {
                 if !published {
+                    // Reading a whole archive can take minutes, and holding the lock
+                    // for that answered every other job and command with BUSY.
+                    drop(lock);
                     objects.verify(&saved.bundle.archive).map_err(io)?;
-                    saved.state = Some(
-                        State::new(saved.bundle.clone()).map_err(why!(cloud::Error::evidence()))?,
-                    );
-                    self.artifact_save(&prepared, &saved)?;
+                    let _lock = self.lock()?;
+                    let mut current = self
+                        .artifact_saved(&prepared)?
+                        .ok_or_else(cloud::Error::evidence)?;
+                    if current.bundle != saved.bundle {
+                        return Err(cloud::Error::evidence());
+                    }
+                    if current.administrative_release.is_some() {
+                        return Err(cloud::Error {
+                            code: "ARTIFACTS_ADMINISTRATIVELY_REMOVED".into(),
+                            http_status: Some(410),
+                            uncertain: false,
+                        });
+                    }
+                    if current.state.is_none() {
+                        current.state = Some(
+                            State::new(current.bundle.clone())
+                                .map_err(why!(cloud::Error::evidence()))?,
+                        );
+                        self.artifact_save(&prepared, &current)?;
+                    }
                 }
                 Ok(
                     json!({"published":true,"sha256":saved.bundle.archive.sha256,"bytes":saved.bundle.archive.bytes}),

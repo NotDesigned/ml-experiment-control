@@ -21,7 +21,7 @@ use ml_exp_core::{
     operations::FrozenFiles,
     slurm::helper,
 };
-use ml_exp_io::directory::{Directory, FileLock, LockOptions};
+use ml_exp_io::directory::{Directory, FileLock, LockOptions, Wait};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -120,6 +120,9 @@ fn client_transport(definition: &Definition) -> cloud::Result<Shared> {
     }
     Ok(Arc::new(client))
 }
+/// A short hold answers its neighbours with a short delay rather than a failure.
+const LOCK_WAIT: Duration = Duration::from_secs(5);
+
 impl Service {
     pub fn initialize(settings: &read_config::Settings) -> cloud::Result<()> {
         settings
@@ -306,7 +309,16 @@ impl Service {
     }
     fn lock(&self) -> cloud::Result<FileLock> {
         self.directory
-            .lock(OsStr::new(LOCK), LockOptions::default())
+            .lock(
+                OsStr::new(LOCK),
+                LockOptions {
+                    wait: Wait::Until {
+                        deadline: std::time::Instant::now() + LOCK_WAIT,
+                        cancelled: None,
+                    },
+                    ..Default::default()
+                },
+            )
             .map_err(why_lock!(
                 cloud::Error {
                     code: "CLOUD_RUN_BUSY".into(),
