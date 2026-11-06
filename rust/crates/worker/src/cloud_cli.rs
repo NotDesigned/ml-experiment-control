@@ -1,4 +1,4 @@
-use clap::{ArgGroup, Parser};
+use clap::Parser;
 use std::{
     ffi::OsString,
     process::ExitCode,
@@ -7,20 +7,16 @@ use std::{
 #[derive(Parser)]
 #[command(
     name = "ml-exp-worker-rs cloud-launch",
-    about = "Start or inspect one cloud Attempt from its saved launch file",
-    group(ArgGroup::new("package").required(true).args(["package_json", "package_url"]))
+    about = "Start or inspect one cloud Attempt from its saved launch file"
 )]
 struct Args {
-    /// Legacy inline entrypoint for existing frozen worker commands.
-    #[arg(long, hide = true)]
-    package_json: Option<String>,
     /// Read launch metadata through the existing Attempt exchange.
-    #[arg(long, requires_all = ["package_token", "package_sha256"])]
-    package_url: Option<String>,
-    #[arg(long, requires = "package_url", hide = true)]
-    package_token: Option<String>,
-    #[arg(long, requires = "package_url")]
-    package_sha256: Option<String>,
+    #[arg(long)]
+    package_url: String,
+    #[arg(long, hide = true)]
+    package_token: String,
+    #[arg(long)]
+    package_sha256: String,
     #[arg(long)]
     inspect: bool,
     /// Retry only retained metadata delivery; never start or initialize training.
@@ -45,27 +41,11 @@ pub(crate) fn main_from(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         }
     };
     let work = || -> ml_exp_worker::managed::Result<_> {
-        let package = if let Some(json) = &args.package_json {
-            if json.len() > ml_exp_core::cloud::launch::MAX_INLINE_BYTES {
-                eprintln!(
-                    "legacy inline package exceeds 64 KiB; use a Runtime supporting package-download.v1"
-                );
-                return Err(ml_exp_worker::managed::Error::Configuration);
-            }
-            ml_exp_worker::cloud::decode(json.as_bytes())?
-        } else {
-            ml_exp_worker::cloud::download(
-                args.package_url
-                    .as_deref()
-                    .ok_or(ml_exp_worker::managed::Error::Configuration)?,
-                args.package_token
-                    .as_deref()
-                    .ok_or(ml_exp_worker::managed::Error::Configuration)?,
-                args.package_sha256
-                    .as_deref()
-                    .ok_or(ml_exp_worker::managed::Error::Configuration)?,
-            )?
-        };
+        let package = ml_exp_worker::cloud::download(
+            &args.package_url,
+            &args.package_token,
+            &args.package_sha256,
+        )?;
         let path =
             std::env::current_exe().map_err(|_| ml_exp_worker::managed::Error::Configuration)?;
         ml_exp_worker::cloud::verify_binary(&path, &package.worker_sha256)?;

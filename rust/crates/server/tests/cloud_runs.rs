@@ -72,7 +72,6 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         source_dir: "/workspace".into(),
         worker_path: "/opt/ml-expd/worker".into(),
         worker_sha256: format!("sha256:{}", "3".repeat(64)),
-        worker_features: ["storage-layout.v1".into(), "package-download.v1".into()].into(),
     };
     let credentials = temp.path().join("credentials.json");
     private(
@@ -209,8 +208,7 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         value
     );
     assert!(!runs.join("setup-only").exists());
-    // CPU Runs use the same durable preparation path. Storage provisioning is
-    // frozen only for new authorship; legacy absence remains absent on replay.
+    // CPU Runs use the same durable preparation path, with the storage plan frozen.
     let mut cpu = request.clone();
     cpu.run_id = "cpu-only".into();
     cpu.resources.gpus = 0;
@@ -220,25 +218,13 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         .create_run("demo", cpu.clone(), "2026-10-29T00:00:00Z")
         .unwrap();
     let cpu_manifest = runs.join("cpu-only/manifest.json");
-    let mut frozen: Value = serde_json::from_slice(&fs::read(&cpu_manifest).unwrap()).unwrap();
+    let frozen: Value = serde_json::from_slice(&fs::read(&cpu_manifest).unwrap()).unwrap();
     assert_eq!(frozen["env"]["EXPERIMENT_LABEL"], "frozen literal $(text)");
     assert_eq!(
         frozen["evaluation"]["protocol"]["env"],
         serde_json::json!(cpu.env)
     );
     assert_eq!(frozen["native_cloud"]["storage"]["mount"], "/mnt/workspace");
-    frozen["native_cloud"]
-        .as_object_mut()
-        .unwrap()
-        .remove("storage");
-    fs::write(&cpu_manifest, serde_json::to_vec(&frozen).unwrap()).unwrap();
-    let mut old_attempt = frozen.clone();
-    old_attempt["attempt_id"] = json!("attempt-001");
-    fs::write(
-        runs.join("cpu-only/attempts/attempt-001/attempt.json"),
-        serde_json::to_vec(&old_attempt).unwrap(),
-    )
-    .unwrap();
     assert_eq!(
         service
             .create_run("demo", cpu.clone(), "2026-10-29T00:01:00Z")
@@ -385,10 +371,9 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     let package = execution.package().unwrap();
     assert_eq!(package.config.datasets[0].receipt.definition, definition);
     assert!(package.imports.is_empty());
-    assert!(serde_json::to_vec(&package).unwrap().len() <= 65536);
     let ready_bytes = fs::read(&ready_file).unwrap();
-    // A verified upload with no backend READY receipt needs the full import
-    // inventory too. This was the real 304-file >64KiB failure.
+    // A verified upload with no backend READY receipt carries the full import
+    // inventory too, which is why the provider command only names the package.
     let mut staging = ready.clone();
     staging.ready = None;
     fs::write(
@@ -403,7 +388,7 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         name: "data".into(),
     }];
     service
-        .create_run("demo", download_run.clone(), "2026-10-29T00:00:00Z")
+        .create_run("demo", download_run, "2026-10-29T00:00:00Z")
         .unwrap();
     let prepare_download = || {
         service
@@ -456,37 +441,6 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         download_execution.job.command[7],
         ml_exp_core::slurm::helper::sha256_bytes(&download_bytes)
     );
-    assert!(download_package.command(&runtime.worker_path).is_err());
-    let mut legacy_config = config.clone();
-    legacy_config["backends"][0]["runtimes"][&runtime.runtime_id]["worker_features"] =
-        json!(["storage-layout.v1"]);
-    let legacy = Service::open(
-        settings.clone(),
-        Settings::from_slice(&serde_json::to_vec(&legacy_config).unwrap()).unwrap(),
-        sources.clone(),
-        None,
-        Default::default(),
-    )
-    .unwrap();
-    download_run.run_id = "legacy-inventory".into();
-    legacy
-        .create_run("demo", download_run, "2026-10-29T00:00:00Z")
-        .unwrap();
-    let error = legacy
-        .prepare(
-            "demo",
-            "legacy-inventory",
-            Approval {
-                max_gpu_hours: 1.,
-                reason: String::new(),
-            },
-            "2026-10-29T00:01:00Z",
-            "2026-10-29T01:01:00Z",
-            &"5".repeat(32),
-        )
-        .unwrap_err();
-    assert_eq!(error.code, "LAUNCH_METADATA_TOO_LARGE");
-    assert_eq!(error.http_status, Some(422));
     fs::write(&ready_file, &ready_bytes).unwrap();
     // Simulate a stop after the complete copy intent was saved but before its
     // outbox entry. A later API URL or launcher must not rebuild this command.
@@ -572,8 +526,7 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         serde_json::to_vec(&json!({"state":absent,"archive_verified":true})).unwrap(),
     )
     .unwrap();
-    // A download-capable plan no longer fails on the inline size of the
-    // recomputed inventory; reading returns the same frozen Submission.
+    // Reading returns the same frozen Submission after the inventory is recomputed.
     assert_eq!(
         service
             .for_run("demo", "full-inventory", "2026-10-29T00:02:00Z")
@@ -627,10 +580,10 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     let listed = service.run_submissions("demo", "full-inventory").unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0]["submission_id"], action);
-    assert!(
+    assert_eq!(
         serde_json::from_slice::<Value>(&fs::read(&cpu_manifest).unwrap()).unwrap()["native_cloud"]
-            .get("storage")
-            .is_none()
+            ["storage"],
+        frozen["native_cloud"]["storage"]
     );
     let first = service
         .create_run("demo", request.clone(), "2026-10-29T00:00:00Z")
@@ -893,8 +846,8 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         "history":{"contract":ml_exp_core::managed::history::CONTRACT,"config_sha256":config_sha256,"start":null,"next":{"device":1,"inode":2,"offset_bytes":bytes.len(),"prefix_sha256":sha(&bytes)},"bytes":bytes,"total_bytes":bytes.len(),"process_finished":false},"checkpoint":null})).unwrap();
     let payload = serde_json::to_vec(&packet).unwrap();
     let http = reqwest::blocking::Client::new();
-    let channel = package.channel.as_ref().unwrap();
-    let download_channel = download_package.channel.as_ref().unwrap();
+    let channel = &package.channel;
+    let download_channel = &download_package.channel;
     let download_path = "/api/worker-exchange/demo/download-inventory/attempt-001/package";
     for _ in 0..2 {
         let response = http

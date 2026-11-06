@@ -65,7 +65,7 @@ impl Service {
         let package = execution
             .package()
             .map_err(why!(cloud::Error::evidence()))?;
-        let channel = package.channel.ok_or_else(cloud::Error::configuration)?;
+        let channel = package.channel;
         let collector = self.backends[&execution.backend_id]
             .collector
             .as_ref()

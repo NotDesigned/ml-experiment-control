@@ -131,7 +131,7 @@ pub fn download(url: &str, token: &str, expected: &str) -> managed::Result<Packa
     eprintln!("ML_EXPD_PACKAGE_DOWNLOAD=START");
     let bytes = download_with_retries(&client, url, token, expected)?;
     let package = decode(&bytes).map_err(|_| download_error("decode", Some(200)))?;
-    if package.channel.as_ref() != Some(&channel) {
+    if package.channel != channel {
         return Err(download_error("scope", Some(200)));
     }
     eprintln!("ML_EXPD_PACKAGE_DOWNLOAD=READY bytes={}", bytes.len());
@@ -246,17 +246,11 @@ pub fn run(
     prepare(package, runtime)?;
     let original = managed::inspect(&package.config)?;
     if original.phase == managed::Phase::Finished {
-        if package.channel.is_some() {
-            let _ = crate::cloud_exchange::drain(package, cancelled);
-        }
+        let _ = crate::cloud_exchange::drain(package, cancelled);
         if package.result_upload && crate::cloud_artifacts::publish(package).is_err() {
             eprintln!("ML_EXPD_RESULTS=DEFERRED; retained on backend storage");
         }
         return Ok(original);
-    }
-    if package.channel.is_none() {
-        crate::cloud_data::materialize(package, cancelled)?;
-        return managed::run(&package.config, cancelled);
     }
     let stop = std::sync::atomic::AtomicBool::new(false);
     let wake = (std::sync::Mutex::new(()), std::sync::Condvar::new());
@@ -327,6 +321,11 @@ mod tests {
         let workdir = temp.path().join("code");
         std::fs::create_dir(&root).unwrap();
         std::fs::create_dir(&workdir).unwrap();
+        let storage = ml_exp_core::cloud::launch::StorageLayout {
+            mount: temp.path().into(),
+            runs: root.clone(),
+            datasets: temp.path().join("datasets"),
+        };
         let argv=vec!["/bin/sh".into(),"-c".into(),"printf once >> \"$STATE_DIR/count\"; printf '{\"name\":\"loss\",\"value\":1,\"unit\":\"nats/token\",\"step\":1}\\n' > \"$METRICS_PATH\"".into()];
         let package = ml_exp_core::cloud::launch::compile(ml_exp_core::cloud::launch::Input {
             root: root.to_str().unwrap(),
@@ -337,6 +336,12 @@ mod tests {
             argv: &argv,
             timeout_seconds: 3,
             worker_sha256: &format!("sha256:{}", "a".repeat(64)),
+            storage,
+            // Nothing listens here, so delivery defers without leaving this host.
+            channel: ml_exp_core::cloud::exchange::Channel {
+                url: "https://127.0.0.1:1/api/worker-exchange/demo/train/attempt-001".into(),
+                token: "b".repeat(64),
+            },
         })
         .unwrap();
         let receipt = run(&package, &BTreeMap::new(), &AtomicBool::new(false)).unwrap();
@@ -420,6 +425,10 @@ mod download_tests {
             artifacts::FileReceipt,
             datasets::{self, Definition, Mount, Receipt},
         };
+        let channel = ml_exp_core::cloud::exchange::Channel {
+            url: "https://api.example/api/worker-exchange/demo/train/attempt-001".into(),
+            token: "b".repeat(64),
+        };
         let mut package = ml_exp_core::cloud::launch::compile(ml_exp_core::cloud::launch::Input {
             root: "/mnt/runs",
             project: "demo",
@@ -429,12 +438,14 @@ mod download_tests {
             argv: &["/bin/true".into()],
             timeout_seconds: 60,
             worker_sha256: &format!("sha256:{}", "a".repeat(64)),
+            storage: ml_exp_core::cloud::launch::StorageLayout {
+                mount: "/mnt".into(),
+                runs: "/mnt/runs".into(),
+                datasets: "/mnt/data".into(),
+            },
+            channel: channel.clone(),
         })
         .unwrap();
-        let channel = ml_exp_core::cloud::exchange::Channel {
-            url: "https://api.example/api/worker-exchange/demo/train/attempt-001".into(),
-            token: "b".repeat(64),
-        };
         let target = helper::Target {
             backend_id: "pai".into(),
             profile_sha256: format!("sha256:{}", "c".repeat(64)),
@@ -468,7 +479,6 @@ mod download_tests {
                 None,
             )
             .unwrap();
-        package.channel = Some(channel.clone());
         package.imports.push(datasets::import::Config {
             root: "/mnt/data".into(),
             project: "demo".into(),
@@ -484,8 +494,7 @@ mod download_tests {
     fn full_304_file_package_downloads_and_decodes_without_entering_argv_or_starting_training() {
         let package = large_package();
         let bytes = serde_json::to_vec(&serde_json::to_value(&package).unwrap()).unwrap();
-        assert!(bytes.len() > ml_exp_core::cloud::launch::MAX_INLINE_BYTES);
-        assert!(package.command("/worker").is_err());
+        assert!(bytes.len() > 64 * 1024);
         let command = package.download_command("/worker").unwrap();
         assert!(command.join(" ").len() < 1024);
         let expected = helper::sha256_bytes(&bytes);
@@ -494,7 +503,7 @@ mod download_tests {
         let got = download_bytes(
             &client(),
             &url,
-            &package.channel.as_ref().unwrap().token,
+            &package.channel.token,
             &expected,
             Duration::from_secs(5),
         )

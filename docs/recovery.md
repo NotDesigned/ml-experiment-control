@@ -216,7 +216,6 @@ There is no automatic preemption recovery. ACP uses `backoff_limit: 0`; the
 collector never launches replacement training. Worker restore, inside-job data,
 training and result return share one worker duration. A hard kill can interrupt
 publication; offline recovery can only return bytes that were actually persisted.
-Detailed diagnostics require the corresponding frozen image capabilities.
 
 Interrupted server preparations become RECONCILE_REQUIRED at startup. Observe
 the original Runtime/copy/script dependencies, then explicitly continue once

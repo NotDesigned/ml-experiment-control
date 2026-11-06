@@ -71,8 +71,7 @@ pub fn materialization_job(
     storage.validate()?;
     crate::submission::validate_submission_token(request_id)
         .map_err(|_| Error("materialization request"))?;
-    if !runtime.worker_features.contains("storage-layout.v1")
-        || config.root != storage.datasets.to_string_lossy()
+    if config.root != storage.datasets.to_string_lossy()
         || config.timeout_seconds != 3600
         || !matches!(
             config.source,
@@ -131,7 +130,6 @@ mod tests {
             source_dir: "/ml-expd/source".into(),
             worker_path: "/usr/local/bin/ml-exp-worker-rs".into(),
             worker_sha256: format!("sha256:{}", "d".repeat(64)),
-            worker_features: ["storage-layout.v1".into()].into(),
         };
         let storage = super::super::launch::StorageLayout {
             mount: "/mnt/workspace".into(),
@@ -197,12 +195,6 @@ mod tests {
             materialization_job(&runtime, &config, &channel, &storage, &"4".repeat(32))
                 .unwrap()
                 .submission_token
-        );
-        let mut unsupported = runtime;
-        unsupported.worker_features.clear();
-        assert!(
-            materialization_job(&unsupported, &config, &channel, &storage, &"3".repeat(32))
-                .is_err()
         );
     }
 }

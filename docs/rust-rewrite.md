@@ -115,26 +115,17 @@ confirmed. A retained `last_error` is historical evidence, not the latest state.
 
 ## Latest implementation completion pass
 
-After changing the worker or its bridge, check the **installed** package with
-the builder service's interpreter and environment. Updating a source checkout
-does not update a wheel installed in another environment. Run
-`tools/check_native_builder.py --config BUILDER_JSON --bridge-sha256 ACCEPTED_MODULE_SHA256
---worker-sha256 sha256:ACCEPTED_WORKER_SHA256 --require-feature shared-cache-identity.v2`
-with that interpreter, without `PYTHONPATH` or `PYTHONHOME`. The check prints
-the imported module path/hash and freezes the actual worker declaration in a
-temporary local marker; it starts no provider job. Then exercise an actual
-build through the running daemon and reconcile its receipt. A source-only
-capability probe does not establish that the service loads the same code.
+After changing the worker or its bridge, updating a source checkout does not update
+a wheel installed in another environment. Exercise an actual build through the
+running daemon and reconcile its receipt to establish what the service loads.
 
 Bounded native PAI CPU execution, restore and results passed on Tokyo.
 Three-backend training acceptance remains a separate pending check. Contracts from
 this pass that still bound behavior:
 
-- **Storage layout.** With a `storage-layout.v1` worker, fresh PAI/NAS workspaces need
-  no manual Run or cache-parent directories; the mounted personal root must exist.
-  Links, escaping paths and shared-writable descendants are refused without repair.
-  Runtime receipts freeze the exact worker's capabilities, so older images and Run
-  identities keep their original package and command contract.
+- **Storage layout.** Fresh PAI/NAS workspaces need no manual Run or cache-parent
+  directories; the mounted personal root must exist. Links, escaping paths and
+  shared-writable descendants are refused without repair.
 - **Requests and credentials.** PAI CPU Runs pass the shared request shape; Slurm GPU
   validation is unchanged. Native credentials require service ownership and mode
   0600/0400, and configuration failures name the stage without exposing values.

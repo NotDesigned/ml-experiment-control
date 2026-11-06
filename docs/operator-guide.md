@@ -145,8 +145,10 @@ experiment file.
    `slurm` materializer map. Verify that a bounded build reaches READY and that the
    selected backend can read its digest.
 4. **Enable training deliberately.** Set finite resource limits, then `enabled` and
-   `allow_run_creation`, and optionally `polling`. Run `--check` again, restart, and
-   read `ml-exp get /api/readiness` from a client.
+   `allow_run_creation`, and optionally `polling`. Cloud Run creation also needs
+   `exchange`, because every worker fetches its launch package through it; `--check`
+   refuses the combination without it. Run `--check` again, restart, and read
+   `ml-exp get /api/readiness` from a client.
 5. **Validate one bounded experiment.** The researcher uses the
    [experiment flow](api-quickstart.md#first-experiment), then checks progress, a
    checkpoint restore and downloaded result hashes with the operator. Expand to
@@ -171,10 +173,8 @@ configured registry; local BuildKit is the alternative. The daemon has no Docker
 socket access. Build push credentials are separate from training pull credentials:
 a builder login does not authorize a backend to pull.
 
-After changing the worker or bridge, check the installed bridge with the builder's
-own interpreter using `tools/check_native_builder.py`, then exercise a real build
-through the running daemon. Updating a source checkout does not update what the
-service loads.
+After changing the worker or bridge, exercise a real build through the running
+daemon. Updating a source checkout does not update what the service loads.
 
 ## Optional W&B
 

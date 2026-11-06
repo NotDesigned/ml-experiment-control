@@ -247,26 +247,22 @@ executes this CPU preparation before `sbatch`, so training nodes need no Interne
 SenseCore uses its configured debug CPU ACP data copier. PAI executes preparation
 inside the allocated DLC job and counts this time toward the job's time limit.
 It uses the approved persistent mount; an absent mount is never created locally.
-New script-enabled cloud Runs require an image worker declaring
-`script-preparation.v1`; old frozen images keep their original capabilities.
-Workers from 0.1.14 also declare `shared-cache-identity.v2`. Shared dataset
-markers bind the storage target and root inode, while the mount-local device
-number is informational. Each process still checks its open directories for
-replacement, and cache reuse verifies file sizes, permissions and SHA256.
-Upgrading the API alone cannot change a worker frozen into an existing image.
+Shared dataset markers bind the storage target and root inode, while the
+mount-local device number is informational. Each process still checks its open
+directories for replacement, and cache reuse verifies file sizes, permissions and
+SHA256.
 
-New workers from 0.1.28 declare package-download.v1. Their cloud command is
-short: ml-exp-worker-rs cloud-launch --package-url ... --package-sha256 ...
-plus the existing Attempt token. The same launch JSON is kept in the original
-Submission and fetched through its worker-exchange scope before normal startup.
-File inventories do not enter the provider command. No extra credential, launch
-receipt or data copy is introduced; retries only read that same JSON. Download
-errors report their operation and HTTP status without printing credentials.
-
-Existing images retain --package-json and its 64 KiB argument limit. Upgrade
-the worker in a new Runtime to use the shorter command, or publish the dataset
-to shared storage first. Updating the API does not rewrite old Runtime, Run or
-Submission identities. Slurm's existing staged/offline entrypoint is unchanged.
+Every Runtime contains the worker built with this release, so nothing asks a worker
+what it supports. The cloud command is short: ml-exp-worker-rs cloud-launch
+--package-url ... --package-sha256 ... plus the existing Attempt token. The launch
+JSON, at most 8 MiB, is kept in the original Submission and fetched through its
+worker-exchange scope before normal startup. File inventories do not enter the
+provider command. No extra credential, launch receipt or data copy is introduced;
+retries only read that same JSON. Download errors report their operation and HTTP
+status without printing credentials. This makes the exchange a requirement for
+creating cloud Runs: `allow_run_creation` without `exchange` is refused at
+`--check`, while a server that creates no Runs may still omit it. Slurm's staged and
+offline entrypoint is unchanged.
 
 For SenseCore, preparation status retains the CPU job's identity and distinguishes
 failure from uncertainty and ordinary waiting. A failed copy reports
@@ -532,12 +528,10 @@ preparation, authorization, metric, checkpoint and result flow. Slurm GPU profil
 retain their positive-GPU rule. CPU Runs still require a finite positive approval
 ceiling and walltime; their GPU reservation is zero.
 
-New images freeze the exact worker's declared features in their Runtime receipt.
-A worker declaring `storage-layout.v1` can create its own private Run directories
-and dataset-cache parents beneath the already mounted personal CPFS/NAS root.
+The worker creates its own private Run directories and dataset-cache parents beneath
+the already mounted personal CPFS/NAS root, from a storage plan frozen into the Run.
 It never creates the mount, changes its permissions or adopts an unmarked cache.
-CPU data-copy jobs use the same plan. Old Runs and images keep their original
-requirements; they never gain new command parameters implicitly.
+CPU data-copy jobs use the same plan.
 
 The worker executable must run on the chosen image's Linux/libc version.
 Slurm gateway helper configuration must use exactly the same `target` as its

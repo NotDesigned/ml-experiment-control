@@ -193,6 +193,44 @@ fn single_config_initializes_once_then_supports_restart_without_reinitializing()
     }
 }
 
+/// Every worker fetches its package through the exchange, so this refuses before
+/// any Run or outbox entry exists. A server that creates nothing may still omit it.
+#[test]
+fn run_creation_without_an_exchange_refuses_at_check_and_read_only_stays_valid() {
+    let fixture = Fixture::new();
+    let root = fixture.temp.path();
+    let mut cloud: Value =
+        serde_json::from_str(include_str!("../../../deploy/pai.example.json")).unwrap();
+    cloud["backends"][0]["credentials_file"] = json!(root.join("credentials.json"));
+    cloud["backends"][0]["registry_auth_file"] = Value::Null;
+    cloud.as_object_mut().unwrap().remove("exchange");
+    cloud.as_object_mut().unwrap().remove("artifacts");
+    cloud["allow_run_creation"] = json!(true);
+    write(
+        &root.join("credentials.json"),
+        &json!({"provider":"pai","access_key_id":"owned-fixture","access_key_secret":"synthetic-sensitive-value"}),
+    );
+    write(&root.join("cloud.json"), &cloud);
+    let mut config = fixture.value();
+    config["cloud_config"] = json!(root.join("cloud.json"));
+    write(&fixture.config, &config);
+    let before = tree(root);
+    for mode in ["--check", "--initialize"] {
+        refused(
+            &fixture.command(mode),
+            "cloud_run_creation_requires_exchange",
+        );
+        assert!(!fixture.registry.exists());
+        assert_eq!(before, tree(root));
+    }
+    cloud["allow_run_creation"] = json!(false);
+    write(&root.join("cloud.json"), &cloud);
+    assert_eq!(
+        value(fixture.command("--check"))["configuration_valid"],
+        true
+    );
+}
+
 #[test]
 fn invalid_private_dependencies_block_bootstrap_before_creating_any_namespace() {
     let fixture = Fixture::new();

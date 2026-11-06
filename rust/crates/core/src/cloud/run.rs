@@ -16,22 +16,9 @@ pub struct Runtime {
     pub source_dir: String,
     pub worker_path: String,
     pub worker_sha256: String,
-    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
-    pub worker_features: std::collections::BTreeSet<String>,
 }
 impl Runtime {
     pub fn validate(&self) -> Result<()> {
-        if self.worker_features.iter().any(|f| {
-            !matches!(
-                f.as_str(),
-                "storage-layout.v1"
-                    | "script-preparation.v1"
-                    | "shared-cache-identity.v2"
-                    | "package-download.v1"
-            )
-        }) {
-            return Err(Error("unsupported worker feature"));
-        }
         crate::sources::validate_source_id(&self.source_id).map_err(|_| Error("source ID"))?;
         if !self
             .runtime_id
@@ -189,7 +176,7 @@ pub fn execution(
     root: &str,
     token: &str,
     allocation: pai::Allocation,
-    channel: Option<exchange::Channel>,
+    channel: exchange::Channel,
 ) -> Result<action::Execution> {
     runtime.validate()?;
     let project = &binding.project;
@@ -233,6 +220,9 @@ pub fn execution(
         argv: &request.command,
         timeout_seconds: request.walltime_seconds,
         worker_sha256: &runtime.worker_sha256,
+        storage: serde_json::from_value(run["native_cloud"]["storage"].clone())
+            .map_err(|_| Error("frozen cloud storage"))?,
+        channel,
     })?;
     package.manifest.environment.extend(
         crate::environment::from_document(run).map_err(|_| Error("frozen Run environment"))?,
@@ -308,13 +298,7 @@ pub fn execution(
     {
         return Err(Error("frozen scheduling priority"));
     }
-    let download = runtime.worker_features.contains("package-download.v1") && channel.is_some();
-    package.channel = channel;
-    let command = if download {
-        package.download_command(&runtime.worker_path)?
-    } else {
-        package.command(&runtime.worker_path)?
-    };
+    let command = package.download_command(&runtime.worker_path)?;
     let job = Job {
         project: project.clone(),
         run_id: run_id.clone(),
@@ -336,7 +320,7 @@ pub fn execution(
         binding,
         job,
         allocation: policy.map(|p| p.allocation).unwrap_or(allocation),
-        launch_package: download.then(|| Box::new(package)),
+        launch_package: Box::new(package),
     };
     result.validate()?;
     Ok(result)

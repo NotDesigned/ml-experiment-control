@@ -127,8 +127,8 @@ mod sync_retry_tests {
             command: vec![
                 "/worker".into(),
                 "cloud-launch".into(),
-                "--package-json".into(),
-                "{}".into(),
+                "--package-url".into(),
+                "https://api.example/api/worker-exchange/demo/train/attempt-001/package".into(),
             ],
             gpus: 8,
             cpus: 64,

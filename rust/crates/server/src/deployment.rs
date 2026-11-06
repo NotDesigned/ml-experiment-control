@@ -169,8 +169,16 @@ impl Settings {
             }
         }
         if let Some(path) = &self.cloud_config {
-            let cloud =
-                crate::cloud_runs::Settings::load(path).map_err(why!(at("cloud_config")))?;
+            let cloud = crate::cloud_runs::Settings::load(path).map_err(|error| {
+                crate::why::record(file!(), line!(), &error);
+                at(
+                    if error.code == crate::cloud_runs::RUN_CREATION_REQUIRES_EXCHANGE {
+                        "cloud_run_creation_requires_exchange"
+                    } else {
+                        "cloud_config"
+                    },
+                )
+            })?;
             for backend in &cloud.backends {
                 if !executors.insert(backend.executor.clone()) {
                     return Err(at("duplicate_executor"));

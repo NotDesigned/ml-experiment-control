@@ -108,8 +108,9 @@ Omitted backends stay disabled, and the examples start with `enabled`,
 both in one cloud file's `backends` list. Executor IDs must be unique across Slurm
 and cloud; they are operator-chosen names, not built-in cluster names. Removing an
 entry stops offering it for new work, and existing frozen Runs and Attempts keep
-their original definition. Credential file shapes and permissions are in the
-[native deployment guide](../rust/README.md#deploying-a-native-service).
+their original definition. A cloud file that sets `allow_run_creation` must also set
+`exchange`; `--check` refuses it otherwise. Credential file shapes and permissions
+are in the [native deployment guide](../rust/README.md#deploying-a-native-service).
 
 `ml-exp backend` shows what the service publishes without contacting a provider.
 Capacity and quota do not guarantee an allocation.

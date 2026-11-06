@@ -134,7 +134,7 @@ keep it, and neither is needed for basic API or client reads:
 
 | Effect | Code | Boundary |
 | --- | --- | --- |
-| Image build and copy | `server/src/ml_exp_server/builds/` (`native_image.py`, `native_data.py`, `native_worker.py`), which also imports other modules of that package; it also needs `worker/src/ml_exp_worker/` and `src/experiment_control/` on its import path | Separate process behind a private socket. Rust owns recipes, frozen Runtime identity and durable dispatch intent |
+| Image build and copy | `server/src/ml_exp_server/builds/` (`native_image.py`, `native_data.py`), which also imports other modules of that package; it also needs `worker/src/ml_exp_worker/` and `src/experiment_control/` on its import path | Separate process behind a private socket. Rust owns recipes, frozen Runtime identity and durable dispatch intent |
 | W&B publication | `rust/crates/server/src/tracking/sdk.py`, run with the configured interpreter and the official SDK | Effect shell only. Rust compares identities and advances cursors |
 
 Neither is an install path for the client or API. Two short launchers embedded in

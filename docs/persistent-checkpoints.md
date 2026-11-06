@@ -87,13 +87,13 @@ scientific configuration requires a new Run. See [recovery](recovery.md).
 Backend state bypasses API archive byte limits but remains subject to backend
 disk/quota. Checkpoint metadata is limited to 256 KiB/20,000 files. The complete native
 worker package, including input definitions and restore metadata, must fit
-64 KiB; its serialized size determines whether preparation can proceed.
+8 MiB; its serialized size determines whether preparation can proceed.
 `checkpoint_upload` is a separate optional full-state backup path on supported
 Slurm/SenseCore executors, governed by archive/part/storage limits. With persistence
 it archives the STATE_DIR ready generation; without persistence it uses the
 historical output-ready format. **DLC supports persistent metadata registration
 and restore, but rejects full `checkpoint_upload`.** Export selected weights as
-normal outputs instead; do not infer support from a worker capability alone.
+normal outputs instead.
 
 Registration failures retry while the worker remains alive. No acknowledged
 metadata means no registered API reference yet. Result-upload failure does not

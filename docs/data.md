@@ -50,8 +50,9 @@ For PAI, an archive-verified asset can be used directly in the Run's `data`
 field even when the API has no READY receipt yet. The worker imports and
 verifies it on CPFS before starting training, or reuses an exact verified cache.
 This inline preparation consumes the allocated job's running time and resources.
-The full worker package, including dataset and checkpoint manifests, must fit
-64 KiB. `ready:null` alone does not prove that a physical cache is absent.
+A Run's dataset manifests must fit 256 KiB together, and the full worker package,
+including checkpoint metadata, must fit 8 MiB. `ready:null` alone does not prove
+that a physical cache is absent.
 
 A separate CPU publication avoids doing that work on allocated training GPUs.
 It is optional for this inline path:

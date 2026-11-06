@@ -5,6 +5,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
 };
+pub(crate) const RUN_CREATION_REQUIRES_EXCHANGE: &str = "CLOUD_RUN_CREATION_REQUIRES_EXCHANGE";
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Definition {
@@ -239,6 +240,15 @@ impl Settings {
                 && settings.backends.iter().any(|b| b.runtimes.is_empty()))
         {
             return Err(cloud::Error::configuration());
+        }
+        // Every worker fetches its package through the exchange, so a Run authored
+        // without one could never start. Refuse before anything is committed.
+        if settings.allow_run_creation && settings.exchange.is_none() {
+            return Err(cloud::Error {
+                code: RUN_CREATION_REQUIRES_EXCHANGE.into(),
+                http_status: None,
+                uncertain: false,
+            });
         }
         let mut ids = BTreeSet::new();
         for backend in &settings.backends {

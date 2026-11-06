@@ -60,6 +60,16 @@ fn a_cloud_input_is_imported_once_into_shared_storage_and_reused_without_the_sou
         argv: &command,
         timeout_seconds: 3,
         worker_sha256: &format!("sha256:{}", "c".repeat(64)),
+        storage: launch::StorageLayout {
+            mount: temp.path().into(),
+            runs: root.clone(),
+            datasets: data_root.clone(),
+        },
+        // Nothing listens here, so delivery defers without leaving this host.
+        channel: ml_exp_core::cloud::exchange::Channel {
+            url: "https://127.0.0.1:1/api/worker-exchange/demo/train/attempt-001".into(),
+            token: "d".repeat(64),
+        },
     })
     .unwrap();
     package
@@ -82,16 +92,11 @@ fn a_cloud_input_is_imported_once_into_shared_storage_and_reused_without_the_sou
         },
         timeout_seconds: 30,
     }];
-    package.storage = Some(launch::StorageLayout {
-        mount: temp.path().into(),
-        runs: root,
-        datasets: data_root.clone(),
-    });
-    let mut bad_storage = package.storage.clone().unwrap();
+    let mut bad_storage = package.storage.clone();
     bad_storage.datasets = temp.path().join("wrong/cache");
-    assert!(scoped_cache(&package.imports[0], Some(&bad_storage)).is_err());
+    assert!(scoped_cache(&package.imports[0], &bad_storage).is_err());
     assert!(!temp.path().join("wrong").exists());
-    scoped_cache(&package.imports[0], package.storage.as_ref()).unwrap();
+    scoped_cache(&package.imports[0], &package.storage).unwrap();
     assert!(!package.root.exists()); // A copy never initializes a training Run.
     crate::cloud::prepare(&package, &BTreeMap::new()).unwrap();
     materialize(&package, &AtomicBool::new(false)).unwrap();

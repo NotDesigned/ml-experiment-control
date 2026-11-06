@@ -36,9 +36,7 @@ PYTHONPATH=server/src:src:worker/src .ops/image-bridge-venv/bin/python rust/test
 ```
 
 This source test does not validate the builder's installed module. Before a
-builder rollout, use `tools/check_native_builder.py` with the unit's interpreter,
-accepted bridge/worker SHA values and required features, without PYTHONPATH or
-PYTHONHOME. Then verify a real daemon build and receipt. See the native guide.
+builder rollout, verify a real daemon build and receipt. See the native guide.
 
 ## CI and publication
 

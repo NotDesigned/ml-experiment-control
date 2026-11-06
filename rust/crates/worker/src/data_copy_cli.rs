@@ -9,9 +9,9 @@ struct Args {
     config_json: String,
     #[arg(long)]
     channel_json: String,
-    /// Frozen backend mount and cache path; absent for older copy jobs.
+    /// Frozen backend mount and cache path.
     #[arg(long)]
-    storage_json: Option<String>,
+    storage_json: String,
 }
 pub fn main_from(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     let args = match Args::try_parse_from(args) {
@@ -22,7 +22,10 @@ pub fn main_from(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         }
     };
     let result = (|| -> Result<(), Box<dyn std::error::Error>> {
-        if args.config_json.len() > 8 * 1024 * 1024 || args.channel_json.len() > 16384 {
+        if args.config_json.len() > 8 * 1024 * 1024
+            || args.channel_json.len() > 16384
+            || args.storage_json.len() > 16384
+        {
             return Err("data-copy request too large".into());
         }
         let config: Config = serde_json::from_value(serde_json::Value::Object(
@@ -40,23 +43,10 @@ pub fn main_from(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         if !matches!(&config.source,Source::File{path} if path=="/ml-expd/data/archive.tar") {
             return Err("data copy requires the fixed image archive".into());
         }
-        let storage: Option<ml_exp_core::cloud::launch::StorageLayout> = args
-            .storage_json
-            .as_deref()
-            .map(
-                |raw| -> Result<
-                    ml_exp_core::cloud::launch::StorageLayout,
-                    Box<dyn std::error::Error>,
-                > {
-                    if raw.len() > 16384 {
-                        return Err("data storage plan too large".into());
-                    }
-                    let value = ml_exp_core::json::mapping(raw.as_bytes())?;
-                    Ok(serde_json::from_value(serde_json::Value::Object(value))?)
-                },
-            )
-            .transpose()?;
-        ml_exp_worker::cloud_data::scoped_cache(&config, storage.as_ref())?;
+        let storage: ml_exp_core::cloud::launch::StorageLayout = serde_json::from_value(
+            serde_json::Value::Object(ml_exp_core::json::mapping(args.storage_json.as_bytes())?),
+        )?;
+        ml_exp_worker::cloud_data::scoped_cache(&config, &storage)?;
         let receipt = ml_exp_worker::data_import::materialize(
             &config,
             &AtomicBool::new(false),

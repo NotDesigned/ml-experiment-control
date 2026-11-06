@@ -35,7 +35,7 @@ fn send(
     package: &Package,
     operation: ArtifactOperation,
 ) -> Result<Value> {
-    let channel = package.channel.as_ref().ok_or(Error::Configuration)?;
+    let channel = &package.channel;
     let request = ArtifactRequest {
         package_sha256: cloud::package_sha(package)?,
         operation,

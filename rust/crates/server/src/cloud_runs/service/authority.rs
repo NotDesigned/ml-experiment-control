@@ -1,6 +1,6 @@
 use super::*;
 fn launch_error(error: ml_exp_core::cloud::Error) -> cloud::Error {
-    if matches!(error.0, "cloud package size" | "cloud inline package size") {
+    if error.0 == "cloud package size" {
         cloud::Error {
             code: "LAUNCH_METADATA_TOO_LARGE".into(),
             http_status: Some(422),
@@ -266,13 +266,6 @@ impl Service {
         .map_err(why!(cloud::Error::evidence()))?;
         let storage = backend.definition.storage_layout()?;
         if request.data_preparation.is_some() {
-            if !runtime.worker_features.contains("script-preparation.v1") {
-                return Err(cloud::Error {
-                    code: "WORKER_SCRIPT_PREPARATION_UNSUPPORTED".into(),
-                    http_status: Some(422),
-                    uncertain: false,
-                });
-            }
             let before_job = matches!(
                 backend.adapter.profile,
                 cloud::adapter::Profile::Sensecore(_)
@@ -284,28 +277,20 @@ impl Service {
             documents.attempt["native_cloud"]["data_preparation_before_job"] = json!(before_job);
         }
         let root = self.authority(project, &request.run_id)?;
-        // New authorship freezes this provisioning plan. Existing Runs retain
-        // their original absence, and a conflicting plan is never repaired.
-        let attach_storage = if root.entry_exists(OsStr::new(&request.run_id)).map_err(io)? {
-            let original = read(
+        // Authorship freezes this provisioning plan. A missing or conflicting plan
+        // in an existing Run is evidence of a problem and is never repaired.
+        if root.entry_exists(OsStr::new(&request.run_id)).map_err(io)?
+            && read(
                 &root.child(OsStr::new(&request.run_id), false).map_err(io)?,
                 "manifest.json",
-            )?;
-            match original["native_cloud"].get("storage") {
-                None => false,
-                Some(value) if *value == json!(storage) => true,
-                Some(_) => return Err(cloud::Error::evidence()),
-            }
-        } else {
-            runtime.worker_features.contains("storage-layout.v1")
-        };
-        if attach_storage && !runtime.worker_features.contains("storage-layout.v1") {
+            )?["native_cloud"]
+                .get("storage")
+                != Some(&json!(storage))
+        {
             return Err(cloud::Error::evidence());
         }
-        if attach_storage {
-            documents.run["native_cloud"]["storage"] = json!(storage);
-            documents.attempt["native_cloud"]["storage"] = json!(storage);
-        }
+        documents.run["native_cloud"]["storage"] = json!(storage);
+        documents.attempt["native_cloud"]["storage"] = json!(storage);
         if let Some(selected) = selected {
             documents.run["native_cloud"]["profile"] = json!(selected);
             documents.attempt["native_cloud"]["profile"] =
@@ -370,8 +355,8 @@ impl Service {
         let channel = self
             .exchange
             .as_ref()
-            .map(|authority| authority.channel_for(&self.workspace, &binding, token))
-            .transpose()?;
+            .ok_or_else(cloud::Error::configuration)?
+            .channel_for(&self.workspace, &binding, token)?;
         let mut execution = run::execution(
             &run,
             &attempt,
@@ -385,12 +370,6 @@ impl Service {
         .map_err(launch_error)?;
         let mut package = execution
             .package()
-            .map_err(why!(cloud::Error::evidence()))?;
-        package.storage = run["native_cloud"]
-            .get("storage")
-            .cloned()
-            .map(serde_json::from_value)
-            .transpose()
             .map_err(why!(cloud::Error::evidence()))?;
         package.result_upload = self.objects.is_some();
         let mut materialized = std::collections::BTreeSet::new();
@@ -420,46 +399,35 @@ impl Service {
             })
             .cloned()
             .collect();
-        if let Some(authority) = &self.exchange {
-            package.channel = Some(authority.channel(&self.workspace, &execution)?);
-            for mount in &package.config.datasets {
-                if !matches!(
-                    backend.adapter.profile,
-                    cloud::adapter::Profile::Sensecore(_)
-                ) && !materialized.contains(&mount.receipt.asset_id)
-                    && !package
-                        .imports
-                        .iter()
-                        .any(|i| i.definition.asset_id() == mount.receipt.asset_id)
-                    && self
-                        .uploaded_data(project, &request.executor, &mount.receipt.asset_id)?
-                        .is_some()
-                {
-                    package.imports.push(ml_exp_core::datasets::import::Config {
-                        root: backend.definition.data_root()?,
-                        target: backend.definition.target()?,
-                        project: project.into(),
-                        definition: mount.receipt.definition.clone(),
-                        source: ml_exp_core::datasets::import::Source::ExchangeParts {
-                            channel: package
-                                .channel
-                                .clone()
-                                .ok_or_else(cloud::Error::configuration)?,
-                        },
-                        timeout_seconds: 3600,
-                    });
-                }
+        for mount in &package.config.datasets {
+            if !matches!(
+                backend.adapter.profile,
+                cloud::adapter::Profile::Sensecore(_)
+            ) && !materialized.contains(&mount.receipt.asset_id)
+                && !package
+                    .imports
+                    .iter()
+                    .any(|i| i.definition.asset_id() == mount.receipt.asset_id)
+                && self
+                    .uploaded_data(project, &request.executor, &mount.receipt.asset_id)?
+                    .is_some()
+            {
+                package.imports.push(ml_exp_core::datasets::import::Config {
+                    root: backend.definition.data_root()?,
+                    target: backend.definition.target()?,
+                    project: project.into(),
+                    definition: mount.receipt.definition.clone(),
+                    source: ml_exp_core::datasets::import::Source::ExchangeParts {
+                        channel: package.channel.clone(),
+                    },
+                    timeout_seconds: 3600,
+                });
             }
         }
-        execution.job.command = if execution.launch_package.is_some() {
-            package.download_command(&runtime.worker_path)
-        } else {
-            package.command(&runtime.worker_path)
-        }
-        .map_err(launch_error)?;
-        if execution.launch_package.is_some() {
-            execution.launch_package = Some(Box::new(package));
-        }
+        execution.job.command = package
+            .download_command(&runtime.worker_path)
+            .map_err(launch_error)?;
+        execution.launch_package = Box::new(package);
         Ok(execution)
     }
     /// The first-spend gate: the Attempt about to be spent still matches its frozen
@@ -484,5 +452,62 @@ impl Service {
         }
         action::validate(&prepared.plan, &prepared.execution)
             .map_err(why!(cloud::Error::evidence()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ml_exp_core::cloud::launch;
+    /// Request, manifest and receipt bounds keep an ordinary Run far below 8 MiB, so
+    /// this compiles the oversized package directly rather than through a Run.
+    #[test]
+    fn a_package_over_its_download_budget_is_a_typed_refusal_not_missing_evidence() {
+        let mut package = launch::compile(launch::Input {
+            root: "/mnt/workspace/runs",
+            project: "demo",
+            run: "train",
+            attempt: "attempt-001",
+            workdir: "/workspace",
+            argv: &["train".into()],
+            timeout_seconds: 300,
+            worker_sha256: &format!("sha256:{}", "a".repeat(64)),
+            storage: launch::StorageLayout {
+                mount: "/mnt/workspace".into(),
+                runs: "/mnt/workspace/runs".into(),
+                datasets: "/mnt/workspace/datasets".into(),
+            },
+            channel: ml_exp_core::cloud::exchange::Channel {
+                url: "https://api.example/api/worker-exchange/demo/train/attempt-001".into(),
+                token: "b".repeat(64),
+            },
+        })
+        .unwrap();
+        package.validate().unwrap();
+        package.artifacts = Some(ml_exp_core::artifacts::publication::Policy {
+            required_files: (0..20_000)
+                .map(|i| format!("{}/{i:05}", "x".repeat(500)))
+                .collect(),
+        });
+        assert!(
+            serde_json::to_vec(&package).unwrap().len() > launch::MAX_PACKAGE_BYTES,
+            "the fixture must exceed the budget"
+        );
+        let refused = launch_error(package.validate().unwrap_err());
+        assert_eq!(refused.code, "LAUNCH_METADATA_TOO_LARGE");
+        assert_eq!(refused.http_status, Some(422));
+        assert!(!refused.uncertain);
+        let command = package.download_command("/worker").err().unwrap();
+        assert_eq!(launch_error(command).code, "LAUNCH_METADATA_TOO_LARGE");
+        let public = failure(refused);
+        assert_eq!(
+            (public.status, public.code),
+            (422, "LAUNCH_METADATA_TOO_LARGE")
+        );
+        // Any other compile failure stays the generic evidence refusal.
+        assert_eq!(
+            launch_error(ml_exp_core::cloud::Error("cloud storage binding")).code,
+            cloud::Error::evidence().code
+        );
     }
 }
