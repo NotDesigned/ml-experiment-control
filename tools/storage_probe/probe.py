@@ -100,6 +100,12 @@ def stat_rate(root):
         directory.rmdir()
 
 
+def masked(argv):
+    """The worker receives its token on the command line, and this report leaves the job."""
+    return ["[redacted]" if index and argv[index - 1].endswith("-token") else word
+            for index, word in enumerate(argv)]
+
+
 def command_chain():
     """Who started this process. A shell given one joined string shows here as `sh -c`."""
     chain = []
@@ -110,7 +116,7 @@ def command_chain():
             status = Path(f"/proc/{pid}/stat").read_text()
         except OSError:
             break
-        chain.append([part[:200] for part in raw.decode("utf-8", "replace").split("\0") if part][:8])
+        chain.append(masked([part[:200] for part in raw.decode("utf-8", "replace").split("\0") if part][:8]))
         pid = int(status.rsplit(")", 1)[1].split()[1])
     return chain
 
