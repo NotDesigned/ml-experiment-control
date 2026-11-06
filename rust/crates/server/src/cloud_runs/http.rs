@@ -78,7 +78,7 @@ async fn worker_read(
         } else {
             cloud.worker_diagnostic_status(&project, &run, &attempt, &token)
         }
-        .map_err(super::failure)
+        .map_err(Into::into)
     })
     .await
 }
@@ -143,7 +143,7 @@ async fn artifact(
                 .map_err(|_| invalid())?;
             cloud
                 .receive_artifacts(&project, &run, &attempt, &token, request, &now)
-                .map_err(super::failure)
+                .map_err(Into::into)
         },
     )
     .await
@@ -202,9 +202,7 @@ async fn receive(
             .map_err(|_| invalid())?
             .format(&time::format_description::well_known::Rfc3339)
             .map_err(|_| invalid())?;
-        let ack = cloud
-            .receive(&project, &run, &attempt, &token, &packet, &now)
-            .map_err(super::failure)?;
+        let ack = cloud.receive(&project, &run, &attempt, &token, &packet, &now)?;
         serde_json::to_value(ack).map_err(|_| invalid())
     })
     .await
@@ -249,7 +247,7 @@ async fn dataset(
         api.cloud()
             .ok_or_else(invalid)?
             .dataset_ticket(&project, &run, &attempt, &token, &asset, part)
-            .map_err(super::failure)
+            .map_err(Into::into)
     })
     .await
 }

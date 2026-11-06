@@ -76,7 +76,7 @@ async fn import_oss(
                 })?;
             cloud
                 .import_oss_dataset(&project, &executor, source)
-                .map_err(crate::cloud_runs::failure)
+                .map_err(Into::into)
         },
     )
     .await
@@ -98,13 +98,11 @@ async fn list(
     }
     read_http::execute(state, Access::Read, move |api, _| {
         if let Some(cloud) = api.cloud().filter(|c| c.accepts(&executor)) {
-            return cloud
-                .dataset_list(&project, &executor)
-                .map_err(crate::cloud_runs::failure);
+            return cloud.dataset_list(&project, &executor).map_err(Into::into);
         }
         super::http::service(api)?
             .dataset_list(&project, &executor)
-            .map_err(super::http::failure)
+            .map_err(Into::into)
     })
     .await
 }
@@ -134,11 +132,9 @@ async fn status(
         if let Some(cloud) = api.cloud().filter(|c| c.accepts(&executor)) {
             return cloud
                 .dataset_state(&project, &executor, &asset)
-                .map_err(crate::cloud_runs::failure);
+                .map_err(Into::into);
         }
-        let result = super::http::service(api)?
-            .dataset_state(&project, &executor, &asset)
-            .map_err(super::http::failure)?;
+        let result = super::http::service(api)?.dataset_state(&project, &executor, &asset)?;
         Ok(json!(result))
     })
     .await
@@ -191,17 +187,15 @@ async fn transfer(
             if let Some(cloud) = api.cloud().filter(|c| c.accepts(&executor)) {
                 return cloud
                     .dataset_transfer(&project, &executor, command, &payload)
-                    .map_err(crate::cloud_runs::failure);
+                    .map_err(Into::into);
             }
-            let value = super::http::service(api)?
-                .dataset_transfer(
-                    &project,
-                    &executor,
-                    command,
-                    &payload,
-                    &AtomicBool::new(false),
-                )
-                .map_err(super::http::failure)?;
+            let value = super::http::service(api)?.dataset_transfer(
+                &project,
+                &executor,
+                command,
+                &payload,
+                &AtomicBool::new(false),
+            )?;
             Ok(json!(value))
         },
     )

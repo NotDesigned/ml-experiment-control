@@ -60,7 +60,7 @@ async fn download(
         api.cloud()
             .ok_or_else(invalid)?
             .dataset_download(&project, &executor, &asset, request.part)
-            .map_err(crate::cloud_runs::failure)
+            .map_err(Into::into)
     })
     .await
 }
@@ -109,7 +109,7 @@ async fn exchange(
             api.cloud()
                 .ok_or_else(invalid)?
                 .data_ready(&project, &executor, &asset, &token, receipt)
-                .map_err(crate::cloud_runs::failure)
+                .map_err(Into::into)
         })
         .await
     } else {
@@ -121,7 +121,7 @@ async fn exchange(
             api.cloud()
                 .ok_or_else(invalid)?
                 .data_download_ticket(&project, &executor, &asset, &token, part)
-                .map_err(crate::cloud_runs::failure)
+                .map_err(Into::into)
         })
         .await
     }
@@ -163,7 +163,7 @@ async fn publish(
                 &request.request_id,
                 request.runtime_id.as_deref(),
             )
-            .map_err(crate::cloud_runs::failure)
+            .map_err(Into::into)
     })
     .await
 }

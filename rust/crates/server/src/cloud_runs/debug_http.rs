@@ -45,7 +45,7 @@ async fn list(State(state): State<Arc<AppState>>, RawQuery(query): RawQuery) -> 
         return read_http::failure(invalid());
     }
     read_http::execute(state, Access::Read, move |api, _| {
-        service(api)?.debug_list().map_err(super::failure)
+        service(api)?.debug_list().map_err(Into::into)
     })
     .await
 }
@@ -58,7 +58,7 @@ async fn show(
         return read_http::failure(invalid());
     }
     read_http::execute(state, Access::Read, move |api, _| {
-        service(api)?.debug_status(&id).map_err(super::failure)
+        service(api)?.debug_status(&id).map_err(Into::into)
     })
     .await
 }
@@ -87,7 +87,7 @@ async fn create(
         move |api, now| {
             service(api)?
                 .debug_create(request, &timestamp(now)?)
-                .map_err(super::failure)
+                .map_err(Into::into)
         },
     )
     .await
@@ -130,7 +130,7 @@ async fn change(
                     &now,
                 )
             }
-            .map_err(super::failure)
+            .map_err(Into::into)
         },
     )
     .await

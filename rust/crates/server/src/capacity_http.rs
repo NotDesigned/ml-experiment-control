@@ -24,7 +24,7 @@ async fn list(State(state): State<Arc<AppState>>, RawQuery(query): RawQuery) -> 
     read_http::execute(state, Access::Read, move |api, _| {
         let mut rows = api.submissions().map(|s| s.catalogue()).unwrap_or_default();
         if let Some(cloud) = api.cloud() {
-            rows.extend(cloud.catalogue().map_err(crate::cloud_runs::failure)?);
+            rows.extend(cloud.catalogue()?);
         }
         let mut names = std::collections::BTreeSet::new();
         if rows
@@ -81,16 +81,12 @@ async fn observe(
             let (now, _) = crate::projects::transition_context()?;
             if let Some(cloud) = api.cloud() {
                 if cloud.accepts(&executor) {
-                    return cloud
-                        .capacity(&executor, refresh, &now)
-                        .map_err(crate::cloud_runs::failure);
+                    return cloud.capacity(&executor, refresh, &now).map_err(Into::into);
                 }
             }
             if let Some(slurm) = api.submissions() {
                 if slurm.accepts(&executor) {
-                    return slurm
-                        .capacity(&executor, refresh, &now)
-                        .map_err(crate::submissions::http::failure);
+                    return slurm.capacity(&executor, refresh, &now).map_err(Into::into);
                 }
             }
             Err(read_api::Error {

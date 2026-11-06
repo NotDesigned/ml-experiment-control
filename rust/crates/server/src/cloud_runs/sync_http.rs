@@ -72,7 +72,7 @@ async fn provider_diagnostics(
             api.cloud()
                 .ok_or_else(invalid)?
                 .provider_diagnostics(&project, &run, &attempt, lines)
-                .map_err(super::failure)
+                .map_err(Into::into)
         },
     )
     .await
@@ -97,7 +97,7 @@ async fn data_provider_diagnostics(
             api.cloud()
                 .ok_or_else(invalid)?
                 .data_provider_diagnostics(&project, &executor, &asset, &request, lines)
-                .map_err(super::failure)
+                .map_err(Into::into)
         },
     )
     .await
@@ -125,7 +125,7 @@ async fn diagnose_sync(
             api.cloud()
                 .ok_or_else(invalid)?
                 .sync_diagnostic(&action, &request, execute, &clock(now)?)
-                .map_err(super::failure)
+                .map_err(Into::into)
         },
     )
     .await
@@ -153,7 +153,7 @@ async fn diagnose_data(
             api.cloud()
                 .ok_or_else(invalid)?
                 .data_diagnostic(&project, &executor, &asset, &request, execute, &clock(now)?)
-                .map_err(super::failure)
+                .map_err(Into::into)
         },
     )
     .await
@@ -189,7 +189,7 @@ async fn show(
         api.cloud()
             .ok_or_else(invalid)?
             .sync_status(&action, &request, &clock(now)?)
-            .map_err(super::failure)
+            .map_err(Into::into)
     })
     .await
 }
@@ -226,7 +226,7 @@ async fn retry(
                     &clock(now)?,
                     &AtomicBool::new(false),
                 )
-                .map_err(super::failure)
+                .map_err(Into::into)
         },
     )
     .await

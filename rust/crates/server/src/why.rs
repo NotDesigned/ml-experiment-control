@@ -86,7 +86,7 @@ pub(crate) fn record_chain<E: Error>(file: &'static str, line: u32, cause: &E) {
 /// A failure the HTTP boundary reports without a discarded cause to attach.
 pub(crate) fn record_status(file: &'static str, line: u32, status: u16, code: &str) {
     let text = format!("HTTP {status} {code}");
-    write_line(file, line, "read_api::Error", &text);
+    write_line(file, line, "error::Error", &text);
 }
 
 fn cause_text<E: Display>(cause: &E) -> String {

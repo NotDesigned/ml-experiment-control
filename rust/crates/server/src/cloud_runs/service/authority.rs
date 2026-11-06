@@ -492,7 +492,7 @@ mod tests {
         assert_eq!(refused.code, "DATASET_MANIFESTS_TOO_LARGE");
         assert_eq!(refused.http_status, Some(422));
         assert!(!refused.uncertain);
-        let public = failure(refused);
+        let public = crate::read_api::Error::from(refused);
         assert_eq!(
             (public.status, public.code),
             (422, "DATASET_MANIFESTS_TOO_LARGE")
@@ -542,7 +542,7 @@ mod tests {
         assert!(!refused.uncertain);
         let command = package.download_command("/worker").err().unwrap();
         assert_eq!(launch_error(command).code, "LAUNCH_METADATA_TOO_LARGE");
-        let public = failure(refused);
+        let public = crate::read_api::Error::from(refused);
         assert_eq!(
             (public.status, public.code),
             (422, "LAUNCH_METADATA_TOO_LARGE")

@@ -12,6 +12,7 @@ pub mod cloud_runs;
 mod data_delivery_http;
 pub mod deletion;
 pub mod deployment;
+pub mod error;
 pub mod experiments;
 mod local_http;
 mod native_contract;

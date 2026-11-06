@@ -69,18 +69,13 @@ async fn tracking(
             return Ok(value);
         }
         if let Some(cloud) = api.cloud() {
-            if cloud
-                .handles_run(&project, &run)
-                .map_err(crate::cloud_runs::failure)?
-            {
-                return cloud
-                    .tracking_status(&project, &run)
-                    .map_err(crate::cloud_runs::failure);
+            if cloud.handles_run(&project, &run)? {
+                return cloud.tracking_status(&project, &run).map_err(Into::into);
             }
         }
         service(api)?
             .tracking_status(&project, &run)
-            .map_err(failure)
+            .map_err(Into::into)
     })
     .await
 }
@@ -89,7 +84,7 @@ async fn observer(State(state): State<Arc<AppState>>, RawQuery(raw): RawQuery) -
         return read_http::failure(error);
     }
     read_http::execute(state, Access::Read, move |api, _| {
-        service(api)?.background_status().map_err(failure)
+        service(api)?.background_status().map_err(Into::into)
     })
     .await
 }
@@ -137,18 +132,15 @@ async fn checkpoint_get(
     }
     read_http::execute(state, Access::Read, move |api, _| {
         if let Some(cloud) = api.cloud() {
-            if cloud
-                .handles_run(&project, &run)
-                .map_err(crate::cloud_runs::failure)?
-            {
+            if cloud.handles_run(&project, &run)? {
                 return cloud
                     .checkpoints(&project, &run, &attempt, id.as_deref())
-                    .map_err(crate::cloud_runs::failure);
+                    .map_err(Into::into);
             }
         }
         service(api)?
             .checkpoints(&project, &run, &attempt, id.as_deref())
-            .map_err(failure)
+            .map_err(Into::into)
     })
     .await
 }
@@ -157,104 +149,6 @@ fn invalid() -> read_api::Error {
         status: 422,
         code: "INVALID_SUBMISSION_REQUEST",
         detail: "invalid native submission identity or request",
-    }
-}
-pub(crate) fn failure(error: Error) -> read_api::Error {
-    let (status, code, detail) = match error {
-        Error::Missing | Error::Action(crate::operations::Error::NotFound) => (
-            404,
-            "SUBMISSION_NOT_FOUND",
-            "the original preparation is unavailable; no new identity was created",
-        ),
-        Error::ObservationConflict => (
-            409,
-            "WORKER_OBSERVATION_CONFLICT",
-            "remote worker state or accepted metric history changed; previous evidence is retained and no provider mutation was issued",
-        ),
-        Error::ArtifactsUnavailable => (
-            503,
-            "ARTIFACTS_UNAVAILABLE",
-            "backend archive cannot be collected, verified or streamed; original outputs and checkpoints are retained",
-        ),
-        Error::ArtifactsReleased => (
-            410,
-            "ARTIFACTS_RELEASED",
-            "the generated archive was released after a verified download; checkpoints and original outputs are retained",
-        ),
-        Error::CheckpointUnavailable => (
-            503,
-            "CHECKPOINT_VERIFICATION_UNAVAILABLE",
-            "backend checkpoint ready marker or generation could not be verified; no scheduler operation was requested",
-        ),
-        Error::CheckpointMissing => (
-            404,
-            "CHECKPOINT_NOT_FOUND",
-            "the exact registered checkpoint is unavailable",
-        ),
-        Error::DatasetMissing => (
-            404,
-            "DATASET_NOT_FOUND",
-            "the exact asset is not registered for this Project and backend",
-        ),
-        Error::DatasetUnavailable => (
-            503,
-            "DATASET_TRANSFER_UNCONFIRMED",
-            "dataset transfer or verification is unconfirmed; resume the same asset identity; no scheduler operation was issued",
-        ),
-        Error::CheckpointConflict => (
-            409,
-            "CHECKPOINT_EVIDENCE_UNAVAILABLE",
-            "checkpoint identity or immutable registry evidence cannot be validated",
-        ),
-        Error::ObservationUnavailable => (
-            503,
-            "WORKER_OBSERVATION_UNAVAILABLE",
-            "worker evidence is unavailable; the last accepted sample is retained and no provider mutation was issued",
-        ),
-        Error::Busy => (
-            503,
-            "SUBMISSION_BUSY",
-            "preparation is busy; query the same Run before retrying",
-        ),
-        Error::Disabled => (
-            403,
-            "SUBMISSION_DISABLED",
-            "scheduler execution is disabled by the operator",
-        ),
-        Error::RunCreationDisabled => (
-            403,
-            "RUN_CREATION_DISABLED",
-            "native Run creation is not enabled for this Project",
-        ),
-        Error::Admission(cause) if cause.0 == ml_exp_core::datasets::ManifestsTooLarge::CAUSE => (
-            422,
-            "DATASET_MANIFESTS_TOO_LARGE",
-            "the Run's dataset manifests exceed their 256 KiB budget; use fewer inputs or package many small files into fewer",
-        ),
-        Error::Admission(cause) => (422, "SUBMISSION_ADMISSION_REJECTED", cause.0),
-        Error::Authority | Error::Conflict | Error::Configuration => (
-            409,
-            "SUBMISSION_EVIDENCE_UNAVAILABLE",
-            "frozen submission authority changed or cannot be validated; no replay is permitted",
-        ),
-        Error::Action(crate::operations::Error::Decision(_))
-        | Error::Runner(crate::backends::slurm::action::Error::Action(
-            crate::operations::Error::Decision(_),
-        )) => (
-            409,
-            "SUBMISSION_STATE_CONFLICT",
-            "the requested transition or confirmation does not match the original Action",
-        ),
-        _ => (
-            500,
-            "SUBMISSION_OPERATION_UNCERTAIN",
-            "submission state may have changed; query the same Run or Submission and reconcile before deciding any further action",
-        ),
-    };
-    read_api::Error {
-        status,
-        code,
-        detail,
     }
 }
 pub(super) fn service(api: &read_api::Api) -> Result<Arc<Service>, read_api::Error> {
@@ -311,7 +205,7 @@ async fn create(
             if cloud.accepts(&request.executor) {
                 return cloud
                     .create_run(&project, request, &clock(now)?)
-                    .map_err(crate::cloud_runs::failure);
+                    .map_err(Into::into);
             }
         }
         service(api)?
@@ -321,7 +215,7 @@ async fn create(
     .await
 }
 fn creation_failure(cause: Error) -> read_api::Error {
-    let mut error = failure(cause);
+    let mut error = read_api::Error::from(cause);
     match error.status {
         // The caller can act on this one, so it keeps its own code.
         422 if error.code == "DATASET_MANIFESTS_TOO_LARGE" => {}
@@ -369,18 +263,15 @@ async fn existing(
     }
     read_http::execute(state, Access::Read, move |api, now| {
         if let Some(cloud) = api.cloud() {
-            if cloud
-                .handles_run(&project, &run)
-                .map_err(crate::cloud_runs::failure)?
-            {
+            if cloud.handles_run(&project, &run)? {
                 return cloud
                     .for_run(&project, &run, &clock(now)?)
-                    .map_err(crate::cloud_runs::failure);
+                    .map_err(Into::into);
             }
         }
         service(api)?
             .for_run(&project, &run, &clock(now)?)
-            .map_err(failure)
+            .map_err(Into::into)
     })
     .await
 }
@@ -413,13 +304,10 @@ async fn prepare(
             .map_err(|_| invalid())?;
         let (_, identity) = crate::projects::transition_context().map_err(read_api::Error::from)?;
         if let Some(cloud) = api.cloud() {
-            if cloud
-                .handles_run(&project, &run)
-                .map_err(crate::cloud_runs::failure)?
-            {
+            if cloud.handles_run(&project, &run)? {
                 return cloud
                     .prepare(&project, &run, approval, &now, &expires, &identity)
-                    .map_err(crate::cloud_runs::failure);
+                    .map_err(Into::into);
             }
         }
         service(api)?
@@ -433,7 +321,7 @@ async fn prepare(
                     transition_id: &identity,
                 },
             )
-            .map_err(failure)
+            .map_err(Into::into)
     })
     .await
 }
@@ -569,7 +457,7 @@ async fn change(
                 expires: &expires,
                 transition_id: &transition,
             };
-            if let Some(cloud)=api.cloud(){if cloud.handles_action(&identity).map_err(crate::cloud_runs::failure)?{
+            if let Some(cloud)=api.cloud(){if cloud.handles_action(&identity)?{
                 let cancelled=AtomicBool::new(false);
                 return match operation {
                     Operation::Renew(request)=>cloud.renew(&identity,request,context),
@@ -585,7 +473,7 @@ async fn change(
                     Operation::Collect=>cloud.collect_artifacts(&identity,&now,&cancelled),
                     Operation::Acknowledge(request)=>cloud.acknowledge_artifacts(&identity,request.proof,request.release,&now),
                     Operation::DownloadTicket(part)=>cloud.download_ticket(&identity,part,&now),
-                }.map_err(crate::cloud_runs::failure);
+                }.map_err(Into::into);
             }}
             let service = service(api)?;
             let refreshing = matches!(&operation,Operation::History | Operation::Refresh | Operation::Checkpoint | Operation::Collect | Operation::Acknowledge(_));
@@ -611,7 +499,7 @@ async fn change(
             .map_err(|cause| {
                 if refreshing && matches!(cause,Error::Uncertain) {
                     read_api::Error { status:503, code:"WORKER_OBSERVATION_CACHE_UNCERTAIN", detail:"the sample may have been saved; query it or repeat refresh; no scheduler effect was requested" }
-                } else { failure(cause) }
+                } else { read_api::Error::from(cause) }
             })
         },
     )
@@ -634,16 +522,11 @@ async fn artifact_metadata(
     }
     read_http::execute(state, Access::Read, move |api, _| {
         if let Some(cloud) = api.cloud() {
-            if cloud
-                .handles_action(&identity)
-                .map_err(crate::cloud_runs::failure)?
-            {
-                return cloud
-                    .artifacts(&identity)
-                    .map_err(crate::cloud_runs::failure);
+            if cloud.handles_action(&identity)? {
+                return cloud.artifacts(&identity).map_err(Into::into);
             }
         }
-        service(api)?.artifacts(&identity).map_err(failure)
+        service(api)?.artifacts(&identity).map_err(Into::into)
     })
     .await
 }
@@ -659,7 +542,7 @@ mod tests {
                 ml_exp_core::datasets::ManifestsTooLarge::CAUSE,
             ))
         };
-        let public = failure(too_large());
+        let public = read_api::Error::from(too_large());
         assert_eq!(
             (public.status, public.code),
             (422, "DATASET_MANIFESTS_TOO_LARGE")

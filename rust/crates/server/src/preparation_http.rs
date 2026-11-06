@@ -52,25 +52,19 @@ async fn discover(
     }
     read_http::execute(state, Access::Read, move |api, now| {
         if let Some(cloud) = api.cloud() {
-            if let Some(value) = cloud
-                .experiment_for_run(&project, &run)
-                .map_err(crate::cloud_runs::failure)?
-            {
+            if let Some(value) = cloud.experiment_for_run(&project, &run)? {
                 return Ok(value);
             }
-            if cloud
-                .handles_run(&project, &run)
-                .map_err(crate::cloud_runs::failure)?
-            {
+            if cloud.handles_run(&project, &run)? {
                 return cloud
                     .for_run(&project, &run, &timestamp(now)?)
-                    .map_err(crate::cloud_runs::failure);
+                    .map_err(Into::into);
             }
         }
         api.submissions()
             .ok_or_else(invalid)?
             .for_run(&project, &run, &timestamp(now)?)
-            .map_err(crate::submissions::http::failure)
+            .map_err(Into::into)
     })
     .await
 }
@@ -102,7 +96,7 @@ async fn prepare(
     read_http::execute(state, Access::Write, move |api, _| {
         service(api)?
             .experiment_prepare(&project, request, api.submissions().as_deref())
-            .map_err(crate::cloud_runs::failure)
+            .map_err(Into::into)
     })
     .await
 }
@@ -117,7 +111,7 @@ async fn show(
     read_http::execute(state, Access::Read, move |api, _| {
         service(api)?
             .experiment_status(&project, &id)
-            .map_err(crate::cloud_runs::failure)
+            .map_err(Into::into)
     })
     .await
 }
@@ -156,7 +150,7 @@ async fn advance(
                     transition_id: &transition,
                 },
             )
-            .map_err(crate::cloud_runs::failure)
+            .map_err(Into::into)
     })
     .await
 }

@@ -46,7 +46,7 @@ async fn list(
         return read_http::failure(invalid());
     }
     read_http::execute(state, Access::Read, move |api, _| {
-        service(api)?.runtimes(&project).map_err(super::failure)
+        service(api)?.runtimes(&project).map_err(Into::into)
     })
     .await
 }
@@ -71,7 +71,7 @@ async fn prepare(
     read_http::execute(state, Access::Write, move |api, _| {
         service(api)?
             .prepare_runtime(&project, request)
-            .map_err(super::failure)
+            .map_err(Into::into)
     })
     .await
 }
@@ -86,7 +86,7 @@ async fn show(
     read_http::execute(state, Access::Read, move |api, _| {
         service(api)?
             .runtime_status(&project, &runtime)
-            .map_err(super::failure)
+            .map_err(Into::into)
     })
     .await
 }
@@ -103,7 +103,7 @@ async fn observe(
     read_http::execute(state, Access::Read, move |api, _| {
         service(api)?
             .runtime_logs(&project, &runtime, operation == "progress")
-            .map_err(super::failure)
+            .map_err(Into::into)
     })
     .await
 }
@@ -135,7 +135,7 @@ async fn change(
         } else {
             service.reconcile_runtime(&project, &runtime)
         }
-        .map_err(super::failure)
+        .map_err(Into::into)
     })
     .await
 }

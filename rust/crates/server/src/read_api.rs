@@ -1,8 +1,10 @@
 //! The read-only application shell. Trusted configuration chooses locations;
 //! requests choose identities and views. No index, bootstrap or provider call.
+pub use crate::error::Error;
 use crate::{
     deletion::RunFence,
-    experiments::{self, RunRef, Snapshot, Store},
+    error::error,
+    experiments::{RunRef, Snapshot, Store},
     read_config,
     read_model::{self, LiveMetrics, LogQuery, MetricQuery},
 };
@@ -17,121 +19,6 @@ use std::{
 };
 
 mod local_runs;
-
-#[derive(Clone, Copy, Debug, thiserror::Error)]
-#[error("{code}")]
-pub struct Error {
-    pub status: u16,
-    pub code: &'static str,
-    pub detail: &'static str,
-}
-fn error(status: u16, code: &'static str, detail: &'static str) -> Error {
-    Error {
-        status,
-        code,
-        detail,
-    }
-}
-impl From<crate::projects::Error> for Error {
-    fn from(value: crate::projects::Error) -> Self {
-        use crate::projects::Error as E;
-        match value {
-            E::Busy => error(
-                503,
-                "PROJECT_REGISTRY_BUSY",
-                "project registry is busy; no operation was dispatched",
-            ),
-            E::EffectUncertain => error(
-                500,
-                "PROJECT_OPERATION_UNCERTAIN",
-                "project state may have changed; query the lifecycle ledger before retry",
-            ),
-            E::Binding => error(
-                409,
-                "PROJECT_SOURCE_BINDING_MISMATCH",
-                "registered Project identity differs from approved source configuration",
-            ),
-            E::Transition(ml_exp_core::projects::Error::UnknownProject) => {
-                error(404, "UNKNOWN_PROJECT", "registered Project is unavailable")
-            }
-            _ => error(
-                409,
-                "PROJECT_LIFECYCLE_BLOCKED",
-                "project lifecycle or its durable evidence cannot be validated",
-            ),
-        }
-    }
-}
-impl From<experiments::DiscoveryError> for Error {
-    fn from(value: experiments::DiscoveryError) -> Self {
-        use experiments::DiscoveryError as E;
-        match value {
-            E::Depth => error(
-                413,
-                "EXPERIMENT_DISCOVERY_LIMIT",
-                "canonical Run discovery exceeds its depth",
-            ),
-            E::UnknownProject => error(
-                404,
-                "EXPERIMENT_NOT_FOUND",
-                "the Project is not configured for discovery",
-            ),
-            E::DuplicateRun | E::OverlappingRoots => error(
-                409,
-                "EXPERIMENT_DISCOVERY_AMBIGUOUS",
-                "approved roots do not establish unique canonical Runs",
-            ),
-            _ => error(
-                409,
-                "EXPERIMENT_DISCOVERY_UNAVAILABLE",
-                "canonical Run discovery encountered changed, unsafe or unavailable evidence",
-            ),
-        }
-    }
-}
-impl From<experiments::Error> for Error {
-    fn from(value: experiments::Error) -> Self {
-        match value {
-            experiments::Error::UnknownProject | experiments::Error::Missing => error(
-                404,
-                "EXPERIMENT_NOT_FOUND",
-                "the configured experiment or manifest is unavailable",
-            ),
-            experiments::Error::Binding => error(
-                422,
-                "INVALID_EXPERIMENT_IDENTITY",
-                "invalid configured experiment identity",
-            ),
-            _ => error(
-                409,
-                "EXPERIMENT_EVIDENCE_UNAVAILABLE",
-                "experiment evidence changed, was deleted or cannot be validated",
-            ),
-        }
-    }
-}
-impl From<read_model::Error> for Error {
-    fn from(value: read_model::Error) -> Self {
-        match value {
-            read_model::Error::Query(_) => {
-                error(422, "INVALID_READ_QUERY", "invalid experiment read query")
-            }
-            read_model::Error::UnknownAttempt => {
-                error(404, "ATTEMPT_NOT_FOUND", "the exact Attempt is unavailable")
-            }
-            read_model::Error::OutputLimit => error(
-                413,
-                "READ_RESPONSE_LIMIT",
-                "experiment read exceeds the response limit",
-            ),
-            _ => error(
-                409,
-                "EXPERIMENT_EVIDENCE_UNAVAILABLE",
-                "experiment evidence cannot be projected safely",
-            ),
-        }
-    }
-}
 
 pub enum View {
     Run,
@@ -446,10 +333,7 @@ impl Api {
     pub fn submission_progress(&self, id: &str, now_unix: f64) -> Result<Value, Error> {
         let submission = self.submission(id, now_unix)?;
         if let Some(cloud) = &self.cloud {
-            if let Some(value) = cloud
-                .submission_progress(id)
-                .map_err(crate::cloud_runs::failure)?
-            {
+            if let Some(value) = cloud.submission_progress(id)? {
                 return Ok(value);
             }
         }
@@ -466,9 +350,7 @@ impl Api {
             return Err(invalid_query());
         }
         let submissions = match &self.cloud {
-            Some(cloud) => cloud
-                .run_submissions(project, run)
-                .map_err(crate::cloud_runs::failure)?,
+            Some(cloud) => cloud.run_submissions(project, run)?,
             None => Vec::new(),
         };
         Ok(serde_json::json!({"project":project,"run_id":run,"submissions":submissions}))
@@ -514,12 +396,10 @@ impl Api {
                     )
                 })?
                 .get(id, &now)
-                .map_err(crate::cloud_runs::failure);
+                .map_err(Into::into);
         }
         if let Some(service) = &self.submissions {
-            return service
-                .get(id, &now)
-                .map_err(crate::submissions::http::failure);
+            return service.get(id, &now).map_err(Into::into);
         }
         let value =
             ml_exp_core::operations::submission_view(&snapshot, &now).map_err(
@@ -748,17 +628,14 @@ impl Api {
             return Ok(value);
         }
         if let Some(cloud) = &self.cloud {
-            if cloud
-                .handles_run(project, run)
-                .map_err(crate::cloud_runs::failure)?
-            {
+            if cloud.handles_run(project, run)? {
                 let now = time::OffsetDateTime::from_unix_timestamp_nanos((now_unix * 1e9) as i128)
                     .map_err(|_| invalid_query())?
                     .format(&time::format_description::well_known::Rfc3339)
                     .map_err(|_| invalid_query())?;
                 return cloud
                     .project_view(value, project, run, attempt, &now)
-                    .map_err(crate::cloud_runs::failure);
+                    .map_err(Into::into);
             }
         }
         let Some(service) = &self.submissions else {
@@ -774,7 +651,7 @@ impl Api {
         {
             Ok(value) => value,
             Err(crate::submissions::Error::Missing) => return Ok(value),
-            Err(cause) => return Err(crate::submissions::http::failure(cause)),
+            Err(cause) => return Err(cause.into()),
         };
         let projected = if let Some(attempt) = attempt {
             if submission["attempt_id"] != attempt {
@@ -832,17 +709,11 @@ impl Api {
             | View::Collection { attempt } => self.store.snapshot_attempt(&reference, attempt)?,
         };
         if let Some(service) = &self.submissions {
-            service
-                .apply_observation(&mut snapshot)
-                .map_err(crate::submissions::http::failure)?;
-            service
-                .apply_artifacts(&mut snapshot)
-                .map_err(crate::submissions::http::failure)?;
+            service.apply_observation(&mut snapshot)?;
+            service.apply_artifacts(&mut snapshot)?;
         }
         if let Some(cloud) = &self.cloud {
-            cloud
-                .apply_observation(&mut snapshot)
-                .map_err(crate::cloud_runs::failure)?;
+            cloud.apply_observation(&mut snapshot)?;
         }
         let value = match query.view {
             View::Run => {

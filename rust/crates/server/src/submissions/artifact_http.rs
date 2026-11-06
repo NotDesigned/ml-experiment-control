@@ -1,6 +1,6 @@
 //! The download endpoint is intentionally the one GET that reads backend bytes.
 //! It neither publishes metadata nor acknowledges a successful download.
-use super::http::{failure, service};
+use super::http::service;
 use crate::{AppState, read_api, read_http};
 use axum::{
     body::{Body, Bytes},
@@ -64,7 +64,7 @@ pub(crate) async fn download(
     let (download, bytes, permit) = match tokio::time::timeout(Duration::from_secs(35), task).await
     {
         Ok(Ok(Ok(v))) => v,
-        Ok(Ok(Err(e))) => return read_http::failure(failure(e)),
+        Ok(Ok(Err(e))) => return read_http::failure(e.into()),
         _ => {
             return read_http::failure(read_api::Error {
                 status: 503,
