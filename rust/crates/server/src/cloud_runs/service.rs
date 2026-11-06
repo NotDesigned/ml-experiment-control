@@ -479,6 +479,11 @@ pub(crate) fn failure(error: cloud::Error) -> read_api::Error {
                 "LAUNCH_METADATA_TOO_LARGE",
                 "the worker launch package exceeds its 8 MiB download budget; reduce its input or restore metadata",
             ),
+            ("DATASET_MANIFESTS_TOO_LARGE", _) => (
+                422,
+                "DATASET_MANIFESTS_TOO_LARGE",
+                "the Run's dataset manifests exceed their 256 KiB budget; use fewer inputs or package many small files into fewer",
+            ),
             ("DEBUG_MACHINE_LIMIT", _) => (
                 409,
                 "DEBUG_MACHINE_LIMIT",
@@ -612,6 +617,7 @@ mod failure_tests {
         for (code, status) in [
             ("INPUT_NOT_READY", 409),
             ("LAUNCH_METADATA_TOO_LARGE", 422),
+            ("DATASET_MANIFESTS_TOO_LARGE", 422),
             ("DEBUG_MACHINE_LIMIT", 409),
             ("ARTIFACTS_ADMINISTRATIVELY_REMOVED", 410),
             ("ARTIFACT_NOT_PUBLISHED", 409),

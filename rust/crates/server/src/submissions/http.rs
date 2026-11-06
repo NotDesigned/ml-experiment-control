@@ -226,6 +226,11 @@ pub(crate) fn failure(error: Error) -> read_api::Error {
             "RUN_CREATION_DISABLED",
             "native Run creation is not enabled for this Project",
         ),
+        Error::Admission(cause) if cause.0 == ml_exp_core::datasets::ManifestsTooLarge::CAUSE => (
+            422,
+            "DATASET_MANIFESTS_TOO_LARGE",
+            "the Run's dataset manifests exceed their 256 KiB budget; use fewer inputs or package many small files into fewer",
+        ),
         Error::Admission(cause) => (422, "SUBMISSION_ADMISSION_REJECTED", cause.0),
         Error::Authority | Error::Conflict | Error::Configuration => (
             409,
@@ -318,6 +323,8 @@ async fn create(
 fn creation_failure(cause: Error) -> read_api::Error {
     let mut error = failure(cause);
     match error.status {
+        // The caller can act on this one, so it keeps its own code.
+        422 if error.code == "DATASET_MANIFESTS_TOO_LARGE" => {}
         422 => {
             error.code = "RUN_CREATION_REJECTED";
             error.detail =
@@ -639,4 +646,30 @@ async fn artifact_metadata(
         service(api)?.artifacts(&identity).map_err(failure)
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ml_exp_core::first_submission::native;
+    #[test]
+    fn dataset_manifests_over_their_budget_keep_their_code_through_run_creation() {
+        let too_large = || {
+            Error::Admission(native::Error(
+                ml_exp_core::datasets::ManifestsTooLarge::CAUSE,
+            ))
+        };
+        let public = failure(too_large());
+        assert_eq!(
+            (public.status, public.code),
+            (422, "DATASET_MANIFESTS_TOO_LARGE")
+        );
+        let created = creation_failure(too_large());
+        assert_eq!(
+            (created.status, created.code),
+            (422, "DATASET_MANIFESTS_TOO_LARGE")
+        );
+        let other = creation_failure(Error::Admission(native::Error("Run runtime or executor")));
+        assert_eq!((other.status, other.code), (422, "RUN_CREATION_REJECTED"));
+    }
 }

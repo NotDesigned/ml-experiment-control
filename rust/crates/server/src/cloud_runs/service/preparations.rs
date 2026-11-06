@@ -23,9 +23,10 @@ fn name(id: &str) -> cloud::Result<String> {
     Ok(format!("{id}.setup.json"))
 }
 impl Service {
-    /// Check provider resources and input references before image construction.
-    /// The compiled worker package checks its actual serialized size later;
-    /// request bytes and dataset inventories are not a package-size estimate.
+    /// Check provider resources, input references and the dataset manifest budget
+    /// before image construction or a CPU copy can spend anything. The compiled
+    /// worker package checks its actual serialized size later; request bytes and
+    /// dataset inventories are not a package-size estimate.
     fn setup_preflight(
         &self,
         project: &str,
@@ -96,26 +97,29 @@ impl Service {
                 http_status: Some(422),
                 uncertain: false,
             }))?;
+            let mut mounts = Vec::with_capacity(run.data.len());
             for input in &run.data {
-                if backend
+                let receipt = match backend
                     .definition
                     .datasets
                     .iter()
-                    .any(|r| r.project == project && r.asset_id == input.asset_id)
+                    .find(|r| r.project == project && r.asset_id == input.asset_id)
                 {
-                    continue;
-                }
-                if backend
-                    .definition
-                    .imports
-                    .iter()
-                    .any(|r| r.project == project && r.definition.asset_id() == input.asset_id)
-                {
-                    continue;
-                }
-                self.uploaded_data(project, &run.executor, &input.asset_id)?
-                    .ok_or_else(cloud::Error::evidence)?;
+                    Some(receipt) => receipt.clone(),
+                    None => {
+                        self.undelivered_receipt(backend, project, &run.executor, &input.asset_id)?
+                    }
+                };
+                mounts.push(ml_exp_core::datasets::Mount {
+                    name: input.name.clone(),
+                    receipt,
+                });
             }
+            ml_exp_core::datasets::manifest_budget(&mounts).map_err(|_| cloud::Error {
+                code: "DATASET_MANIFESTS_TOO_LARGE".into(),
+                http_status: Some(422),
+                uncertain: false,
+            })?;
         } else if !slurm.is_some_and(|s| s.accepts(&run.executor)) || run.scheduling.is_some() {
             return Err(cloud::Error::configuration());
         }

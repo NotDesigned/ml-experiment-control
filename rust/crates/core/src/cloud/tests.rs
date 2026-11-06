@@ -270,6 +270,51 @@ fn cloud_run_authorship_launch_and_approval_preserve_science_and_exact_attempt()
     );
 }
 #[test]
+fn cloud_authorship_refuses_dataset_manifests_over_their_budget() {
+    let digest = format!("sha256:{}", "a".repeat(64));
+    let target = helper::Target {
+        backend_id: "pai-h200".into(),
+        profile_sha256: digest.clone(),
+        storage_scope: digest.clone(),
+    };
+    let data_root = "/mnt/workspace/ml-expd/datasets";
+    let receipt = crate::datasets::oversized_receipt("demo", &target, data_root);
+    let runtime = run::Runtime {
+        runtime_id: format!("runtime.{}", "1".repeat(64)),
+        source_id: job().source_id,
+        image: job().image,
+        source_dir: "/workspace".into(),
+        worker_path: "/opt/ml-expd/worker".into(),
+        worker_sha256: digest.clone(),
+    };
+    let request: run::Create = serde_json::from_value(json!({"run_id":"train",
+        "runtime_id":runtime.runtime_id,"executor":"pai-h200","command":["python","train.py"],
+        "resources":{"gpus":1,"cpus":8,"memory_gb":64},"walltime_seconds":3600,"seed":42,
+        "data":[{"name":"train","asset_id":receipt.asset_id}]}))
+    .unwrap();
+    let refused = run::documents(
+        "demo",
+        &request,
+        &runtime,
+        run::Authority {
+            project_sha256: &digest,
+            source_receipt_sha256: &digest,
+            profile_sha256: &digest,
+            tracking_route: &json!({"enabled":false}),
+            target: &target,
+            run_root: "/mnt/workspace/ml-expd/runs",
+            data_root,
+            datasets: std::slice::from_ref(&receipt),
+            checkpoint: None,
+        },
+        "2026-10-29T00:00:00Z",
+    )
+    .err()
+    .unwrap();
+    assert_eq!(refused.0, crate::datasets::ManifestsTooLarge::CAUSE);
+}
+
+#[test]
 fn dlc_resources_idle_permission_personal_mounts_and_frozen_ownership_are_explicit() {
     let p = pai();
     let job = job();

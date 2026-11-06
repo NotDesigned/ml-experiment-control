@@ -10,7 +10,50 @@ fn launch_error(error: ml_exp_core::cloud::Error) -> cloud::Error {
         cloud::Error::evidence()
     }
 }
+/// A planning refusal the caller can act on keeps its code. Anything else about the
+/// frozen authority stays the generic evidence refusal.
+fn planning_error(error: ml_exp_core::cloud::Error) -> cloud::Error {
+    if error.0 == ml_exp_core::datasets::ManifestsTooLarge::CAUSE {
+        cloud::Error {
+            code: "DATASET_MANIFESTS_TOO_LARGE".into(),
+            http_status: Some(422),
+            uncertain: false,
+        }
+    } else {
+        crate::why::record(file!(), line!(), &error);
+        cloud::Error::evidence()
+    }
+}
 impl Service {
+    /// The receipt an undelivered input will have: its import recipe, or else its
+    /// verified upload, under this backend's data root. A missing input is evidence.
+    pub(super) fn undelivered_receipt(
+        &self,
+        backend: &Backend,
+        project: &str,
+        executor: &str,
+        asset: &str,
+    ) -> cloud::Result<ml_exp_core::datasets::Receipt> {
+        let definition = if let Some(recipe) = backend
+            .definition
+            .imports
+            .iter()
+            .find(|r| r.project == project && r.definition.asset_id() == asset)
+        {
+            recipe.definition.clone()
+        } else {
+            self.uploaded_data(project, executor, asset)?
+                .ok_or_else(cloud::Error::evidence)?
+        };
+        Ok(ml_exp_core::datasets::Receipt {
+            contract: ml_exp_core::datasets::CONTRACT.into(),
+            project: project.into(),
+            target: backend.definition.target()?,
+            asset_id: asset.into(),
+            definition,
+            root: format!("{}/{project}/{asset}/tree", backend.definition.data_root()?),
+        })
+    }
     fn selected_profile(
         &self,
         project: &str,
@@ -202,25 +245,7 @@ impl Service {
                         });
                     }
                 }
-                let definition = if let Some(recipe) = backend
-                    .definition
-                    .imports
-                    .iter()
-                    .find(|r| r.project == project && r.definition.asset_id() == input.asset_id)
-                {
-                    recipe.definition.clone()
-                } else {
-                    self.uploaded_data(project, &request.executor, &input.asset_id)?
-                        .ok_or_else(cloud::Error::evidence)?
-                };
-                Ok(ml_exp_core::datasets::Receipt {
-                    contract: ml_exp_core::datasets::CONTRACT.into(),
-                    project: project.into(),
-                    target: target.clone(),
-                    asset_id: input.asset_id.clone(),
-                    definition,
-                    root: format!("{data_root}/{project}/{}/tree", input.asset_id),
-                })
+                self.undelivered_receipt(backend, project, &request.executor, &input.asset_id)
             })
             .collect::<cloud::Result<Vec<_>>>()?;
         let checkpoint = if request.resume_from.is_some() {
@@ -263,7 +288,7 @@ impl Service {
             },
             now,
         )
-        .map_err(why!(cloud::Error::evidence()))?;
+        .map_err(planning_error)?;
         let storage = backend.definition.storage_layout()?;
         if request.data_preparation.is_some() {
             let before_job = matches!(
@@ -459,6 +484,24 @@ impl Service {
 mod tests {
     use super::*;
     use ml_exp_core::cloud::launch;
+    #[test]
+    fn dataset_manifests_over_their_budget_are_a_typed_refusal_not_missing_evidence() {
+        let refused = planning_error(ml_exp_core::cloud::Error(
+            ml_exp_core::datasets::ManifestsTooLarge::CAUSE,
+        ));
+        assert_eq!(refused.code, "DATASET_MANIFESTS_TOO_LARGE");
+        assert_eq!(refused.http_status, Some(422));
+        assert!(!refused.uncertain);
+        let public = failure(refused);
+        assert_eq!(
+            (public.status, public.code),
+            (422, "DATASET_MANIFESTS_TOO_LARGE")
+        );
+        assert_eq!(
+            planning_error(ml_exp_core::cloud::Error("cloud dataset scope")).code,
+            cloud::Error::evidence().code
+        );
+    }
     /// Request, manifest and receipt bounds keep an ordinary Run far below 8 MiB, so
     /// this compiles the oversized package directly rather than through a Run.
     #[test]

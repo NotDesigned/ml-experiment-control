@@ -1529,6 +1529,75 @@ fn a_proven_failure_permits_one_new_job_and_retires_the_old_request() {
     }
 }
 
+/// A preparation whose Run reads the fixture's dataset.
+fn dataset_setup(c: &CopyFixture) -> ml_exp_core::preparation::Request {
+    serde_json::from_value(
+        json!({"request_id":"a".repeat(32),"run":{"run_id":"large-input",
+        "runtime_id":c.f.runtime.runtime_id,"executor":c.f.executor,"command":["python","train.py"],
+        "resources":{"gpus":1,"cpus":8,"memory_gb":64},"walltime_seconds":300,"seed":42,
+        "data":[{"name":"train","asset_id":c.asset}]},"approval":{"max_gpu_hours":1.0}}),
+    )
+    .unwrap()
+}
+
+#[test]
+fn dataset_manifests_over_their_budget_are_refused_before_any_copy() {
+    for kind in KINDS {
+        let small = CopyFixture::new(kind, 3);
+        let view = small
+            .open()
+            .experiment_prepare("demo", dataset_setup(&small), None)
+            .unwrap();
+        assert_eq!(view["status"], "PREPARED");
+
+        let c = CopyFixture::new(kind, 5000);
+        let service = c.open();
+        let setup = dataset_setup(&c);
+        let id = setup.id("demo").unwrap();
+        let refused = service
+            .experiment_prepare("demo", setup.clone(), None)
+            .unwrap_err();
+        assert_eq!(refused.code, "DATASET_MANIFESTS_TOO_LARGE");
+        assert_eq!(refused.http_status, Some(422));
+        assert!(service.experiment_status("demo", &id).is_err());
+
+        // Continuing checks again, because the dataset copy comes straight after.
+        private(
+            &c.f.settings
+                .registry_root
+                .join("cloud-submissions/slots")
+                .join(format!("{id}.setup.json")),
+            &json!({"project":"demo","request":setup,"worker_sha256":format!("sha256:{}", "0".repeat(64)),
+                "started":false,"submission":null}),
+        );
+        let refused = service
+            .experiment_continue(
+                "demo",
+                &id,
+                &format!("PREPARE {id}"),
+                None,
+                open_gate(&c.f.transition()),
+            )
+            .unwrap_err();
+        assert_eq!(refused.code, "DATASET_MANIFESTS_TOO_LARGE");
+        assert_eq!(c.provider.creates(), 0);
+        assert!(!c.f.run_directory("large-input").exists());
+    }
+}
+
+#[test]
+fn a_pai_run_over_the_manifest_budget_is_refused_before_it_exists() {
+    let c = CopyFixture::new(Kind::Pai, 5000);
+    let request = dataset_setup(&c)
+        .resolve("demo", &format!("sha256:{}", "0".repeat(64)))
+        .unwrap();
+    let refused = c.open().create_run("demo", request, T_CREATE).unwrap_err();
+    assert_eq!(refused.code, "DATASET_MANIFESTS_TOO_LARGE");
+    assert_eq!(refused.http_status, Some(422));
+    assert_eq!(c.provider.creates(), 0);
+    assert!(!c.f.run_directory("large-input").exists());
+}
+
 #[test]
 fn a_superseded_pai_request_stays_readable() {
     let c = CopyFixture::new(Kind::Pai, 3);
