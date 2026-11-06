@@ -13,7 +13,17 @@ fn scope() -> JobScope {
 }
 fn intent() -> FrozenIntent {
     FrozenIntent {
-        staging: None,
+        staging: slurm::staging::Requirement {
+            runs_root: "/synthetic/shared-runs".into(),
+            worker: slurm::managed::Runtime {
+                program: "/opt/ml-expd/bin/ml-exp-worker-rs".into(),
+                base_environment: std::collections::BTreeMap::from([(
+                    "PATH".into(),
+                    "/usr/bin:/bin".into(),
+                )]),
+                runtime_environment: Vec::new(),
+            },
+        },
         target: Target {
             backend_id: "slurm-test".into(),
             profile_sha256: sha256_bytes(b"profile"),

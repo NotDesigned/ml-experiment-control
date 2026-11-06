@@ -40,10 +40,9 @@ impl Helper {
             return Err(Error::Metadata);
         }
         self.verify_issued(request.intent())?;
-        let (plan, directories) = self
-            .observe_shared(request.intent(), &snapshot.directory, false)?
-            .ok_or(Error::Configuration)?;
-        let package = plan.managed.as_ref().ok_or(Error::Configuration)?;
+        let (plan, directories) =
+            self.observe_shared(request.intent(), &snapshot.directory, false)?;
+        let package = &plan.managed;
         let worker = crate::managed::sample(&package.config).map_err(|_| Error::Metadata)?;
         if worker.phase != ml_exp_core::managed::evidence::Phase::Finished
             || worker.receipt.is_none()
@@ -123,13 +122,7 @@ impl Helper {
                 let bundle = Bundle {
                     contract: artifacts::publication::CONTRACT.into(),
                     intent_sha256: intent.clone(),
-                    config_sha256: helper::sha256_bytes(
-                        &plan
-                            .managed
-                            .as_ref()
-                            .ok_or(Error::Metadata)?
-                            .config_bytes()?,
-                    ),
+                    config_sha256: helper::sha256_bytes(&plan.managed.config_bytes()?),
                     archive: artifacts::ArchiveReceipt {
                         project: scope.project.clone(),
                         run_id: scope.run_id.clone(),
@@ -157,13 +150,7 @@ impl Helper {
             .bundle
             .bind(
                 request.intent(),
-                Some(&helper::sha256_bytes(
-                    &plan
-                        .managed
-                        .as_ref()
-                        .ok_or(Error::Metadata)?
-                        .config_bytes()?,
-                )),
+                Some(&helper::sha256_bytes(&plan.managed.config_bytes()?)),
             )
             .map_err(|_| Error::Metadata)?;
         self.verify_issued(request.intent())?;

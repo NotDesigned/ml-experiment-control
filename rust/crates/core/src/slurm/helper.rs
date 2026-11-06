@@ -90,8 +90,7 @@ impl Scope {
 pub struct FrozenIntent {
     pub target: Target,
     pub scope: Scope,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub staging: Option<super::staging::Requirement>,
+    pub staging: super::staging::Requirement,
     pub submission_token: String,
     pub scheduler_name: String,
     pub manifest_sha256: String,
@@ -101,9 +100,7 @@ impl FrozenIntent {
     pub fn validate(&self) -> Result<()> {
         self.target.validate()?;
         self.scope.validate()?;
-        if let Some(requirement) = &self.staging {
-            requirement.validate()?;
-        }
+        self.staging.validate()?;
         submission_marker(&self.submission_token).map_err(|_| Error::Identity)?;
         if scheduler_job_name(&self.scope.run_id, &self.scope.attempt_id)
             .map_err(|_| Error::Identity)?
@@ -337,7 +334,7 @@ impl Request {
             {
                 return Err(Error::Content);
             }
-            super::staging::plan(&self.intent, manifest.as_bytes())?;
+            super::staging::admit(&self.intent, manifest.as_bytes())?;
             // Require the generated long-form identity directives in pinned
             // bytes, but do not pretend this is a complete sbatch parser. The
             // executor must also force these fields on the sbatch CLI, whose
@@ -752,13 +749,25 @@ pub fn decode_reply(frame: &[u8], expected: &Request) -> Result<Reply> {
 mod tests {
     use super::*;
     fn fixture() -> (FrozenIntent, String, String) {
-        let manifest = "run_id: train\n".to_owned();
+        let manifest = include_str!("../../tests/fixtures/slurm/attempt.json")
+            .trim()
+            .replace("@ROOT@", "/synthetic");
         let script = format!(
             "#!/usr/bin/env bash\n#SBATCH --job-name=train--attempt-001\n#SBATCH --comment=ml-exp-{}\n\ntrue\n",
             "a".repeat(32)
         );
         let intent = FrozenIntent {
-            staging: None,
+            staging: super::super::staging::Requirement {
+                runs_root: "/synthetic/shared-runs".into(),
+                worker: super::super::managed::Runtime {
+                    program: "/opt/ml-expd/bin/ml-exp-worker-rs".into(),
+                    base_environment: std::collections::BTreeMap::from([(
+                        "PATH".into(),
+                        "/usr/bin:/bin".into(),
+                    )]),
+                    runtime_environment: Vec::new(),
+                },
+            },
             target: Target {
                 backend_id: "slurm-test".into(),
                 profile_sha256: sha256_bytes(b"profile"),

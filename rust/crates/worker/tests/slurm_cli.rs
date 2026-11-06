@@ -4,6 +4,8 @@
 use ml_exp_core::slurm::helper::{self, FrozenIntent, ReplyOutcome, Request, Scope, Target};
 use serde_json::{Value, json};
 use std::{
+    cell::RefCell,
+    collections::BTreeMap,
     fs,
     io::Write,
     os::unix::fs::PermissionsExt,
@@ -19,15 +21,29 @@ fn target() -> Target {
         storage_scope: helper::sha256_bytes(b"storage"),
     }
 }
+thread_local! {
+    /// The root of the newest `Fixture`, so `request()` names its shared runs.
+    static ROOT: RefCell<PathBuf> = RefCell::new(PathBuf::from("/synthetic"));
+}
 fn request() -> Request {
-    let manifest = "run_id: train\n".to_owned();
+    let root = ROOT.with(|root| root.borrow().clone());
+    let manifest = include_str!("../../core/tests/fixtures/slurm/attempt.json")
+        .trim()
+        .replace("@ROOT@", root.to_str().unwrap());
     let script = format!(
         "#!/bin/sh\n#SBATCH --job-name=train--attempt-001\n#SBATCH --comment=ml-exp-{}\n\nexit 0\n",
         "a".repeat(32)
     );
     Request::prepare(
         FrozenIntent {
-            staging: None,
+            staging: ml_exp_core::slurm::staging::Requirement {
+                runs_root: root.join("shared-runs").display().to_string(),
+                worker: ml_exp_core::slurm::managed::Runtime {
+                    program: "/opt/ml-expd/bin/ml-exp-worker-rs".into(),
+                    base_environment: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
+                    runtime_environment: Vec::new(),
+                },
+            },
             target: target(),
             scope: Scope {
                 project: "demo".into(),
@@ -53,13 +69,16 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let root = tempfile::tempdir().unwrap();
+        ROOT.with(|current| *current.borrow_mut() = root.path().into());
+        let shared = root.path().join("shared-runs");
+        fs::create_dir(&shared).unwrap();
         let helper_root = root.path().join("ledger");
         let config = root.path().join("helper.json");
         let program = root.path().join("sbatch");
         let calls = root.path().join("calls");
         fs::write(&program,"#!/bin/sh\n[ \"$#\" -eq 3 ] && [ \"$1\" = --parsable ] && [ \"$2\" = --job-name=train--attempt-001 ] && [ \"$3\" = --comment=ml-exp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ] || exit 99\ncat >/dev/null\nprintf 'call\\n' >> \"$COUNTER\"\nprintf '12345;synthetic\\n'\n").unwrap();
         fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
-        let value = json!({"root":helper_root,"target":target(),"sbatch_program":program,"environment":{"PATH":"/usr/bin:/bin","COUNTER":calls,"SYNTHETIC_SECRET":"never-print-this-synthetic-value"},"lock_timeout_seconds":1,"execution_timeout_seconds":1,"stdio_timeout_seconds":1});
+        let value = json!({"root":helper_root,"shared_run_root":shared,"target":target(),"sbatch_program":program,"environment":{"PATH":"/usr/bin:/bin","COUNTER":calls,"SYNTHETIC_SECRET":"never-print-this-synthetic-value"},"lock_timeout_seconds":1,"execution_timeout_seconds":1,"stdio_timeout_seconds":1});
         fs::write(&config, serde_json::to_vec(&value).unwrap()).unwrap();
         fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
         Self {

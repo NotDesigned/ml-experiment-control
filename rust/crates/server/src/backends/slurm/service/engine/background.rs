@@ -252,10 +252,7 @@ impl Service {
                     let terminal = self
                         .scheduler_observation(&prepared)?
                         .is_some_and(|saved| saved.observation.status.state.is_terminal());
-                    let managed = Self::background_managed(&prepared)?;
-                    if terminal && !managed {
-                        continue;
-                    }
+                    Self::background_admitted(&prepared)?;
                     let finished = self.observation(&prepared)?.is_some_and(|saved| {
                         saved.evidence.worker.phase
                             == ml_exp_core::managed::evidence::Phase::Finished
@@ -282,11 +279,7 @@ impl Service {
         timeout: std::time::Duration,
     ) -> Result<Value> {
         let prepared = self.load(action)?;
-        let phase = if Self::background_managed(&prepared)? {
-            phase
-        } else {
-            Phase::Scheduler
-        };
+        Self::background_admitted(&prepared)?;
         match phase {
             Phase::Scheduler => {
                 self.refresh_scheduler_with_limit(action, now, cancelled, Some(timeout))
@@ -295,15 +288,14 @@ impl Service {
             Phase::History => self.ingest_history_with_limit(action, cancelled, Some(timeout)),
         }
     }
-    fn background_managed(prepared: &Prepared) -> Result<bool> {
+    fn background_admitted(prepared: &Prepared) -> Result<()> {
         let (manifest, _) = prepared
             .request
             .prepared_content()
             .ok_or(Error::Authority)?;
-        let plan =
-            ml_exp_core::slurm::staging::plan(prepared.request.intent(), manifest.as_bytes())
-                .map_err(why!(Error::Authority))?;
-        Ok(plan.is_some_and(|plan| plan.managed.is_some()))
+        ml_exp_core::slurm::staging::admit(prepared.request.intent(), manifest.as_bytes())
+            .map_err(why!(Error::Authority))?;
+        Ok(())
     }
     pub(super) fn observation_ssh(
         backend: &Backend,

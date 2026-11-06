@@ -134,10 +134,10 @@ fn staged(root: &str, attempt_bytes: &[u8]) -> slurm_managed::Package {
             storage_scope: repeated("sha256:", "d"),
         },
         scope: scope(),
-        staging: Some(staging::Requirement {
+        staging: staging::Requirement {
             runs_root: format!("{root}/runs"),
-            worker: Some(runtime()),
-        }),
+            worker: runtime(),
+        },
         submission_token: "0123456789abcdef0123456789abcdef".into(),
         scheduler_name: slurm::scheduler_job_name("train", "attempt-001").unwrap(),
         manifest_sha256: helper::sha256_bytes(attempt_bytes),

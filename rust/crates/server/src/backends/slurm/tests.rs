@@ -6,6 +6,7 @@ use ml_exp_core::slurm::{
     scheduler_job_name,
 };
 use std::{
+    cell::RefCell,
     collections::BTreeMap,
     fs,
     io::Read,
@@ -29,15 +30,39 @@ fn target() -> Target {
     }
 }
 
+thread_local! {
+    /// The shared runs of the newest `ledger_config`. `action_tests.rs` is pinned
+    /// and calls `request()` with no argument right after that config.
+    static SHARED_RUNS: RefCell<PathBuf> =
+        RefCell::new(PathBuf::from("/synthetic/shared-runs"));
+}
+
 fn request() -> Request {
     let token = "a".repeat(32);
-    let manifest = format!("run_id: train\ncapability: {SECRET}\n");
+    let runs_root = SHARED_RUNS.with(|path| path.borrow().clone());
+    let root = runs_root.parent().unwrap().to_str().unwrap();
+    let mut document: serde_json::Value = serde_json::from_str(
+        &include_str!("../../../../core/tests/fixtures/slurm/attempt.json").replace("@ROOT@", root),
+    )
+    .unwrap();
+    document["command"]
+        .as_array_mut()
+        .unwrap()
+        .push(SECRET.into());
+    let manifest = document.to_string();
     let name = scheduler_job_name("train", "attempt-001").unwrap();
     let script = format!(
         "#!/usr/bin/env bash\n#SBATCH --job-name={name}\n#SBATCH --comment=ml-exp-{token}\n\ntrue\n"
     );
     let intent = FrozenIntent {
-        staging: None,
+        staging: ml_exp_core::slurm::staging::Requirement {
+            runs_root: runs_root.display().to_string(),
+            worker: ml_exp_core::slurm::managed::Runtime {
+                program: "/opt/ml-expd/bin/ml-exp-worker-rs".into(),
+                base_environment: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
+                runtime_environment: Vec::new(),
+            },
+        },
         target: target(),
         scope: Scope {
             project: "demo".into(),
@@ -102,11 +127,17 @@ fn config(root: &Path, mode: &str) -> SshConfig {
 
 fn ledger_config(root: &Path) -> ml_exp_worker::slurm::HelperConfig {
     // Trusted test-operator configuration, independent of the request frame.
+    let marker = root.join("native-shared-root");
+    if !marker.exists() {
+        let shared = root.join("shared-runs");
+        fs::create_dir_all(&shared).unwrap();
+        fs::write(&marker, shared.to_str().unwrap()).unwrap();
+    }
+    let shared = PathBuf::from(fs::read_to_string(marker).unwrap());
+    SHARED_RUNS.with(|path| *path.borrow_mut() = shared.clone());
     ml_exp_worker::slurm::HelperConfig {
         root: root.join("remote-helper"),
-        shared_run_root: fs::read_to_string(root.join("native-shared-root"))
-            .ok()
-            .map(PathBuf::from),
+        shared_run_root: Some(shared),
         target: target(),
         sbatch_program: root.join("sbatch"),
         environment: BTreeMap::from([

@@ -82,10 +82,9 @@ impl Service {
             .prepared_content()
             .ok_or(Error::Authority)?;
         let plan =
-            ml_exp_core::slurm::staging::plan(prepared.request.intent(), manifest.as_bytes())
-                .map_err(why!(Error::Authority))?
-                .ok_or(Error::Authority)?;
-        let package = plan.managed.ok_or(Error::Authority)?;
+            ml_exp_core::slurm::staging::admit(prepared.request.intent(), manifest.as_bytes())
+                .map_err(why!(Error::Authority))?;
+        let package = plan.managed;
         let name = format!(
             "{}.history.json",
             native::attempt_slot(

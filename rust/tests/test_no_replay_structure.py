@@ -36,13 +36,13 @@ PINS = {
     "rust/crates/core/src/slurm/action.rs": "61d6fb7e14248434b39f5a73208412d232d9134c784512e114c12892b8de9548",
     "rust/crates/core/src/cloud/action.rs": "5829a8a03252f9100341b46217e37e9f40f202630f251377d3777f6faba3d13f",
     "rust/crates/core/src/cloud/exchange.rs": "0d8257ef48ca52d3bb560d4bab582d6df28af98988cc45c100df60f74e4b664a",
-    "rust/crates/worker/src/slurm/ledger.rs": "d2686258092407e36ae0bda717b38377ae87702c21d046c7c1976a15c75cfb6b",
-    "rust/crates/worker/src/slurm/ledger/artifacts.rs": "0f69929ff433d14230a443931c83f1d3ede389b83e6d632995808003e58acb79",
-    "rust/crates/worker/src/slurm/ledger/checkpoints.rs": "936a8f83b2175d8d6ed669370a8e59312031292a737b8bb9e7cd28f637604246",
-    "rust/crates/worker/src/slurm/ledger/history.rs": "68b7b78902fdc0ea37d9e4e308439c54facd58322f88bd664dc424aa28e59548",
+    "rust/crates/worker/src/slurm/ledger.rs": "4c945a908455aa68bdcdadbc5fbfaa3c9e4cc0f6bb373c56511423ce68138910",
+    "rust/crates/worker/src/slurm/ledger/artifacts.rs": "9581fc9f5b04e6254810859f689eb54e5c51e2c4ddd89795ca7eabfd19809148",
+    "rust/crates/worker/src/slurm/ledger/checkpoints.rs": "871c13c21b65c46b5da435d95a8bb966da55e441c2775b971c4f9032b74755bc",
+    "rust/crates/worker/src/slurm/ledger/history.rs": "c075ece78d43ddd738efd7f09416a3c0e7efa4d6291f565091004c1a4ad61200",
     "rust/crates/worker/src/slurm/ledger/jobs.rs": "695018e2b31111048c48eac6581140aa6f8f14b8c98561bd6f4f4efa2a0909f0",
-    "rust/crates/worker/src/slurm/ledger/observation.rs": "70f5464e81043f85f7b4ed85de37376c3b4e7f1281dda4057de58a7881a64fd4",
-    "rust/crates/worker/src/slurm/ledger/staging.rs": "20e0b6d52d53cded3ab2722abd9ef676e131d313c1d71f148f4dc20d26be375e",
+    "rust/crates/worker/src/slurm/ledger/observation.rs": "56754c26885edd67c6c3a040f04f39cdc03359e64b228501204bb7352b113aae",
+    "rust/crates/worker/src/slurm/ledger/staging.rs": "9e0ae81aadd292bfe43353aa75cebf59a67fb63da2ebcb60ee0cb300bf4e0ba9",
 }
 
 # Every line in the server crate's production code that calls a method named

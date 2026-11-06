@@ -1,27 +1,7 @@
 use super::*;
 use serde_json::{Value, json};
 fn staged_request(root: &Path) -> Request {
-    let mut intent = request().intent().clone();
-    intent.staging = Some(ml_exp_core::slurm::staging::Requirement {
-        worker: None,
-        runs_root: root.join("shared-runs").display().to_string(),
-    });
-    let doc = json!({"schema_version":1,"project":"demo","run_id":"train","attempt_id":"attempt-001",
-        "image_id":format!("sha256:{}","1".repeat(64)),
-        "backend":{"kind":"slurm","ssh_alias":"test","partition":"h100","account":"science","qos":"normal",
-            "gres":"gpu:h100:1","time":"00:05:00","source_dir":root.join("source"),"sif_path":root.join("image.sif"),"mount_root":root},
-        "storage":{"run_dir":root.join("shared-runs/demo/train"),"project_data_root":root.join("data/demo")},
-        "resources":{"gpus":1,"cpus":2,"memory_gb":4},
-        "execution":{"source_mount":"/workspace","workdir":"/workspace","managed_io":true},
-        "command":["python","train.py"]});
-    let manifest = serde_json::to_string(&doc).unwrap();
-    intent.manifest_sha256 = helper::sha256_bytes(manifest.as_bytes());
-    Request::prepare(
-        intent,
-        manifest,
-        request().prepared_content().unwrap().1.into(),
-    )
-    .unwrap()
+    request_at(root)
 }
 fn staged_fixture() -> (tempfile::TempDir, Helper, Request) {
     let root = tempfile::tempdir().unwrap();
@@ -61,7 +41,9 @@ fn staged_attempt_exists_before_submission_and_reuses_original_files_after_resta
 }
 #[test]
 fn missing_operator_storage_permission_rejects_without_creating_a_claim() {
-    let (root, helper) = fixture("printf '12345\\n'");
+    let root = tempfile::tempdir().unwrap();
+    fake_program(root.path(), "printf '12345\\n'");
+    let helper = Helper::initialize(unshared_config(root.path())).unwrap();
     let request = staged_request(root.path());
     assert_eq!(
         handle(&helper, &request).outcome,
@@ -294,22 +276,10 @@ fn competing_shared_attempt_preparations_keep_one_immutable_manifest() {
     assert_eq!(calls(root.path()), 0);
 }
 
-fn managed_request(request: &Request) -> Request {
-    let mut intent = request.intent().clone();
-    intent.staging.as_mut().unwrap().worker = Some(ml_exp_core::slurm::managed::Runtime {
-        program: "/opt/ml-expd/bin/ml-exp-worker-rs".into(),
-        base_environment: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
-        runtime_environment: vec!["CUDA_VISIBLE_DEVICES".into()],
-    });
-    let (manifest, script) = request.prepared_content().unwrap();
-    Request::prepare(intent, manifest.into(), script.into()).unwrap()
-}
-
 #[test]
 fn long_preparation_releases_metadata_lock_and_honors_cancellation_without_dispatch() {
     let (root, helper, request) = staged_fixture();
     drop(helper);
-    let request = managed_request(&request);
     let mut doc: Value = serde_json::from_str(request.prepared_content().unwrap().0).unwrap();
     doc["source_id"] = json!(format!("source.{}", "2".repeat(64)));
     doc["image_id"] = json!(format!("sha256:{}", "3".repeat(64)));
@@ -374,7 +344,6 @@ fn long_preparation_releases_metadata_lock_and_honors_cancellation_without_dispa
 #[test]
 fn managed_launch_is_staged_with_exact_local_binding_and_keeps_control_outputs_fresh() {
     let (root, helper, request) = staged_fixture();
-    let request = managed_request(&request);
     assert_eq!(handle(&helper, &request).outcome, ReplyOutcome::Prepared);
     let plan = ml_exp_core::slurm::staging::plan(
         request.intent(),
@@ -412,7 +381,6 @@ fn managed_launch_is_staged_with_exact_local_binding_and_keeps_control_outputs_f
 fn changed_launch_package_or_preexisting_worker_never_dispatches() {
     for change in ["config", "launch", "control", "payload"] {
         let (root, helper, request) = staged_fixture();
-        let request = managed_request(&request);
         assert_eq!(handle(&helper, &request).outcome, ReplyOutcome::Prepared);
         let path = attempt(root.path());
         match change {
@@ -439,18 +407,9 @@ fn changed_launch_package_or_preexisting_worker_never_dispatches() {
 }
 #[test]
 fn managed_environment_admission_and_large_sealed_configuration_are_checked_before_dispatch() {
-    let (root, helper, request) = staged_fixture();
-    let mut request = managed_request(&request);
+    let (root, helper, mut request) = staged_fixture();
     let mut intent = request.intent().clone();
-    intent
-        .staging
-        .as_mut()
-        .unwrap()
-        .worker
-        .as_mut()
-        .unwrap()
-        .base_environment
-        .clear();
+    intent.staging.worker.base_environment.clear();
     assert!(
         ml_exp_core::slurm::staging::plan(
             &intent,
@@ -461,11 +420,7 @@ fn managed_environment_admission_and_large_sealed_configuration_are_checked_befo
     let mut intent = request.intent().clone();
     intent
         .staging
-        .as_mut()
-        .unwrap()
         .worker
-        .as_mut()
-        .unwrap()
         .base_environment
         .insert("SYNTHETIC_LARGE_VALUE".into(), "x".repeat(40 * 1024));
     let (manifest, script) = request.prepared_content().unwrap();

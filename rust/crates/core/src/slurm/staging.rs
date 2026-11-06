@@ -9,23 +9,24 @@ pub const CONTRACT: &str = "slurm-shared-attempt.v1";
 #[serde(deny_unknown_fields)]
 pub struct Requirement {
     pub runs_root: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worker: Option<super::managed::Runtime>,
+    pub worker: super::managed::Runtime,
 }
 impl Requirement {
     pub fn validate(&self) -> helper::Result<()> {
-        if let Some(worker) = &self.worker {
-            worker.validate()?;
-        }
-        if !absolute_path(&self.runs_root)
-            || self.runs_root == "/"
-            || self.runs_root.ends_with('/')
-            || self.runs_root.contains("//")
-        {
-            return Err(helper::Error::Metadata);
-        }
-        Ok(())
+        self.worker.validate()?;
+        validate_runs_root(&self.runs_root)
     }
+}
+/// The operator's shared root, checked on its own before any Attempt names it.
+pub fn validate_runs_root(runs_root: &str) -> helper::Result<()> {
+    if !absolute_path(runs_root)
+        || runs_root == "/"
+        || runs_root.ends_with('/')
+        || runs_root.contains("//")
+    {
+        return Err(helper::Error::Metadata);
+    }
+    Ok(())
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -37,19 +38,16 @@ pub struct Plan {
     pub runs_root: String,
     pub run_dir: String,
     pub attempt_dir: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub managed: Option<super::managed::Package>,
+    pub managed: super::managed::Package,
 }
 fn decode<T: serde::de::DeserializeOwned>(value: &Value) -> helper::Result<T> {
     serde_json::from_value(value.clone()).map_err(|_| helper::Error::Metadata)
 }
 /// Only the immutable Attempt may select its scoped directory. A shared-root
 /// capability is independent operator policy and cannot be supplied by a client.
-pub fn plan(intent: &helper::FrozenIntent, manifest: &[u8]) -> helper::Result<Option<Plan>> {
+pub fn admit(intent: &helper::FrozenIntent, manifest: &[u8]) -> helper::Result<Plan> {
     intent.validate()?;
-    let Some(requirement) = &intent.staging else {
-        return Ok(None);
-    };
+    let requirement = &intent.staging;
     if helper::sha256_bytes(manifest) != intent.manifest_sha256 {
         return Err(helper::Error::Content);
     }
@@ -82,9 +80,6 @@ pub fn plan(intent: &helper::FrozenIntent, manifest: &[u8]) -> helper::Result<Op
         &spec.storage.project_data_root,
     )
     .map_err(|_| helper::Error::Identity)?;
-    if !datasets.is_empty() && requirement.worker.is_none() {
-        return Err(helper::Error::Identity);
-    }
     let run_dir = format!(
         "{}/{}/{}",
         requirement.runs_root, intent.scope.project, intent.scope.run_id
@@ -116,14 +111,11 @@ pub fn plan(intent: &helper::FrozenIntent, manifest: &[u8]) -> helper::Result<Op
                     return Err(helper::Error::Identity);
                 }
             }
-            if requirement.worker.is_none() {
-                return Err(helper::Error::Identity);
-            }
         }
         (None, None) => {}
         _ => return Err(helper::Error::Identity),
     }
-    Ok(Some(Plan {
+    Ok(Plan {
         contract: CONTRACT.into(),
         scope: intent.scope.clone(),
         intent_sha256: intent.digest()?,
@@ -131,13 +123,29 @@ pub fn plan(intent: &helper::FrozenIntent, manifest: &[u8]) -> helper::Result<Op
         runs_root: requirement.runs_root.clone(),
         attempt_dir: format!("{run_dir}/attempts/{}", intent.scope.attempt_id),
         run_dir,
-        managed: requirement
-            .worker
-            .as_ref()
-            .map(|runtime| {
-                super::managed::plan_for_document(&intent.scope, &spec, runtime, &doc, &datasets)
-            })
-            .transpose()?,
+        managed: super::managed::plan_for_document(
+            &intent.scope,
+            &spec,
+            &requirement.worker,
+            &doc,
+            &datasets,
+        )?,
+    })
+}
+
+/// What `plan` hands back: the managed package and nothing else.
+#[doc(hidden)]
+pub struct Admitted {
+    pub managed: Option<super::managed::Package>,
+}
+/// `admit` in the shape `backends/slurm/tests/submission_tests.rs` reads. That
+/// file is pinned by the no-replay guard and calls this as
+/// `plan(..).unwrap().unwrap().managed.unwrap()`, so the name and the two options
+/// stay until its owner allows the edit. Production code calls `admit`.
+#[doc(hidden)]
+pub fn plan(intent: &helper::FrozenIntent, manifest: &[u8]) -> helper::Result<Option<Admitted>> {
+    Ok(Some(Admitted {
+        managed: Some(admit(intent, manifest)?.managed),
     }))
 }
 
@@ -145,8 +153,7 @@ pub fn checkpoint_context(
     intent: &helper::FrozenIntent,
     manifest: &[u8],
 ) -> helper::Result<crate::checkpoints::Context> {
-    let plan = plan(intent, manifest)?.ok_or(helper::Error::Metadata)?;
-    let package = plan.managed.ok_or(helper::Error::Metadata)?;
+    let package = admit(intent, manifest)?.managed;
     let doc = Value::Object(crate::json::mapping(manifest).map_err(|_| helper::Error::Metadata)?);
     let context = crate::checkpoints::Context {
         project: intent.scope.project.clone(),
