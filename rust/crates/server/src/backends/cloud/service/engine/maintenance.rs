@@ -72,6 +72,9 @@ impl Service {
             .ok_or_else(cloud::Error::configuration)?;
         let mut job = execution.job.clone();
         let id = plan.id().map_err(why!(cloud::Error::evidence()))?;
+        // The run name decides the outbox slot, so each plan is one job of its own and
+        // a finished plan cannot close the way to the next. The plan names the Attempt.
+        job.run_id = format!("maintenance-{}", &id[..32]);
         job.submission_token = id[..32].into();
         job.gpus = 0;
         job.priority = 5;

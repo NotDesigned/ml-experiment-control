@@ -1798,6 +1798,59 @@ fn a_maintenance_job_takes_the_configured_limit_and_keeps_it_once_recorded() {
     assert_eq!(entries[0]["job"]["gpus"], 0);
 }
 
+/// Each plan is one job of its own, so removing outputs leaves state and a generation
+/// removable. Driving a plan again observes its job and creates nothing.
+#[test]
+fn every_maintenance_plan_of_an_attempt_runs_as_its_own_job_once() {
+    for kind in KINDS {
+        let mut c = CopyFixture::new(kind, 1);
+        if let Profile::Sensecore(training) = &c.f.provider.profile {
+            let mut collector = training.clone();
+            collector.purpose = sensecore::Purpose::ResultCollection;
+            collector.cluster = "debug-cpu".into();
+            collector.worker_spec = "cpu.2c4g".into();
+            collector.worker_gpus = 0;
+            collector.worker_cpus = 2;
+            collector.worker_memory_gb = 4;
+            collector.quota = sensecore::Quota::Reserved;
+            let mut config: Value = serde_json::from_slice(&c.config).unwrap();
+            config["backends"][0]["collector"] = json!(Profile::Sensecore(collector));
+            c.config = serde_json::to_vec(&config).unwrap();
+        }
+        let service = c.open();
+        let (action, _) = c.f.authorized(&service, "train");
+        c.f.execute(&service, &action).unwrap();
+        c.provider.set_state("FAILED");
+        let plan = |selection, request: &str| {
+            service
+                .maintenance_plan(&action, selection, request.into(), T_RECONCILE)
+                .unwrap()
+        };
+        let outputs = plan(ml_exp_core::maintenance::Selection::Outputs, REQUEST_A);
+        let state = plan(ml_exp_core::maintenance::Selection::State, REQUEST_B);
+        service.maintenance_execute(&action, &outputs).unwrap();
+        assert_eq!(c.provider.creates(), 2);
+        service.maintenance_execute(&action, &state).unwrap();
+        assert_eq!(c.provider.creates(), 3);
+        for repeated in [&outputs, &state] {
+            service.maintenance_execute(&action, repeated).unwrap();
+        }
+        assert_eq!(c.provider.creates(), 3);
+        let entries = c.sync_entries();
+        assert_eq!(entries.len(), 2);
+        assert_ne!(
+            entries[0]["job"]["submission_token"],
+            entries[1]["job"]["submission_token"]
+        );
+        for entry in &entries {
+            assert_eq!(entry["job"]["project"], "demo");
+            assert_eq!(entry["job"]["attempt_id"], "attempt-001");
+            assert_eq!(entry["job"]["gpus"], 0);
+            assert_ne!(entry["job"]["run_id"], "train");
+        }
+    }
+}
+
 #[test]
 fn result_job_limits_default_and_refuse_what_the_collector_cannot_run() {
     let c = CopyFixture::new(Kind::Pai, 1);

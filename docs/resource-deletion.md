@@ -23,6 +23,11 @@ at stays. A target that is itself a link is refused. Datasets and source trees a
 of scope. Real provider cleanup remains pending acceptance; see the
 [acceptance status](acceptance-status.md).
 
+On SenseCore and PAI each plan runs as its own CPU job, and running `admin execute`
+again observes that job without creating another. Execute one plan at a time on an
+Attempt: a job that finds another holding the Attempt's lock fails, and a new request
+ID then makes a new plan.
+
 ## Delete bytes first, then retire
 
 `admin retire` retires a terminal Run registration and keeps small audit records. It
