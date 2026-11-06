@@ -201,7 +201,7 @@ sends remain reserved; a successful connection check never authorizes replay.
 
 Campaign authoring is intentionally absent; a Run does not need a research
 question or Campaign. Batch commands perform explicit passes, not an unattended
-queue. An expired authorization gate blocks dispatch until an explicit `run renew`
+queue. An expired gate blocks dispatch until an explicit `run renew`
 creates a fresh PREPARED plan; renewal is idempotent, preserves the Run/Attempt and
 budget, and refuses any possible prior execution. No automatic checkpoint selection
 or unbounded restart exists. Native debug supports CCI create/stop and DSW

@@ -864,35 +864,27 @@ fn show(client: &Client, id: &str, health: &Value) -> Result<Value, Error> {
     )
 }
 
-/// Only these can be sent. Anything else may already have a job, or can never have
+/// Only this can be sent. Anything else may already have a job, or can never have
 /// one until it is prepared again, so sending is out of the question.
 fn unsent(status: &Value) -> bool {
-    matches!(status.as_str(), Some("PREPARED" | "AUTHORIZED"))
+    status.as_str() == Some("PREPARED")
 }
 /// Prepared again or never: BLOCKED and an expired gate have no job.
 fn may_exist(status: &Value) -> bool {
     !unsent(status) && status != "BLOCKED"
 }
 
+/// The one request that can start a job. Repeating it is safe: the server claims an
+/// Action once, and refuses or answers from the record after that.
 fn dispatch(client: &Client, id: &str, health: &Value) -> Result<Value, Error> {
-    let mut current = show(client, id, health)?;
+    let current = show(client, id, health)?;
     if current["next_action"] == "REPREPARE" {
         return Err(Error::Submit(format!(
             "the prepared Submission {id} expired or was blocked, and nothing was submitted; \
              see `ml-exp run renew --help`"
         )));
     }
-    if current["status"] == "PREPARED" {
-        current = submissions::execute(
-            client,
-            &submissions::plan(submissions::Command::Authorize {
-                submission: id,
-                reason: REASON,
-            })?,
-            health,
-        )?;
-    }
-    if current["status"] != "AUTHORIZED" {
+    if !unsent(&current["status"]) {
         return Ok(current);
     }
     let confirmation = current["confirmation"]
@@ -904,6 +896,7 @@ fn dispatch(client: &Client, id: &str, health: &Value) -> Result<Value, Error> {
         &submissions::plan(submissions::Command::Execute {
             submission: id,
             confirmation: &confirmation,
+            reason: REASON,
         })?,
         health,
     )
@@ -925,8 +918,9 @@ fn observe(client: &Client, id: &str, current: Value, health: &Value) -> Result<
     }
 }
 
-/// Send once and say truthfully what is known afterwards. If a reply was lost and the
-/// server still shows it unsent, nothing was sent, and that must not read as success.
+/// Send once and say truthfully what is known afterwards. A lost reply says nothing about
+/// whether the claim happened, so the server's record decides: EXECUTING or later goes on
+/// to reconcile, and still PREPARED is reported as not sent, never as success.
 fn send(client: &Client, id: &str, health: &Value) -> Result<Value, Error> {
     let current = match dispatch(client, id, health) {
         Ok(current) => current,
@@ -2030,10 +2024,8 @@ mod tests {
     }
     #[test]
     fn only_a_prepared_submission_can_be_sent_and_only_a_sent_one_may_have_a_job() {
-        for status in ["PREPARED", "AUTHORIZED"] {
-            assert!(unsent(&json!(status)));
-            assert!(!may_exist(&json!(status)));
-        }
+        assert!(unsent(&json!("PREPARED")));
+        assert!(!may_exist(&json!("PREPARED")));
         assert!(!unsent(&json!("BLOCKED")));
         assert!(!may_exist(&json!("BLOCKED")));
         for status in ["EXECUTING", "RECONCILE_REQUIRED", "VERIFIED"] {

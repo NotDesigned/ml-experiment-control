@@ -1,6 +1,6 @@
 //! Append-only continuation metadata. An explicit retry proves the previous
 //! exact job terminal, freezes an explicit checkpoint, then publishes a new
-//! Attempt. It never prepares, authorizes or submits that Attempt implicitly.
+//! Attempt. It never prepares or submits that Attempt implicitly.
 use super::creation::{clean_files, publish_json, read_json};
 use super::*;
 use crate::backends::slurm::{CallOutcome, call};

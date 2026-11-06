@@ -30,7 +30,7 @@ fn archive() -> Vec<u8> {
     tar.into_inner().unwrap().finish().unwrap()
 }
 #[test]
-fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
+fn create_reuse_restart_and_frozen_guard_without_provider_effects() {
     let temp = tempfile::tempdir().unwrap();
     fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let registry = temp.path().join("registry");
@@ -636,20 +636,12 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         original_run
     );
     drop(relocated_service);
-    let authorized = service
-        .authorize(
-            action,
-            "owned fixture",
-            "2026-10-29T00:02:00Z",
-            &"2".repeat(32),
-        )
-        .unwrap();
-    assert_eq!(authorized["status"], "AUTHORIZED");
     assert!(
         service
             .execute(
                 action,
                 &format!("EXECUTE {action}"),
+                "owned fixture",
                 "2026-10-29T00:03:00Z",
                 &"3".repeat(32),
                 &std::sync::atomic::AtomicBool::new(false)
@@ -775,11 +767,11 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     );
     assert_eq!(
         client.get(&format!("/api/submissions/{action}")).unwrap()["status"],
-        "AUTHORIZED"
+        "PREPARED"
     );
     assert_eq!(
         client.get("/api/runs/demo/train").unwrap()["native_submission"]["status"],
-        "AUTHORIZED"
+        "PREPARED"
     );
     // A provider observation can hold the outbox lock across a slow GET. A
     // concurrent cached read must report temporary contention, not corrupt
@@ -804,7 +796,7 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     fs2::FileExt::unlock(&effects_lock).unwrap();
     assert_eq!(
         client.get(&format!("/api/submissions/{action}")).unwrap()["status"],
-        "AUTHORIZED"
+        "PREPARED"
     );
     assert_eq!(
         fs::read(runs.join("train/manifest.json")).unwrap(),
@@ -919,7 +911,7 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
             &ml_exp_core::operations::Transition {
                 execution: current,
                 event: json!({"event":"SYNTHETIC_TEST_RECEIPT"}),
-                expected_status: Some("AUTHORIZED".into()),
+                expected_status: Some("PREPARED".into()),
             },
             &"4".repeat(32),
             "2026-10-29T00:04:01Z",
@@ -1033,14 +1025,6 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         )
         .unwrap();
     let old = prior["submission_id"].as_str().unwrap();
-    service
-        .authorize(
-            old,
-            "owned fixture",
-            "2026-10-29T00:01:00Z",
-            &"8".repeat(32),
-        )
-        .unwrap();
     let renewal = ml_exp_core::renewal::Request {
         request_id: "c".repeat(32),
         confirmation: format!("RENEW {old}"),
@@ -1060,18 +1044,13 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     );
     assert_eq!(
         service.get(old, context().now).unwrap()["status"],
-        "AUTHORIZED"
+        "PREPARED"
     );
     assert_eq!(
         service
             .for_run("demo", "renew-only", context().now)
             .unwrap()["submission_id"],
         next["submission_id"]
-    );
-    assert!(
-        service
-            .authorize(old, "expired", context().now, &"0".repeat(32))
-            .is_err()
     );
     check_builder_dispatch_evidence(&settings, &config, sources.clone(), &runtime, temp.path());
     let mut enabled_config = config.clone();
@@ -1084,7 +1063,27 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         Default::default(),
     )
     .unwrap();
-    // Two Attempts that have not started, stopped at different first-spend gates.
+    // The original of a renewal stays refused past its gate, on a service that could
+    // otherwise execute it, and the refusal changes nothing.
+    assert_eq!(
+        enabled
+            .execute(
+                old,
+                &format!("EXECUTE {old}"),
+                "expired",
+                context().now,
+                &"0".repeat(32),
+                &std::sync::atomic::AtomicBool::new(false),
+            )
+            .unwrap_err()
+            .code,
+        "CLOUD_ACTION_UNAVAILABLE"
+    );
+    assert_eq!(
+        service.get(old, context().now).unwrap()["status"],
+        "PREPARED"
+    );
+    // An Attempt that has not started, stopped at its first-spend gate.
     let unspent = |run: &str, transition: &str| {
         let mut unspent_run = request.clone();
         unspent_run.run_id = run.into();
@@ -1109,15 +1108,6 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
             .to_owned()
     };
     let reused = unspent("unspent-prepared", &"a".repeat(32));
-    let authorized = unspent("unspent-authorized", &"b".repeat(32));
-    service
-        .authorize(
-            &authorized,
-            "owned fixture",
-            "2026-10-29T01:01:00Z",
-            &"c".repeat(32),
-        )
-        .unwrap();
     let original_project = fs::read(temp.path().join("project.json")).unwrap();
     // Editing the project file is ordinary work while an Attempt is running.
     ml_exp_io::write_atomic(
@@ -1148,20 +1138,14 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
             .code,
         refused
     );
-    assert_eq!(
-        service
-            .authorize(&reused, "owned fixture", now, &"e".repeat(32))
-            .unwrap_err()
-            .code,
-        refused
-    );
     // Cancellation is set, so a missing gate would fail differently and in no
     // case reach a provider.
     assert_eq!(
         enabled
             .execute(
-                &authorized,
-                &format!("EXECUTE {authorized}"),
+                &reused,
+                &format!("EXECUTE {reused}"),
+                "owned fixture",
                 now,
                 &"f".repeat(32),
                 &std::sync::atomic::AtomicBool::new(true),
@@ -1170,8 +1154,8 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
             .code,
         refused
     );
-    let unstarted = service.get(&authorized, now).unwrap();
-    assert_eq!(unstarted["status"], "AUTHORIZED");
+    let unstarted = service.get(&reused, now).unwrap();
+    assert_eq!(unstarted["status"], "PREPARED");
     assert!(unstarted.get("cloud_observation").is_none());
     check_running_attempt_after_project_edit(
         &service,

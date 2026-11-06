@@ -126,7 +126,7 @@ pub(crate) fn extend(document: &mut Value) {
     insert(
         "/api/submissions/{identity}/renew",
         "post",
-        "Explicitly replace an expired never-started gate under one durable request ID. Preserve Run/Attempt, resources, budget and scheduler token; return a PREPARED replacement requiring fresh authorization. Possible prior effects block renewal.",
+        "Explicitly replace an expired never-started gate under one durable request ID. Preserve Run/Attempt, resources, budget and scheduler token; return a PREPARED replacement with a fresh gate. Possible prior effects block renewal.",
         Some(object(
             &["request_id", "confirmation"],
             json!({"request_id":{"type":"string"},"confirmation":{"type":"string"}}),

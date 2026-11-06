@@ -50,7 +50,7 @@ flowchart LR
     C[Client configuration] --> P[Source and dataset identities]
     P --> E[Environment and data preparation]
     E --> R[Frozen Run and Attempt]
-    R --> A[Prepare and authorize Submission]
+    R --> A[Prepare Submission]
     A --> X[Execute once or reconcile original job]
     X --> O[Scheduler, logs, metrics and checkpoints]
     O --> D[Collect and verify results]
@@ -265,7 +265,7 @@ For SenseCore, preparation status retains the CPU job's identity and distinguish
 failure from uncertainty and ordinary waiting. A failed copy reports
 `DATA_PREPARATION_FAILED` without creating a training Submission. Direct
 `run prepare` can return `operation=PREPARE_INPUT` while the CPU job is pending;
-that response cannot be used with `authorize` or `execute`.
+that response cannot be used with `execute`.
 Slurm download scripts receive cancellation and run without holding the helper's
 global metadata lock; a failed/cancelled preparation leaves no dispatchable plan.
 
@@ -277,8 +277,8 @@ ml-exp run continue --help
 ```
 
 Continuing builds/reconciles the environment, stages data and prepares a normal
-Submission. It does not authorize GPU training. Use `run authorize` and
-`run execute` with the returned Submission and confirmation. After response loss,
+Submission. It does not start GPU training. Use `run execute` with the returned
+Submission and confirmation, and optionally `--reason`. After response loss,
 query that same preparation or Submission, then reconcile; do not invent another
 identity. All command argument details are available through `--help`.
 
@@ -306,17 +306,18 @@ ml-exp run batch-submit --state-dir ./private-batch --max-active 2 --confirmatio
 ```
 
 Continue and submit are explicit passes. Repeating a pass queries the saved
-identities. Batch-submit authorizes only ready children and records a durable
-claim before dispatch. Unknown submissions consume a slot and are never replayed.
-The cap covers this batch, not other clients or the provider's entire quota.
-An expired authorization gate can be replaced explicitly:
+identities. Batch-submit sends only ready children and records a durable claim
+before dispatch. A child past its gate is reported as `GATE_EXPIRED`, with no claim.
+Unknown submissions consume a slot and are never replayed. A refused child keeps its
+claim and its slot until its gate expires. The cap covers this batch, not other
+clients or the provider's entire quota. An expired gate can be replaced explicitly:
 
 ```sh
 ml-exp run renew action-0123456789abcdef --request-id 33333333333333333333333333333333 --confirmation 'RENEW action-0123456789abcdef'
 ```
 
-The replacement remains PREPARED and needs fresh authorization. It retains the
-Run, Attempt, scheduler token and budget; the old plan stays queryable. A possible
+The replacement is PREPARED with a fresh gate and needs its own `run execute`. It
+retains the Run, Attempt, scheduler token and budget; the old plan stays queryable. A possible
 prior execution blocks renewal. Repeat the same request ID after a lost response.
 Batch status follows the reviewed replacement; dispatch does not renew it
 silently. The client does not run an unattended queue.

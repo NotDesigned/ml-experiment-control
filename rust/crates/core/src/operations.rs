@@ -143,11 +143,11 @@ fn transition(
 
 pub fn initial_execution(plan: &Value) -> Value {
     json!({"revision":0,"status":if plan.get("ready") == Some(&Value::Bool(true)) {"PREPARED"} else {"BLOCKED"},
-        "authorized_at":null,"authorization_note":"","started_at":null,"finished_at":null,"result":null,"error":null})
+        "started_at":null,"finished_at":null,"result":null,"error":null})
 }
 
 /// Public Submission projection of an already observed Action. Time is supplied
-/// by the shell; this does not authorize, execute, repair or refresh anything.
+/// by the shell; this does not execute, repair or refresh anything.
 pub fn submission_view(action: &Value, now: &str) -> Result<Value, Error> {
     let now = timestamp(now)?;
     let id = field(action, "action_id")?;
@@ -169,7 +169,7 @@ pub fn submission_view(action: &Value, now: &str) -> Result<Value, Error> {
     revision(execution)?;
     let status = field(execution, "status")?;
     let next = match status {
-        "PREPARED" | "AUTHORIZED" => {
+        "PREPARED" => {
             if action
                 .get("gate_expires_at")
                 .and_then(Value::as_str)
@@ -177,8 +177,6 @@ pub fn submission_view(action: &Value, now: &str) -> Result<Value, Error> {
                 .is_none_or(|expiry| expiry <= now)
             {
                 "REPREPARE"
-            } else if status == "PREPARED" {
-                "AUTHORIZE"
             } else {
                 "EXECUTE"
             }
@@ -249,7 +247,7 @@ pub fn commit_transition(
     Ok((Value::Object(execution), Value::Object(event)))
 }
 
-/// Every Action is a Submission; a plan naming anything else cannot be approved.
+/// Every Action is a Submission; a plan naming anything else cannot be executed.
 fn require_submission(plan: &Value) -> Result<(), Error> {
     if field(plan, "operation")? == SUBMIT_RUN {
         Ok(())
@@ -258,39 +256,26 @@ fn require_submission(plan: &Value) -> Result<(), Error> {
     }
 }
 
-pub fn authorize(
+/// What `claim` refuses from the request and the clock alone. A shell that makes a
+/// durable record ahead of its claim calls this first, so that a request which could
+/// never be claimed leaves nothing behind.
+pub fn check_request(
     plan: &Value,
-    execution: &Value,
-    actor: &str,
-    note: &str,
+    confirmation: &str,
+    reason: &str,
     now: &str,
-) -> Result<Transition, Error> {
-    require_submission(plan)?;
-    if plan.get("ready") != Some(&Value::Bool(true))
-        || execution.get("status").and_then(Value::as_str) != Some("PREPARED")
-    {
-        return Err(Error::State(
-            "only a ready PREPARED action can be authorized",
-        ));
+) -> Result<(), Error> {
+    let id = field(plan, "action_id")?;
+    if confirmation != format!("EXECUTE {id}") {
+        return Err(Error::Invalid("execution confirmation"));
     }
     if timestamp(now)? >= timestamp(field(plan, "gate_expires_at")?)? {
         return Err(Error::Expired);
     }
-    let actor = actor.trim();
-    if actor.is_empty() || actor.chars().any(char::is_control) || note.chars().count() > 4000 {
-        return Err(Error::Invalid("trusted authorization actor or note"));
+    if reason.chars().count() > 4000 || reason.chars().any(char::is_control) {
+        return Err(Error::Invalid("execution reason"));
     }
-    let intent = digest(plan, "intent_digest")?;
-    let gates = digest(plan, "gate_bundle_digest")?;
-    transition(
-        execution,
-        json!({"status":"AUTHORIZED","authorized_at":now,"authorization_note":note,"authorization_actor":actor,
-        "authorized_intent_digest":intent,"authorized_gate_bundle_digest":gates,"authorization_expires_at":plan["gate_expires_at"]}),
-        now,
-        "execution_authorized",
-        Some("PREPARED"),
-        json!({}),
-    )
+    Ok(())
 }
 
 /// Files are hashed by the I/O shell. Missing observations never count as matches.
@@ -310,6 +295,7 @@ pub fn claim(
     execution: &Value,
     confirmation: &str,
     files: &FrozenFiles,
+    reason: &str,
     now: &str,
 ) -> Result<Claim, Error> {
     if execution.get("status").and_then(Value::as_str) == Some("VERIFIED") {
@@ -321,32 +307,12 @@ pub fn claim(
             "execution intent already exists; reconcile instead of replaying",
         ));
     }
-    if status != Some("AUTHORIZED") {
-        return Err(Error::State(
-            "a separate execution authorization is required",
-        ));
+    if plan.get("ready") != Some(&Value::Bool(true)) || status != Some("PREPARED") {
+        return Err(Error::State("only a ready PREPARED action can be executed"));
     }
-    let id = field(plan, "action_id")?;
-    if confirmation != format!("EXECUTE {id}") {
-        return Err(Error::Invalid("execution confirmation"));
-    }
-    if timestamp(now)? >= timestamp(field(plan, "gate_expires_at")?)? {
-        return Err(Error::Expired);
-    }
-    if execution
-        .get("authorized_intent_digest")
-        .and_then(Value::as_str)
-        != Some(digest(plan, "intent_digest")?)
-    {
-        return Err(Error::Identity("authorized intent"));
-    }
-    if execution
-        .get("authorized_gate_bundle_digest")
-        .and_then(Value::as_str)
-        != Some(digest(plan, "gate_bundle_digest")?)
-    {
-        return Err(Error::Identity("authorized gates"));
-    }
+    check_request(plan, confirmation, reason, now)?;
+    digest(plan, "intent_digest")?;
+    digest(plan, "gate_bundle_digest")?;
     require_submission(plan)?;
     for (key, observed) in [
         (
@@ -365,11 +331,11 @@ pub fn claim(
     Ok(Claim::Execute {
         transition: transition(
             execution,
-            json!({"status":"EXECUTING","started_at":now,"error":null,"resolution":"STILL_IN_PROGRESS","safe_to_retry":false,"next_action":"WAIT"}),
+            json!({"status":"EXECUTING","started_at":now,"execution_reason":reason,"error":null,"resolution":"STILL_IN_PROGRESS","safe_to_retry":false,"next_action":"WAIT"}),
             now,
             "execution_started",
-            Some("AUTHORIZED"),
-            json!({"intent_digest":plan["intent_digest"]}),
+            Some("PREPARED"),
+            json!({"intent_digest":plan["intent_digest"],"reason":reason}),
         )?,
     })
 }
@@ -397,6 +363,7 @@ pub fn interrupted(execution: &Value, now: &str) -> Result<Option<Transition>, E
 mod tests {
     use super::*;
     const NOW: &str = "2026-10-27T00:00:00Z";
+    const CONFIRMATION: &str = "EXECUTE action-0123456789abcdef";
     fn hash(c: char) -> String {
         format!("sha256:{}", c.to_string().repeat(64))
     }
@@ -413,40 +380,36 @@ mod tests {
         }
     }
     #[test]
-    fn authorization_and_claim_are_immutable_and_require_exact_frozen_inputs() {
+    fn claim_is_immutable_and_requires_exact_frozen_inputs() {
         let plan = plan("SUBMIT_RUN");
         let initial = initial_execution(&plan);
         let original = initial.clone();
-        let authorized = authorize(&plan, &initial, " actor:test ", "approved", NOW).unwrap();
-        assert_eq!(initial, original);
-        assert_eq!(authorized.execution["authorization_actor"], "actor:test");
         assert!(matches!(
-            claim(&plan, &authorized.execution, "wrong", &files(), NOW),
+            claim(&plan, &initial, "wrong", &files(), "", NOW),
             Err(Error::Invalid(_))
         ));
         assert!(matches!(
             claim(
                 &plan,
-                &authorized.execution,
-                "EXECUTE action-0123456789abcdef",
+                &initial,
+                CONFIRMATION,
                 &FrozenFiles::default(),
+                "",
                 NOW
             ),
             Err(Error::Identity(_))
         ));
-        let Claim::Execute { transition } = claim(
-            &plan,
-            &authorized.execution,
-            "EXECUTE action-0123456789abcdef",
-            &files(),
-            NOW,
-        )
-        .unwrap() else {
+        let Claim::Execute { transition } =
+            claim(&plan, &initial, CONFIRMATION, &files(), "approved", NOW).unwrap()
+        else {
             panic!()
         };
-        assert_eq!(transition.expected_status.as_deref(), Some("AUTHORIZED"));
+        assert_eq!(initial, original);
+        assert_eq!(transition.expected_status.as_deref(), Some("PREPARED"));
         assert_eq!(transition.execution["status"], "EXECUTING");
         assert_eq!(transition.execution["safe_to_retry"], false);
+        assert_eq!(transition.execution["execution_reason"], "approved");
+        assert_eq!(transition.event["payload"]["reason"], "approved");
         assert_eq!(
             plan["frozen_unknown"]["resume_from"],
             "checkpoint.immutable"
@@ -455,53 +418,109 @@ mod tests {
             claim(
                 &plan,
                 &transition.execution,
-                "EXECUTE action-0123456789abcdef",
+                CONFIRMATION,
                 &files(),
+                "",
                 NOW
             ),
             Err(Error::State(_))
         ));
-        let mut changed = authorized.execution.clone();
-        changed["authorized_intent_digest"] = json!(hash('f'));
+        // Either digest must still be a well formed digest in the frozen plan.
+        for key in ["intent_digest", "gate_bundle_digest"] {
+            let mut changed = plan.clone();
+            changed[key] = json!("not-a-digest");
+            assert_eq!(
+                claim(&changed, &initial, CONFIRMATION, &files(), "", NOW).unwrap_err(),
+                Error::Invalid(key)
+            );
+        }
+    }
+    #[test]
+    fn claim_refuses_an_expired_gate_and_a_bad_clock_or_reason() {
+        let plan = plan("SUBMIT_RUN");
+        let initial = initial_execution(&plan);
+        for expired in ["2026-10-27T00:30:00Z", "2026-10-27T01:00:00Z"] {
+            assert_eq!(
+                claim(&plan, &initial, CONFIRMATION, &files(), "", expired).unwrap_err(),
+                Error::Expired
+            );
+            assert_eq!(
+                check_request(&plan, CONFIRMATION, "", expired),
+                Err(Error::Expired)
+            );
+        }
         assert!(matches!(
+            claim(&plan, &initial, CONFIRMATION, &files(), "", "invalid"),
+            Err(Error::Invalid(_))
+        ));
+        for reason in ["bad\nreason".to_owned(), "r".repeat(4001)] {
+            assert!(matches!(
+                claim(&plan, &initial, CONFIRMATION, &files(), &reason, NOW),
+                Err(Error::Invalid("execution reason"))
+            ));
+        }
+        assert!(
             claim(
                 &plan,
-                &changed,
-                "EXECUTE action-0123456789abcdef",
-                &files(),
-                NOW
-            ),
-            Err(Error::Identity(_))
-        ));
-        assert!(matches!(
-            authorize(
-                &plan,
                 &initial,
-                "actor:test",
-                "approved",
-                "2026-10-27T00:30:00Z"
-            ),
-            Err(Error::Expired)
-        ));
-        assert!(matches!(
-            authorize(&plan, &initial, " ", "approved", NOW),
-            Err(Error::Invalid(_))
-        ));
-        assert!(matches!(
-            authorize(&plan, &initial, "actor:test", "approved", "invalid"),
-            Err(Error::Invalid(_))
-        ));
+                CONFIRMATION,
+                &files(),
+                &"r".repeat(4000),
+                NOW
+            )
+            .is_ok()
+        );
+        assert_eq!(check_request(&plan, CONFIRMATION, "", NOW), Ok(()));
+        assert_eq!(
+            check_request(&plan, "wrong", "", NOW),
+            Err(Error::Invalid("execution confirmation"))
+        );
+    }
+    #[test]
+    fn only_a_ready_prepared_action_can_be_claimed() {
+        let plan = plan("SUBMIT_RUN");
+        let initial = initial_execution(&plan);
+        let mut blocked = plan.clone();
+        blocked["ready"] = json!(false);
+        let refused = Error::State("only a ready PREPARED action can be executed");
+        // A plan that is not ready, whichever status its execution row claims.
+        assert_eq!(
+            claim(&blocked, &initial, CONFIRMATION, &files(), "", NOW).unwrap_err(),
+            refused
+        );
+        assert_eq!(initial_execution(&blocked)["status"], "BLOCKED");
+        assert_eq!(
+            claim(
+                &blocked,
+                &initial_execution(&blocked),
+                CONFIRMATION,
+                &files(),
+                "",
+                NOW
+            )
+            .unwrap_err(),
+            refused
+        );
+        // A status this version never writes is not treated as PREPARED.
+        for status in ["AUTHORIZED", "FAILED", "UNKNOWN"] {
+            let mut other = initial.clone();
+            other["status"] = json!(status);
+            assert_eq!(
+                claim(&plan, &other, CONFIRMATION, &files(), "", NOW).unwrap_err(),
+                refused
+            );
+        }
     }
     #[test]
     fn commit_is_cas_and_restart_preserves_identity_without_replaying() {
-        let current = json!({"revision":4,"status":"AUTHORIZED","unknown_field":{"keep":true}});
+        let current = json!({"revision":4,"status":"PREPARED","unknown_field":{"keep":true}});
         let mut proposed = current.clone();
         proposed["status"] = json!("EXECUTING");
         let (committed, event) = commit_transition(
             &current,
             &proposed,
             &json!({"event":"execution_started"}),
-            Some("AUTHORIZED"),
+            Some("PREPARED"),
             "0123456789abcdef0123456789abcdef",
         )
         .unwrap();
@@ -523,7 +542,7 @@ mod tests {
                 &current,
                 &proposed,
                 &json!({}),
-                Some("PREPARED"),
+                Some("EXECUTING"),
                 "0123456789abcdef0123456789abcdef"
             ),
             Err(Error::StatusConflict)
@@ -568,27 +587,20 @@ mod tests {
         }
     }
     #[test]
-    fn only_a_submission_can_be_authorized_or_claimed() {
+    fn only_a_submission_can_be_claimed() {
         let mut other = plan("SUBMIT_RUN");
-        let approved = authorize(&other, &initial_execution(&other), "actor:test", "ok", NOW)
-            .unwrap()
-            .execution;
         other["operation"] = json!("CANCEL_RUN");
-        let refused = Error::State("operation cannot be dispatched");
-        assert_eq!(
-            authorize(&other, &initial_execution(&other), "actor:test", "ok", NOW).unwrap_err(),
-            refused
-        );
         assert_eq!(
             claim(
                 &other,
-                &approved,
-                "EXECUTE action-0123456789abcdef",
+                &initial_execution(&other),
+                CONFIRMATION,
                 &files(),
+                "",
                 NOW
             )
             .unwrap_err(),
-            refused
+            Error::State("operation cannot be dispatched")
         );
     }
 }

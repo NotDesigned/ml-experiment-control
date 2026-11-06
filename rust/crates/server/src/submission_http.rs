@@ -308,13 +308,14 @@ async fn prepare(
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Authorize {
+struct Execute {
+    confirmation: String,
     #[serde(default)]
     reason: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Execute {
+struct Cancel {
     confirmation: String,
 }
 #[derive(Deserialize)]
@@ -335,9 +336,8 @@ fn on_timeout(operation: &Operation) -> OnTimeout {
         | Operation::Checkpoint
         | Operation::DownloadTicket(_) => OnTimeout::NoEffect,
         Operation::Sync(_)
-        | Operation::Authorize(_)
         | Operation::Renew(_)
-        | Operation::Execute(_)
+        | Operation::Execute { .. }
         | Operation::Cancel(_)
         | Operation::Retry(_)
         | Operation::Reconcile
@@ -372,24 +372,22 @@ async fn change(
                 Ok(Operation::Retry(r))
             })
         }
-        "cancel" => decode::<Execute>(body).and_then(|r| {
+        "cancel" => decode::<Cancel>(body).and_then(|r| {
             if r.confirmation == format!("CANCEL {identity}") {
                 Ok(Operation::Cancel(r.confirmation))
             } else {
                 Err(invalid())
             }
         }),
-        "authorize" => decode::<Authorize>(body).and_then(|request| {
-            if request.reason.chars().count() > 4000 || request.reason.chars().any(char::is_control)
-            {
-                Err(invalid())
-            } else {
-                Ok(Operation::Authorize(request.reason))
-            }
-        }),
         "execute" => decode::<Execute>(body).and_then(|request| {
-            if request.confirmation == format!("EXECUTE {identity}") {
-                Ok(Operation::Execute(request.confirmation))
+            if request.confirmation == format!("EXECUTE {identity}")
+                && request.reason.chars().count() <= 4000
+                && !request.reason.chars().any(char::is_control)
+            {
+                Ok(Operation::Execute {
+                    confirmation: request.confirmation,
+                    reason: request.reason,
+                })
             } else {
                 Err(invalid())
             }

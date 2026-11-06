@@ -153,18 +153,17 @@ changing the payload under the same ID is a conflict. For an existing Runtime,
 omit `runtime` and set `run.runtime_id`. The executor decides whether the requested
 resources fit. Slurm rejects the cloud-only `scheduling` option.
 
-Preparation, authorization and dispatch are separate commands:
+Preparation and dispatch are separate commands:
 
 ```sh
 ml-exp run start --project my-study --file experiment.json --state trial.state.json
 ml-exp run continue PREPARATION_ID --project my-study --confirmation 'PREPARE PREPARATION_ID'
-ml-exp run authorize SUBMISSION_ID --reason 'bounded validation'
-ml-exp run execute SUBMISSION_ID --confirmation 'CONFIRMATION_RETURNED_BY_THE_API'
+ml-exp run execute SUBMISSION_ID --confirmation 'CONFIRMATION_RETURNED_BY_THE_API' --reason 'bounded validation'
 ```
 
 `run start` saves the recovery identity before sending anything. `run continue`
 builds or reconciles the environment, stages data and prepares a Submission. Repeat
-it for the same preparation until a Submission is returned. It does not authorize
+it for the same preparation until a Submission is returned. It does not start
 training. Use the IDs and confirmations the API returns. Closing the client does
 not cancel a submitted job.
 
@@ -247,6 +246,6 @@ ml-exp run retry SUBMISSION_ID --run trial-001 --attempt attempt-001 --from-star
 
 Use `--checkpoint CHECKPOINT_ID` instead of `--from-start` to restore saved state.
 A retry creates new Attempt metadata and does not submit training or choose a
-checkpoint for you. An expired authorization gate needs `ml-exp run renew`. See
+checkpoint for you. An expired gate needs `ml-exp run renew`. See
 [recovery](recovery.md#cancel-or-retry-an-exact-attempt) and
 [administrative deletion](resource-deletion.md).

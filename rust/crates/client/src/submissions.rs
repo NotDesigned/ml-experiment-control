@@ -58,13 +58,10 @@ pub enum Command<'a> {
     Show {
         submission: &'a str,
     },
-    Authorize {
-        submission: &'a str,
-        reason: &'a str,
-    },
     Execute {
         submission: &'a str,
         confirmation: &'a str,
+        reason: &'a str,
     },
     Cancel {
         submission: &'a str,
@@ -400,29 +397,19 @@ pub fn plan(command: Command<'_>) -> Result<Plan, Error> {
                     )
                 }
                 Command::Show { submission } => (submission, "", None, false),
-                Command::Authorize {
-                    submission,
-                    reason: value,
-                } => {
-                    reason(value)?;
-                    (
-                        submission,
-                        "/authorize",
-                        Some(json!({"reason":value})),
-                        false,
-                    )
-                }
                 Command::Execute {
                     submission,
                     confirmation,
+                    reason: value,
                 } => {
                     if confirmation != format!("EXECUTE {submission}") {
                         return Err(invalid());
                     }
+                    reason(value)?;
                     (
                         submission,
                         "/execute",
-                        Some(json!({"confirmation":confirmation})),
+                        Some(json!({"confirmation":confirmation,"reason":value})),
                         true,
                     )
                 }
@@ -670,7 +657,7 @@ pub fn response(plan: &Plan, value: Value) -> Result<Value, Error> {
     }
     // Input preparation can need a CPU job before a training Action exists.
     // This response is valid only for the explicit Run prepare request and
-    // cannot be used as authorize/execute evidence for a Submission.
+    // cannot be used as execute evidence for a Submission.
     if value["operation"] == "PREPARE_INPUT" {
         let Expected::Run { project, run } = &plan.expected else {
             return Err(Error::Response);
@@ -706,14 +693,7 @@ pub fn response(plan: &Plan, value: Value) -> Result<Value, Error> {
         || value["execution"]["status"] != value["status"]
         || !matches!(
             value["status"].as_str(),
-            Some(
-                "PREPARED"
-                    | "AUTHORIZED"
-                    | "EXECUTING"
-                    | "RECONCILE_REQUIRED"
-                    | "VERIFIED"
-                    | "BLOCKED"
-            )
+            Some("PREPARED" | "EXECUTING" | "RECONCILE_REQUIRED" | "VERIFIED" | "BLOCKED")
         )
         || value["execution"]["revision"]
             .as_i64()

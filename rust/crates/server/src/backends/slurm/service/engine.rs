@@ -339,28 +339,11 @@ impl Service {
         result["background_observation"] = self.polling_status(&prepared)?;
         Ok(result)
     }
-    pub fn authorize(
-        &self,
-        action: &str,
-        actor: &str,
-        note: &str,
-        context: Context<'_>,
-    ) -> Result<Value> {
-        let prepared = self.load(action)?;
-        let _guard = self
-            .fence
-            .existing_observation_guard(&prepared.binding.project, &prepared.binding.run_id)
-            .map_err(why!(Error::Authority))?;
-        self.check(&prepared)?;
-        let snapshot =
-            self.actions
-                .authorize(action, actor, note, context.now, context.transition_id)?;
-        self.public(snapshot, context.now)
-    }
     pub fn execute(
         &self,
         action: &str,
         confirmation: &str,
+        reason: &str,
         context: Context<'_>,
         cancelled: &AtomicBool,
     ) -> Result<Value> {
@@ -375,7 +358,7 @@ impl Service {
             .fence
             .existing_observation_guard(&prepared.binding.project, &prepared.binding.run_id)
             .map_err(why!(Error::Authority))?;
-        if self.actions.observe(action)?["execution"]["status"] == "AUTHORIZED" {
+        if self.actions.observe(action)?["execution"]["status"] == "PREPARED" {
             let facts = self.facts(&prepared.binding.project, &prepared.binding.run_id)?;
             if facts.binding != prepared.binding
                 || facts.scheduler_state != "NOT_SUBMITTED"
@@ -412,6 +395,7 @@ impl Service {
                     now: context.now,
                     transition_id: context.transition_id,
                     pid: std::process::id(),
+                    reason,
                 },
             },
             &check,

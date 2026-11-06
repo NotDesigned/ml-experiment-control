@@ -170,8 +170,7 @@ Review the created Attempt, then prepare and submit it explicitly:
 ```bash
 ml-exp run prepare --project PROJECT --run RUN --max-gpu-hours 0.5
 # Use the NEW_ACTION and exact confirmation returned by preparation.
-ml-exp run authorize NEW_ACTION --reason 'Resume reviewed Attempt'
-ml-exp run execute NEW_ACTION --confirmation 'EXECUTE NEW_ACTION'
+ml-exp run execute NEW_ACTION --confirmation 'EXECUTE NEW_ACTION' --reason 'Resume reviewed Attempt'
 ```
 
 A timeout does not establish that submission failed. Read/reconcile the same

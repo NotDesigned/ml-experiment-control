@@ -500,7 +500,7 @@ enum Run {
         #[arg(long)]
         state: PathBuf,
     },
-    /// Advance the same environment/Run preparation; never authorize or submit training.
+    /// Advance the same environment/Run preparation; never submit training.
     Continue {
         #[arg(long)]
         project: String,
@@ -590,7 +590,7 @@ enum Run {
     },
     /// Read the exact original Submission.
     Submission { submission: String },
-    /// Replace an expired, never-started gate; the replacement needs fresh authorization.
+    /// Replace an expired, never-started gate with a fresh one.
     Renew {
         submission: String,
         #[arg(long)]
@@ -598,17 +598,14 @@ enum Run {
         #[arg(long)]
         confirmation: String,
     },
-    /// Authorize a reviewed preparation; does not submit it.
-    Authorize {
-        submission: String,
-        #[arg(long, default_value = "")]
-        reason: String,
-    },
     /// Dispatch once using the exact confirmation shown by preparation.
     Execute {
         submission: String,
         #[arg(long)]
         confirmation: String,
+        /// Why this is being sent; recorded with the execution.
+        #[arg(long, default_value = "")]
+        reason: String,
     },
     /// Inspect the original scheduler identity; never submit a second job.
     Reconcile { submission: String },
@@ -767,15 +764,14 @@ impl Run {
                 request_id,
                 confirmation,
             },
-            Self::Authorize { submission, reason } => {
-                submissions::Command::Authorize { submission, reason }
-            }
             Self::Execute {
                 submission,
                 confirmation,
+                reason,
             } => submissions::Command::Execute {
                 submission,
                 confirmation,
+                reason,
             },
             Self::Reconcile { submission } => submissions::Command::Reconcile { submission },
             Self::Refresh { submission } => submissions::Command::Refresh { submission },
@@ -1481,7 +1477,6 @@ fn run(mut args: Args) -> Result<(), Box<dyn std::error::Error>> {
                         | Run::Prepare { .. }
                         | Run::Preparation { .. }
                         | Run::Submission { .. }
-                        | Run::Authorize { .. }
                         | Run::Renew { .. }
                         | Run::Execute { .. }
                         | Run::Cancel { .. }

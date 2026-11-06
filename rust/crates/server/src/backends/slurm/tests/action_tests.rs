@@ -43,15 +43,6 @@ fn fixture(mode: &str) -> (tempfile::TempDir, SshConfig, Store, Request, Value) 
     let plan = plan(&prepare);
     let store = Store::open(root.path().join("actions")).unwrap();
     store.save_plan(&plan, NOW, &id(1)).unwrap();
-    store
-        .authorize(
-            plan["action_id"].as_str().unwrap(),
-            "actor:test",
-            "reviewed original native plan",
-            NOW,
-            &id(2),
-        )
-        .unwrap();
     (root, config, store, prepare, plan)
 }
 fn files(request: &Request) -> FrozenFiles {
@@ -69,6 +60,7 @@ fn command<'a>(action_id: &'a str, confirmation: &'a str, files: &'a FrozenFiles
             now: NOW,
             transition_id: "00000000000000000000000000000003",
             pid: 123,
+            reason: "reviewed original native plan",
         },
     }
 }
@@ -92,6 +84,10 @@ fn claimed_action_runs_through_helper_and_verifies_owned_submission_once() {
         )
         .unwrap();
     assert_eq!(result["execution"]["status"], "VERIFIED");
+    assert_eq!(
+        result["execution"]["execution_reason"],
+        "reviewed original native plan"
+    );
     assert_eq!(
         result["execution"]["result"]["observation"]["status"]["state"],
         "RUNNING"
@@ -244,7 +240,7 @@ fn frozen_mismatch_or_lost_guard_cannot_dispatch() {
     );
     assert_eq!(
         store.observe(action).unwrap()["execution"]["status"],
-        "AUTHORIZED"
+        "PREPARED"
     );
     fs::write(&path, original).unwrap();
     assert!(
@@ -297,7 +293,7 @@ fn cancellation_before_claim_and_timeout_after_claim_have_distinct_durable_state
     );
     assert_eq!(
         store.observe(action).unwrap()["execution"]["status"],
-        "AUTHORIZED"
+        "PREPARED"
     );
     assert!(!root.path().join("calls").exists());
     ssh.budget.timeout = Duration::from_millis(100);

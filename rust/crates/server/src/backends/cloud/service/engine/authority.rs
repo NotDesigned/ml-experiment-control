@@ -461,7 +461,7 @@ impl Service {
         Ok(execution)
     }
     /// The first-spend gate: the Attempt about to be spent still matches its frozen
-    /// Run, source and profile. It runs before reuse, authorization and the claim,
+    /// Run, source and profile. It runs before reuse and the claim,
     /// never afterwards, and before a retry publishes the Attempt that would be spent
     /// next. A running Attempt stays readable and cancellable after an edit; a drifted
     /// one that has not started stays unspendable, and the remedy is a new Run.

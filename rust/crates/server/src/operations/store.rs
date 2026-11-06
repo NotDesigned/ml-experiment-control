@@ -17,6 +17,8 @@ pub struct ClaimContext<'a> {
     pub now: &'a str,
     pub transition_id: &'a str,
     pub pid: u32,
+    /// Why this execution was requested, recorded in the claim's own transition.
+    pub reason: &'a str,
 }
 
 /// Proof that the caller holds `.actions.lock`.
@@ -190,10 +192,7 @@ impl Store {
                 }
             } else {
                 let execution = self.database.observe(action_id)?;
-                if !matches!(
-                    execution["status"].as_str(),
-                    Some("PREPARED" | "AUTHORIZED")
-                ) {
+                if execution["status"].as_str() != Some("PREPARED") {
                     return Err(Error::Invalid(
                         "missing native Slurm request requires offline investigation",
                     ));
@@ -227,7 +226,7 @@ impl Store {
     pub fn slurm_request(&self, action_id: &str) -> Result<ml_exp_core::slurm::helper::Request> {
         self.locked(|lock| self.slurm_request_unlocked(action_id, lock))
     }
-    /// The cloud adapter uses the same Action authorization/CAS as Slurm.
+    /// The cloud adapter uses the same Action claim and CAS as Slurm.
     /// Private request bytes are immutable and must exist before execution.
     pub fn bind_cloud_request(
         &self,
@@ -249,10 +248,7 @@ impl Store {
                 }
             } else {
                 let execution = self.database.observe(action_id)?;
-                if !matches!(
-                    execution["status"].as_str(),
-                    Some("PREPARED" | "AUTHORIZED")
-                ) {
+                if execution["status"].as_str() != Some("PREPARED") {
                     return Err(Error::Invalid(
                         "missing native cloud input requires offline investigation",
                     ));
@@ -319,28 +315,6 @@ impl Store {
         )?;
         Ok(())
     }
-    pub fn authorize(
-        &self,
-        action_id: &str,
-        actor: &str,
-        note: &str,
-        now: &str,
-        transition_id: &str,
-    ) -> Result<Value> {
-        self.locked(|lock| {
-            // A crash may have published plan.json before its initial database
-            // row. Bootstrap and authorization are distinct audit transitions.
-            let bootstrap = format!(
-                "{:x}",
-                Sha256::digest(format!("bootstrap:{action_id}:{transition_id}"))
-            );
-            let snapshot = self.snapshot_unlocked(action_id, now, &bootstrap[..32], lock)?;
-            let transition =
-                operations::authorize(&snapshot, &snapshot["execution"], actor, note, now)?;
-            self.apply(action_id, &transition, transition_id, lock)?;
-            self.snapshot_unlocked(action_id, now, transition_id, lock)
-        })
-    }
     /// Persist intent before returning dispatch information. The caller must
     /// enqueue at most once; existing EXECUTING/unknown effects never replay.
     pub fn claim(
@@ -354,14 +328,22 @@ impl Store {
             now,
             transition_id,
             pid,
+            reason,
         } = context;
         self.locked(|lock| {
-        let snapshot = self.snapshot_unlocked(action_id, now, transition_id,lock)?;
+        // A crash may have published plan.json before its initial database row.
+        // Bootstrap and claim are distinct audit transitions, and event keys are unique.
+        let bootstrap = format!(
+            "{:x}",
+            Sha256::digest(format!("bootstrap:{action_id}:{transition_id}"))
+        );
+        let snapshot = self.snapshot_unlocked(action_id, now, &bootstrap[..32], lock)?;
         match operations::claim(
             &snapshot,
             &snapshot["execution"],
             confirmation,
             files,
+            reason,
             now,
         )? {
             Claim::AlreadyVerified => Ok(Claimed {

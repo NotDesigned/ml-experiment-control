@@ -1,5 +1,5 @@
 //! A single experiment configuration and stable recovery identity. These
-//! decisions neither build an image nor authorize/dispatch a training job.
+//! decisions neither build an image nor dispatch a training job.
 use crate::{
     canonical,
     cloud::build,
@@ -84,10 +84,7 @@ pub fn occupied(row: &Value) -> bool {
     if submission.is_null() {
         return false;
     }
-    if submission["status"]
-        .as_str()
-        .is_some_and(|s| matches!(s, "PREPARED" | "AUTHORIZED"))
-    {
+    if submission["status"] == "PREPARED" {
         return false;
     }
     let state = submission
@@ -262,9 +259,7 @@ mod tests {
     fn scheduling_slots_follow_scheduler_evidence_and_reserve_unknown_effects() {
         assert!(!occupied(&json!({"status":"PREPARING","submission":null})));
         assert!(occupied(&json!({"status":"UNKNOWN"})));
-        for status in ["PREPARED", "AUTHORIZED"] {
-            assert!(!occupied(&json!({"submission":{"status":status}})));
-        }
+        assert!(!occupied(&json!({"submission":{"status":"PREPARED"}})));
         assert!(occupied(
             &json!({"submission":{"status":"RECONCILE_REQUIRED"}})
         ));
