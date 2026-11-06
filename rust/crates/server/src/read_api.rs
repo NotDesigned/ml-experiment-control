@@ -688,7 +688,6 @@ impl Api {
         {
             return Ok(Vec::new());
         }
-        let expected_workspace = self.workspace_id.strip_prefix("rust-preview-");
         let records = crate::records::Store::read_only(&self.registry_root);
         let guard = records.guard(project, run).map_err(why!({
             error(
@@ -703,13 +702,8 @@ impl Api {
                 "JOURNAL_IDENTITY_UNAVAILABLE",
                 "canonical journal identity is unavailable",
             )
-        }))? != expected_workspace.ok_or_else(|| {
-            error(
-                409,
-                "READ_WORKSPACE_CHANGED",
-                "isolated workspace identity changed",
-            )
-        })? {
+        }))? != self.workspace_id
+        {
             return Err(error(
                 409,
                 "JOURNAL_IDENTITY_MISMATCH",

@@ -111,12 +111,15 @@ impl Settings {
     /// effects. Passing this check makes no claim about a remote connection.
     pub fn check(&self) -> Result<Check, Error> {
         self.validate().map_err(why!(at("deployment")))?;
+        let reads = crate::read_config::load(&self.read_config).map_err(why!(at("read_config")))?;
+        if crate::read_config::predates_restart(&reads.registry_root) {
+            return Err(at(crate::read_config::PREDATES_RESTART));
+        }
         if !self.bind.ip().is_loopback() {
             return Err(at("loopback_bind"));
         }
         crate::Auth::load(&self.token_file)
             .map_err(why!(at("api_token"), "daemon token invalid"))?;
-        let reads = crate::read_config::load(&self.read_config).map_err(why!(at("read_config")))?;
         for project in &reads.projects {
             let parent = ml_exp_io::directory::Directory::open(
                 project

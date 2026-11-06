@@ -8,11 +8,13 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, Output, Stdio},
     sync::mpsc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 const SERVER: &str = env!("CARGO_BIN_EXE_ml-expd-rs");
 const TOKEN: &str = "synthetic-native-deployment-token-00000000000000";
+const RETIRED_MARKER: &str = ".rust-preview-workspace.json";
+const RESTART_STAGE: &str = "registry_predates_clean_restart";
 fn write(path: &Path, value: &Value) {
     ml_exp_io::write_atomic(path, &serde_json::to_vec(value).unwrap(), false).unwrap();
 }
@@ -58,9 +60,39 @@ impl Fixture {
             .output()
             .unwrap()
     }
+    fn startup(&self) -> Output {
+        exited(Command::new(SERVER).arg("--config").arg(&self.config))
+    }
     fn value(&self) -> Value {
         serde_json::from_slice(&fs::read(&self.config).unwrap()).unwrap()
     }
+    fn old_registry(&self) {
+        fs::create_dir(&self.registry).unwrap();
+        fs::write(self.registry.join(RETIRED_MARKER), b"\xff\x00 not json").unwrap();
+    }
+}
+/// Run a command that must refuse by itself, failing rather than hanging if it serves.
+fn exited(command: &mut Command) -> Output {
+    let mut child = command
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the command kept running instead of refusing");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    child.wait_with_output().unwrap()
+}
+fn refused(output: &Output, stage: &str) {
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{error}");
+    assert!(error.contains(stage), "{error}");
 }
 fn tree(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     fn visit(root: &Path, out: &mut BTreeMap<PathBuf, Vec<u8>>) {
@@ -259,4 +291,100 @@ fn existing_foreign_registry_and_invalid_project_are_never_initialized_or_erased
     assert!(!result.status.success());
     assert!(String::from_utf8_lossy(&result.stderr).contains("project_definition"));
     assert!(!fixture.temp.path().join("new-registry").exists());
+}
+
+#[test]
+fn retired_marker_refuses_every_entry_point_without_being_parsed_or_changed() {
+    let fixture = Fixture::new();
+    fixture.old_registry();
+    let before = tree(fixture.temp.path());
+    for result in [
+        fixture.command("--check"),
+        fixture.command("--initialize"),
+        fixture.startup(),
+        exited(
+            Command::new(SERVER)
+                .arg("--read-config")
+                .arg(&fixture.reads)
+                .arg("--initialize-source-archives"),
+        ),
+        exited(
+            Command::new(SERVER)
+                .args(["--bind", "127.0.0.1:0", "--token-file"])
+                .arg(fixture.temp.path().join("token"))
+                .arg("--read-config")
+                .arg(&fixture.reads),
+        ),
+    ] {
+        refused(&result, RESTART_STAGE);
+        let error = String::from_utf8_lossy(&result.stderr);
+        assert!(error.contains("set registry_root to a new path and run --initialize"));
+        assert!(error.contains("nothing was read or changed"));
+        assert_eq!(before, tree(fixture.temp.path()));
+    }
+}
+
+#[test]
+fn retired_marker_wins_over_unrelated_configuration_errors() {
+    let fixture = Fixture::new();
+    let root = fixture.temp.path();
+    fixture.old_registry();
+    fs::remove_file(root.join("token")).unwrap();
+    write(
+        &root.join("project.json"),
+        &json!({"schema_version":1,"project":"another-project","title":"mismatch"}),
+    );
+    let mut config = fixture.value();
+    config["bind"] = json!("0.0.0.0:18765");
+    config["cloud_config"] = json!(root.join("absent-cloud.json"));
+    config["tracking_config"] = json!(root.join("absent-tracking.json"));
+    write(&fixture.config, &config);
+    let before = tree(root);
+    for result in [
+        fixture.command("--check"),
+        fixture.command("--initialize"),
+        fixture.startup(),
+    ] {
+        refused(&result, RESTART_STAGE);
+        assert_eq!(before, tree(root));
+    }
+}
+
+#[test]
+fn absent_registry_is_created_with_the_new_marker_and_an_altered_marker_is_refused() {
+    let fixture = Fixture::new();
+    let root = fixture.temp.path();
+    let check = value(fixture.command("--check"));
+    assert_eq!(check["registry_initialized"], false);
+    assert!(!fixture.registry.exists());
+    let initialized = value(fixture.command("--initialize"));
+    let id = initialized["workspace_id"].as_str().unwrap();
+    assert_eq!(id.len(), 32);
+    assert!(id.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')));
+    let marker = fixture.registry.join(".ml-expd-workspace.json");
+    let written: Value = serde_json::from_slice(&fs::read(&marker).unwrap()).unwrap();
+    assert_eq!(
+        written,
+        json!({"contract":"ml-expd-registry.v1","workspace_id":id})
+    );
+    assert!(!fixture.registry.join(RETIRED_MARKER).exists());
+    assert_eq!(
+        value(fixture.command("--check"))["registry_initialized"],
+        true
+    );
+    for altered in [
+        json!({"contract":"ml-expd-rust-preview.v1","workspace_id":id}),
+        json!({"contract":"ml-expd-registry.v1","workspace_id":format!("rust-preview-{id}")}),
+    ] {
+        write(&marker, &altered);
+        let before = tree(root);
+        for result in [
+            fixture.command("--check"),
+            fixture.command("--initialize"),
+            fixture.startup(),
+        ] {
+            refused(&result, "existing_non_native_registry");
+            assert_eq!(before, tree(root));
+        }
+    }
 }

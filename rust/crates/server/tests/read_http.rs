@@ -141,10 +141,7 @@ impl Fixture {
         }
     }
     fn journal_matching(&self) {
-        self.journal(
-            self.workspace.strip_prefix("rust-preview-").unwrap(),
-            &self.journal_config,
-        );
+        self.journal(&self.workspace, &self.journal_config);
     }
     fn server(&self) -> Server {
         Server::start(
@@ -555,11 +552,7 @@ fn authentication_protocol_and_query_errors_never_echo_request_credentials() {
         &fixture.project.join("research_project.yaml"),
         &json!({"project":"demo","title":"Synthetic science"}),
     );
-    let journal = records::Store::open(
-        &fixture.registry,
-        fixture.workspace.strip_prefix("rust-preview-").unwrap(),
-    )
-    .unwrap();
+    let journal = records::Store::open(&fixture.registry, &fixture.workspace).unwrap();
     let guard = journal.guard("demo", "train").unwrap();
     journal
         .bind(&guard, &json!({"enabled":false}), &fixture.journal_config)
@@ -649,7 +642,7 @@ fn copied_or_wrong_science_journals_never_supply_live_metrics() {
         let seed = if variant == "wrong-workspace" {
             "00000000000000000000000000000000"
         } else {
-            fixture.workspace.strip_prefix("rust-preview-").unwrap()
+            fixture.workspace.as_str()
         };
         if variant == "wrong-source" {
             config["ml_expd"]["source_id"] = json!("source.foreign");
@@ -713,11 +706,7 @@ fn malformed_internal_journal_observations_never_become_complete_science() {
     ] {
         let fixture = Fixture::new();
         fixture.journal_matching();
-        let store = records::Store::open(
-            &fixture.registry,
-            fixture.workspace.strip_prefix("rust-preview-").unwrap(),
-        )
-        .unwrap();
+        let store = records::Store::open(&fixture.registry, &fixture.workspace).unwrap();
         let guard = store.guard("demo", "train").unwrap();
         let scope = store.scope(&guard, "attempt-001").unwrap();
         let mut malformed = valid.clone();

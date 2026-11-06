@@ -130,6 +130,14 @@ async fn main() -> std::process::ExitCode {
         args.project_lifecycle = settings.project_lifecycle;
         args.source_archives = settings.source_archives;
         args.administration = settings.administration;
+    } else if let Some(path) = args.read_config.as_deref() {
+        // An unusable file is reported by whichever command goes on to load it.
+        if ml_exp_server::read_config::load(path)
+            .is_ok_and(|reads| ml_exp_server::read_config::predates_restart(&reads.registry_root))
+        {
+            eprintln!("{}", ml_exp_server::read_config::PREDATES_RESTART);
+            return std::process::ExitCode::FAILURE;
+        }
     }
     if let Some(path) = &args.initialize_registry {
         return match ml_exp_server::read_config::initialize(path) {

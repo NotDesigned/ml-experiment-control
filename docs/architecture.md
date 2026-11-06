@@ -109,10 +109,11 @@ plugin loader or second scheduler.
 | Checkpoint | Complete generation, file hashes and backend storage scope |
 | Result receipt | Published archive and file hashes; download ACK is a separate record |
 
-One registry root holds a daemon's control state. It carries a native marker
-(`.rust-preview-workspace.json`), so a native daemon cannot adopt an existing
-Python registry and ordinary startup never creates one. Actions use transactional
-SQLite under `actions/` ([storage notes](action-storage.md)). The canonical
+One registry root holds a daemon's control state. It carries a marker
+(`.ml-expd-workspace.json`), so a daemon cannot adopt a directory it did not
+initialize and ordinary startup never creates one. A registry holding the retired
+marker `.rust-preview-workspace.json` is refused by name and is never read. Actions
+use transactional SQLite under `actions/` ([storage notes](action-storage.md)). The canonical
 records journal is `tracking/outbox.sqlite`; optional W&B cursors do not create
 another copy of experiment history. File-backed resources use cross-process
 locks, revision checks and atomic transitions.

@@ -80,6 +80,10 @@ provider jobs. It refuses an existing or partial registry and never repairs, res
 or deletes one. **Never initialize a registry over existing state.** Ordinary
 startup does not initialize missing stores.
 
+A `registry_root` holding the retired `.rust-preview-workspace.json` marker refuses
+every command with `registry_predates_clean_restart`. Set `registry_root` to a new
+path and run `--initialize`. Nothing in the old registry is read or changed.
+
 ## Upgrade a release
 
 `deploy/deploy_native.py` in the bundle upgrades an installed server. It needs only

@@ -1,5 +1,5 @@
 //! Explicit isolated read configuration. Validation is pure; opening files and
-//! initializing a fresh preview registry are separate, named effects.
+//! initializing a fresh registry are separate, named effects.
 use crate::{
     deletion::RunFence,
     experiments::{ProjectBinding, RunRef},
@@ -13,8 +13,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const MARKER: &str = ".rust-preview-workspace.json";
-const FORMAT: &str = "ml-expd-rust-preview.v1";
+const MARKER: &str = ".ml-expd-workspace.json";
+const FORMAT: &str = "ml-expd-registry.v1";
+/// The marker of a registry from before the clean restart. Only its name is
+/// looked up; the file is never opened.
+const RETIRED_MARKER: &str = ".rust-preview-workspace.json";
+
+/// The refusal for a registry from before the clean restart.
+pub const PREDATES_RESTART: &str = "registry_predates_clean_restart: set registry_root to a new path and run --initialize; nothing was read or changed";
 
 #[derive(Debug, thiserror::Error)]
 #[error("invalid isolated experiment read configuration or workspace")]
@@ -156,7 +162,15 @@ pub fn load(path: &Path) -> Result<Settings, Error> {
     Settings::from_json(&ml_exp_io::read_private(path, 1024 * 1024, true).map_err(why!(Error))?)
 }
 
-/// Only an explicit CLI initialization may create a preview registry. Existing
+/// Whether `root` is a registry from before the clean restart. An absent or
+/// unopenable root is not one, and the later registry checks still refuse it.
+pub fn predates_restart(root: &Path) -> bool {
+    Directory::open(root, false)
+        .and_then(|directory| directory.entry_exists(OsStr::new(RETIRED_MARKER)))
+        .unwrap_or(false)
+}
+
+/// Only an explicit CLI initialization may create a registry. Existing
 /// targets, including empty directories, are refused; no repair or migration.
 pub fn initialize(path: &Path) -> Result<String, Error> {
     if !absolute(path) {
@@ -174,7 +188,7 @@ pub fn initialize(path: &Path) -> Result<String, Error> {
     }
     let mut random = [0u8; 16];
     getrandom::fill(&mut random).map_err(why!(Error))?;
-    let workspace_id = format!("rust-preview-{:032x}", u128::from_be_bytes(random));
+    let workspace_id = format!("{:032x}", u128::from_be_bytes(random));
     let marker = Marker {
         contract: FORMAT.into(),
         workspace_id: workspace_id.clone(),
@@ -189,21 +203,18 @@ pub fn initialize(path: &Path) -> Result<String, Error> {
     Ok(workspace_id)
 }
 
-/// Pin the marker and existing deletion lock. The marker explicitly excludes
-/// accidental use of a production/Python registry; ordinary reads create none.
+/// Pin the marker and existing deletion lock. The marker excludes any directory
+/// this release did not initialize; ordinary reads create none.
 pub fn workspace(path: &Path) -> Result<(Directory, String), Error> {
     let root = Directory::open(path, false).map_err(why!(Error))?;
     let data = root
         .read_regular(OsStr::new(MARKER), 4096)
         .map_err(why!(Error))?;
     let marker: Marker = serde_json::from_slice(&data).map_err(why!(Error))?;
-    let suffix = marker
-        .workspace_id
-        .strip_prefix("rust-preview-")
-        .ok_or(Error)?;
     if marker.contract != FORMAT
-        || suffix.len() != 32
-        || !suffix
+        || marker.workspace_id.len() != 32
+        || !marker
+            .workspace_id
             .bytes()
             .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
     {
@@ -282,5 +293,19 @@ mod tests {
         std::fs::create_dir(&empty).unwrap();
         assert!(initialize(&empty).is_err());
         assert_eq!(std::fs::read_dir(empty).unwrap().count(), 0);
+    }
+    #[test]
+    fn a_retired_marker_is_found_by_name_and_a_new_registry_has_none() {
+        let temp = tempfile::tempdir().unwrap();
+        let old = temp.path().join("old");
+        assert!(!predates_restart(&old));
+        std::fs::create_dir(&old).unwrap();
+        assert!(!predates_restart(&old));
+        std::os::unix::fs::symlink("/nonexistent", old.join(RETIRED_MARKER)).unwrap();
+        assert!(predates_restart(&old));
+        let new = temp.path().join("new");
+        let id = initialize(&new).unwrap();
+        assert!(!predates_restart(&new));
+        assert_eq!(id.len(), 32);
     }
 }
