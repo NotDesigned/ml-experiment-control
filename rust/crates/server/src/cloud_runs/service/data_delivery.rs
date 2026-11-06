@@ -417,31 +417,13 @@ impl Service {
                 .map_err(io)?;
         }
         let check = || self.project_hash(project).map(|_| ());
-        self.sync_outbox.prepare(
-            &copier.profile,
+        let status = self.submit_once_or_reconcile(
+            copier,
             &job,
             ml_exp_core::cloud::pai::Allocation::Guaranteed,
             &check,
+            &AtomicBool::new(false),
         )?;
-        let current = self.sync_outbox.status(&job)?;
-        let status = if current["retry_safe"] == true {
-            self.sync_outbox.execute(
-                copier,
-                &job,
-                ml_exp_core::cloud::pai::Allocation::Guaranteed,
-                &format!("SUBMIT {}", Outbox::slot(&job)?),
-                &check,
-                &AtomicBool::new(false),
-            )?
-        } else {
-            self.sync_outbox.reconcile(
-                copier,
-                &job,
-                ml_exp_core::cloud::pai::Allocation::Guaranteed,
-                &check,
-                &AtomicBool::new(false),
-            )?
-        };
         let _lock = self.lock()?;
         saved = self
             .data_saved(project, executor, asset)?

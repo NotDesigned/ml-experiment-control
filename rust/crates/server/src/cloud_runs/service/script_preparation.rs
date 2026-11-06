@@ -119,22 +119,13 @@ impl Service {
             .ok_or_else(cloud::Error::configuration)?;
         let check = || self.project_hash(project).map(|_| ());
         let allocation = ml_exp_core::cloud::pai::Allocation::Guaranteed;
-        self.sync_outbox
-            .prepare(&copier.profile, &job, allocation, &check)?;
-        let current = self.sync_outbox.status(&job)?;
-        let status = if current["retry_safe"] == true {
-            self.sync_outbox.execute(
-                copier,
-                &job,
-                allocation,
-                &format!("SUBMIT {}", Outbox::slot(&job)?),
-                &check,
-                &AtomicBool::new(false),
-            )?
-        } else {
-            self.sync_outbox
-                .reconcile(copier, &job, allocation, &check, &AtomicBool::new(false))?
-        };
+        let status = self.submit_once_or_reconcile(
+            copier,
+            &job,
+            allocation,
+            &check,
+            &AtomicBool::new(false),
+        )?;
         let status = view(project, run_id, status)?;
         if status["status"] == "READY" {
             return Ok(None);

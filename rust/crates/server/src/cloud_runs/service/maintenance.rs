@@ -92,31 +92,13 @@ impl Service {
             String::from_utf8(encode(&channel)?).map_err(why!(cloud::Error::evidence()))?,
         ];
         let check = || self.maintenance_original(action, plan).map(|_| ());
-        self.sync_outbox.prepare(
-            &collector.profile,
+        self.submit_once_or_reconcile(
+            collector,
             &job,
             ml_exp_core::cloud::pai::Allocation::Guaranteed,
             &check,
-        )?;
-        let current = self.sync_outbox.status(&job)?;
-        if current["retry_safe"] == true {
-            self.sync_outbox.execute(
-                collector,
-                &job,
-                ml_exp_core::cloud::pai::Allocation::Guaranteed,
-                &format!("SUBMIT {}", Outbox::slot(&job)?),
-                &check,
-                &AtomicBool::new(false),
-            )
-        } else {
-            self.sync_outbox.reconcile(
-                collector,
-                &job,
-                ml_exp_core::cloud::pai::Allocation::Guaranteed,
-                &check,
-                &AtomicBool::new(false),
-            )
-        }
+            &AtomicBool::new(false),
+        )
     }
     pub fn maintenance_auth(&self, action: &str, plan: &Plan, token: &str) -> cloud::Result<()> {
         use subtle::ConstantTimeEq;

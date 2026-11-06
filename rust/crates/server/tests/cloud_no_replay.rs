@@ -3,8 +3,12 @@
 //! ends by asserting how many creates the provider saw: an uncertain submission
 //! must never be sent twice, whatever the service was asked to do next.
 use ml_exp_core::{
-    cloud::{Job, Request, action::Execution, pai, run::Runtime, sensecore},
+    artifacts::FileReceipt,
+    canonical,
+    cloud::{Job, Request, action::Execution, data::Image, pai, run::Runtime, sensecore},
+    datasets::{Definition, State},
     first_submission::native::{self, Approval, creation::Request as CreateRun},
+    multipart::PartRecord,
     operations::FrozenFiles,
     slurm::{ExecutionConfig, JobSpec, Resources, SlurmConfig, Storage, helper},
     sources::Policy,
@@ -45,6 +49,8 @@ const GATE_EXPIRES: &str = "2026-10-29T01:01:00Z";
 const T_GATE_EXPIRED: &str = "2026-10-29T02:00:00Z";
 const RENEWED_GATE_EXPIRES: &str = "2026-10-29T03:00:00Z";
 const PAI_JOB_ID: &str = "dlc-owned";
+const SENSECORE_USER: &str = "12345678-1234-1234-1234-123456789abc";
+const REQUEST_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 #[derive(Clone, Copy)]
 enum Kind {
@@ -220,7 +226,7 @@ fn provider_profile(kind: Kind) -> (Profile, &'static str, &'static str) {
                     zone: "cn-east-1a".into(),
                     workspace_zone: Some("cn-east-1z".into()),
                     workspace: "work".into(),
-                    user_id: "12345678-1234-1234-1234-123456789abc".into(),
+                    user_id: SENSECORE_USER.into(),
                 },
                 cluster: "training".into(),
                 vpc_id: "vpc1".into(),
@@ -1025,5 +1031,266 @@ fn an_action_given_to_the_other_backend_is_refused_with_no_provider_call() {
 
         assert!(f.provider.calls().is_empty());
         assert!(!ssh_calls.exists());
+    }
+}
+
+/// A provider that holds many jobs, as data copies need. Each create adds a row
+/// built from the request it received, so every later read must find its own job.
+#[derive(Default)]
+struct CopyWorld {
+    rows: Vec<Value>,
+    calls: Vec<String>,
+    lose_create_reply: bool,
+}
+struct CopyProvider {
+    kind: Kind,
+    world: Mutex<CopyWorld>,
+}
+impl CopyProvider {
+    fn world(&self) -> MutexGuard<'_, CopyWorld> {
+        self.world.lock().unwrap()
+    }
+    fn creates(&self) -> usize {
+        self.world()
+            .calls
+            .iter()
+            .filter(|action| matches!(action.as_str(), "CreateJob" | "CreateTrainingJob"))
+            .count()
+    }
+    fn row_for_create(&self, body: &Value, number: usize) -> (Value, Value) {
+        match self.kind {
+            Kind::Pai => {
+                let id = format!("dlc-copy-{number}");
+                (
+                    json!({"JobId":id,"WorkspaceId":body["WorkspaceId"],"ResourceId":body["ResourceId"],
+                        "DisplayName":body["DisplayName"],"Settings":{"Tags":body["Settings"]["Tags"]},"Status":"Running"}),
+                    json!({"JobId":id}),
+                )
+            }
+            Kind::Sensecore => (
+                json!({"name":body["name"],"uid":format!("copy-uid-{number}"),
+                    "ownership":{"user_id":SENSECORE_USER},"state":"RUNNING"}),
+                json!({"name":body["name"]}),
+            ),
+        }
+    }
+}
+impl Transport for CopyProvider {
+    fn request(&self, request: &Request, _: &AtomicBool) -> cloud::Result<Value> {
+        request
+            .validate()
+            .map_err(|_| cloud::Error::configuration())?;
+        let mut world = self.world();
+        world.calls.push(request.action.clone());
+        let named = |row: &&Value, field: &str, name: &str| row[field] == name;
+        match request.action.as_str() {
+            "CreateJob" | "CreateTrainingJob" => {
+                if world.lose_create_reply {
+                    return Err(cloud::Error {
+                        code: "REPLY_LOST".into(),
+                        http_status: None,
+                        uncertain: true,
+                    });
+                }
+                let body = request.body.as_ref().unwrap();
+                let (row, reply) = self.row_for_create(body, world.rows.len());
+                world.rows.push(row);
+                Ok(reply)
+            }
+            "GetJob" | "GetTrainingJob" => {
+                let id = request.path.rsplit('/').next().unwrap();
+                let field = match self.kind {
+                    Kind::Pai => "JobId",
+                    Kind::Sensecore => "name",
+                };
+                world
+                    .rows
+                    .iter()
+                    .find(|row| named(row, field, id))
+                    .cloned()
+                    .ok_or_else(|| cloud::Error {
+                        code: "PROVIDER_NOT_FOUND".into(),
+                        http_status: Some(404),
+                        uncertain: false,
+                    })
+            }
+            "ListJobs" => {
+                let name = &request.query["DisplayName"];
+                let rows: Vec<_> = world
+                    .rows
+                    .iter()
+                    .filter(|row| named(row, "DisplayName", name))
+                    .collect();
+                Ok(json!({"Jobs":rows,"TotalCount":rows.len()}))
+            }
+            "ListTrainingJobs" => {
+                let name = &request.query["name"];
+                let rows: Vec<_> = world
+                    .rows
+                    .iter()
+                    .filter(|row| named(row, "name", name))
+                    .collect();
+                Ok(json!({"training_jobs":rows,"next_page_token":""}))
+            }
+            other => panic!("unexpected provider operation {other}"),
+        }
+    }
+}
+
+/// One verified dataset archive, waiting to be copied on the backend.
+struct CopyFixture {
+    f: Fixture,
+    config: Vec<u8>,
+    provider: Arc<CopyProvider>,
+    kind: Kind,
+    asset: String,
+}
+impl CopyFixture {
+    fn new(kind: Kind, files: usize) -> Self {
+        let f = Fixture::new(kind);
+        let mut config: Value = serde_json::from_slice(&f.config).unwrap();
+        match &f.provider.profile {
+            Profile::Pai(_) => {
+                config["backends"][0]["collector"] = json!(f.provider.profile);
+            }
+            Profile::Sensecore(training) => {
+                let mut copier = training.clone();
+                copier.purpose = sensecore::Purpose::DataCopy;
+                copier.cluster = "debug-cpu".into();
+                copier.worker_spec = "cpu.2c4g".into();
+                copier.worker_gpus = 0;
+                copier.worker_cpus = 2;
+                copier.worker_memory_gb = 4;
+                copier.quota = sensecore::Quota::Reserved;
+                config["backends"][0]["data_copier"] = json!(Profile::Sensecore(copier));
+            }
+        }
+        let config = serde_json::to_vec(&config).unwrap();
+        let settings = Settings::from_slice(&config).unwrap();
+        let definition = Definition {
+            sha256: "e".repeat(64),
+            archive_bytes: 1024 * 1024,
+            files: (0..files)
+                .map(|n| FileReceipt {
+                    path: format!("dataset/tasks/sample-{n:05}.bin"),
+                    bytes: 128,
+                    sha256: "f".repeat(64),
+                })
+                .collect(),
+        };
+        let mut state = State::new(
+            "demo".into(),
+            settings.backends[0].target().unwrap(),
+            definition.clone(),
+        )
+        .unwrap();
+        state.parts.insert(
+            0,
+            PartRecord {
+                bytes: definition.archive_bytes,
+                sha256: "d".repeat(64),
+            },
+        );
+        let asset = state.asset_id.clone();
+        let saved = match kind {
+            Kind::Pai => {
+                json!({"state":state,"archive_verified":true,"image_recipe":null,"image_started":false,
+                    "image":null,"copy_request_id":null,"copy_status":null,"diagnostic":null})
+            }
+            Kind::Sensecore => {
+                let recipe = Image {
+                    project: "demo".into(),
+                    executor: f.executor.into(),
+                    definition,
+                    base_image: format!("registry.example/team/base@sha256:{}", "4".repeat(64)),
+                    worker_sha256: format!("sha256:{}", "5".repeat(64)),
+                };
+                json!({"state":state,"archive_verified":true,"image_recipe":recipe,"image_started":true,
+                    "image":format!("registry.sensecore.cn/team/data@sha256:{}", "6".repeat(64)),
+                    "copy_request_id":null,"copy_storage":settings.backends[0].storage_layout().unwrap(),
+                    "copy_status":null,"diagnostic":null})
+            }
+        };
+        let name = format!(
+            "dataset-{}.json",
+            canonical::digest(&json!(["demo", f.executor, asset])).unwrap()
+        );
+        private(
+            &f.settings
+                .registry_root
+                .join("cloud-submissions/slots")
+                .join(name),
+            &saved,
+        );
+        Self {
+            f,
+            config,
+            provider: Arc::new(CopyProvider {
+                kind,
+                world: Mutex::default(),
+            }),
+            kind,
+            asset,
+        }
+    }
+    fn open(&self) -> Arc<Service> {
+        Arc::new(
+            Service::open_with_transport(
+                self.f.settings.clone(),
+                Settings::from_slice(&self.config).unwrap(),
+                self.f.sources.clone(),
+                None,
+                Default::default(),
+                self.provider.clone(),
+            )
+            .unwrap(),
+        )
+    }
+    fn publish(&self, service: &Arc<Service>, request: &str) -> cloud::Result<Value> {
+        let runtime = match self.kind {
+            Kind::Pai => Some(self.f.runtime.runtime_id.as_str()),
+            Kind::Sensecore => None,
+        };
+        service.publish_dataset("demo", self.f.executor, &self.asset, request, runtime)
+    }
+}
+
+#[test]
+fn a_sync_job_driven_twice_creates_once() {
+    for kind in KINDS {
+        let c = CopyFixture::new(kind, 3);
+        let service = c.open();
+        let first = c.publish(&service, REQUEST_A).unwrap();
+        assert_eq!(first["copy_job"]["phase"], "OWNED");
+        assert_eq!(c.provider.creates(), 1);
+        assert_eq!(
+            c.publish(&service, REQUEST_A).unwrap()["copy_job"]["slot"],
+            first["copy_job"]["slot"]
+        );
+        drop(service);
+        let service = c.open();
+        c.publish(&service, REQUEST_A).unwrap();
+        assert_eq!(c.provider.creates(), 1);
+    }
+}
+
+#[test]
+fn a_started_sync_job_makes_no_create() {
+    for kind in KINDS {
+        let c = CopyFixture::new(kind, 3);
+        c.provider.world().lose_create_reply = true;
+        let service = c.open();
+        let first = c.publish(&service, REQUEST_A).unwrap();
+        assert_eq!(first["copy_job"]["phase"], "RECONCILE_REQUIRED");
+        assert_eq!(first["copy_job"]["retry_safe"], false);
+        assert_eq!(c.provider.creates(), 1);
+        c.provider.world().calls.clear();
+        // The provider would now accept a create, and still nothing is sent.
+        c.provider.world().lose_create_reply = false;
+        drop(service);
+        let service = c.open();
+        let again = c.publish(&service, REQUEST_A).unwrap();
+        assert_eq!(again["copy_job"]["phase"], "RECONCILE_REQUIRED");
+        assert_eq!(c.provider.creates(), 0);
     }
 }

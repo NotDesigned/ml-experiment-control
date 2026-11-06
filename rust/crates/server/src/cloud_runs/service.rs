@@ -596,6 +596,7 @@ mod materialization;
 mod preparations;
 mod renewal;
 mod script_preparation;
+mod sync_jobs;
 
 #[cfg(test)]
 mod failure_tests {

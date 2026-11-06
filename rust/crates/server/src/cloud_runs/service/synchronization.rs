@@ -212,22 +212,7 @@ impl Service {
             check()?;
             write(&self.slots, &slot(action, request_id)?, &saved)?;
         }
-        self.sync_outbox
-            .prepare(&collector.profile, &job, allocation, &check)?;
-        let state = self.sync_outbox.status(&job)?;
-        if state["retry_safe"] == true {
-            self.sync_outbox.execute(
-                collector,
-                &job,
-                allocation,
-                &format!("SUBMIT {}", Outbox::slot(&job)?),
-                &check,
-                cancelled,
-            )?;
-        } else {
-            self.sync_outbox
-                .reconcile(collector, &job, allocation, &check, cancelled)?;
-        }
+        self.submit_once_or_reconcile(collector, &job, allocation, &check, cancelled)?;
         drop(lock);
         self.sync_status(action, request_id, now)
     }

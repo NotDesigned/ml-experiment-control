@@ -84,27 +84,13 @@ impl Service {
         let job = saved.copy_intent.ok_or_else(cloud::Error::evidence)?;
         let check = || self.project_hash(project).map(|_| ());
         let allocation = ml_exp_core::cloud::pai::Allocation::Guaranteed;
-        self.sync_outbox
-            .prepare(&collector.profile, &job, allocation, &check)?;
-        let status = self.sync_outbox.status(&job)?;
-        let status = if status["retry_safe"] == true {
-            self.sync_outbox.execute(
-                collector,
-                &job,
-                allocation,
-                &format!("SUBMIT {}", Outbox::slot(&job)?),
-                &check,
-                &AtomicBool::new(false),
-            )?
-        } else {
-            self.sync_outbox.reconcile(
-                collector,
-                &job,
-                allocation,
-                &check,
-                &AtomicBool::new(false),
-            )?
-        };
+        let status = self.submit_once_or_reconcile(
+            collector,
+            &job,
+            allocation,
+            &check,
+            &AtomicBool::new(false),
+        )?;
         let _lock = self.lock()?;
         let mut saved = self
             .data_saved(project, executor, asset)?

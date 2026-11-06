@@ -170,31 +170,13 @@ impl Service {
             saved
         };
         if execute {
-            self.sync_outbox.prepare(
-                &collector.profile,
+            let status = self.submit_once_or_reconcile(
+                collector,
                 &saved.job,
                 Allocation::Guaranteed,
                 check,
+                &AtomicBool::new(false),
             )?;
-            let status = self.sync_outbox.status(&saved.job)?;
-            let status = if status["retry_safe"] == true {
-                self.sync_outbox.execute(
-                    collector,
-                    &saved.job,
-                    Allocation::Guaranteed,
-                    &format!("SUBMIT {}", Outbox::slot(&saved.job)?),
-                    check,
-                    &AtomicBool::new(false),
-                )?
-            } else {
-                self.sync_outbox.reconcile(
-                    collector,
-                    &saved.job,
-                    Allocation::Guaranteed,
-                    check,
-                    &AtomicBool::new(false),
-                )?
-            };
             if saved.report.is_none() && status["handle"].is_object() {
                 let handle = serde_json::from_value(status["handle"].clone())
                     .map_err(why!(cloud::Error::evidence()))?;

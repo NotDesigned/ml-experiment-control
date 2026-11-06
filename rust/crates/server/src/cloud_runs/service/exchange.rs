@@ -152,31 +152,13 @@ impl Service {
             .job(&execution.job)
             .map_err(why!(cloud::Error::configuration()))?;
         let check = || self.still_live(&guard, &execution.job.project, &execution.job.run_id);
-        self.sync_outbox.prepare(
-            &collector.profile,
+        let status = self.submit_once_or_reconcile(
+            collector,
             &job,
             ml_exp_core::cloud::pai::Allocation::Guaranteed,
             &check,
+            cancelled,
         )?;
-        let current = self.sync_outbox.status(&job)?;
-        let status = if current["retry_safe"] == true {
-            self.sync_outbox.execute(
-                collector,
-                &job,
-                ml_exp_core::cloud::pai::Allocation::Guaranteed,
-                &format!("SUBMIT {}", Outbox::slot(&job)?),
-                &check,
-                cancelled,
-            )?
-        } else {
-            self.sync_outbox.reconcile(
-                collector,
-                &job,
-                ml_exp_core::cloud::pai::Allocation::Guaranteed,
-                &check,
-                cancelled,
-            )?
-        };
         let mut view = self.get(action, now)?;
         view["synchronization"] = json!({"request_id":request.request_id,"resources":{"gpus":0,"cpus":2,"memory_gb":4},"max_time_seconds":600,"job":status,"training_replayed":false});
         Ok(view)
