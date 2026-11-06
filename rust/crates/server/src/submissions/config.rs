@@ -27,21 +27,11 @@ pub struct Settings {
 pub struct Definition {
     pub profile: Profile,
     pub ssh: Ssh,
-    /// Optional upgraded helper for inspecting and cancelling existing jobs.
-    /// It shares the frozen SSH target and cannot prepare or submit a job.
-    #[serde(default)]
-    pub control_helper: Option<ControlHelper>,
     pub runtimes: BTreeMap<String, Runtime>,
     #[serde(default)]
     pub data_helper_config: Option<String>,
     #[serde(default)]
     pub script_preparation: bool,
-}
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ControlHelper {
-    pub helper_path: String,
-    pub helper_config_path: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -85,7 +75,6 @@ impl Settings {
                     return Err(Error::Configuration);
                 }
                 let backend = Backend {
-                    control_helper: definition.control_helper,
                     ssh: SshConfig {
                         target: definition.profile.target.clone(),
                         ssh_binary: ssh.binary,

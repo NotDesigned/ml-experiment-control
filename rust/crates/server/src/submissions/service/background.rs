@@ -248,7 +248,7 @@ impl Service {
         backend: &Backend,
         limit: Option<std::time::Duration>,
     ) -> SshConfig {
-        let mut ssh = backend.control_ssh();
+        let mut ssh = backend.ssh.clone();
         if let Some(limit) = limit {
             ssh.budget.timeout = ssh.budget.timeout.min(limit);
             ssh.budget.connect_timeout_seconds = ssh
