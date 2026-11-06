@@ -26,6 +26,7 @@ use ml_exp_server::{
     background::{Cycle, Polled},
     cloud_runs::{Service, Settings},
     operations::{ClaimContext, Store},
+    read_api::Api,
     read_config, sources, submissions,
 };
 use serde_json::{Value, json};
@@ -1945,4 +1946,85 @@ fn a_crash_after_retaining_the_old_job_leaves_its_request_current() {
     assert_eq!(c.provider.creates(), 2);
     let error = c.publish(&service, REQUEST_A).unwrap_err();
     assert_eq!(error.code, "DATA_COPY_REQUEST_SUPERSEDED");
+}
+
+const ROUTING_TOKEN: &str = "synthetic-routing-http-token-0000000000";
+
+fn routing_api(
+    f: &Fixture,
+    slurm: Option<Arc<submissions::Service>>,
+    cloud: Option<Arc<Service>>,
+) -> Arc<Api> {
+    let mut api = Api::open(f.settings.clone())
+        .unwrap()
+        .with_sources(f.sources.clone())
+        .unwrap();
+    if let Some(slurm) = slurm {
+        api = api.with_submissions(slurm).unwrap();
+    }
+    if let Some(cloud) = cloud {
+        api = api.with_cloud(cloud).unwrap();
+    }
+    Arc::new(api)
+}
+fn routing_app(f: &Fixture, api: Arc<Api>) -> axum::Router {
+    let token = f.temp.path().join("routing-token");
+    ml_exp_io::write_atomic(&token, ROUTING_TOKEN.as_bytes(), true).unwrap();
+    ml_exp_server::app(ml_exp_server::Auth::load(&token).unwrap(), Some(api))
+}
+async fn routed(app: &axum::Router, method: &str, path: &str, body: &str) -> (u16, Value) {
+    use tower::ServiceExt;
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method(method)
+                .uri(path)
+                .header("authorization", format!("Bearer {ROUTING_TOKEN}"))
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body.to_owned()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status().as_u16();
+    let bytes = axum::body::to_bytes(response.into_body(), 8 * 1024 * 1024)
+        .await
+        .unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap())
+}
+
+/// Cloud authority needs one discovered root, but a Slurm Run can live elsewhere.
+/// Only the Run's owner may decide whether its layout matters.
+#[tokio::test]
+async fn a_configured_cloud_service_can_read_a_slurm_run_in_an_explicit_run_project() {
+    for kind in KINDS {
+        let mut f = Fixture::new(kind);
+        f.settings.projects[0].runs = vec![read_config::Run {
+            run_id: "train".into(),
+            root_index: 0,
+            relative_components: vec!["train".into()],
+        }];
+        let cloud_service = Arc::new(f.open());
+        let (slurm, action, ssh_calls) = slurm_side(&f);
+        let app = routing_app(
+            &f,
+            routing_api(&f, Some(Arc::new(slurm)), Some(cloud_service)),
+        );
+        for path in [
+            "/api/runs/demo/train",
+            "/api/runs/demo/train/submission",
+            "/api/runs/demo/train/preparation",
+            "/api/runs/demo/train/tracking",
+        ] {
+            let (status, body) = routed(&app, "GET", path, "").await;
+            assert_eq!(status, 200, "{path}: {body}");
+        }
+        let (_, run) = routed(&app, "GET", "/api/runs/demo/train", "").await;
+        assert_eq!(run["native_submission"]["submission_id"], action.as_str());
+        let (_, submission) = routed(&app, "GET", "/api/runs/demo/train/submission", "").await;
+        assert_eq!(submission["submission_id"], action.as_str());
+        assert!(f.provider.calls().is_empty());
+        assert!(!ssh_calls.exists());
+    }
 }
