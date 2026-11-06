@@ -43,6 +43,7 @@ pub struct Store {
     config: Config,
     root: Directory,
 }
+mod claim;
 #[cfg(test)]
 mod tests;
 impl Store {
@@ -183,7 +184,11 @@ impl Store {
         let parts = directory.child(OsStr::new("parts"), false)?;
         let name = number.to_string();
         if !parts.entry_exists(OsStr::new(&name))? {
-            parts.publish_new(OsStr::new(&name), payload)?;
+            // Another node may publish the same part; the hash below decides either way.
+            match parts.publish_new(OsStr::new(&name), payload) {
+                Err(error) if error.kind() != io::ErrorKind::AlreadyExists => return Err(error),
+                _ => {}
+            }
         }
         let mut file = parts.open_regular_read(OsStr::new(&name))?;
         let (sha, bytes) = ml_exp_io::artifacts::hash(&mut file)?;
@@ -222,6 +227,24 @@ impl Store {
             root: format!("{root}/{}/{}/tree", state.project, state.asset_id),
         })
     }
+    /// One build at a time across nodes. Another may have finished during the wait.
+    fn claimed(
+        &self,
+        request: &Request,
+        directory: &Directory,
+        cancelled: &AtomicBool,
+    ) -> io::Result<State> {
+        let claim = claim::Claim::acquire(directory, claim::Timing::default(), cancelled)?;
+        let result = self.read(request).and_then(|(_, state)| {
+            if state.ready.is_some() {
+                Self::cleanup(directory)?;
+                return Ok(state);
+            }
+            claim.beating(|| self.complete(request, directory, &state, &claim, cancelled))
+        });
+        claim.release();
+        result
+    }
     /// Publish a state with no receipt yet. Any tree here came from a job that did
     /// not finish, so no Run has accepted it, and its bytes can be made again.
     fn complete(
@@ -229,6 +252,7 @@ impl Store {
         request: &Request,
         directory: &Directory,
         state: &State,
+        claim: &claim::Claim<'_>,
         cancelled: &AtomicBool,
     ) -> io::Result<State> {
         // Pure completeness admission precedes any concatenation or extraction.
@@ -247,6 +271,7 @@ impl Store {
             }
             self.rebuild(request, directory, state, stale, cancelled)?;
         }
+        claim.still_held()?;
         Self::save(directory, &next)?;
         Self::cleanup(directory)?;
         Ok(next)
@@ -424,9 +449,7 @@ impl Store {
                 Self::cleanup(&directory)?;
                 (state, Some(directory))
             }
-            Command::Complete { .. } => {
-                (self.complete(request, &directory, &state, cancelled)?, None)
-            }
+            Command::Complete { .. } => (self.claimed(request, &directory, cancelled)?, None),
             _ => (state, None),
         })
     }
