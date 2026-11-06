@@ -76,6 +76,21 @@ impl Store {
         store.verify()?;
         Ok(store)
     }
+    /// Open a cloud store, first claiming a root that has no marker. Anything may have
+    /// made that directory: training code writing to DATA_DIR, a download script, or a
+    /// crash before the marker. Every dataset is still verified on its own, so a claimed
+    /// root can only hold nothing useful yet. A marker for another target is refused.
+    pub fn claim(config: Config) -> io::Result<Self> {
+        let store = Self::configured(config)?;
+        if !store.root.entry_exists(OsStr::new(MARKER))? {
+            // A store claimed at the same moment is fine; verifying decides.
+            let _ = store
+                .root
+                .publish_new(OsStr::new(MARKER), &json(&store.marker()?)?);
+        }
+        store.verify()?;
+        Ok(store)
+    }
     fn verify(&self) -> io::Result<()> {
         let actual: Marker =
             serde_json::from_slice(&self.root.read_regular(OsStr::new(MARKER), 4096)?)
