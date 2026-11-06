@@ -637,33 +637,34 @@ fn original_sqlite_schema_is_read_without_mutation_and_additively_migrated() {
 }
 
 #[test]
-fn historical_import_freezes_schema_and_never_enables_publication() {
+fn import_needs_a_bound_run_and_never_changes_its_binding() {
     let temp = tempfile::tempdir().unwrap();
     let store = Store::open(temp.path(), SEED).unwrap();
-    let guard = store.guard("demo", "history").unwrap();
-    let manifest = json!({"resolved_config":{"evaluation":{"protocol_id":"protocol-historical","metrics_schema":{"definitions":{"loss":{"unit":"u"}}}}}});
-    let (scope, config) = store
-        .prepare_import(&guard, "attempt-001", &manifest)
+    let guard = store.guard("demo", "train").unwrap();
+    assert!(matches!(
+        store.import_scope(&guard, "attempt-001"),
+        Err(Error::Unbound)
+    ));
+    assert!(store.binding(&guard).unwrap().is_none());
+    let frozen = json!({"ml_expd":{"evaluation":{"protocol_id":"protocol-frozen","metrics_schema":{"definitions":{"loss":{"unit":"u"}}}}}});
+    store
+        .bind(
+            &guard,
+            &json!({"enabled":false,"reason":"NATIVE_LOCAL_ONLY"}),
+            &frozen,
+        )
         .unwrap();
+    let original = store.binding(&guard).unwrap();
+    let (scope, config) = store.import_scope(&guard, "attempt-001").unwrap();
+    assert_eq!(config, frozen);
     assert_eq!(
         store.scope_status(&guard, &scope).unwrap().unwrap()["status"],
         "LOCAL_ONLY"
     );
     let metric = normalized_metric(&json!({"loss":1}), &config).unwrap();
-    assert_eq!(
-        metric["observations"][0]["protocol_id"],
-        "protocol-historical"
-    );
+    assert_eq!(metric["observations"][0]["protocol_id"], "protocol-frozen");
     assert_eq!(metric["observations"][0]["unit"], "u");
-    let original = store.binding(&guard).unwrap();
-    let second = store
-        .prepare_import(
-            &guard,
-            "attempt-001",
-            &json!({"evaluation":{"protocol_id":"other"}}),
-        )
-        .unwrap();
-    assert_eq!(second.1, config);
+    assert_eq!(store.import_scope(&guard, "attempt-001").unwrap().1, frozen);
     assert_eq!(store.binding(&guard).unwrap(), original);
 }
 

@@ -130,7 +130,7 @@ impl Service {
             .is_none()
         {
             let binding =
-                ml_exp_core::records::observed_binding(&facts.run, &facts.binding.run_sha256)
+                ml_exp_core::records::native_binding(&facts.run, &facts.binding.run_sha256)
                     .map_err(why!(Error::Authority))?;
             records
                 .bind(&guard, &binding["route"], &binding["config"])

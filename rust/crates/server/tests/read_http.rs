@@ -49,7 +49,7 @@ impl Fixture {
             &json!({"schema_version":1,"project":"demo","title":"Synthetic science"}),
         );
         let evaluation = json!({"protocol_id":"synthetic-protocol-v1"});
-        let manifest = json!({"schema_version":1,"identity_version":2,"project":"demo","run_id":"train",
+        let manifest = json!({"schema_version":1,"project":"demo","run_id":"train",
             "source_id":"source.fixture","image_id":"sha256:fixture","config_path":"config.json","seed":42,"campaign":"fixture",
             "created_at":"2026-10-27T00:00:00Z","evaluation":evaluation,"parameters":{"lr":0.001},
             "resources":{"gpus":1},"container":{"runtime_id":"runtime.fixture"},"backend":{"kind":"slurm"},"inputs":[]});
@@ -389,7 +389,7 @@ fn native_clients_pin_exact_attempt_and_keep_scientific_metric_dimensions() {
     assert_eq!(initial["publication"]["download_available"], false);
     assert_eq!(
         initial["publication"]["diagnostic"],
-        "ARTIFACT_PUBLICATION_NOT_MIGRATED"
+        "ARTIFACT_PUBLICATION_NOT_OBSERVED"
     );
     assert_eq!(initial["publication"]["status"], "NOT_OBSERVED");
     // A producer's coarse failure_class is not an assessed failure fact.

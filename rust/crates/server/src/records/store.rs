@@ -307,27 +307,16 @@ impl Store {
         })
     }
 
-    /// Bind an historical archive to its declared schema without enabling a
-    /// publisher. Existing frozen routes and schemas always take precedence.
-    pub fn prepare_import(
-        &self,
-        guard: &RecordGuard<'_>,
-        attempt: &str,
-        manifest: &Value,
-    ) -> Result<(String, Value)> {
+    /// The scope and frozen config an import writes under. The Run must already
+    /// be bound, so an import can neither choose nor change a route or schema.
+    pub fn import_scope(&self, guard: &RecordGuard<'_>, attempt: &str) -> Result<(String, Value)> {
         if self.read_only {
             return Err(Error::ReadOnly);
         }
         self.require_guard(guard)?;
-        let binding = match self.binding_raw(&guard.project, &guard.run)? {
-            Some(binding) => binding,
-            None => {
-                let binding = records::historical_binding(manifest)?;
-                self.bind(guard, &binding["route"], &binding["config"])?;
-                self.binding_raw(&guard.project, &guard.run)?
-                    .ok_or(Error::Unbound)?
-            }
-        };
+        let binding = self
+            .binding_raw(&guard.project, &guard.run)?
+            .ok_or(Error::Unbound)?;
         let scope = self.scope(guard, attempt)?;
         self.require_scope(guard, &scope)?;
         Ok((scope, binding["config"].clone()))

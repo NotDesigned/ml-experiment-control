@@ -126,7 +126,7 @@ pub fn documents(
     // Validate arbitrary project schemas without inventing scientific metrics.
     crate::metrics::MetricSchema::from_value(&request.metrics_schema.to_value())
         .map_err(|_| Error("metric schema"))?;
-    let mut run = json!({"schema_version":1,"identity_version":2,"project":project,"run_id":request.run_id,"created_at":now,
+    let mut run = json!({"schema_version":1,"project":project,"run_id":request.run_id,"created_at":now,
         "source_id":runtime.source_id,"image_id":runtime.image,"config_path":"request.json","seed":request.seed,"campaign":format!("run-{}",request.run_id),
         "parameters":request.parameters,"backend":{"kind":"cloud","executor":request.executor},"resources":request.resources,
         "container":{"runtime_id":runtime.runtime_id},"command":request.command,"inputs":[],"assets":[],"native_cloud":{"walltime_seconds":request.walltime_seconds},

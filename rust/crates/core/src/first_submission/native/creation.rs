@@ -230,7 +230,7 @@ pub fn plan(
         (None, None) => {}
         _ => return Err(Error("checkpoint evidence")),
     }
-    let mut run = json!({"schema_version":1,"identity_version":2,"project":project,"run_id":request.run_id,
+    let mut run = json!({"schema_version":1,"project":project,"run_id":request.run_id,
         "created_at":now,"source_id":runtime.source_id,"image_id":runtime.image_id,
         "config_path":"request.json","seed":request.seed,"campaign":format!("run-{}",request.run_id),
         "parameters":request.parameters,"backend":spec.backend,"storage":spec.storage,

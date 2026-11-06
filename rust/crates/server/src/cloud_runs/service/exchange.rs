@@ -305,7 +305,7 @@ impl Service {
             .child(OsStr::new(&b.run_id), false)
             .map_err(io)?;
         let manifest = read(&root, "manifest.json")?;
-        let binding = ml_exp_core::records::observed_binding(&manifest, &b.run_sha256)
+        let binding = ml_exp_core::records::native_binding(&manifest, &b.run_sha256)
             .map_err(why!(cloud::Error::evidence()))?;
         let guard = store
             .guard(&b.project, &b.run_id)

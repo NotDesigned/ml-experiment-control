@@ -136,8 +136,8 @@ impl Fixture {
             },
             command: vec!["python".into(), "-u".into(), "/workspace/train.py".into()],
         };
-        let manifest = json!({"schema_version":1,"identity_version":2,"project":"demo","run_id":"train","source_id":source_id,"image_id":image,"config_path":"config.json","seed":42,"campaign":"fixture",
-            "backend":spec.backend,"storage":spec.storage,"resources":spec.resources,"execution":spec.execution,"command":spec.command,"container":{"runtime_id":runtime.runtime_id},"evaluation":{"protocol_id":"fixture"},"parameters":{},"inputs":[]});
+        let manifest = json!({"schema_version":1,"project":"demo","run_id":"train","source_id":source_id,"image_id":image,"config_path":"config.json","seed":42,"campaign":"fixture",
+            "backend":spec.backend,"storage":spec.storage,"resources":spec.resources,"execution":spec.execution,"command":spec.command,"container":{"runtime_id":runtime.runtime_id},"evaluation":{"protocol_id":"fixture"},"parameters":{},"inputs":[],"native_creation":{"format":"native-run-creation.v1"}});
         write(&project.join("runs/train/manifest.json"), &manifest);
         let mut attempt = manifest;
         attempt["attempt_id"] = json!("attempt-001");
@@ -459,7 +459,8 @@ fn unapproved_resources_runtime_inputs_and_attempt_mismatches_fail_before_prepar
         "cache_directory",
         "attempt_resources",
         "attempt_running",
-        "legacy",
+        "authored",
+        "foreign_format",
     ] {
         let f = Fixture::new();
         let service = f.service("ledger", true);
@@ -499,7 +500,12 @@ fn unapproved_resources_runtime_inputs_and_attempt_mismatches_fail_before_prepar
                 "attempt_resources" if filename.starts_with("attempts/") => {
                     value["resources"]["cpus"] = json!(16)
                 }
-                "legacy" => value["identity_version"] = json!(1),
+                "authored" => {
+                    value.as_object_mut().unwrap().remove("native_creation");
+                }
+                "foreign_format" => {
+                    value["native_creation"]["format"] = json!("native-cloud-run.v1")
+                }
                 _ => {}
             }
             write(&path, &value);

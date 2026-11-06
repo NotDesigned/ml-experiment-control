@@ -6,7 +6,7 @@ fn staged_request(root: &Path) -> Request {
         worker: None,
         runs_root: root.join("shared-runs").display().to_string(),
     });
-    let doc = json!({"schema_version":1,"identity_version":2,"project":"demo","run_id":"train","attempt_id":"attempt-001",
+    let doc = json!({"schema_version":1,"project":"demo","run_id":"train","attempt_id":"attempt-001",
         "image_id":format!("sha256:{}","1".repeat(64)),
         "backend":{"kind":"slurm","ssh_alias":"test","partition":"h100","account":"science","qos":"normal",
             "gres":"gpu:h100:1","time":"00:05:00","source_dir":root.join("source"),"sif_path":root.join("image.sif"),"mount_root":root},

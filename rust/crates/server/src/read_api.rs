@@ -957,14 +957,7 @@ pub fn journal_binding_matches(snapshot: &Snapshot, binding: Option<&Value>) -> 
     {
         return false;
     }
-    let mut definition = snapshot.run.metadata.clone();
-    if let Some(resolved) = definition
-        .get("resolved_config")
-        .and_then(Value::as_object)
-        .cloned()
-    {
-        definition.extend(resolved);
-    }
+    let definition = &snapshot.run.metadata;
     let same = |left: &Value, right: Option<&Value>| {
         right.is_some_and(|right| {
             match (

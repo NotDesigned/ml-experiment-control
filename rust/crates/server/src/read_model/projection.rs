@@ -1028,7 +1028,7 @@ pub fn attempt_collection(snapshot: &Snapshot, attempt_id: &str, now_unix: f64) 
             "process_state":process_state,"diagnostic":if conflicting{json!("PROCESS_STATE_EXIT_CODE_CONFLICT")}else{Value::Null},
             "evidence":if collected_doc.metadata().is_some(){json!("exact_attempt_process_evidence")}else{Value::Null}},
         "verification":"PENDING","download_available":false,"publication":null,
-        "diagnostic":if snapshot.run.metadata.contains_key("native_creation"){"ARTIFACT_PUBLICATION_NOT_OBSERVED"}else{"ARTIFACT_PUBLICATION_NOT_MIGRATED"},
+        "diagnostic":"ARTIFACT_PUBLICATION_NOT_OBSERVED",
         "evidence_availability":evidence_view(collection(snapshot, attempt)),"evidence":evidence,
         "process":process,"diagnostics":snapshot.diagnostics}),
     );

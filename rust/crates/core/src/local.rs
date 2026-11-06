@@ -73,7 +73,7 @@ impl Registration {
             return Err(Error("LOCAL_PROTOCOL_INVALID"));
         }
         Ok(
-            json!({"schema_version":1,"identity_version":2,"project":project,"run_id":self.run_id,"created_at":now,
+            json!({"schema_version":1,"project":project,"run_id":self.run_id,"created_at":now,
             "backend":{"kind":"local"},"local_execution":{"execution_id":self.execution_id,"mode":"attached","process_control":false},
             "parameters":self.parameters,"seed":self.seed,"evaluation":evaluation,"tracking_route":route,
             "native_creation":{"format":FORMAT,"request_sha256":canonical::digest(&json!(self)).map_err(|_| Error("LOCAL_DEFINITION_INVALID"))?}}),

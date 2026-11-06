@@ -40,10 +40,10 @@ cat > "$preview_root/project/project.json" <<'JSON'
 {"schema_version":1,"project":"demo","title":"Native smoke fixture","run_roots":["runs"]}
 JSON
 cat > "$preview_root/project/runs/train/manifest.json" <<'JSON'
-{"schema_version":1,"identity_version":2,"project":"demo","run_id":"train","source_id":"source.fixture","image_id":"sha256:fixture","config_path":"config.json","seed":42,"campaign":"fixture","evaluation":{"protocol_id":"fixture-protocol"},"parameters":{},"resources":{"gpus":0},"container":{"runtime_id":"runtime.fixture"},"backend":{"kind":"slurm"},"inputs":[]}
+{"schema_version":1,"project":"demo","run_id":"train","source_id":"source.fixture","image_id":"sha256:fixture","config_path":"config.json","seed":42,"campaign":"fixture","evaluation":{"protocol_id":"fixture-protocol"},"parameters":{},"resources":{"gpus":0},"container":{"runtime_id":"runtime.fixture"},"backend":{"kind":"slurm"},"inputs":[],"native_creation":{"format":"native-run-creation.v1"}}
 JSON
 cat > "$preview_root/project/runs/train/attempts/attempt-001/attempt.json" <<'JSON'
-{"schema_version":1,"identity_version":2,"project":"demo","run_id":"train","attempt_id":"attempt-001","source_id":"source.fixture","image_id":"sha256:fixture","config_path":"config.json","seed":42,"campaign":"fixture","evaluation":{"protocol_id":"fixture-protocol"},"parameters":{},"resources":{"gpus":0},"container":{"runtime_id":"runtime.fixture"},"backend":{"kind":"slurm"},"inputs":[]}
+{"schema_version":1,"project":"demo","run_id":"train","attempt_id":"attempt-001","source_id":"source.fixture","image_id":"sha256:fixture","config_path":"config.json","seed":42,"campaign":"fixture","evaluation":{"protocol_id":"fixture-protocol"},"parameters":{},"resources":{"gpus":0},"container":{"runtime_id":"runtime.fixture"},"backend":{"kind":"slurm"},"inputs":[],"native_creation":{"format":"native-run-creation.v1"}}
 JSON
 cat > "$preview_root/project/runs/train/status.json" <<'JSON'
 {"project":"demo","run_id":"train","attempt_id":"attempt-001","state":"RUNNING"}

@@ -84,7 +84,14 @@ impl Service {
             .evidence
             .snapshot_metadata(&reference)
             .map_err(why!(Error::Authority))?;
-        if snapshot.run.legacy_observation_only
+        // Only a Run this service created can reach admission; an authored one cannot.
+        if snapshot
+            .run
+            .metadata
+            .get("native_creation")
+            .and_then(|creation| creation.get("format"))
+            .and_then(Value::as_str)
+            != Some("native-run-creation.v1")
             || snapshot.attempts.is_empty()
             || !snapshot.diagnostics.is_empty()
         {
@@ -99,8 +106,7 @@ impl Service {
             .find(|v| v.attempt_id == selected)
             .ok_or(Error::Authority)?;
         native::retry::number(selected)?;
-        if attempt.manifest.legacy_observation_only
-            || !attempt.provenance.compared_fields_complete
+        if !attempt.provenance.compared_fields_complete
             || matches!(attempt.status, EvidenceDocument::Unavailable { .. })
             || matches!(attempt.submission, EvidenceDocument::Unavailable { .. })
             || matches!(attempt.backend, EvidenceDocument::Unavailable { .. })

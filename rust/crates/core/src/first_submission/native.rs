@@ -337,7 +337,6 @@ pub fn definition(
     }
     for value in [run, attempt] {
         if value["schema_version"] != 1
-            || value["identity_version"] != 2
             || field(value, "project")? != binding.project
             || field(value, "run_id")? != binding.run_id
             || !value.get("resume").is_none_or(Value::is_null)

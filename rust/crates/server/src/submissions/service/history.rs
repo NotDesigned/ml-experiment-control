@@ -106,11 +106,8 @@ impl Service {
         let journal_guard = records
             .guard(&prepared.binding.project, &prepared.binding.run_id)
             .map_err(why!(Error::Authority))?;
-        let document = Value::Object(
-            ml_exp_core::json::mapping(manifest.as_bytes()).map_err(why!(Error::Authority))?,
-        );
         let (scope, config) = records
-            .prepare_import(&journal_guard, &prepared.binding.attempt_id, &document)
+            .import_scope(&journal_guard, &prepared.binding.attempt_id)
             .map_err(why!(Error::ObservationConflict))?;
         let saved = if self
             .slots

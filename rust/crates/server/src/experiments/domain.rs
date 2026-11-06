@@ -26,7 +26,6 @@ pub struct Document {
     pub source: ManifestSource,
     pub raw_sha256: String,
     pub metadata: Map<String, Value>,
-    pub legacy_observation_only: bool,
 }
 impl Document {
     pub(super) fn decode(bytes: &[u8], source: ManifestSource) -> Result<Self, DocumentError> {
@@ -36,13 +35,10 @@ impl Document {
             ml_exp_core::json::Error::MappingKey => DocumentError::MappingKey,
             ml_exp_core::json::Error::Number => DocumentError::Number,
         })?;
-        let legacy_observation_only =
-            metadata.get("identity_version").and_then(Value::as_u64) != Some(2);
         Ok(Self {
             source,
             raw_sha256: format!("sha256:{:x}", Sha256::digest(bytes)),
             metadata,
-            legacy_observation_only,
         })
     }
 }
@@ -59,7 +55,7 @@ pub enum DocumentError {
     Number,
     #[error("metadata identity is missing or conflicts with the requested object")]
     Identity,
-    #[error("metadata schema or identity version is unsupported")]
+    #[error("metadata schema version is unsupported")]
     Version,
     #[error("Attempt changes immutable Run provenance")]
     Provenance,
@@ -79,9 +75,6 @@ fn version(map: &Map<String, Value>) -> Result<(), DocumentError> {
     if map
         .get("schema_version")
         .is_some_and(|v| v.as_u64() != Some(1))
-        || map
-            .get("identity_version")
-            .is_some_and(|v| !matches!(v.as_u64(), Some(1 | 2)))
     {
         return Err(DocumentError::Version);
     }
@@ -108,8 +101,8 @@ pub struct Provenance {
     pub compared_fields_complete: bool,
     pub compared_fields: Vec<String>,
     pub missing_fields: Vec<String>,
-    pub project_inherited_from_json_run: bool,
 }
+const COMPARED_FIELDS: [&str; 5] = ["source_id", "image_id", "config_path", "seed", "campaign"];
 pub fn validate_attempt(
     run: &Document,
     attempt: &Document,
@@ -120,48 +113,13 @@ pub fn validate_attempt(
     identity::validate_id(attempt_id).map_err(why!(DocumentError::Identity))?;
     validate_run(&run.metadata, project, run_id)?;
     version(&attempt.metadata)?;
-    let inherited = run.source == ManifestSource::RunJson
-        && attempt.source == ManifestSource::AttemptJson
-        && field(&attempt.metadata, "project").is_none();
-    if !inherited {
-        exact(&attempt.metadata, "project", project)?;
-    }
+    exact(&attempt.metadata, "project", project)?;
     exact(&attempt.metadata, "run_id", run_id)?;
     exact(&attempt.metadata, "attempt_id", attempt_id)?;
     let mut missing_fields = Vec::new();
-    for key in ["source_id", "image_id", "config_path", "seed", "campaign"] {
-        let seed_value = |map: &Map<String, Value>| {
-            field(map, "seed").cloned().or_else(|| {
-                map.get("resolved_config")
-                    .and_then(|v| v.get("seed"))
-                    .filter(|v| !v.is_null())
-                    .cloned()
-            })
-        };
-        let (mut left, mut right) = if key == "seed" {
-            (seed_value(&run.metadata), seed_value(&attempt.metadata))
-        } else {
-            (
-                field(&run.metadata, key).cloned(),
-                field(&attempt.metadata, key).cloned(),
-            )
-        };
-        if key == "seed" && left.is_none() && right.is_none() {
-            left = run
-                .metadata
-                .get("resolved_config")
-                .and_then(|v| v.get("seeds"))
-                .filter(|v| !v.is_null())
-                .cloned();
-            right = attempt
-                .metadata
-                .get("resolved_config")
-                .and_then(|v| v.get("seeds"))
-                .filter(|v| !v.is_null())
-                .cloned();
-        }
-        match (left, right) {
-            (Some(left), Some(right)) if !python_equal(&left, &right) => {
+    for key in COMPARED_FIELDS {
+        match (field(&run.metadata, key), field(&attempt.metadata, key)) {
+            (Some(left), Some(right)) if !python_equal(left, right) => {
                 return Err(DocumentError::Provenance);
             }
             (None, _) | (_, None) => missing_fields.push(key.into()),
@@ -170,11 +128,7 @@ pub fn validate_attempt(
     }
     Ok(Provenance {
         compared_fields_complete: missing_fields.is_empty(),
-        compared_fields: ["source_id", "image_id", "config_path", "seed", "campaign"]
-            .into_iter()
-            .map(str::to_owned)
-            .collect(),
+        compared_fields: COMPARED_FIELDS.into_iter().map(str::to_owned).collect(),
         missing_fields,
-        project_inherited_from_json_run: inherited,
     })
 }

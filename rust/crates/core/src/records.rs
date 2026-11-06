@@ -104,29 +104,6 @@ pub fn fence_names(run: &str, frozen_config: &Value) -> Result<Vec<String>> {
     Ok(names)
 }
 
-/// A verified archive can be imported for an historical Run without opting it
-/// into cloud publication. An already bound Run must always retain its route.
-pub fn historical_binding(manifest: &Value) -> Result<Value> {
-    let manifest = manifest
-        .as_object()
-        .ok_or(Error::Invalid("import manifest object"))?;
-    let definition = manifest.get("resolved_config").unwrap_or(&Value::Null);
-    let definition = if manifest.contains_key("resolved_config") {
-        definition
-            .as_object()
-            .ok_or(Error::Invalid("resolved import config object"))?
-    } else {
-        manifest
-    };
-    let evaluation = definition
-        .get("evaluation")
-        .cloned()
-        .unwrap_or_else(|| json!({}));
-    Ok(
-        json!({"route":{"enabled":false,"reason":"HISTORICAL_RUN_NOT_BOUND"},"config":{"ml_expd":{"evaluation":evaluation}}}),
-    )
-}
-
 /// Native local ingestion freezes the entire Run document identity. It cannot
 /// turn an absent W&B configuration into cloud publication authorization.
 pub fn native_binding(run: &Value, raw_sha256: &str) -> Result<Value> {
@@ -146,33 +123,6 @@ pub fn native_binding(run: &Value, raw_sha256: &str) -> Result<Value> {
     )
 }
 
-/// Previously authored managed Runs can be collected into a local journal.
-/// Their lack of a native creation record never authorizes a cloud route.
-pub fn observed_binding(run: &Value, raw_sha256: &str) -> Result<Value> {
-    if matches!(
-        run["native_creation"]["format"].as_str(),
-        Some("native-run-creation.v1" | "native-cloud-run.v1" | "native-local-run.v1")
-    ) {
-        return native_binding(run, raw_sha256);
-    }
-    let mut definition = run
-        .as_object()
-        .cloned()
-        .ok_or(Error::Invalid("Run mapping"))?;
-    if let Some(resolved) = run.get("resolved_config") {
-        definition.extend(
-            resolved
-                .as_object()
-                .ok_or(Error::Invalid("resolved Run mapping"))?
-                .clone(),
-        );
-    }
-    frozen_binding(
-        &Value::Object(definition),
-        raw_sha256,
-        json!({"enabled":false,"reason":"OBSERVED_LEGACY_LOCAL_ONLY"}),
-    )
-}
 fn frozen_binding(run: &Value, raw_sha256: &str, route: Value) -> Result<Value> {
     if !crate::slurm::helper::valid_digest(raw_sha256) {
         return Err(Error::Invalid("Run raw identity"));

@@ -9,7 +9,6 @@ pub fn document(value: Value, source: ManifestSource) -> Document {
         source,
         metadata: value.as_object().unwrap().clone(),
         raw_sha256: format!("sha256:{}", "a".repeat(64)),
-        legacy_observation_only: false,
     }
 }
 pub fn evidence(id: &str, name: &str, mut value: Value) -> EvidenceDocument {
@@ -40,14 +39,13 @@ pub fn attempt(id: &str) -> AttemptSnapshot {
     AttemptSnapshot {
         attempt_id: id.into(),
         manifest: document(
-            json!({"identity_version":2,"project":"demo","run_id":"trial","attempt_id":id}),
+            json!({"project":"demo","run_id":"trial","attempt_id":id}),
             ManifestSource::AttemptJson,
         ),
         provenance: Provenance {
             compared_fields_complete: false,
             compared_fields: vec![],
             missing_fields: vec![],
-            project_inherited_from_json_run: false,
         },
         status: EvidenceDocument::Missing,
         backend: EvidenceDocument::Missing,
@@ -78,7 +76,7 @@ pub fn snapshot() -> Snapshot {
         project: "demo".into(),
         run_id: "trial".into(),
         run: document(
-            json!({"identity_version":2,"project":"demo","run_id":"trial"}),
+            json!({"project":"demo","run_id":"trial"}),
             ManifestSource::RunJson,
         ),
         current_status,

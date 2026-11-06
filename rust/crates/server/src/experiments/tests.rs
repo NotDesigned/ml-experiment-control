@@ -6,7 +6,7 @@ use std::{ffi::OsStr, fs, os::unix::fs::symlink, path::Path};
 
 const PROJECT: &[u8] = br#"{"schema_version":1,"project":"demo","title":"Synthetic readonly reader","run_roots":["runs"],"campaigns":[]}"#;
 fn native_run() -> Value {
-    json!({"schema_version":1,"identity_version":2,"project":"demo","run_id":"train",
+    json!({"schema_version":1,"project":"demo","run_id":"train",
         "created_at":"2026-10-27T01:02:03Z","config_path":"train.json",
         "source_id":format!("source.{}","1".repeat(64)),"campaign":"baseline",
         "image_id":format!("sha256:{}","2".repeat(64)),"seed":42,
@@ -116,7 +116,6 @@ fn exact_run_attempt_and_byte_expectations_are_read_without_mutation_or_index() 
     let project = f.store.project("demo", None).unwrap();
     assert_eq!(project.metadata["title"], "Synthetic readonly reader");
     let run = f.store.run(&f.reference, None).unwrap();
-    assert!(!run.legacy_observation_only);
     assert!(run.metadata.get("future_metadata").is_some());
     let first = f
         .store
@@ -124,7 +123,6 @@ fn exact_run_attempt_and_byte_expectations_are_read_without_mutation_or_index() 
         .unwrap();
     assert!(first.provenance.compared_fields_complete);
     assert_eq!(first.provenance.compared_fields.len(), 5);
-    assert!(!first.provenance.project_inherited_from_json_run);
     assert_ne!(
         first.run.metadata["created_at"],
         first.attempt.metadata["created_at"]
@@ -215,6 +213,7 @@ fn identity_conflicts_paths_and_cross_attempt_evidence_fail_closed() {
             json!("source.foreign"),
         ),
         ("attempts/attempt-001/attempt.json", "seed", json!(99)),
+        ("attempts/attempt-001/attempt.json", "project", json!(null)),
     ] {
         let file = path.join(filename);
         let before = fs::read(&file).unwrap();

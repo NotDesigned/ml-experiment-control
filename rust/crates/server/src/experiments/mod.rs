@@ -1,5 +1,5 @@
 //! Read-only authoritative metadata. Files are observations, not scheduler
-//! authorization; raw SHA binds file bytes, not the legacy scientific digest.
+//! authorization; raw SHA binds file bytes, not a scientific digest.
 //! No index, workspace bootstrap, mutation, provider or latest-Attempt lookup.
 #![forbid(unsafe_code)]
 mod domain;
