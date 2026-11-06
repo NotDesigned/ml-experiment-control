@@ -1,7 +1,7 @@
 //! Workspace project registration. Reducers consume explicit path observations
 //! and time; they never resolve files, read configuration, index or run a job.
 mod definition;
-use crate::{identity, observation::python_equal};
+use crate::identity;
 pub use definition::ProjectDefinition;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -129,7 +129,7 @@ fn record_values(payload: &Value) -> Result<Vec<LifecycleRecord>> {
     let fields = payload.as_object().ok_or(Error::Schema)?;
     if fields
         .get("schema_version")
-        .is_some_and(|v| !python_equal(v, &json!(1)))
+        .is_some_and(|v| v.as_u64() != Some(1))
     {
         return Err(Error::Schema);
     }

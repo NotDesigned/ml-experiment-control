@@ -1,6 +1,6 @@
 //! Pure human summaries of already-bound evidence. No clock, configuration,
 //! provider reads, scientific selection or mutation is hidden in rendering.
-use ml_exp_core::metrics::{python_is_printable, python_string};
+use ml_exp_core::metrics::json_text;
 use serde_json::Value;
 use time::OffsetDateTime;
 
@@ -35,13 +35,30 @@ fn first<'a>(values: &[&'a Value]) -> &'a Value {
         .find(|value| truth(value))
         .unwrap_or(&Value::Null)
 }
+/// Whether a terminal can show this character as itself. Refuses controls, line
+/// breaks and wide spaces, private use, and format characters such as the bidi
+/// overrides that could make a printed command read differently from what runs.
+fn terminal_safe(c: char) -> bool {
+    c == ' '
+        || !(c.is_control()
+            || c.is_whitespace()
+            || matches!(c,
+                '\u{2028}' | '\u{2029}'
+                | '\u{e000}'..='\u{f8ff}' | '\u{f0000}'..='\u{ffffd}' | '\u{100000}'..='\u{10fffd}'
+                | '\u{ad}' | '\u{600}'..='\u{605}' | '\u{61c}' | '\u{6dd}' | '\u{70f}'
+                | '\u{890}' | '\u{891}' | '\u{8e2}' | '\u{180e}' | '\u{200b}'..='\u{200f}'
+                | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206f}'
+                | '\u{feff}' | '\u{fff9}'..='\u{fffb}' | '\u{110bd}' | '\u{110cd}'
+                | '\u{13430}'..='\u{1343f}' | '\u{1bca0}'..='\u{1bca3}'
+                | '\u{1d173}'..='\u{1d17a}' | '\u{e0001}' | '\u{e0020}'..='\u{e007f}'))
+}
 fn text(value: &Value, default: &str) -> String {
     if !matches!(value, Value::String(_) | Value::Number(_) | Value::Bool(_)) {
         return default.into();
     }
-    let raw = python_string(value)
+    let raw = json_text(value)
         .chars()
-        .map(|c| if python_is_printable(c) { c } else { ' ' })
+        .map(|c| if terminal_safe(c) { c } else { ' ' })
         .collect::<String>();
     let clean = raw.split_whitespace().collect::<Vec<_>>().join(" ");
     if clean.is_empty() {
@@ -180,7 +197,7 @@ fn command(argv: &Value) -> Option<String> {
     let mut result = Vec::new();
     for arg in args {
         let arg = arg.as_str()?;
-        if arg.is_empty() || !arg.chars().all(python_is_printable) {
+        if arg.is_empty() || !arg.chars().all(terminal_safe) {
             return None;
         }
         result.push(
@@ -300,8 +317,7 @@ fn stage_line(phase: &Value, worker: &Value) -> String {
     format!(
         "Stage: {}{}",
         show(phase),
-        if truth(get(worker, "phase"))
-            && ml_exp_core::observation::python_equal(phase, get(worker, "phase"))
+        if truth(get(worker, "phase")) && ml_exp_core::canonical::equal(phase, get(worker, "phase"))
         {
             " (last reported worker phase; not a heartbeat)"
         } else {
@@ -577,4 +593,65 @@ pub fn provider_diagnostics(value: &Value) -> String {
         lines.push(format!("Event: {}", event.as_str().unwrap_or_default()));
     }
     lines.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn bidi_overrides_and_other_unsafe_characters_are_refused_for_the_terminal() {
+        for c in [
+            '\u{202a}',
+            '\u{202b}',
+            '\u{202c}',
+            '\u{202d}',
+            '\u{202e}',
+            '\u{2066}',
+            '\u{2067}',
+            '\u{2068}',
+            '\u{2069}',
+            '\u{200b}',
+            '\u{200f}',
+            '\u{ad}',
+            '\u{feff}',
+            '\u{e0041}',
+            '\u{e000}',
+            '\u{f0000}',
+            '\u{10fffd}',
+            '\n',
+            '\t',
+            '\u{1b}',
+            '\u{7f}',
+            '\u{85}',
+            '\u{a0}',
+            '\u{2003}',
+            '\u{2028}',
+            '\u{2029}',
+            '\u{3000}',
+        ] {
+            assert!(!terminal_safe(c), "{:x}", u32::from(c));
+            let word = format!("rm{c}file");
+            assert_eq!(command(&json!(["run", word])), None);
+            assert_eq!(text(&json!(word), "default"), "rm file");
+        }
+        for c in [' ', 'a', '~', 'é', '训', '😀', '\u{378}'] {
+            assert!(terminal_safe(c), "{:x}", u32::from(c));
+        }
+        assert_eq!(
+            command(&json!(["run", "训练 😀"])).unwrap(),
+            "run '训练 😀'"
+        );
+    }
+
+    #[test]
+    fn stage_line_compares_a_phase_by_its_canonical_bytes() {
+        let worker = json!({"phase":"TRAINING"});
+        assert!(stage_line(&json!("TRAINING"), &worker).contains("not a heartbeat"));
+        assert!(!stage_line(&json!("OTHER"), &worker).contains("not a heartbeat"));
+        let numeric = json!({"phase":1});
+        assert!(stage_line(&json!(1), &numeric).contains("not a heartbeat"));
+        assert!(!stage_line(&json!(1.0), &numeric).contains("not a heartbeat"));
+    }
 }

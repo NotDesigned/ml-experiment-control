@@ -588,7 +588,7 @@ impl Flow {
         if model["state"].is_null() && truth(&observation) {
             let step = &observation["step"];
             let timestamp = &observation["timestamp"];
-            model_view = json!({"state":if step.is_null(){"present".into()}else{format!("step {}",ml_exp_core::metrics::python_string(step))},"step":step,
+            model_view = json!({"state":if step.is_null(){"present".into()}else{format!("step {}",ml_exp_core::metrics::json_text(step))},"step":step,
                 "last_metric":observation,"metric_record":{"sequence":metric["sequence"],"event_id":metric["event_id"],"source":metric["source"]},
                 "observed_at":timestamp,"stale":if timestamp.is_null(){json!(true)}else{Value::Null}});
         }

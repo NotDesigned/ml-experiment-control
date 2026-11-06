@@ -27,6 +27,13 @@ pub fn protocol_identity(value: &Value) -> Result<String, CanonicalError> {
     Ok(format!("sha256:{}", digest(value)?))
 }
 
+/// Own records and identities compare by canonical bytes. Under exact number
+/// text `1.5` and `1.50` are unequal `Value`s, and here they are one value; `1.0`
+/// and `1` stay two. A value with no canonical form equals nothing.
+pub fn equal(left: &Value, right: &Value) -> bool {
+    matches!((bytes(left), bytes(right)), (Ok(left), Ok(right)) if left == right)
+}
+
 /// One finite float's shortest round-trip text. Both zeros compare equal, so
 /// they share the spelling `0.0`.
 pub fn float_text(value: f64) -> Result<String, CanonicalError> {

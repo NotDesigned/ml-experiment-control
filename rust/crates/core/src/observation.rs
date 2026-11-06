@@ -1,19 +1,23 @@
 //! Backend-neutral observational projections. Never refresh a provider or grant retries.
 use serde_json::{Map, Value};
 
-/// Python JSON equality is deliberately separate from frozen byte identity.
-pub fn python_equal(left: &Value, right: &Value) -> bool {
+/// JSON equality where numbers and bools compare by numeric value, so step 1 and
+/// 1.0 are one point. For scientific logic only: own records and identities use
+/// `canonical::equal`.
+pub fn numeric_tolerant_equal(left: &Value, right: &Value) -> bool {
     match (left, right) {
         (Value::Number(_) | Value::Bool(_), Value::Number(_) | Value::Bool(_)) => {
             crate::metrics::numeric_equal(left, right)
         }
         (Value::Object(a), Value::Object(b)) => {
             a.len() == b.len()
-                && a.iter()
-                    .all(|(k, v)| b.get(k).is_some_and(|other| python_equal(v, other)))
+                && a.iter().all(|(k, v)| {
+                    b.get(k)
+                        .is_some_and(|other| numeric_tolerant_equal(v, other))
+                })
         }
         (Value::Array(a), Value::Array(b)) => {
-            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| python_equal(a, b))
+            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| numeric_tolerant_equal(a, b))
         }
         _ => left == right,
     }

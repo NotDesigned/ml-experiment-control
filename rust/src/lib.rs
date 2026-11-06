@@ -221,6 +221,15 @@ mod tests {
     }
 
     #[test]
+    fn redacts_a_secret_in_compact_json_text() {
+        let output = redact_line(r#"{"note":"kept","token":"alpha","api_key":"bravo"}"#);
+        for secret in ["alpha", "bravo"] {
+            assert!(!output.contains(secret), "{output}");
+        }
+        assert!(output.contains("kept"));
+    }
+
+    #[test]
     fn structured_evidence_preserves_scientific_token_fields() {
         let input = concat!(
             "2026-07-16T12:00:00Z EXPERIMENT_EVIDENCE_JSON=",

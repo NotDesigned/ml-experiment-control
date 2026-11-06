@@ -52,23 +52,6 @@ fn optional_unit(value: Option<&Value>) -> Result<Option<String>, MetricError> {
     }
 }
 
-fn python_bool(value: &Value) -> Result<bool, MetricError> {
-    match value {
-        Value::Bool(value) => Ok(*value),
-        Value::Number(number) => match number.as_f64() {
-            Some(0.0) => Ok(false),
-            Some(1.0) => Ok(true),
-            _ => Err(MetricError::Schema),
-        },
-        Value::String(value) => match value.to_ascii_lowercase().as_str() {
-            "0" | "off" | "f" | "false" | "n" | "no" => Ok(false),
-            "1" | "on" | "t" | "true" | "y" | "yes" => Ok(true),
-            _ => Err(MetricError::Schema),
-        },
-        _ => Err(MetricError::Schema),
-    }
-}
-
 impl MetricDefinition {
     pub fn from_value(value: &Value) -> Result<Self, MetricError> {
         let fields = value.as_object().ok_or(MetricError::Schema)?;
@@ -102,11 +85,11 @@ impl MetricDefinition {
         };
         Ok(Self {
             unit: string(fields.get("unit"), 1, 128, true)?,
-            required: fields
-                .get("required")
-                .map(python_bool)
-                .transpose()?
-                .unwrap_or(false),
+            required: match fields.get("required") {
+                None => false,
+                Some(Value::Bool(required)) => *required,
+                _ => return Err(MetricError::Schema),
+            },
             description: match fields.get("description") {
                 None => String::new(),
                 value => string(value, 0, 2000, false)?,
@@ -153,7 +136,7 @@ impl MetricSchema {
             return Err(MetricError::Schema);
         }
         if let Some(version) = fields.get("schema_version") {
-            if !matches!(version, Value::Bool(true)) && version.as_f64() != Some(1.0) {
+            if version.as_u64() != Some(1) {
                 return Err(MetricError::Schema);
             }
         }

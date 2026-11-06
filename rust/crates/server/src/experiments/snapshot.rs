@@ -275,7 +275,7 @@ fn text_line_end(bytes: &[u8], offset: usize) -> Option<usize> {
         _ => None,
     }
 }
-/// Python's text splitlines contract, including CRLF as one separator and no
+/// Unicode text line splitting, including CRLF as one separator and no
 /// extra empty record after a terminal separator. JSONL keeps its LF framing.
 fn text_lines(text: &str) -> Vec<&str> {
     let mut lines = Vec::new();

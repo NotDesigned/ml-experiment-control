@@ -68,8 +68,13 @@ One line is one JSON object, for example:
 
 Names/units are nonempty printable strings, at most 128 characters. One encoded
 line is limited to 64 KiB. Convert tensors with `.item()` before writing.
+Lines are UTF-8 JSON. A byte order mark or any other encoding makes that line an
+`INVALID_METRIC_JSONL` diagnostic; write files with `encoding="utf-8"`.
 Missing values, NaN and infinity never become zero; nonfinite values remain
-failed evidence. Different units/protocols cannot silently overwrite one another.
+failed evidence. A failed value keeps at most 128 characters of its text in
+`invalid_value`: a string as written, `true` or `false`, `nan`, `inf` or `-inf`,
+and a list or object as sorted compact JSON with nonfinite numbers as those
+words. Lists and objects that differ only in key order are therefore one event. Different units/protocols cannot silently overwrite one another.
 Metric checkpoint/data references are authored labels; checkpoint file/hash
 verification is a separate registration contract.
 

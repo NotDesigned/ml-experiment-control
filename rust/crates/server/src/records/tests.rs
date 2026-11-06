@@ -515,20 +515,17 @@ fn encoded(encoding: Encoding) -> Vec<u8> {
     encoded_as(PLAIN, encoding)
 }
 
-/// One expected journal row. A literal digest only hashes ASCII, float-free
-/// content; `None` marks content holding a float or a container's text form.
+/// One expected journal row. `None` leaves the digest to the payload comparison.
 struct Row {
     prefix: &'static str,
     digest: Option<&'static str>,
     payload: Value,
-    unpinned: Option<&'static str>,
 }
 fn diagnostic_row(digest: &'static str) -> Row {
     Row {
         prefix: "invalid",
         digest: Some(digest),
         payload: json!({"kind":"diagnostic","data":{"diagnostic":"INVALID_METRIC_JSONL"}}),
-        unpinned: None,
     }
 }
 fn metric_row(digest: Option<&'static str>, observations: Vec<Value>) -> Row {
@@ -536,15 +533,6 @@ fn metric_row(digest: Option<&'static str>, observations: Vec<Value>) -> Row {
         prefix: "archive",
         digest,
         payload: json!({"kind":"metrics","observations":observations}),
-        unpinned: None,
-    }
-}
-/// A container's text form under `key` is proven to exist but not asserted.
-fn unpinned_row(key: &'static str, mut observation: Value) -> Row {
-    observation.as_object_mut().unwrap().remove(key);
-    Row {
-        unpinned: Some(key),
-        ..metric_row(None, vec![observation])
     }
 }
 fn plain_observation(step: i64) -> Value {
@@ -564,6 +552,24 @@ fn failed_observation(text: &str) -> Value {
         &["NONFINITE_OR_MISSING_VALUE"],
         json!(text),
     )
+}
+/// One line holding `value`, and the one failed row its `invalid_value` text makes.
+fn invalid_value_case(
+    label: &'static str,
+    value: &str,
+    digest: &'static str,
+    text: &str,
+) -> ImportCase {
+    ImportCase {
+        label,
+        files: vec![(
+            "metrics.jsonl",
+            format!("{{\"name\":\"loss\",\"value\":{value},\"unit\":\"u\"}}\n").into_bytes(),
+        )],
+        records: 1,
+        invalid_lines: 0,
+        rows: vec![metric_row(Some(digest), vec![failed_observation(text)])],
+    }
 }
 struct ImportCase {
     label: &'static str,
@@ -718,24 +724,12 @@ fn import_cases() -> Vec<ImportCase> {
                 vec![failed_observation("-inf")],
             )],
         },
-        ImportCase {
-            label: "a nonfinite value inside a list",
-            files: vec![(
-                "metrics.jsonl",
-                b"{\"name\":\"loss\",\"value\":[NaN],\"unit\":\"u\"}\n".to_vec(),
-            )],
-            records: 1,
-            invalid_lines: 0,
-            rows: vec![unpinned_row(
-                "invalid_value",
-                small_observation(
-                    json!(null),
-                    "FAILED",
-                    &["NONFINITE_OR_MISSING_VALUE"],
-                    json!(null),
-                ),
-            )],
-        },
+        invalid_value_case(
+            "a nonfinite value inside a list",
+            "[NaN]",
+            "2448df15563086311dd847c300dfefee7e14e9d46e93de84128234ac7ae8ecc2",
+            r#"["nan"]"#,
+        ),
         ImportCase {
             label: "a nonfinite value inside the error field",
             files: vec![(
@@ -745,9 +739,81 @@ fn import_cases() -> Vec<ImportCase> {
             )],
             records: 1,
             invalid_lines: 0,
-            rows: vec![unpinned_row(
-                "error",
-                small_observation(json!(1), "VALID", &[], json!(null)),
+            rows: vec![metric_row(
+                Some("7ff9dc27bbe4fc70de05a31432f91337f79870c6e3e8514e3765af6045ae2a3c"),
+                vec![{
+                    let mut observation = small_observation(json!(1), "VALID", &[], json!(null));
+                    observation["error"] = json!(r#"{"x":"inf"}"#);
+                    observation
+                }],
+            )],
+        },
+        invalid_value_case(
+            "a list without a nonfinite number",
+            r#"[1,"a",true,null]"#,
+            "ea1e6fa36764040f72a0666fd98523db8fe5407a2f5b902ab93da956b1999e12",
+            r#"[1,"a",true,null]"#,
+        ),
+        invalid_value_case(
+            "an object sorts its keys and normalizes its numbers",
+            r#"{"b":1,"a":2.50}"#,
+            "fc484b411c0953e1192421a90cf454bcd5d69c7660cbcb3f70a79a6bf78abb0d",
+            r#"{"a":2.5,"b":1}"#,
+        ),
+        invalid_value_case(
+            "nonfinite numbers nested in a container",
+            r#"{"x":[-Infinity,1e400]}"#,
+            "ac39940e496f322bb371dea8e6d8a946a568e494045089a7fdf87ce375ef2ce0",
+            r#"{"x":["-inf","inf"]}"#,
+        ),
+        invalid_value_case(
+            "a boolean is not a value",
+            "true",
+            "e8a3ef782b0c2f496bbca4a953a925abffa0467b3c35c5a9fb6f981982f81192",
+            "true",
+        ),
+        invalid_value_case(
+            "a string is kept verbatim",
+            r#""a'b\"c\n""#,
+            "386b5fd5f2104f789dfcbc5bb73d1572436edf35ddab722355149e7c22550c78",
+            "a'b\"c\n",
+        ),
+        invalid_value_case(
+            "a non-ASCII string",
+            r#""训练😀""#,
+            "f098cca723f9361e6a022f433bd0c4963f52fb6659ae242f76a61886414ede0d",
+            "训练😀",
+        ),
+        invalid_value_case(
+            "a non-ASCII string inside a list",
+            r#"["训练😀"]"#,
+            "61c12f0394c707d33f3629ae43fe3b19f075ebdd2d9a15b8662ea06f470b0e33",
+            r#"["训练😀"]"#,
+        ),
+        invalid_value_case(
+            "a container's text is bounded",
+            &format!("[\"{}\"]", "x".repeat(200)),
+            "83e399873a1d940b4e3ad046ff881017a5203cfc96661fc7c7f886cf1e9a46be",
+            &format!("[\"{}", "x".repeat(126)),
+        ),
+        ImportCase {
+            label: "reordered invalid containers are one event",
+            files: vec![(
+                "metrics.jsonl",
+                concat!(
+                    r#"{"name":"loss","value":{"b":1,"a":[NaN]},"unit":"u"}"#,
+                    "\n",
+                    r#"{"unit":"u","value":{"a":[NaN],"b":1},"name":"loss"}"#,
+                    "\n",
+                )
+                .as_bytes()
+                .to_vec(),
+            )],
+            records: 2,
+            invalid_lines: 0,
+            rows: vec![metric_row(
+                Some("f36da737db60fc1f2c37c5ce074da5b9da2fcb5fc8b0e59a4bcd61d679371d8d"),
+                vec![failed_observation(r#"{"a":["nan"],"b":1}"#)],
             )],
         },
         ImportCase {
@@ -764,39 +830,62 @@ fn import_cases() -> Vec<ImportCase> {
             )],
         },
         ImportCase {
-            label: "UTF-8 with a BOM and no newline",
+            label: "UTF-8 with a BOM and no newline is one invalid line",
             files: vec![("metrics.jsonl", encoded(Encoding::Utf8Bom))],
-            records: 1,
-            invalid_lines: 0,
-            rows: vec![metric_row(None, vec![plain_observation(1)])],
+            records: 0,
+            invalid_lines: 1,
+            rows: vec![diagnostic_row(
+                "e93ab06972fddf6fae39549a80a3f69c44ecf07e47c6fe33ecefec99cfe597eb",
+            )],
         },
         ImportCase {
-            label: "UTF-16 little endian with a BOM",
+            label: "UTF-16 little endian with a BOM is one invalid line",
             files: vec![("metrics.jsonl", encoded(Encoding::Utf16LeBom))],
-            records: 1,
-            invalid_lines: 0,
-            rows: vec![metric_row(None, vec![plain_observation(1)])],
+            records: 0,
+            invalid_lines: 1,
+            rows: vec![diagnostic_row(
+                "053485b112928332cb80c805f08e9c6a376988cce3b7457dfaab631e6d398e5f",
+            )],
         },
         ImportCase {
-            label: "UTF-16 big endian without a BOM",
+            label: "UTF-16 big endian without a BOM is one invalid line",
             files: vec![("metrics.jsonl", encoded(Encoding::Utf16Be))],
-            records: 1,
-            invalid_lines: 0,
-            rows: vec![metric_row(None, vec![plain_observation(1)])],
+            records: 0,
+            invalid_lines: 1,
+            rows: vec![diagnostic_row(
+                "a1d6fe240d8f27e6d4456ced39b02b40a3c02419b0246df2902f9041ae627b7c",
+            )],
         },
         ImportCase {
-            label: "UTF-32 little endian with a BOM",
+            label: "UTF-32 little endian with a BOM is one invalid line",
             files: vec![("metrics.jsonl", encoded(Encoding::Utf32LeBom))],
-            records: 1,
-            invalid_lines: 0,
-            rows: vec![metric_row(None, vec![plain_observation(1)])],
+            records: 0,
+            invalid_lines: 1,
+            rows: vec![diagnostic_row(
+                "d1710c284fb28b9ca48f70495b15199b6e708aede5fb80969627e9197c275d5f",
+            )],
         },
         ImportCase {
-            label: "UTF-32 big endian without a BOM",
+            label: "UTF-32 big endian without a BOM is one invalid line",
             files: vec![("metrics.jsonl", encoded(Encoding::Utf32Be))],
+            records: 0,
+            invalid_lines: 1,
+            rows: vec![diagnostic_row(
+                "513bb4651684fb93b6d65a94d1be8882c3fb6243b85186536df4c5f31f2bdac0",
+            )],
+        },
+        ImportCase {
+            label: "a BOM costs only its own line",
+            files: vec![(
+                "metrics.jsonl",
+                [encoded(Encoding::Utf8Bom), b"\n".to_vec(), plain_line()].concat(),
+            )],
             records: 1,
-            invalid_lines: 0,
-            rows: vec![metric_row(None, vec![plain_observation(1)])],
+            invalid_lines: 1,
+            rows: vec![
+                diagnostic_row("31d0baf116d9b2a44b3bbf304b9fe77e3a64dbefab519bb4604a1760cc237c9f"),
+                metric_row(None, vec![plain_observation(1)]),
+            ],
         },
         ImportCase {
             label: "65 records cross the 64-event batch",
@@ -950,7 +1039,7 @@ fn import_files(store: &Store, scope: &str, files: &[(&str, Vec<u8>)]) -> super:
 #[test]
 fn archive_import_frames_jsonl_diagnoses_nonfinite_values_and_replays_idempotently() {
     let cases = import_cases();
-    assert_eq!(cases.len(), 35);
+    assert_eq!(cases.len(), 45);
     for case in &cases {
         let label = case.label;
         let temp = tempfile::tempdir().unwrap();
@@ -981,13 +1070,7 @@ fn archive_import_frames_jsonl_diagnoses_nonfinite_values_and_replays_idempotent
                     "{label}"
                 ),
             }
-            let mut payload = actual.payload.clone();
-            if let Some(key) = row.unpinned {
-                let observation = &mut payload["observations"][0];
-                assert!(observation[key].is_string(), "{label}");
-                observation.as_object_mut().unwrap().remove(key);
-            }
-            assert_eq!(payload, row.payload, "{label}");
+            assert_eq!(actual.payload, row.payload, "{label}");
         }
         let observations: Vec<Value> = events
             .iter()
@@ -1039,7 +1122,7 @@ fn archive_import_frames_jsonl_diagnoses_nonfinite_values_and_replays_idempotent
 }
 
 #[test]
-fn one_record_has_one_event_id_in_every_text_encoding_and_a_changed_record_has_another() {
+fn another_text_encoding_is_a_diagnostic_and_a_changed_record_has_another_event_id() {
     let event_id = |bytes: Vec<u8>| {
         let temp = tempfile::tempdir().unwrap();
         let store = Store::open(temp.path(), SEED).unwrap();
@@ -1058,15 +1141,15 @@ fn one_record_has_one_event_id_in_every_text_encoding_and_a_changed_record_has_a
     ];
     let plain = event_id(plain_line());
     assert!(plain.starts_with("archive."));
-    for encoding in encodings {
-        assert_eq!(event_id(encoded(encoding)), plain);
-    }
+    assert_eq!(event_id(PLAIN.as_bytes().to_vec()), plain);
     assert_ne!(event_id(PLAIN.replace("2.5", "2.75").into_bytes()), plain);
     let unicode = PLAIN.replace("loss", "训练/loss");
     let first = event_id(unicode.clone().into_bytes());
+    assert!(first.starts_with("archive."));
     assert_ne!(first, plain);
     for encoding in encodings {
-        assert_eq!(event_id(encoded_as(&unicode, encoding)), first);
+        assert!(event_id(encoded(encoding)).starts_with("invalid."));
+        assert!(event_id(encoded_as(&unicode, encoding)).starts_with("invalid."));
     }
 }
 

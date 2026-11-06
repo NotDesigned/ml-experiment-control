@@ -126,3 +126,24 @@ fn integers_and_floats_stay_distinct_and_nonfinite_values_refuse() {
         assert!(canonical::float_text(number).is_err());
     }
 }
+
+#[test]
+fn equality_is_canonical_bytes() {
+    let parse = |text: &str| serde_json::from_str::<Value>(text).unwrap();
+    for (left, right) in [
+        ("1.5", "1.50"),
+        ("0.0", "-0.0"),
+        (r#"{"a":1,"b":2}"#, r#"{"b":2,"a":1}"#),
+        (r#""\u6a21""#, r#""模""#),
+    ] {
+        assert!(canonical::equal(&parse(left), &parse(right)), "{left}");
+    }
+    for (left, right) in [
+        ("1", "1.0"),
+        ("true", "1"),
+        ("[1,2]", "[2,1]"),
+        ("1e999", "1e999"),
+    ] {
+        assert!(!canonical::equal(&parse(left), &parse(right)), "{left}");
+    }
+}

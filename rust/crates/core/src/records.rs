@@ -5,7 +5,7 @@ use serde_json::{Map, Value, json};
 
 use crate::{canonical, metrics};
 
-mod python_json;
+mod metric_line;
 
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum Error {
@@ -295,7 +295,7 @@ impl JsonlImporter {
             canonical_only: false,
         })
     }
-    /// Local attachment takes explicit named observations. Wide legacy logs
+    /// Local attachment takes explicit named observations. Wide logs
     /// need a caller-authored mapping; never guess units or turn global_step
     /// into a scientific result.
     pub fn canonical_metrics(config: Value) -> Result<Self> {
@@ -311,10 +311,10 @@ impl JsonlImporter {
     fn line(&mut self, bytes: &[u8], oversized: bool) -> Result<Event> {
         self.number += 1;
         if self.canonical_only && !oversized {
-            if let Some(parsed) = python_json::parse(bytes) {
+            if let Some(parsed) = metric_line::parse(bytes) {
                 if ["name", "value", "unit"]
                     .iter()
-                    .any(|key| parsed.get(key).is_none())
+                    .any(|key| !parsed.has_field(key))
                 {
                     return Err(Error::Invalid(
                         "local JSONL requires explicit name, value and unit",
@@ -325,7 +325,7 @@ impl JsonlImporter {
         let record = if oversized {
             None
         } else {
-            python_json::parse(bytes).and_then(|record| record.observation())
+            metric_line::parse(bytes).and_then(|record| record.observation())
         };
         if let Some(record) = record {
             self.counts.records += 1;

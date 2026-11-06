@@ -117,7 +117,7 @@ pub struct WandbSettings {
     api_key: Option<String>,
     provided: BTreeSet<String>,
 }
-fn python_whitespace(value: char) -> bool {
+fn key_whitespace(value: char) -> bool {
     matches!(value,'\t'..='\r'|'\u{1c}'..='\u{20}'|'\u{85}'|'\u{a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}')
 }
 impl WandbSettings {
@@ -145,7 +145,7 @@ impl WandbSettings {
             None | Some(Value::Null) => None,
             Some(Value::String(key))
                 if (1..=512).contains(&key.chars().count())
-                    && !key.chars().any(|c| c < '!' || python_whitespace(c)) =>
+                    && !key.chars().any(|c| c < '!' || key_whitespace(c)) =>
             {
                 Some(key.clone())
             }

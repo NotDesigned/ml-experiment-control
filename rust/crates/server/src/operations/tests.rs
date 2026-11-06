@@ -441,6 +441,45 @@ fn a_command_without_a_journal_event_id_is_refused_rather_than_hashed() {
 }
 
 #[test]
+fn a_retry_from_the_stored_bytes_replays_and_another_number_spelling_conflicts() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::open(root.path()).unwrap();
+    let plan = action_plan();
+    let id = plan["action_id"].as_str().unwrap();
+    store.save_plan(&plan, NOW, &uid(1)).unwrap();
+    let parse = |text: &str| serde_json::from_str::<Value>(text).unwrap();
+    let payload = parse(r#"{"score":1.0,"count":1,"ratio":1.50,"note":"科学"}"#);
+    let first = store
+        .write_command(id, CommandPhase::Authorize, &payload, "first-command", NOW)
+        .unwrap();
+    let stored = store.read_command(id, CommandPhase::Authorize).unwrap();
+    assert_eq!(
+        store
+            .write_command(id, CommandPhase::Authorize, &stored, "retry", NOW)
+            .unwrap(),
+        first
+    );
+    // One float with another spelling and reordered keys has the same bytes.
+    let respelled = parse(r#"{"note":"科学","ratio":1.5,"count":1,"score":1.0}"#);
+    assert_eq!(
+        store
+            .write_command(id, CommandPhase::Authorize, &respelled, "retry", NOW)
+            .unwrap(),
+        first
+    );
+    for changed in [
+        r#"{"score":1,"count":1,"ratio":1.5,"note":"科学"}"#,
+        r#"{"score":1.0,"count":1.0,"ratio":1.5,"note":"科学"}"#,
+        r#"{"score":true,"count":1,"ratio":1.5,"note":"科学"}"#,
+    ] {
+        assert!(matches!(
+            store.write_command(id, CommandPhase::Authorize, &parse(changed), "changed", NOW),
+            Err(Error::CommandConflict)
+        ));
+    }
+}
+
+#[test]
 fn an_identical_command_replay_is_accepted_and_a_different_payload_conflicts() {
     for payload in [
         json!({"value":1}),

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use super::{Error, Result};
-use crate::{canonical, metrics::numeric_compare, observation::python_equal};
+use crate::{canonical, metrics::numeric_compare, observation::numeric_tolerant_equal};
 
 const FIELDS: [&str; 5] = ["name", "unit", "protocol_id", "dataset_id", "variant_id"];
 pub const DISPLAY_VERSION: i64 = 4;
@@ -47,8 +47,8 @@ pub fn number(value: &Value) -> Result<bool> {
         return Ok(false);
     };
     let finite = number.as_f64().is_some_and(f64::is_finite);
-    // Python math.isfinite raises on an integer too large for conversion. Such
-    // integers never arise as valid normalized metrics, but fail rather than
+    // An integer too large for a float has no finite conversion. Such integers
+    // never arise as valid normalized metrics, but fail rather than
     // silently treating malformed values as a successful empty display.
     if !finite && !number.to_string().contains(['.', 'e', 'E']) {
         return Err(Error::Display("integer exceeds finite float range"));
@@ -176,7 +176,9 @@ impl Projection {
                     .as_array_mut()
                     .expect("internal positions array");
                 if positions.len() < 2
-                    && !positions.iter().any(|v| python_equal(v, get(item, axis)))
+                    && !positions
+                        .iter()
+                        .any(|v| numeric_tolerant_equal(v, get(item, axis)))
                 {
                     positions.push(get(item, axis).clone());
                 }
@@ -204,7 +206,7 @@ impl Projection {
                             "denominator",
                         ]
                         .iter()
-                        .any(|key| !python_equal(get(old, key), get(item, key))) =>
+                        .any(|key| !numeric_tolerant_equal(get(old, key), get(item, key))) =>
                     {
                         point["status"] = json!("CONFLICTING");
                         point["value"] = Value::Null;
@@ -213,12 +215,14 @@ impl Projection {
                     _ => {}
                 }
             } else if axis.is_none() && old_axis.is_none() {
-                let error = if !python_equal(get(old, "checkpoint_id"), get(item, "checkpoint_id"))
-                {
+                let error = if !numeric_tolerant_equal(
+                    get(old, "checkpoint_id"),
+                    get(item, "checkpoint_id"),
+                ) {
                     Some("UNORDERED_CHECKPOINTS")
                 } else if ["value", "status", "numerator", "denominator"]
                     .iter()
-                    .any(|key| !python_equal(get(old, key), get(item, key)))
+                    .any(|key| !numeric_tolerant_equal(get(old, key), get(item, key)))
                 {
                     Some("CONFLICTING_LATEST_OBSERVATIONS")
                 } else {

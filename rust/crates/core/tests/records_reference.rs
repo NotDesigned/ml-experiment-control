@@ -387,3 +387,102 @@ fn a_metric_event_deduplicates_on_the_checksum_of_its_content() {
         prepared(metric("训练/loss", json!(2.5))).unwrap().checksum
     );
 }
+
+/// Every line kind: valid, a nonfinite value, invalid containers in both key
+/// orders, non-ASCII evidence, broken UTF-8, a BOM, and an unterminated tail.
+const MIXED_TEXT: &str = "{\"name\":\"loss\",\"value\":2.5,\"unit\":\"u\",\"step\":1}\n\
+     {\"name\":\"loss\",\"value\":NaN,\"unit\":\"u\",\"step\":2}\n\
+     {\"name\":\"loss\",\"value\":{\"b\":[\"训练😀\"],\"a\":Infinity},\"unit\":\"u\"}\n\
+     {\"name\":\"loss\",\"value\":{\"a\":Infinity,\"b\":[\"训练😀\"]},\"unit\":\"u\"}\n\
+     not json\n\
+     \u{feff}{\"name\":\"loss\",\"value\":1,\"unit\":\"u\"}\n\
+     {\"name\":\"loss\",\"value\":\"训练😀\",\"unit\":\"u\"}";
+const MIXED: &[u8] = MIXED_TEXT.as_bytes();
+
+fn imported(bytes: &[u8], size: usize) -> Vec<(String, String, Option<String>)> {
+    let mut importer = records::JsonlImporter::new("metrics.jsonl", json!({})).unwrap();
+    let mut events = Vec::new();
+    for chunk in bytes.chunks(size) {
+        let (next, emission) = importer.feed(chunk).unwrap();
+        events.extend(emission.events);
+        importer = next;
+    }
+    events.extend(importer.finish().unwrap().events);
+    events
+        .iter()
+        .map(|event| {
+            let prepared = records::prepare_event(event).unwrap();
+            (prepared.event_id, prepared.checksum, prepared.dedup)
+        })
+        .collect()
+}
+
+#[test]
+fn replaying_the_same_bytes_gives_the_same_identities_at_any_chunk_boundary() {
+    let whole = imported(MIXED, MIXED.len());
+    assert_eq!(whole.len(), 7);
+    for size in [1, 2, 3, 7, 64] {
+        assert_eq!(imported(MIXED, size), whole, "chunk size {size}");
+    }
+    let dedup = |index: usize| whole[index].2.as_deref();
+    assert!(whole[0].0.starts_with("archive."));
+    assert_eq!(dedup(0), Some(whole[0].1.as_str()));
+    // Invalid containers in either key order are one intended event.
+    assert_eq!(whole[2], whole[3]);
+    assert_ne!(whole[1], whole[2]);
+    // A diagnostic is identified by its line number and raw bytes, with no dedup.
+    for index in [4, 5] {
+        assert!(whole[index].0.starts_with("invalid."));
+        assert_eq!(dedup(index), None);
+    }
+    assert_ne!(whole[4].0, whole[5].0);
+    // Broken UTF-8 split across chunks is still the same one line.
+    let broken = b"\xe8\xae\n{\"name\":\"loss\",\"value\":1,\"unit\":\"u\"}\n";
+    assert_eq!(imported(broken, 1), imported(broken, broken.len()));
+    assert!(imported(broken, 1)[0].0.starts_with("invalid."));
+}
+
+#[test]
+fn a_non_ascii_invalid_value_has_a_pinned_digest() {
+    let last = imported(MIXED, MIXED.len()).pop().unwrap();
+    assert_eq!(
+        last.0,
+        "archive.f098cca723f9361e6a022f433bd0c4963f52fb6659ae242f76a61886414ede0d"
+    );
+    assert_eq!(
+        last.1,
+        "f098cca723f9361e6a022f433bd0c4963f52fb6659ae242f76a61886414ede0d"
+    );
+    assert_eq!(last.2.as_deref(), Some(last.1.as_str()));
+}
+
+#[test]
+fn invalid_text_is_verbatim_or_canonical_and_bounded() {
+    let invalid = |value: Value| {
+        let payload = records::normalized_metric(
+            &json!({"name":"loss","value":value,"unit":"u"}),
+            &json!({}),
+        )
+        .unwrap();
+        payload["observations"][0]["invalid_value"].clone()
+    };
+    for (value, text) in [
+        (json!("verbatim 'text'"), "verbatim 'text'"),
+        (json!(true), "true"),
+        (json!(false), "false"),
+        (json!([1, "a", null]), r#"[1,"a",null]"#),
+        (json!({"b":1,"a":"训练"}), r#"{"a":"训练","b":1}"#),
+        (json!("line\u{2028}\u{202e}"), "line\u{2028}\u{202e}"),
+    ] {
+        assert_eq!(invalid(value), json!(text));
+    }
+    let long = invalid(json!(["x".repeat(500)]));
+    assert_eq!(long.as_str().unwrap().chars().count(), 128);
+    let overflow: Value =
+        serde_json::from_str(r#"{"name":"loss","value":[1e999,-1e999],"unit":"u"}"#).unwrap();
+    let payload = records::normalized_metric(&overflow, &json!({})).unwrap();
+    assert_eq!(
+        payload["observations"][0]["invalid_value"],
+        json!(r#"["inf","-inf"]"#)
+    );
+}

@@ -1,6 +1,6 @@
 //! Pure failure evidence assessment. A producer's label alone is diagnostic;
 //! no retry, execution permission or provider fact is inferred from it.
-use crate::metrics::python_string;
+use crate::metrics::json_text;
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::{Map, Number, Value, json};
@@ -77,13 +77,13 @@ fn get<'a>(value: &'a Value, key: &str) -> &'a Value {
 }
 fn or_string(value: &Value, default: &str) -> String {
     if truth(value) {
-        python_string(value)
+        json_text(value)
     } else {
         default.into()
     }
 }
 fn strip(value: &str) -> &str {
-    // Python's whitespace predicate additionally includes four C0 separators.
+    // Unicode whitespace, plus the four C0 separators U+001C to U+001F.
     value.trim_matches(|c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}'))
 }
 fn normalized_class(value: &Value) -> Option<String> {
@@ -140,7 +140,7 @@ pub fn compact_evidence(value: &Value) -> Value {
 }
 
 /// Numeric timestamps must be finite. Common ISO timestamps are parsed without
-/// consulting the host timezone. Unsupported legacy date grammars remain unknown.
+/// consulting the host timezone. Unsupported date grammars remain unknown.
 pub fn evidence_timestamp(value: &Value, naive_offset_seconds: Option<i32>) -> Option<f64> {
     if let Value::Number(number) = value {
         return number.as_f64().filter(|number| number.is_finite());
@@ -192,11 +192,7 @@ fn joined_tail(value: &Value) -> Result<String, FailureError> {
         return Ok(String::new());
     }
     Ok(match value {
-        Value::Array(values) => values
-            .iter()
-            .map(python_string)
-            .collect::<Vec<_>>()
-            .join("\n"),
+        Value::Array(values) => values.iter().map(json_text).collect::<Vec<_>>().join("\n"),
         Value::Object(values) => values.keys().cloned().collect::<Vec<_>>().join("\n"),
         Value::String(value) => value
             .chars()

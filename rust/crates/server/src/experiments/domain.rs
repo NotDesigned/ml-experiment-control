@@ -1,4 +1,4 @@
-use ml_exp_core::{identity, observation::python_equal};
+use ml_exp_core::{identity, observation::numeric_tolerant_equal};
 use serde::Serialize;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -119,7 +119,7 @@ pub fn validate_attempt(
     let mut missing_fields = Vec::new();
     for key in COMPARED_FIELDS {
         match (field(&run.metadata, key), field(&attempt.metadata, key)) {
-            (Some(left), Some(right)) if !python_equal(left, right) => {
+            (Some(left), Some(right)) if !numeric_tolerant_equal(left, right) => {
                 return Err(DocumentError::Provenance);
             }
             (None, _) | (_, None) => missing_fields.push(key.into()),

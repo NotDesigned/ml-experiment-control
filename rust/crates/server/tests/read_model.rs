@@ -594,7 +594,7 @@ fn logs_are_exact_bounded_redacted_and_never_contact_a_provider() {
     );
     assert_eq!(
         result["streams"]["stderr"]["lines"],
-        json!(["{'x': 1}", "last"])
+        json!([r#"{"x":1}"#, "last"])
     );
     assert_eq!(result["streams"]["stderr"]["mode"], "collected_tail");
     assert_eq!(result["follow_supported"], false);

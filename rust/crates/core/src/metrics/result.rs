@@ -71,7 +71,7 @@ fn integer_cmp(left: &str, right: &str) -> Ordering {
     }
 }
 
-/// Python number ordering, including bools and exact integer/float comparison.
+/// Number ordering, with bools as 0 and 1 and exact integer/float comparison.
 /// Integer magnitudes are not rounded through f64.
 pub fn numeric_compare(left: &Value, right: &Value) -> Result<Ordering, MetricError> {
     let Atom::Number(left_key) = atom(left)? else {

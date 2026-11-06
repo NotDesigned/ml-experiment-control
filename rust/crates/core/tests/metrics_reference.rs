@@ -40,6 +40,20 @@ fn schemas_fill_defaults_keep_unicode_names_and_refuse_unknown_fields() {
     ] {
         assert!(MetricSchema::from_value(&case["input"]["value"]).is_err());
     }
+    for value in [
+        json!({"schema_version":true}),
+        json!({"schema_version":1.0}),
+        json!({"schema_version":"1"}),
+        json!({"definitions":{"m":{"unit":"u","required":1}}}),
+        json!({"definitions":{"m":{"unit":"u","required":0}}}),
+        json!({"definitions":{"m":{"unit":"u","required":"true"}}}),
+        json!({"definitions":{"m":{"unit":"u","required":"yes"}}}),
+        json!({"definitions":{"m":{"unit":"u","required":null}}}),
+    ] {
+        assert!(MetricSchema::from_value(&value).is_err(), "{value}");
+    }
+    let strict = json!({"schema_version":1,"definitions":{"m":{"unit":"u","required":false}}});
+    assert!(MetricSchema::from_value(&strict).is_ok());
     let case = literal(
         r#"{"id":"definition-unit-8","operation":"definition","input":{"value":{"unit":"\u007f"}},"expected":{"unit":"\u007f","required":false,"description":"","aggregation":"scalar","numerator_unit":null,"denominator_unit":null}}"#,
     );

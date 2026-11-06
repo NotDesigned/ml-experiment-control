@@ -94,6 +94,16 @@ fn contradictory_or_missing_path_facts_fail_without_inventing_resolution() {
     );
 }
 #[test]
+fn registry_schema_version_is_exactly_the_integer_one() {
+    assert!(Registry::from_value(&json!({"schema_version":1,"projects":[]}), &[]).is_ok());
+    for version in [json!(1.0), json!(true), json!("1"), json!(2), json!(null)] {
+        assert!(
+            Registry::from_value(&json!({"schema_version":version,"projects":[]}), &[]).is_err(),
+            "{version}"
+        );
+    }
+}
+#[test]
 fn schema_values_are_not_scientific_or_execution_authority() {
     let definition=ProjectDefinition::from_value(&json!({"project":"demo","title":"","run_roots":[],"campaigns":[{"name":"c","file":"campaign.yaml","current_revision":{"campaign":"c","project":"demo","revision_id":"arbitrary-authored-string","file":"not-yet-read"}}],"controller":{"python":"/untrusted/interpreter","experimentctl":"/untrusted/tool"},"metrics_schema":{"definitions":{"token":{"unit":"nats/token","required_when":null},"password":{"unit":"bits/raw byte"}}}})).unwrap();
     assert_eq!(

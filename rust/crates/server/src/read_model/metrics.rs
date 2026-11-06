@@ -1,8 +1,8 @@
 use super::{Error, MAX_METRIC_OBSERVATIONS, Result, bounded};
 use ml_exp_core::{
     canonical,
-    metrics::{MetricRecord, MetricStatus, finite, metric_result, observations, python_string},
-    observation::python_equal,
+    metrics::{MetricRecord, MetricStatus, finite, json_text, metric_result, observations},
+    observation::numeric_tolerant_equal,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -262,7 +262,7 @@ pub fn validate_journal_observations(records: &[Value], contract: &Value) -> Res
             record
                 .get(key)
                 .filter(|value| !value.is_null())
-                .map(python_string)
+                .map(json_text)
         };
         // Reuse the typed domain's text, finite numeric and context limits.
         // The two diagnostic-only placeholders are validation inputs only;
@@ -320,7 +320,7 @@ pub fn validate_journal_observations(records: &[Value], contract: &Value) -> Res
             "denominator",
             "summary",
         ] {
-            if !python_equal(
+            if !numeric_tolerant_equal(
                 record.get(key).unwrap_or(&Value::Null),
                 candidate.get(key).unwrap_or(&Value::Null),
             ) {
@@ -367,9 +367,9 @@ pub fn merge_metrics(
     Ok(merged)
 }
 
-/// Existing Python `_metric_payload` semantics, including complete-history
-/// validation before filtering/downsampling. Source paths are explicit inputs.
-/// This function retains the legacy payload; `records` is the compact format.
+/// The metric payload, including complete-history validation before
+/// filtering/downsampling. Source paths are explicit inputs. `records` is the
+/// compact format, and `legacy` names the older points shape on the wire.
 pub fn metric_payload(
     records: &[Value],
     query: &MetricQuery,

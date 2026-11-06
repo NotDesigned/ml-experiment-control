@@ -9,10 +9,10 @@ pub enum MetricValue {
     /// Standard JSON cannot represent NaN/infinity. Typed producers use this
     /// variant so normalization can preserve the exact nonfinite diagnosis.
     Float(f64),
-    /// A list/dict containing a nonfinite Python number cannot be represented
-    /// as standard JSON. Keep its literal failure evidence without pretending
+    /// A list or object containing a nonfinite number cannot be represented
+    /// as standard JSON. Keep its text as failure evidence without pretending
     /// it is a valid string, scalar, unit or identity.
-    InvalidRepr(String),
+    InvalidText(String),
 }
 
 #[derive(Clone, Debug)]
@@ -42,13 +42,12 @@ impl ObservationInput {
         self
     }
 
-    pub fn with_invalid_repr(mut self, name: impl Into<String>, representation: String) -> Self {
+    pub fn with_invalid_text(mut self, name: impl Into<String>, text: String) -> Self {
         let name = name.into();
         if let Some((_, field)) = self.fields.iter_mut().find(|(key, _)| key == &name) {
-            *field = MetricValue::InvalidRepr(representation);
+            *field = MetricValue::InvalidText(text);
         } else {
-            self.fields
-                .push((name, MetricValue::InvalidRepr(representation)));
+            self.fields.push((name, MetricValue::InvalidText(text)));
         }
         self
     }
@@ -68,7 +67,7 @@ impl MetricValue {
             Self::Float(number) => Number::from_f64(*number)
                 .map(Value::Number)
                 .unwrap_or(Value::Null),
-            Self::InvalidRepr(_) => Value::Null,
+            Self::InvalidText(_) => Value::Null,
         }
     }
     fn string(&self) -> Option<&str> {
@@ -84,24 +83,17 @@ impl MetricValue {
         match self {
             Self::Json(value) => finite(value),
             Self::Float(value) => value.is_finite(),
-            Self::InvalidRepr(_) => false,
+            Self::InvalidText(_) => false,
         }
     }
     fn is_null(&self) -> bool {
         matches!(self, Self::Json(Value::Null))
     }
-    fn python_string(&self) -> String {
+    fn invalid_text(&self) -> String {
         match self {
-            Self::Json(value) => python_string(value),
-            Self::Float(value) if value.is_nan() => "nan".to_owned(),
-            Self::Float(value) if value.is_infinite() => if value.is_sign_negative() {
-                "-inf"
-            } else {
-                "inf"
-            }
-            .to_owned(),
-            Self::Float(value) => crate::canonical::float_text(*value).unwrap(),
-            Self::InvalidRepr(value) => value.clone(),
+            Self::Json(value) => json_text(value),
+            Self::Float(value) => float_token(*value),
+            Self::InvalidText(value) => value.clone(),
         }
     }
 }
@@ -117,82 +109,45 @@ fn truncate(value: &str, max: usize) -> String {
     value.chars().take(max).collect()
 }
 
-fn repr_string(value: &str) -> String {
-    let quote = if value.contains('\'') && !value.contains('"') {
-        '"'
+/// A float's text, with `nan`, `inf` or `-inf` for a nonfinite one.
+pub(crate) fn float_token(value: f64) -> String {
+    if value.is_nan() {
+        "nan".to_owned()
+    } else if value.is_infinite() {
+        if value < 0.0 { "-inf" } else { "inf" }.to_owned()
     } else {
-        '\''
-    };
-    let mut result = String::from(quote);
-    for c in value.chars() {
-        match c {
-            '\\' => result.push_str("\\\\"),
-            '\n' => result.push_str("\\n"),
-            '\r' => result.push_str("\\r"),
-            '\t' => result.push_str("\\t"),
-            c if c == quote => {
-                result.push('\\');
-                result.push(c);
-            }
-            c if !super::python_printability::is_printable(c) => {
-                let code = u32::from(c);
-                if code <= 255 {
-                    result.push_str(&format!("\\x{code:02x}"));
-                } else if code <= 65535 {
-                    result.push_str(&format!("\\u{code:04x}"));
-                } else {
-                    result.push_str(&format!("\\U{code:08x}"));
-                }
-            }
-            c => result.push(c),
-        }
+        crate::canonical::float_text(value).unwrap()
     }
-    result.push(quote);
-    result
 }
 
-pub(crate) fn python_repr(value: &Value) -> String {
+fn nonfinite_as_tokens(value: &Value) -> Value {
     match value {
-        Value::Null => "None".to_owned(),
-        Value::Bool(true) => "True".to_owned(),
-        Value::Bool(false) => "False".to_owned(),
-        Value::String(value) => repr_string(value),
         Value::Number(number) => {
             let raw = number.to_string();
-            if raw.contains(['.', 'e', 'E']) {
-                if let Some(number) = number.as_f64().filter(|number| number.is_finite()) {
-                    crate::canonical::float_text(number).unwrap()
-                } else {
-                    if raw.starts_with('-') { "-inf" } else { "inf" }.to_owned()
-                }
+            if raw.contains(['.', 'e', 'E']) && number.as_f64().is_none() {
+                json!(if raw.starts_with('-') { "-inf" } else { "inf" })
             } else {
-                raw
+                value.clone()
             }
         }
-        Value::Array(values) => format!(
-            "[{}]",
-            values
+        Value::Array(values) => Value::Array(values.iter().map(nonfinite_as_tokens).collect()),
+        Value::Object(fields) => Value::Object(
+            fields
                 .iter()
-                .map(python_repr)
-                .collect::<Vec<_>>()
-                .join(", ")
+                .map(|(key, value)| (key.clone(), nonfinite_as_tokens(value)))
+                .collect(),
         ),
-        Value::Object(values) => format!(
-            "{{{}}}",
-            values
-                .iter()
-                .map(|(key, value)| format!("{}: {}", repr_string(key), python_repr(value)))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
+        value => value.clone(),
     }
 }
 
-/// Preserve legacy textual observation fields without changing their identity.
-pub fn python_string(value: &Value) -> String {
-    match value {
-        Value::String(value) => value.clone(),
-        _ => python_repr(value),
+/// A JSON value as plain text: a string verbatim, anything else canonical, with
+/// nonfinite numbers as string tokens. This feeds event digests, so it uses no
+/// Unicode table or std escaping that could change with the toolchain.
+pub fn json_text(value: &Value) -> String {
+    match nonfinite_as_tokens(value) {
+        Value::String(value) => value,
+        value => crate::canonical::text(&value).expect("every number is finite"),
     }
 }
 
@@ -230,7 +185,7 @@ pub fn observations_typed(
     if source.filter(|source| !source.is_empty()).is_none()
         && record.get("_source_path").is_some_and(|value| {
             matches!(value,
-            MetricValue::InvalidRepr(_) | MetricValue::Float(_) if !value.finite())
+            MetricValue::InvalidText(_) | MetricValue::Float(_) if !value.finite())
         })
     {
         // A nonfinite source cannot be emitted as JSON provenance. Fail closed
@@ -326,8 +281,8 @@ pub fn observations_typed(
         let mut error = item
             .and_then(|item| item.get("error"))
             .map(|value| match value {
-                MetricValue::Float(number) if !number.is_finite() => json!(value.python_string()),
-                MetricValue::InvalidRepr(value) => json!(value),
+                MetricValue::Float(number) if !number.is_finite() => json!(value.invalid_text()),
+                MetricValue::InvalidText(value) => json!(value),
                 value => value.json(),
             })
             .unwrap_or(Value::Null);
@@ -428,7 +383,7 @@ pub fn observations_typed(
         }
         let invalid = raw
             .filter(|raw| !raw.is_null() && !valid_number)
-            .map(|raw| json!(truncate(&raw.python_string(), 128)))
+            .map(|raw| json!(truncate(&raw.invalid_text(), 128)))
             .unwrap_or(Value::Null);
         let mut result = common.clone();
         result.extend([
@@ -458,7 +413,7 @@ pub fn observations_typed(
                 if error.is_null() {
                     Value::Null
                 } else {
-                    json!(truncate(&python_string(&error), 2000))
+                    json!(truncate(&json_text(&error), 2000))
                 },
             ),
             (

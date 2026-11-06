@@ -2,7 +2,7 @@ use super::{Error, MetricQuery, Result, bounded, merge_metrics, metric_payload};
 use crate::experiments::{AttemptSnapshot, EvidenceDocument, EvidenceProblem, LogTail, Snapshot};
 use ml_exp_core::{
     failures::{self, AssessmentContext},
-    metrics::python_string,
+    metrics::json_text,
     observation,
 };
 use serde::{Deserialize, Serialize};
@@ -624,7 +624,7 @@ fn layers(
         let state = record
             .get("step")
             .filter(|v| !v.is_null())
-            .map(|v| json!(format!("step {}", python_string(v))))
+            .map(|v| json!(format!("step {}", json_text(v))))
             .unwrap_or_else(|| json!("present"));
         let mut value = layer(
             state,
@@ -829,7 +829,7 @@ fn stream_view(tail: &LogTail, process: &Value, name: &str, lines: usize) -> Res
                     .rev()
                     .take(lines)
                     .rev()
-                    .map(python_string)
+                    .map(json_text)
                     .collect()
             })
             .unwrap_or_default()

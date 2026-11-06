@@ -577,11 +577,12 @@ impl Store {
             let directory = self.subdirectory(action_id, "commands", true, lock)?;
             let name = format!("{}.json", phase.name());
             let record = if let Some(existing) = Self::read_json(&directory, OsStr::new(&name))? {
-                // Free-form command replay follows the old Python dictionary
-                // equality. Frozen intent/digest identities remain byte-bound.
-                if !existing.get("payload").is_some_and(|previous| {
-                    ml_exp_core::observation::python_equal(previous, payload)
-                }) {
+                // A replay carries the stored bytes. Anything else conflicts,
+                // which can refuse a command but never submit a second time.
+                if !existing
+                    .get("payload")
+                    .is_some_and(|previous| ml_exp_core::canonical::equal(previous, payload))
+                {
                     return Err(Error::CommandConflict);
                 }
                 existing

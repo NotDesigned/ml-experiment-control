@@ -1,6 +1,5 @@
 //! Recoverable JSON head + contiguous transition journal. All values, time and
 //! transition identities are explicit; this module never repairs a file.
-use crate::observation::python_equal;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
@@ -94,7 +93,7 @@ pub fn missing_transition(snapshot: &Snapshot, events: &[Value]) -> Result<Optio
     match (&snapshot.last_transition, last) {
         (None, None) if snapshot.revision == 0 => Ok(None),
         (Some(head), Some(last)) if transition_id(head)? == transition_id(last)? => {
-            if revision == snapshot.revision && python_equal(head, last) {
+            if revision == snapshot.revision && crate::canonical::equal(head, last) {
                 Ok(None)
             } else {
                 Err(Error)
@@ -203,6 +202,25 @@ mod tests {
         assert!(missing_transition(&next, &[]).is_err());
         assert!(missing_transition(&next, &[first.transition.clone(), first.transition]).is_err());
         assert!(missing_transition(&head, &[second.transition]).is_err());
+    }
+    #[test]
+    fn a_head_differing_from_its_journal_only_in_number_type_is_not_recovered() {
+        let zero = Snapshot::from_value(&json!({"schema_version":1})).unwrap();
+        let first = commit(
+            &zero,
+            &[],
+            &zero.value,
+            &json!({"event":"BOOTSTRAP","step":1}),
+            Some(0),
+            &"1".repeat(32),
+        )
+        .unwrap();
+        let head = Snapshot::from_value(&first.head).unwrap();
+        let same = first.transition.clone();
+        assert!(missing_transition(&head, &[same]).unwrap().is_none());
+        let mut changed = first.transition;
+        changed["step"] = json!(1.0);
+        assert!(missing_transition(&head, &[changed]).is_err());
     }
     #[test]
     fn invalid_metadata_cas_duplicates_and_reserved_keys_never_produce_a_commit() {
