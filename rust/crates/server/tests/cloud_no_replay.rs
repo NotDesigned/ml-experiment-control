@@ -837,6 +837,60 @@ fn renew_is_refused_once_started() {
     }
 }
 
+/// The pointer is the last write of a renewal. Rewinding it and refusing new files
+/// in the slot directory stops a repeat exactly there, because every earlier record
+/// already matches and writes nothing. CI runs this as an ordinary user: root ignores
+/// the directory mode, so under root the first `unwrap_err` panics instead of passing.
+#[test]
+fn a_renewal_whose_pointer_write_fails_is_uncertain_and_a_repeat_finishes_it() {
+    for kind in KINDS {
+        let f = Fixture::new(kind);
+        let service = f.open();
+        let (old, _) = f.authorized(&service, "train");
+        let slots = f.settings.registry_root.join("cloud-submissions/slots");
+        let pointer = slots.join(format!(
+            "{}.json",
+            native::attempt_slot("demo", "train", "attempt-001").unwrap()
+        ));
+        let before = fs::read(&pointer).unwrap();
+        let transition = f.transition();
+        let renewed = service
+            .renew(&old, renewal(&old), expired_gate(&transition))
+            .unwrap();
+        let new = renewed["submission_id"].as_str().unwrap().to_owned();
+        assert_ne!(new, old);
+
+        fs::write(&pointer, &before).unwrap();
+        let writable = fs::metadata(&slots).unwrap().permissions();
+        fs::set_permissions(&slots, fs::Permissions::from_mode(0o500)).unwrap();
+        let failed = service
+            .renew(&old, renewal(&old), expired_gate(&transition))
+            .unwrap_err();
+        fs::set_permissions(&slots, writable).unwrap();
+        assert!(failed.uncertain);
+        assert_eq!(failed.code, "CLOUD_RENEWAL_UNCERTAIN");
+        let public = read_api::Error::from(failed);
+        assert_eq!(public.status, 500);
+        assert_eq!(public.code, "CLOUD_OPERATION_UNCERTAIN");
+        assert_eq!(fs::read(&pointer).unwrap(), before);
+        assert_eq!(
+            service.for_run("demo", "train", T_GATE_EXPIRED).unwrap()["submission_id"],
+            old.as_str()
+        );
+
+        let repeated = service
+            .renew(&old, renewal(&old), expired_gate(&transition))
+            .unwrap();
+        assert_eq!(repeated["submission_id"], new.as_str());
+        assert_eq!(repeated["status"], "PREPARED");
+        assert_eq!(
+            service.for_run("demo", "train", T_GATE_EXPIRED).unwrap()["submission_id"],
+            new.as_str()
+        );
+        assert!(f.provider.calls().is_empty());
+    }
+}
+
 /// The real cloud observer, one second per step, with the default 10 s interval.
 struct Observer<P: Polled> {
     polled: P,

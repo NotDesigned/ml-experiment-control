@@ -90,7 +90,13 @@ impl Service {
                     OsStr::new(&Self::attempt_slot(&b.project, &b.run_id, &b.attempt_id)?),
                     &encode(&candidate)?,
                 )
-                .map_err(io)?;
+                // The rename may have landed before a later step failed, so the pointer
+                // is unknown. Repeating the same request finishes this same renewal.
+                .map_err(why!(cloud::Error {
+                    code: "CLOUD_RENEWAL_UNCERTAIN".into(),
+                    http_status: None,
+                    uncertain: true,
+                }))?;
         }
         // An older repeated request never moves the pointer back over a newer renewal.
         let mut view = self.view(&candidate, snapshot, context.now)?;
