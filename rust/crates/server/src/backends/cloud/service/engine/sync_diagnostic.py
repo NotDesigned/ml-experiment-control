@@ -184,13 +184,9 @@ def diagnose(config):
             report["checks"].append(row)
             if raw is not None:
                 metadata[path] = raw
-        output = package["config"].get("output_directory") or package["config"]["attempt_root"] + "/output"
-        prefix = package["config"]["attempt_root"] + "/"
-        if not output.startswith(prefix):
-            raise ValueError()
         for path in (package.get("artifacts") or {}).get("required_files", []):
             components(path)
-            row, _ = inspect(root, output[len(prefix):] + "/" + path)
+            row, _ = inspect(root, "outputs/" + path)
             report["checks"].append(row)
     finally:
         os.close(root)
