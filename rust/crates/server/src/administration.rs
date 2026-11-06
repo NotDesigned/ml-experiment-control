@@ -198,7 +198,7 @@ impl Service {
             .ok_or_else(invalid)
     }
     pub fn prepare(&self, action: &str, request: Request, now: &str) -> Result<Value> {
-        ml_exp_core::operations::validate_submission_id(action).map_err(why!(invalid()))?;
+        ml_exp_core::operations::validate_action_id(action).map_err(why!(invalid()))?;
         ml_exp_core::submission::validate_submission_token(&request.request_id)
             .map_err(why!(invalid()))?;
         let _lock = self.lock()?;

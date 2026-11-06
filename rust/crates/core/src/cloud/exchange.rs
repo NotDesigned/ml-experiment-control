@@ -34,7 +34,7 @@ pub struct Sync {
 }
 impl Sync {
     pub fn validate(&self, action: &str) -> Result<()> {
-        crate::operations::validate_submission_id(action).map_err(|_| Error("sync submission"))?;
+        crate::operations::validate_action_id(action).map_err(|_| Error("sync submission"))?;
         crate::submission::validate_submission_token(&self.request_id)
             .map_err(|_| Error("sync request ID"))?;
         if self.confirmation != format!("SYNC {action}") {

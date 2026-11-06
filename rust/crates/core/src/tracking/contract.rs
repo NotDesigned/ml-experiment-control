@@ -4,7 +4,7 @@ use super::{Error, Result};
 use crate::canonical;
 use serde_json::{Value, json};
 
-/// A missing preparation option retains historical intent JSON; an explicitly
+/// A missing preparation option stays absent from the intent JSON; an explicitly
 /// supplied false must remain present and override the server default.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WandbOptions {
@@ -167,21 +167,6 @@ impl WandbSettings {
     }
     pub fn provided(&self, field: &str) -> bool {
         self.provided.contains(field)
-    }
-    pub fn provided_fields(&self) -> impl Iterator<Item = &str> {
-        self.provided.iter().map(String::as_str)
-    }
-    /// Equivalent to the reference's JSON-mode request serialization. Never
-    /// exposes the raw credential, including on failed validation paths.
-    pub fn to_public_value(&self) -> Value {
-        let mut value = self.options.to_value();
-        value["api_key"] = self
-            .api_key
-            .as_ref()
-            .map(|_| json!("**********"))
-            .unwrap_or(Value::Null);
-        value["clear_credentials"] = json!(self.clear_credentials);
-        value
     }
 }
 

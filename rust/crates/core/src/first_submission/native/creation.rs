@@ -292,6 +292,8 @@ pub fn plan(
     })
 }
 /// Compare immutable authorship only; later scheduler/worker state is separate.
+/// Canonical bytes decide, as they do for the request identity: a repeat that
+/// respells a number has the same digest and is the same creation.
 pub fn same_creation(expected: &Documents, run: &Value, attempt: &Value, request: &Value) -> bool {
     let without_time = |value: &Value| {
         let mut v = value.clone();
@@ -303,9 +305,9 @@ pub fn same_creation(expected: &Documents, run: &Value, attempt: &Value, request
     run["created_at"]
         .as_str()
         .is_some_and(|s| OffsetDateTime::parse(s, &Rfc3339).is_ok())
-        && without_time(&expected.run) == without_time(run)
-        && without_time(&expected.attempt) == without_time(attempt)
-        && expected.request == *request
+        && canonical::equal(&without_time(&expected.run), &without_time(run))
+        && canonical::equal(&without_time(&expected.attempt), &without_time(attempt))
+        && canonical::equal(&expected.request, request)
         && run["created_at"] == attempt["created_at"]
 }
 pub fn receipt(
@@ -383,6 +385,56 @@ mod tests {
         assert_ne!(one.identity("demo").unwrap(), two.identity("demo").unwrap());
         alternate["metrics_schema"]["definitions"]["loss"]["unit"] = json!("");
         assert!(Request::from_slice(&serde_json::to_vec(&alternate).unwrap()).is_err());
+    }
+    #[test]
+    fn a_respelled_repeat_is_the_same_creation_and_a_changed_value_is_not() {
+        let parse = |text: String| serde_json::from_str::<Value>(&text).unwrap();
+        let document = |lr: &str| {
+            parse(format!(
+                r#"{{"created_at":"2026-01-01T00:00:00Z","parameters":{{"lr":{lr}}}}}"#
+            ))
+        };
+        let original = |lr: &str| parse(format!(r#"{{"parameters":{{"lr":{lr}}}}}"#));
+        let expected = Documents {
+            run: document("1.5"),
+            attempt: document("1.5"),
+            status: json!({}),
+            request: original("1.5"),
+        };
+        let same = |lr: &str| same_creation(&expected, &document(lr), &document(lr), &original(lr));
+        assert_ne!(expected.run, document("1.50"));
+        assert!(same("1.5"));
+        assert!(same("1.50"));
+        assert!(same("15e-1"));
+        assert!(!same("1.6"));
+        // A float stays a float, because canonical bytes are also delivered.
+        let whole = Documents {
+            run: document("2.0"),
+            attempt: document("2.0"),
+            status: json!({}),
+            request: original("2.0"),
+        };
+        assert!(!same_creation(
+            &whole,
+            &document("2"),
+            &document("2"),
+            &original("2")
+        ));
+
+        let spelled = |lr: &str| {
+            let mut request = request();
+            request["parameters"] = json!({});
+            let text = request.to_string().replacen(
+                r#""parameters":{}"#,
+                &format!(r#""parameters":{{"lr":{lr}}}"#),
+                1,
+            );
+            Request::from_slice(text.as_bytes())
+                .unwrap()
+                .identity("demo")
+                .unwrap()
+        };
+        assert_eq!(spelled("1.5"), spelled("1.50"));
     }
     #[test]
     fn optional_cloud_policy_is_identity_bound_and_omission_preserves_original_bytes() {

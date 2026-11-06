@@ -1,6 +1,6 @@
 //! Pure parser for bounded worker input-delivery progress records.
 //!
-//! The Python shell reads the exact Attempt log and supplies individual lines.
+//! The server reads the exact Attempt log and supplies individual lines.
 //! This module validates the marker payload and returns observational data; it
 //! never treats a log line as execution authority or as proof of training.
 use serde::{Deserialize, Serialize};

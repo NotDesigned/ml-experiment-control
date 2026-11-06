@@ -46,7 +46,7 @@ impl Policy {
         Ok(())
     }
     /// Includes tar/PAX framing, not just regular-file payload. The I/O boundary
-    /// must apply this bound to the complete decompressed stream as Python does.
+    /// must apply this bound to the complete decompressed stream.
     pub fn expanded_archive_limit(&self) -> Result<u64> {
         self.validate()?;
         Ok(self.max_source_bytes + self.max_source_files as u64 * 2048 + CHUNK_BYTES as u64)
@@ -240,8 +240,7 @@ impl TreePlan {
                 .or_default()
                 .push(path.clone());
         }
-        // BTreeMap iteration sorts UTF-8 names in Unicode code-point order,
-        // as Python's sorted(children,key=lambda p:p.name) does for valid UTF-8.
+        // BTreeMap iteration sorts UTF-8 names in Unicode code-point order.
         let mut ordered = Vec::with_capacity(table.len());
         let mut pending = vec![String::new()];
         while let Some(parent) = pending.pop() {

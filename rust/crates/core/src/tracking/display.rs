@@ -99,32 +99,6 @@ impl Projection {
     pub fn cursor(&self) -> i64 {
         self.cursor
     }
-    /// The shell must replay from zero when requesting an older cutoff. This
-    /// only selects a read position; core never reads or invents missing events.
-    pub fn replay_after(&self, through: i64) -> Result<i64> {
-        if through < 0 {
-            return Err(Error::Display("negative journal cutoff"));
-        }
-        Ok(if self.cursor > through {
-            0
-        } else {
-            self.cursor
-        })
-    }
-    /// Prepare the disposable state for a requested cutoff. The shell still
-    /// supplies accepted journal events and validates `through` against its
-    /// durable MAX(sequence); this transition never invents a journal receipt.
-    pub fn for_cutoff(self, through: i64) -> Result<(Self, i64)> {
-        let after = self.replay_after(through)?;
-        Ok((
-            if self.cursor > through {
-                Self::new()
-            } else {
-                self
-            },
-            after,
-        ))
-    }
     /// Mark an actually replayed cutoff. The effect owner must validate it
     /// against the accepted journal prefix before calling this pure function.
     pub fn at(mut self, through: i64) -> Result<Self> {

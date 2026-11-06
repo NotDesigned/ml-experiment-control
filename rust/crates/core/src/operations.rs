@@ -1,5 +1,5 @@
 //! Pure Action decisions. All clocks, identities and observations are caller inputs.
-//! Unknown historical fields survive every transition; no function dispatches I/O.
+//! Fields a transition does not name survive it; no function dispatches I/O.
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -60,21 +60,9 @@ pub fn action_id(scope: &Scope, intent_key: &str) -> String {
     format!("action-{:x}", Sha256::digest(raw.as_bytes()))[..23].to_owned()
 }
 
-/// Match the historical directory validator without accepting path separators.
-/// The stricter HTTP request identity remains action-[a-f0-9]{16}.
+/// Exactly what `action_id` generates, action-[a-f0-9]{16}, wherever an Action ID
+/// is read: a request, a directory name or a database key.
 pub fn validate_action_id(value: &str) -> Result<(), Error> {
-    if !value
-        .strip_prefix("action-")
-        .is_some_and(|suffix| !suffix.is_empty() && suffix.chars().all(char::is_alphanumeric))
-    {
-        return Err(Error::Invalid("action_id"));
-    }
-    Ok(())
-}
-
-/// The public Submission protocol uses the deterministic 16-hex Action ID;
-/// the historical on-disk Action validator deliberately remains broader.
-pub fn validate_submission_id(value: &str) -> Result<(), Error> {
     if value.strip_prefix("action-").is_some_and(|suffix| {
         suffix.len() == 16
             && suffix
@@ -83,7 +71,7 @@ pub fn validate_submission_id(value: &str) -> Result<(), Error> {
     }) {
         Ok(())
     } else {
-        Err(Error::Identity("action_id"))
+        Err(Error::Invalid("action_id"))
     }
 }
 
@@ -169,7 +157,7 @@ pub fn initial_execution(plan: &Value) -> Value {
 pub fn submission_view(action: &Value, now: &str) -> Result<Value, Error> {
     let now = timestamp(now)?;
     let id = field(action, "action_id")?;
-    validate_submission_id(id)?;
+    validate_action_id(id)?;
     let project = field(&action["scope"], "project")?;
     let run = field(action, "run_id")?;
     let attempt = field(action, "attempt_id")?;
@@ -314,8 +302,8 @@ pub fn authorize(
     note: &str,
     now: &str,
 ) -> Result<Transition, Error> {
-    // Approval may precede enabling an executor, but an unsupported historical
-    // operation is a read-only record and must not acquire new authorization.
+    // Approval may precede enabling an executor, but an unsupported operation
+    // must not acquire authorization.
     dispatch(
         field(plan, "operation")?,
         &Policy {
@@ -514,22 +502,13 @@ fn single(payload: &Value) -> Option<&Value> {
     }
 }
 
-/// Historical SQLite/worker observations may represent a scheduler ID as an
-/// integer. Preserve its exact decimal identity; an unsupported non-null value
-/// is unknown evidence, never proof that no scheduler mutation occurred.
+/// A scheduler ID is a non-empty string. Any other non-null value is unknown
+/// evidence, never proof that no scheduler mutation occurred.
 fn scheduler_identity(value: Option<&Value>) -> Result<Option<String>, ()> {
     match value {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(value)) if value.is_empty() => Ok(None),
         Some(Value::String(value)) => Ok(Some(value.clone())),
-        Some(Value::Number(value)) => {
-            let text = value.to_string();
-            if text.bytes().all(|c| c.is_ascii_digit()) {
-                Ok(Some(text))
-            } else {
-                Err(())
-            }
-        }
         Some(_) => Err(()),
     }
 }
@@ -1028,6 +1007,35 @@ mod tests {
         assert_eq!(verified["private_extension"]["keep"], true);
     }
     #[test]
+    fn an_action_id_is_exactly_what_the_generator_produces() {
+        let scope = Scope {
+            project: "demo".into(),
+            scope_type: ScopeType::Run,
+            object_id: "train".into(),
+        };
+        assert!(validate_action_id(&action_id(&scope, "submit")).is_ok());
+        assert!(validate_action_id("action-0123456789abcdef").is_ok());
+        for refused in [
+            "",
+            "action-",
+            "action-a",
+            "action-0123456789abcde",
+            "action-0123456789abcdef0",
+            "action-0123456789ABCDEF",
+            "action-0123456789abcdeg",
+            "action-é",
+            "action-0123456789abcdé",
+            "action-../../../etc",
+            "0123456789abcdef",
+        ] {
+            assert_eq!(
+                validate_action_id(refused),
+                Err(Error::Invalid("action_id")),
+                "{refused}"
+            );
+        }
+    }
+    #[test]
     fn numeric_job_ids_and_malformed_evidence_never_authorize_replay() {
         let plan = plan("SUBMIT_RUN");
         let absent = json!({"run_id":"train","attempt_id":"attempt-001","state":"NOT_SUBMITTED"});
@@ -1080,16 +1088,48 @@ mod tests {
             "123456789012345678901234567890",
         ] {
             let mut previous = uncertain();
+            previous["result"] = json!({"submission":{"backend_job_id":identity}});
+            let visible = |value: Value| json!({"run_id":"train","attempt_id":"attempt-001","backend_job_id":value,"state":"RUNNING"});
+            let result = decided(
+                reconcile(
+                    &plan,
+                    &previous,
+                    &policy(),
+                    &observation(visible(json!(identity))),
+                    NOW,
+                )
+                .unwrap(),
+            );
+            assert_eq!(result["status"], "VERIFIED");
+            assert_eq!(result["safe_to_retry"], false);
+            // A number is unknown evidence on either side, never that string's job.
             let numeric: Value = serde_json::from_str(identity).unwrap();
-            previous["result"] = json!({"submission":{"backend_job_id":numeric}});
-            for value in [json!(identity), numeric] {
-                let visible = json!({"run_id":"train","attempt_id":"attempt-001","backend_job_id":value,"state":"RUNNING"});
-                let result = decided(
-                    reconcile(&plan, &previous, &policy(), &observation(visible), NOW).unwrap(),
-                );
-                assert_eq!(result["status"], "VERIFIED");
-                assert_eq!(result["safe_to_retry"], false);
-            }
+            let result = decided(
+                reconcile(
+                    &plan,
+                    &previous,
+                    &policy(),
+                    &observation(visible(numeric.clone())),
+                    NOW,
+                )
+                .unwrap(),
+            );
+            assert_eq!(result["status"], "RECONCILE_REQUIRED");
+            assert_eq!(result["safe_to_retry"], false);
+            let mut recorded = uncertain();
+            recorded["result"] = json!({"submission":{"backend_job_id":numeric}});
+            let result = decided(
+                reconcile(
+                    &plan,
+                    &recorded,
+                    &policy(),
+                    &observation(visible(json!(identity))),
+                    NOW,
+                )
+                .unwrap(),
+            );
+            assert_eq!(result["status"], "RECONCILE_REQUIRED");
+            assert_eq!(result["safe_to_retry"], false);
             let foreign = json!({"run_id":"train","attempt_id":"attempt-001","backend_job_id":"9007199254740992","state":"RUNNING"});
             assert_eq!(
                 decided(
@@ -1115,8 +1155,22 @@ mod tests {
         );
         let mut cancel = plan.clone();
         cancel["operation"] = json!("CANCEL_RUN");
-        cancel["backend_job_id"] = json!(24827);
+        cancel["backend_job_id"] = json!("24827");
         let terminal = json!({"run_id":"train","attempt_id":"attempt-001","backend_job_id":"24827","state":"CANCELLED"});
+        assert_eq!(
+            decided(
+                reconcile(
+                    &cancel,
+                    &uncertain(),
+                    &policy(),
+                    &observation(terminal.clone()),
+                    NOW
+                )
+                .unwrap()
+            )["status"],
+            "VERIFIED"
+        );
+        cancel["backend_job_id"] = json!(24827);
         assert_eq!(
             decided(
                 reconcile(
@@ -1128,7 +1182,7 @@ mod tests {
                 )
                 .unwrap()
             )["status"],
-            "VERIFIED"
+            "RECONCILE_REQUIRED"
         );
     }
     #[test]
@@ -1216,7 +1270,7 @@ mod tests {
         );
         assert!(matches!(
             claim(
-                &plan("REMOVED_HISTORICAL_OPERATION"),
+                &plan("UNSUPPORTED_OPERATION"),
                 &authorized(&plan("SUBMIT_RUN")),
                 "EXECUTE action-0123456789abcdef",
                 &policy(),

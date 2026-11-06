@@ -20,7 +20,7 @@ pub mod retry;
 /// state. A receipt proves the recorded observation, not current liveness.
 pub fn project_run(mut run: Value, submission: &Value) -> Result<Value> {
     let id = field(submission, "submission_id")?;
-    crate::operations::validate_submission_id(id).map_err(|_| Error("Submission identity"))?;
+    crate::operations::validate_action_id(id).map_err(|_| Error("Submission identity"))?;
     if submission["project"] != run["project"]
         || submission["run_id"] != run["run_id"]
         || submission["attempt_id"] != run["current_attempt_id"]

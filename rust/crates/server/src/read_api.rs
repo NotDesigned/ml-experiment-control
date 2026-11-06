@@ -447,9 +447,6 @@ impl Api {
     pub fn workspace_id(&self) -> &str {
         &self.workspace_id
     }
-    pub fn project_count(&self) -> usize {
-        self.projects.len()
-    }
     /// Retained progress evidence for an exact Submission; never contacts a provider.
     pub fn submission_progress(&self, id: &str, now_unix: f64) -> Result<Value, Error> {
         let submission = self.submission(id, now_unix)?;
@@ -482,7 +479,7 @@ impl Api {
         Ok(serde_json::json!({"project":project,"run_id":run,"submissions":submissions}))
     }
     pub fn submission(&self, id: &str, now_unix: f64) -> Result<Value, Error> {
-        if ml_exp_core::operations::validate_submission_id(id).is_err() {
+        if ml_exp_core::operations::validate_action_id(id).is_err() {
             return Err(invalid_query());
         }
         let actions = self.actions.as_ref().ok_or_else(|| {

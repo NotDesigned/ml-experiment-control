@@ -242,7 +242,7 @@ impl Store {
         self.snapshot_selected(reference, None, false)
     }
 
-    /// Read one exact Attempt only. Historical malformed siblings, Run mirrors
+    /// Read one exact Attempt only. Malformed siblings, Run mirrors
     /// or a different current Attempt cannot supply its payload or identity.
     pub fn snapshot_attempt(
         &self,

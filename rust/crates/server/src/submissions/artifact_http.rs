@@ -31,7 +31,7 @@ pub(crate) async fn download(
     let Ok(Path((identity, sha256))) = path else {
         return read_http::failure(invalid());
     };
-    if ml_exp_core::operations::validate_submission_id(&identity).is_err()
+    if ml_exp_core::operations::validate_action_id(&identity).is_err()
         || ml_exp_core::sources::validate_archive_digest(&sha256).is_err()
     {
         return read_http::failure(invalid());

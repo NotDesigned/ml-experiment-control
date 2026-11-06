@@ -4,10 +4,7 @@ use super::{Client, Error, Result};
 use ml_exp_core::cloud::{self, Job, JobObservation, Page, Request, pai, sensecore};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::atomic::AtomicBool,
-};
+use std::{collections::BTreeSet, sync::atomic::AtomicBool};
 
 pub trait Transport: Send + Sync {
     fn request(&self, request: &Request, cancelled: &AtomicBool) -> Result<Value>;
@@ -350,30 +347,6 @@ impl<T: Transport> Adapter<T> {
         }
         Ok(experiment_redact::redact_json(result))
     }
-    pub fn pai_logs(
-        &self,
-        job: &Job,
-        handle: &Handle,
-        pod: &str,
-        tail: u32,
-        cancelled: &AtomicBool,
-    ) -> Result<Value> {
-        handle.validate(&self.profile, job)?;
-        let Profile::Pai(p) = &self.profile else {
-            return Err(Error::configuration());
-        };
-        let row = self.raw_job(&handle.job_id, cancelled)?;
-        p.validate_job(&row, job, Some(&handle.job_id))
-            .map_err(why!(Error::evidence()))?;
-        let pods = row["Pods"].as_array().ok_or_else(Error::evidence)?;
-        if pods.iter().filter(|p| p["PodId"] == pod).count() != 1 {
-            return Err(Error::evidence());
-        }
-        let value = self.call(p.pod_logs(&handle.job_id, pod, tail), cancelled)?;
-        // Logs are scientific/user text: outward rendering uses the common
-        // redactor; neither an error response nor another pod is substituted.
-        Ok(experiment_redact::redact_json(value))
-    }
     fn sense_pages(
         &self,
         field: &str,
@@ -563,10 +536,4 @@ impl<T: Transport> Adapter<T> {
         )
         .map_err(why!(Error::evidence()))
     }
-}
-
-/// Exact normalized observations can be cached independently of frozen Actions.
-pub fn observation_document(observation: &JobObservation) -> Result<BTreeMap<String, Value>> {
-    serde_json::from_value(serde_json::to_value(observation).map_err(why!(Error::evidence()))?)
-        .map_err(why!(Error::evidence()))
 }

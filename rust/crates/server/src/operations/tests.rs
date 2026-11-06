@@ -97,7 +97,7 @@ fn action_plan() -> Value {
         "gate_bundle_digest": format!("sha256:{}", "c".repeat(64)),
         "gate_expires_at": "2100-01-01T00:00:00Z",
         "scope": {"project": "demo", "scope_type": "run", "object_id": "train"},
-        "historical_extra": {"preserve": true},
+        "unnamed_extra": {"preserve": true},
         "run_id": "train"
     })
 }
@@ -117,7 +117,7 @@ fn prepared_authorized_and_claimed_snapshots_keep_the_plan_and_the_idempotency_k
     let prepared = store.save_plan(plan, NOW, &uid(1)).unwrap();
     assert_eq!(prepared["execution"]["status"], "PREPARED");
     assert_eq!(prepared["execution"]["revision"], 1);
-    assert_eq!(prepared["historical_extra"], json!({"preserve": true}));
+    assert_eq!(prepared["unnamed_extra"], json!({"preserve": true}));
     let authorized = store
         .authorize(id, "actor:test", "approved explicitly", NOW, &uid(2))
         .unwrap();

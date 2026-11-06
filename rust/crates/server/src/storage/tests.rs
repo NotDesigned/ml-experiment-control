@@ -101,10 +101,10 @@ fn readonly_missing_shm_refuses_repair_and_creation_modes_are_explicit() {
     });
     assert!(result.is_err());
     assert!(!temp.path().join("wal.sqlite-shm").exists());
-    let legacy = SqliteDatabase::new(temp.path().join("delete.sqlite"));
-    initialize(&legacy);
+    let delete_journal = SqliteDatabase::new(temp.path().join("delete.sqlite"));
+    initialize(&delete_journal);
     assert_eq!(
-        legacy
+        delete_journal
             .read(|connection| Ok::<_, Error>(connection.query_row(
                 "PRAGMA journal_mode",
                 [],

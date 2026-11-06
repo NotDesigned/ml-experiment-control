@@ -31,7 +31,7 @@ pub struct Request {
 }
 impl Request {
     pub fn validate(&self, action: &str) -> Result<()> {
-        crate::operations::validate_submission_id(action).map_err(|_| Error("parent Action"))?;
+        crate::operations::validate_action_id(action).map_err(|_| Error("parent Action"))?;
         match (&self.resume_from, &self.restart_from) {
             (Some(reference), None) => reference
                 .validate()

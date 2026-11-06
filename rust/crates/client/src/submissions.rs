@@ -1,7 +1,7 @@
 //! Pure request and response planning; one explicit transport call per command.
 //! Mutation response loss retains uncertainty and never triggers a second POST.
 use crate::{Client, Error, session};
-use ml_exp_core::{identity, operations::validate_submission_id};
+use ml_exp_core::{identity, operations::validate_action_id};
 use serde_json::{Value, json};
 
 pub enum Command<'a> {
@@ -436,7 +436,7 @@ pub fn plan(command: Command<'_>) -> Result<Plan, Error> {
                 }
                 _ => unreachable!(),
             };
-            validate_submission_id(id).map_err(|_| invalid())?;
+            validate_action_id(id).map_err(|_| invalid())?;
             return Ok(Plan {
                 path: format!("/api/submissions/{id}{suffix}"),
                 body: body
@@ -685,7 +685,7 @@ pub fn response(plan: &Plan, value: Value) -> Result<Value, Error> {
         return Ok(value);
     }
     let id = value["submission_id"].as_str().ok_or(Error::Response)?;
-    validate_submission_id(id).map_err(|_| Error::Response)?;
+    validate_action_id(id).map_err(|_| Error::Response)?;
     let project = value["project"].as_str().ok_or(Error::Response)?;
     let run = value["run_id"].as_str().ok_or(Error::Response)?;
     identity::validate_id(project).map_err(|_| Error::Response)?;

@@ -813,7 +813,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             | Run::Download { submission, .. },
     } = &args.command
     {
-        ml_exp_core::operations::validate_submission_id(submission).map_err(|_| {
+        ml_exp_core::operations::validate_action_id(submission).map_err(|_| {
             ml_exp_client::Error::Observation("invalid submission identity; no request sent")
         })?;
     }

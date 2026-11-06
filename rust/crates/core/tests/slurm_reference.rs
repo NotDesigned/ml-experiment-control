@@ -153,7 +153,7 @@ fn rendering_is_byte_exact_for_source_and_managed_oci_inputs() {
     assert!(render_job_with_datasets(&spec, None, &[]).is_err());
 }
 #[test]
-fn typed_configuration_preserves_reference_and_labels_hardening() {
+fn typed_configuration_accepts_exactly_the_valid_cases() {
     let f = fixture();
     assert_eq!(f["config_cases"].as_array().unwrap().len(), 24);
     for c in f["config_cases"].as_array().unwrap() {
@@ -161,9 +161,6 @@ fn typed_configuration_preserves_reference_and_labels_hardening() {
             .map(|s| s.validate().is_ok())
             .unwrap_or(false);
         assert_eq!(valid, c["native_valid"].as_bool().unwrap(), "{}", c["id"]);
-        if c["native_valid"] != c["python_valid"] {
-            assert!(c["difference"].as_str().is_some());
-        }
     }
     let mut s = sample();
     s.backend.kind = "wyd".into();

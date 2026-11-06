@@ -47,8 +47,8 @@ impl Error {
     }
 }
 
-// Byte/schema-compatible with actions/database.py user_version=1. Plans remain
-// immutable external files; executions and audit transitions commit together.
+// Schema user_version=1. Plans remain immutable external files; executions and
+// audit transitions commit together.
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS executions (
     action_id TEXT PRIMARY KEY,

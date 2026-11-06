@@ -50,8 +50,7 @@ impl Command {
                 kind,
                 checkpoint,
             } => {
-                ml_exp_core::operations::validate_submission_id(submission)
-                    .map_err(|_| invalid())?;
+                ml_exp_core::operations::validate_action_id(submission).map_err(|_| invalid())?;
                 ml_exp_core::submission::validate_submission_token(request_id)
                     .map_err(|_| invalid())?;
                 let selection = if kind == "checkpoint" {
