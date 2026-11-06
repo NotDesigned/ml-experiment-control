@@ -524,3 +524,98 @@ fn prepared_archive_hashes_from_zero_and_restores_stream_position() {
     assert_eq!(prepared.file.stream_position().unwrap(), 0);
     assert!(sources::inspect_archive(tempfile::tempfile().unwrap()).is_err());
 }
+
+fn git(directory: &std::path::Path, arguments: &[&str]) {
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(directory)
+        .args(arguments)
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+fn members(archive: sources::PreparedArchive) -> Vec<String> {
+    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(archive.file));
+    let mut names: Vec<String> = archive
+        .entries()
+        .unwrap()
+        .map(|entry| entry.unwrap().path().unwrap().display().to_string())
+        .collect();
+    names.sort();
+    names
+}
+#[test]
+fn a_git_repository_packs_what_git_would_keep() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    git(root, &["init", "-q"]);
+    std::fs::write(root.join(".gitignore"), "data/\n*.log\n").unwrap();
+    std::fs::write(root.join("train.py"), "tracked").unwrap();
+    std::fs::write(root.join("notes.txt"), "untracked").unwrap();
+    std::fs::create_dir_all(root.join("sub")).unwrap();
+    std::fs::write(root.join("sub/keep.py"), "kept").unwrap();
+    std::fs::write(root.join("sub/skip.log"), "ignored").unwrap();
+    std::fs::create_dir_all(root.join("data")).unwrap();
+    File::create(root.join("data/large.bin"))
+        .unwrap()
+        .set_len(ml_exp_core::sources::Policy::default().max_source_bytes + 1)
+        .unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink("nowhere", root.join("data/link")).unwrap();
+    git(root, &["add", "train.py"]);
+    let first = sources::pack_directory(root).unwrap();
+    let sha256 = first.sha256.clone();
+    assert_eq!(
+        members(first),
+        [".gitignore", "notes.txt", "sub/keep.py", "train.py"]
+    );
+    std::fs::write(root.join("sub/skip.log"), "ignored and changed").unwrap();
+    assert_eq!(sources::pack_directory(root).unwrap().sha256, sha256);
+    std::fs::write(root.join("notes.txt"), "changed").unwrap();
+    assert_ne!(sources::pack_directory(root).unwrap().sha256, sha256);
+}
+#[test]
+fn a_subdirectory_of_a_repository_packs_only_itself() {
+    let temp = tempfile::tempdir().unwrap();
+    git(temp.path(), &["init", "-q"]);
+    std::fs::write(temp.path().join("outside.py"), "other").unwrap();
+    let inner = temp.path().join("project");
+    std::fs::create_dir(&inner).unwrap();
+    std::fs::write(inner.join("train.py"), "inside").unwrap();
+    assert_eq!(
+        members(sources::pack_directory(&inner).unwrap()),
+        ["train.py"]
+    );
+}
+#[test]
+fn a_refusal_names_the_file_and_how_to_leave_it_out() {
+    let temp = tempfile::tempdir().unwrap();
+    File::create(temp.path().join("large.bin"))
+        .unwrap()
+        .set_len(ml_exp_core::sources::Policy::default().max_source_bytes + 1)
+        .unwrap();
+    let text = sources::pack_directory(temp.path())
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(
+        text.contains("large.bin") && text.contains(".gitignore"),
+        "{text}"
+    );
+}
+#[cfg(unix)]
+#[test]
+fn a_kept_symlink_is_named_rather_than_failing_the_whole_directory_silently() {
+    let temp = tempfile::tempdir().unwrap();
+    git(temp.path(), &["init", "-q"]);
+    std::fs::write(temp.path().join("train.py"), "code").unwrap();
+    std::os::unix::fs::symlink("train.py", temp.path().join("latest")).unwrap();
+    let text = sources::pack_directory(temp.path())
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(
+        text.contains("latest") && text.contains("symlink"),
+        "{text}"
+    );
+}

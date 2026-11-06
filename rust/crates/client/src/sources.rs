@@ -309,6 +309,74 @@ impl Write for BoundedWriter {
     }
 }
 
+/// What git would keep in this directory: tracked files, and untracked ones it does
+/// not ignore. A tracked path that is a directory is a submodule, kept whole.
+struct Selection {
+    files: std::collections::BTreeSet<String>,
+    directories: std::collections::BTreeSet<String>,
+}
+impl Selection {
+    fn from_listing(listing: &[u8]) -> Option<Self> {
+        let mut files = std::collections::BTreeSet::new();
+        let mut directories = std::collections::BTreeSet::new();
+        for raw in listing.split(|byte| *byte == 0).filter(|p| !p.is_empty()) {
+            let path = std::str::from_utf8(raw).ok()?;
+            let mut child = path;
+            while let Some((parent, _)) = child.rsplit_once('/') {
+                directories.insert(parent.to_owned());
+                child = parent;
+            }
+            files.insert(path.to_owned());
+        }
+        Some(Self { files, directories })
+    }
+    fn includes(&self, path: &str) -> bool {
+        if self.files.contains(path) || self.directories.contains(path) {
+            return true;
+        }
+        let mut child = path;
+        while let Some((parent, _)) = child.rsplit_once('/') {
+            if self.files.contains(parent) {
+                return true;
+            }
+            child = parent;
+        }
+        false
+    }
+}
+/// None outside a git work tree, or without git: every file is then a candidate.
+/// fsmonitor is the one setting that would make this listing run repository code.
+fn git_selection(directory: &Path) -> Option<Selection> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(directory)
+        .args(["-c", "core.fsmonitor=false", "ls-files", "-z"])
+        .args(["--cached", "--others", "--exclude-standard"])
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Selection::from_listing(&output.stdout)
+}
+fn member(relative: &str, name: &str) -> String {
+    if relative.is_empty() {
+        name.into()
+    } else {
+        format!("{relative}/{name}")
+    }
+}
+/// Says which file stopped the upload and how to leave it out.
+fn refused(path: &str, why: &str) -> Error {
+    Error::Submit(format!(
+        "cannot pack {path}: {why}. Remove it, or ignore it in .gitignore; \
+         upload data separately with `ml-exp data upload`"
+    ))
+}
+
 /// Pack regular files only, with stable order, gzip mtime zero and normalized
 /// tar ownership/timestamps. Executable intent is retained; repository code is
 /// never run. The initial names and file metadata are rechecked before success,
@@ -326,6 +394,7 @@ pub fn pack_directory(path: &Path) -> Result<PreparedArchive, Error> {
     }
     struct Names {
         parent: Directory,
+        relative: String,
         names: Vec<OsString>,
     }
     let absolute = if path.is_absolute() {
@@ -345,6 +414,34 @@ pub fn pack_directory(path: &Path) -> Result<PreparedArchive, Error> {
     }
     let root = Directory::open(&normalized, false).map_err(|_| packing())?;
     let limits = policy();
+    let selection = git_selection(&normalized);
+    // Ignored names are not part of the source, so they neither count nor must stay still.
+    let visible = |relative: &str, names: Vec<OsString>| -> Vec<OsString> {
+        match &selection {
+            None => names,
+            Some(selection) => names
+                .into_iter()
+                .filter(|name| {
+                    name.to_str()
+                        .is_some_and(|name| selection.includes(&member(relative, name)))
+                })
+                .collect(),
+        }
+    };
+    let read_limit = |remaining: usize| {
+        if selection.is_some() {
+            usize::MAX
+        } else {
+            remaining
+        }
+    };
+    let too_many = || {
+        Error::Submit(format!(
+            "cannot pack the source: it holds more than {} files. Ignore data and outputs in \
+             .gitignore, and upload data separately with `ml-exp data upload`",
+            limits.max_source_files
+        ))
+    };
     let mut stack = vec![(root, String::new())];
     let mut entries = Vec::new();
     let mut observed = Vec::new();
@@ -353,22 +450,21 @@ pub fn pack_directory(path: &Path) -> Result<PreparedArchive, Error> {
     let mut path_bytes = 0_usize;
     while let Some((directory, relative)) = stack.pop() {
         let names = directory
-            .entry_names_limited(limits.max_source_files.saturating_sub(nodes))
-            .map_err(|_| packing())?;
+            .entry_names_limited(read_limit(limits.max_source_files.saturating_sub(nodes)))
+            .map_err(|_| too_many())?;
+        let names = visible(&relative, names);
         nodes += names.len();
         if nodes > limits.max_source_files {
-            return Err(packing());
+            return Err(too_many());
         }
         for name in &names {
             let name_str = name.to_str().ok_or_else(packing)?;
-            let path = if relative.is_empty() {
-                name_str.into()
-            } else {
-                format!("{relative}/{name_str}")
-            };
+            let path = member(&relative, name_str);
             match path_policy(&path) {
                 PathPolicy::Skip => continue,
-                PathPolicy::Reject => return Err(packing()),
+                PathPolicy::Reject => {
+                    return Err(refused(&path, "its name is not allowed in an upload"));
+                }
                 PathPolicy::Include => {}
             }
             path_bytes = path_bytes.checked_add(path.len()).ok_or_else(packing)?;
@@ -378,11 +474,22 @@ pub fn pack_directory(path: &Path) -> Result<PreparedArchive, Error> {
             if let Ok(child) = directory.child(name, false) {
                 stack.push((child, path));
             } else {
-                let file = directory.open_regular_read(name).map_err(|_| packing())?;
+                let file = directory.open_regular_read(name).map_err(|_| {
+                    refused(
+                        &path,
+                        "only regular files upload, and this is a symlink or special file",
+                    )
+                })?;
                 let metadata = file.metadata().map_err(|_| packing())?;
                 expanded = expanded.checked_add(metadata.len()).ok_or_else(packing)?;
                 if expanded > limits.max_source_bytes {
-                    return Err(packing());
+                    return Err(refused(
+                        &path,
+                        &format!(
+                            "with it the source exceeds {} MiB",
+                            limits.max_source_bytes / (1024 * 1024)
+                        ),
+                    ));
                 }
                 entries.push(Entry {
                     parent: directory.clone(),
@@ -394,6 +501,7 @@ pub fn pack_directory(path: &Path) -> Result<PreparedArchive, Error> {
         }
         observed.push(Names {
             parent: directory,
+            relative,
             names,
         });
     }
@@ -432,7 +540,15 @@ pub fn pack_directory(path: &Path) -> Result<PreparedArchive, Error> {
         let mut body = (&mut file).take(entry.metadata.len());
         archive
             .append_data(&mut header, &entry.path, &mut body)
-            .map_err(|_| packing())?;
+            .map_err(|_| {
+                refused(
+                    &entry.path,
+                    &format!(
+                        "with it the compressed source exceeds {} MiB, or it changed while packing",
+                        limits.max_archive_bytes / (1024 * 1024)
+                    ),
+                )
+            })?;
         if body.limit() != 0
             || !same_metadata(&entry.metadata, &file.metadata().map_err(|_| packing())?)
         {
@@ -454,12 +570,11 @@ pub fn pack_directory(path: &Path) -> Result<PreparedArchive, Error> {
         }
     }
     for proof in observed {
-        if proof
+        let names = proof
             .parent
-            .entry_names_limited(limits.max_source_files)
-            .map_err(|_| packing())?
-            != proof.names
-        {
+            .entry_names_limited(read_limit(limits.max_source_files))
+            .map_err(|_| packing())?;
+        if visible(&proof.relative, names) != proof.names {
             return Err(packing());
         }
     }
