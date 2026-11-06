@@ -355,10 +355,10 @@ impl Selection {
 /// file instead would send what .gitignore keeps out, including secrets and data.
 /// fsmonitor is the one setting that would make this listing run repository code.
 fn git_selection(directory: &Path) -> Result<Option<Selection>, Error> {
-    if !directory
-        .ancestors()
-        .any(|parent| parent.join(".git").exists())
-    {
+    // A worktree or submodule has a `.git` file; a repository's directory has a HEAD. An
+    // empty directory named `.git` is not a repository, so it does not count.
+    let git = |parent: &Path| parent.join(".git/HEAD").exists() || parent.join(".git").is_file();
+    if !directory.ancestors().any(git) {
         return Ok(None);
     }
     let unreadable = || {

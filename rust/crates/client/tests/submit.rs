@@ -161,7 +161,9 @@ impl World {
             }
             ("GET", r) if r.starts_with("/api/submissions/") && r.matches('/').count() == 3 => {
                 let mut value = self.submission();
-                value["submission_id"] = json!(r.rsplit('/').next());
+                let id = r.rsplit('/').next().unwrap_or_default();
+                value["submission_id"] = json!(id);
+                value["confirmation"] = json!(format!("EXECUTE {id}"));
                 // Slurm's view has the latest state; a cloud view waits for a refresh.
                 if !self.cloud && self.status == "VERIFIED" {
                     self.advance_job();
@@ -678,7 +680,7 @@ fn ended() -> World {
     world.job_states = vec![("FAILED", "Failed")];
     world
 }
-fn quiet<'a>(confirm: &'a mut dyn FnMut(&str) -> Result<bool, Error>) -> Hooks<'a> {
+fn quiet(confirm: &mut dyn FnMut(&str) -> Result<bool, Error>) -> Hooks<'_> {
     Hooks {
         confirm,
         progress: Box::leak(Box::new(|_: &str| {})),
