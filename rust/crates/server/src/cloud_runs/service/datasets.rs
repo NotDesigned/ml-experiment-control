@@ -142,12 +142,8 @@ impl Service {
                 .copy_intent
                 .as_ref()
                 .ok_or_else(cloud::Error::evidence)?;
-            let config: ml_exp_core::datasets::import::Config =
-                serde_json::from_str(job.command.get(5).ok_or_else(cloud::Error::evidence)?)
-                    .map_err(why!(cloud::Error::evidence()))?;
-            let channel =
-                serde_json::from_str(job.command.get(6).ok_or_else(cloud::Error::evidence)?)
-                    .map_err(why!(cloud::Error::evidence()))?;
+            let (config, channel) = ml_exp_core::cloud::data::materialization_inputs(job)
+                .map_err(why!(cloud::Error::evidence()))?;
             let storage = saved
                 .copy_storage
                 .as_ref()

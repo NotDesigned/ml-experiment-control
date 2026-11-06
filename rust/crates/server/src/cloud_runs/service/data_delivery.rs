@@ -353,16 +353,21 @@ impl Service {
                 .copy_storage
                 .as_ref()
                 .ok_or_else(cloud::Error::evidence)?;
-            let command = vec![
-                "/usr/local/bin/ml-exp-worker-rs".into(),
+            let mut command = vec![
+                "/usr/local/bin/ml-exp-worker-rs".to_owned(),
                 "data-copy".into(),
-                "--config-json".into(),
-                String::from_utf8(encode(&config)?).map_err(why!(cloud::Error::evidence()))?,
+            ];
+            let text =
+                String::from_utf8(encode(&config)?).map_err(why!(cloud::Error::evidence()))?;
+            for part in ml_exp_core::cloud::data::argument_parts(&text) {
+                command.extend(["--config-json".into(), part]);
+            }
+            command.extend([
                 "--channel-json".into(),
                 String::from_utf8(encode(&channel)?).map_err(why!(cloud::Error::evidence()))?,
                 "--storage-json".into(),
                 String::from_utf8(encode(storage)?).map_err(why!(cloud::Error::evidence()))?,
-            ];
+            ]);
             Ok(Job {
                 project: project.into(),
                 run_id: format!("data-{}", &identity[..32]),

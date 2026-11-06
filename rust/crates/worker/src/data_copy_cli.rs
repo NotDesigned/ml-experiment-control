@@ -2,16 +2,39 @@
 //! persistent data store. The callback contains a receipt, never dataset bytes.
 use clap::Parser;
 use ml_exp_core::datasets::import::{Config, DataChannel, Source};
-use std::{ffi::OsString, io::Read, process::ExitCode, sync::atomic::AtomicBool};
+use std::{ffi::OsString, io::Read, path::PathBuf, process::ExitCode, sync::atomic::AtomicBool};
+const MAX_CONFIG_BYTES: usize = 8 * 1024 * 1024;
 #[derive(Parser)]
 struct Args {
-    #[arg(long)]
-    config_json: String,
+    /// A private file holding the config, written by the launcher for this process.
+    #[arg(
+        long,
+        conflicts_with = "config_json",
+        required_unless_present = "config_json"
+    )]
+    config: Option<PathBuf>,
+    /// The config text, repeated in parts that join back to the whole. A part can
+    /// begin with a hyphen, because a split can land inside a file name.
+    #[arg(long, allow_hyphen_values = true)]
+    config_json: Vec<String>,
     #[arg(long)]
     channel_json: String,
     /// Frozen backend mount and cache path.
     #[arg(long)]
     storage_json: String,
+}
+fn config_bytes(args: &Args) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    if let Some(path) = &args.config {
+        return Ok(ml_exp_io::read_private(
+            path,
+            MAX_CONFIG_BYTES as u64,
+            true,
+        )?);
+    }
+    if args.config_json.iter().map(String::len).sum::<usize>() > MAX_CONFIG_BYTES {
+        return Err("data-copy request too large".into());
+    }
+    Ok(args.config_json.concat().into_bytes())
 }
 pub fn main_from(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     let args = match Args::try_parse_from(args) {
@@ -22,14 +45,11 @@ pub fn main_from(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         }
     };
     let result = (|| -> Result<(), Box<dyn std::error::Error>> {
-        if args.config_json.len() > 8 * 1024 * 1024
-            || args.channel_json.len() > 16384
-            || args.storage_json.len() > 16384
-        {
+        if args.channel_json.len() > 16384 || args.storage_json.len() > 16384 {
             return Err("data-copy request too large".into());
         }
         let config: Config = serde_json::from_value(serde_json::Value::Object(
-            ml_exp_core::json::mapping(args.config_json.as_bytes())?,
+            ml_exp_core::json::mapping(&config_bytes(&args)?)?,
         ))?;
         let channel: DataChannel = serde_json::from_value(serde_json::Value::Object(
             ml_exp_core::json::mapping(args.channel_json.as_bytes())?,
@@ -93,5 +113,51 @@ pub fn main_from(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             );
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    const REST: [&str; 4] = ["--channel-json", "{}", "--storage-json", "{}"];
+    fn parse(config: &[&str]) -> Result<Args, clap::Error> {
+        Args::try_parse_from(["data-copy"].iter().chain(config).chain(&REST))
+    }
+    #[test]
+    fn config_parts_join_back_to_the_whole_text() {
+        let args = parse(&["--config-json", "{\"a\"", "--config-json", ":1}"]).unwrap();
+        assert_eq!(config_bytes(&args).unwrap(), b"{\"a\":1}");
+    }
+    #[test]
+    fn a_config_part_may_begin_with_a_hyphen() {
+        let args = parse(&["--config-json", "{\"a\":\"b", "--config-json", "-c\"}"]).unwrap();
+        assert_eq!(config_bytes(&args).unwrap(), b"{\"a\":\"b-c\"}");
+    }
+    #[test]
+    fn a_config_file_is_read_only_when_private_and_within_the_cap() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("copy.json");
+        std::fs::write(&path, b"{}").unwrap();
+        let set_mode =
+            |mode| std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+        let args = parse(&["--config", path.to_str().unwrap()]).unwrap();
+        set_mode(0o644);
+        assert!(config_bytes(&args).is_err());
+        set_mode(0o600);
+        assert_eq!(config_bytes(&args).unwrap(), b"{}");
+        std::fs::write(&path, vec![b' '; MAX_CONFIG_BYTES + 1]).unwrap();
+        assert!(config_bytes(&args).is_err());
+    }
+    #[test]
+    fn config_parts_above_the_cap_are_refused() {
+        let part = " ".repeat(MAX_CONFIG_BYTES / 2 + 1);
+        let args = parse(&["--config-json", &part, "--config-json", &part]).unwrap();
+        assert!(config_bytes(&args).is_err());
+    }
+    #[test]
+    fn exactly_one_config_source_is_required() {
+        assert!(parse(&[]).is_err());
+        assert!(parse(&["--config", "/x", "--config-json", "{}"]).is_err());
     }
 }

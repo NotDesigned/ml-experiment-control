@@ -370,9 +370,8 @@ impl Service {
             return Err(unavailable("DATA_COPY_IDENTITY_CONFLICT"));
         }
         let parent = saved.copy_intent.ok_or_else(cloud::Error::evidence)?;
-        let import: ml_exp_core::datasets::import::Config =
-            serde_json::from_str(parent.command.get(5).ok_or_else(cloud::Error::evidence)?)
-                .map_err(why!(cloud::Error::evidence()))?;
+        let (import, _) = ml_exp_core::cloud::data::materialization_inputs(&parent)
+            .map_err(why!(cloud::Error::evidence()))?;
         let lineage =
             json!({"project":project,"executor":executor,"asset_id":asset,"request_id":request});
         let config = json!({"contract":"data-diagnostic.v1","project":project,"asset_id":asset,"request_id":request,

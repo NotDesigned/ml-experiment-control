@@ -231,11 +231,16 @@ pub fn shell_join(args: &[String]) -> Result<String> {
         .map(|s| format!("'{}'", s.replace('\'', "'\"'\"'")))
         .collect::<Vec<_>>()
         .join(" ");
-    if command.len() > 128 * 1024 {
+    if command.len() > submission::MAX_REQUEST_BYTES {
         return Err(Error("command length"));
     }
     Ok(command)
 }
+/// Linux refuses one argument above 128 KiB. Providers take a command as one string,
+/// and whether they pass that string to a shell as one argument is unverified. A job
+/// that spends GPU time stays within the limit. A CPU data copy may carry a long file
+/// inventory, and the most it can lose is one failed CPU job.
+const MAX_GPU_COMMAND_BYTES: usize = 128 * 1024;
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Job {
@@ -303,7 +308,9 @@ impl Job {
         {
             return Err(Error("resources"));
         }
-        shell_join(&self.command)?;
+        if shell_join(&self.command)?.len() > MAX_GPU_COMMAND_BYTES && self.gpus > 0 {
+            return Err(Error("command length"));
+        }
         Ok(())
     }
     pub fn name(&self) -> Result<String> {

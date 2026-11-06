@@ -1246,6 +1246,20 @@ impl CopyFixture {
             .unwrap(),
         )
     }
+    /// Every entry in the synchronous outbox, exactly as it is on disk.
+    fn sync_entries(&self) -> Vec<Value> {
+        fs::read_dir(
+            self.f
+                .settings
+                .registry_root
+                .join("cloud-submissions/sync-effects"),
+        )
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| !path.file_name().unwrap().to_str().unwrap().starts_with('.'))
+        .map(|path| serde_json::from_slice(&fs::read(path).unwrap()).unwrap())
+        .collect()
+    }
     fn publish(&self, service: &Arc<Service>, request: &str) -> cloud::Result<Value> {
         let runtime = match self.kind {
             Kind::Pai => Some(self.f.runtime.runtime_id.as_str()),
@@ -1292,5 +1306,25 @@ fn a_started_sync_job_makes_no_create() {
         let again = c.publish(&service, REQUEST_A).unwrap();
         assert_eq!(again["copy_job"]["phase"], "RECONCILE_REQUIRED");
         assert_eq!(c.provider.creates(), 0);
+    }
+}
+
+#[test]
+fn a_long_file_inventory_reaches_the_provider_in_bounded_arguments() {
+    for kind in KINDS {
+        for files in [1_900, 5_000] {
+            let c = CopyFixture::new(kind, files);
+            let service = c.open();
+            let view = c.publish(&service, REQUEST_A).unwrap();
+            assert_eq!(view["copy_job"]["phase"], "OWNED");
+            c.publish(&service, REQUEST_A).unwrap();
+            assert_eq!(c.provider.creates(), 1);
+            let entries = c.sync_entries();
+            assert_eq!(entries.len(), 1);
+            let command = entries[0]["job"]["command"].as_array().unwrap();
+            let lengths = command.iter().map(|s| s.as_str().unwrap().len());
+            assert!(lengths.clone().all(|length| length <= 64 * 1024));
+            assert!(lengths.sum::<usize>() > 128 * 1024);
+        }
     }
 }
