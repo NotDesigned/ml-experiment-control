@@ -2681,7 +2681,7 @@ async fn a_run_that_cannot_be_read_or_is_deleted_has_no_owner() {
 #[test]
 fn a_run_retires_after_its_bytes_and_takes_no_later_plan() {
     let c = CopyFixture::new(Kind::Pai, 1);
-    let service = Arc::new(c.open());
+    let service = c.open();
     let (action, _) = c.f.authorized(&service, "train");
     c.f.execute(&service, &action).unwrap();
     c.provider.world().rows[0]["Status"] = json!("Failed");
