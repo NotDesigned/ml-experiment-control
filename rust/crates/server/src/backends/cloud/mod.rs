@@ -5,6 +5,7 @@ pub mod adapter;
 mod evidence;
 pub mod outbox;
 mod registry;
+pub mod service;
 mod signing;
 pub use evidence::FailureEvidence;
 use ml_exp_core::cloud::{Endpoint, Method, Request};

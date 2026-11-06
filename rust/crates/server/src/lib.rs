@@ -8,7 +8,6 @@ pub mod backends;
 pub mod background;
 mod capacity_http;
 pub mod checkpoints;
-pub mod cloud_runs;
 mod data_delivery_http;
 pub mod deletion;
 pub mod deployment;
@@ -42,7 +41,7 @@ use axum::{
     routing::get,
 };
 #[doc(hidden)]
-pub use backends::slurm::service as submissions;
+pub use backends::{cloud::service as cloud_runs, slurm::service as submissions};
 use ml_exp_io::read_private;
 use serde_json::json;
 use std::{path::Path, sync::Arc};

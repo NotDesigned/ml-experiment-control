@@ -1,6 +1,6 @@
 //! One bounded read-only scheduler poll at a time. Discovery reads original
 //! Actions; neither polling nor restart ever submits a missing cloud job.
-use super::{Service, service::Prepared};
+use super::{Service, engine::Prepared};
 use crate::background::{Polled, Sample, Worker};
 use ml_exp_core::polling::Phase;
 use ml_exp_io::directory::LockOptions;
@@ -62,7 +62,7 @@ impl Service {
 impl Service {
     fn observer_candidates(&self) -> crate::backends::cloud::Result<BTreeSet<String>> {
         let mut result = BTreeSet::new();
-        for name in self.slots.entry_names().map_err(super::service::io)? {
+        for name in self.slots.entry_names().map_err(super::engine::io)? {
             let Some(name) = name.to_str() else {
                 continue;
             };
@@ -75,12 +75,12 @@ impl Service {
                 continue;
             }
             let prepared: Prepared =
-                serde_json::from_value(super::service::read(&self.slots, name)?)
+                serde_json::from_value(super::engine::read(&self.slots, name)?)
                     .map_err(why!(crate::backends::cloud::Error::evidence()))?;
             let action = prepared.plan["action_id"]
                 .as_str()
                 .ok_or_else(crate::backends::cloud::Error::evidence)?;
-            if self.actions.observe(action).map_err(super::service::op)?["execution"]["status"]
+            if self.actions.observe(action).map_err(super::engine::op)?["execution"]["status"]
                 != "VERIFIED"
             {
                 continue;

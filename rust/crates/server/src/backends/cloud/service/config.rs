@@ -204,8 +204,8 @@ pub struct Settings {
     pub backends: Vec<Definition>,
     pub exchange: Option<ExchangeSettings>,
     pub artifacts: Option<crate::objects::Settings>,
-    pub builds: Option<super::service::builds::Settings>,
-    pub debug: Option<super::service::debug::Settings>,
+    pub builds: Option<super::engine::builds::Settings>,
+    pub debug: Option<super::engine::debug::Settings>,
     #[serde(default)]
     pub polling: ml_exp_core::polling::Policy,
 }
@@ -219,7 +219,7 @@ impl Settings {
     /// Validate private dependencies without opening any durable store or
     /// sending a provider request. This does not establish network readiness.
     pub fn check_references(self) -> cloud::Result<()> {
-        super::service::check_configuration(self)
+        super::engine::check_configuration(self)
     }
     pub fn load(path: &Path) -> cloud::Result<Self> {
         let bytes = ml_exp_io::read_private(path, 4 * 1024 * 1024, true)

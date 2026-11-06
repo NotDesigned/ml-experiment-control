@@ -15,7 +15,7 @@ import unittest
 from unittest.mock import patch
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "rust/crates/server/src/cloud_runs/service/sync_diagnostic.py"
+SCRIPT = Path(__file__).resolve().parents[1] / "rust/crates/server/src/backends/cloud/service/engine/sync_diagnostic.py"
 spec = importlib.util.spec_from_file_location("sync_diagnostic", SCRIPT)
 diagnostic = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(diagnostic)
