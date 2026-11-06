@@ -237,11 +237,6 @@ mod tests {
         assert!(parse(&[]).is_err());
         assert!(parse(&["--config", "/x", "--config-json", "{}"]).is_err());
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
     #[test]
     fn only_a_passing_failure_is_tried_again() {
         for status in [408, 429, 500, 502, 503, 504] {
