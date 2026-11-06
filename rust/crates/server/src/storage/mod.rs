@@ -34,12 +34,6 @@ pub enum Error {
     EffectUncertain,
 }
 
-impl Error {
-    pub fn effects_may_have_applied(&self) -> bool {
-        matches!(self, Self::EffectUncertain)
-    }
-}
-
 #[derive(Debug, Default)]
 struct Anchors {
     parent: OnceLock<Directory>,
