@@ -11,7 +11,7 @@ fn path(raw: &str, canonical: &str) -> PathEvidence {
     }
 }
 fn record() -> Value {
-    json!({"project":"demo","project_file":"/approved/repo/experiments/project.json","source":"MANUAL","registered_at":"first","updated_at":"old","private_extra":{"retained":"only on no-op"}})
+    json!({"project":"demo","project_file":"/approved/repo/experiments/project.json","state":"ACTIVE","source":"MANUAL","registered_at":"first","updated_at":"old","state_reason":"","private_extra":{"retained":"only on no-op"}})
 }
 fn registry() -> Registry {
     Registry::from_value(
@@ -166,4 +166,9 @@ fn archive_cannot_resume_directly_and_unregister_never_describes_resource_deleti
     let lifecycle = LifecycleRecord::from_value(&raw).unwrap();
     assert_eq!(lifecycle.state, LifecycleState::Active);
     assert_eq!(lifecycle.state_reason, "");
+    for required in ["state", "state_reason"] {
+        let mut missing = record();
+        missing.as_object_mut().unwrap().remove(required);
+        assert!(LifecycleRecord::from_value(&missing).is_err(), "{required}");
+    }
 }

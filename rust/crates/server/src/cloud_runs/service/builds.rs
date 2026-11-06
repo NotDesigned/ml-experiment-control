@@ -71,7 +71,6 @@ struct Record {
     source_receipt_sha256: String,
     worker_sha256: String,
     started: bool,
-    #[serde(default)]
     slurm_runtime: Option<ml_exp_core::first_submission::native::Runtime>,
     runtime: Option<Runtime>,
     diagnostic: Option<Value>,

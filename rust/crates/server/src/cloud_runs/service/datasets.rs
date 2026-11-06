@@ -7,13 +7,9 @@ use ml_exp_core::datasets::{self, Command, State};
 pub(super) struct Saved {
     pub(super) state: State,
     pub(super) archive_verified: bool,
-    #[serde(default)]
     pub(super) image_recipe: Option<ml_exp_core::cloud::data::Image>,
-    #[serde(default)]
     pub(super) image_started: bool,
-    #[serde(default)]
     pub(super) image: Option<String>,
-    #[serde(default)]
     pub(super) copy_request_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) copy_runtime: Option<ml_exp_core::cloud::run::Runtime>,
@@ -21,9 +17,7 @@ pub(super) struct Saved {
     pub(super) copy_intent: Option<ml_exp_core::cloud::Job>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) copy_storage: Option<ml_exp_core::cloud::launch::StorageLayout>,
-    #[serde(default)]
     pub(super) copy_status: Option<Value>,
-    #[serde(default)]
     pub(super) diagnostic: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) import_source: Option<datasets::oss::Import>,

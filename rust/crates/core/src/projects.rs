@@ -28,12 +28,10 @@ pub enum RegistrationSource {
 pub struct LifecycleRecord {
     pub project: String,
     pub project_file: String,
-    #[serde(default)]
     pub state: LifecycleState,
     pub source: RegistrationSource,
     pub registered_at: String,
     pub updated_at: String,
-    #[serde(default)]
     pub state_reason: String,
 }
 impl LifecycleRecord {

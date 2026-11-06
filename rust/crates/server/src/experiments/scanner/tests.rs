@@ -110,7 +110,7 @@ fn duplicate_run_ids_are_rejected_even_for_identical_bytes_and_across_roots() {
         if different {
             write(
                 &fixture.runs().join("namespace/two/manifest.json"),
-                b"{\"project\":\"demo\",\"run_id\":\"same\",\"seed\":2}",
+                b"{\"schema_version\":1,\"project\":\"demo\",\"run_id\":\"same\",\"seed\":2}",
             );
         }
         assert!(matches!(

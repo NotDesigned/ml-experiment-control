@@ -17,7 +17,6 @@ struct Saved {
     importer: Option<JsonlImporter>,
     counts: ImportCounts,
     complete: bool,
-    #[serde(default)]
     missing_after_finish: bool,
 }
 impl Service {

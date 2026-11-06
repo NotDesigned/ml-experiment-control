@@ -284,7 +284,7 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         .join(name);
     private(
         &dataset_file,
-        &json!({"state":dataset,"archive_verified":false}),
+        &json!({"state":dataset,"archive_verified":false,"image_recipe":null,"image_started":false,"image":null,"copy_request_id":null,"copy_status":null,"diagnostic":null}),
     );
     let dataset_bytes = fs::read(&dataset_file).unwrap();
     let catalog = service.dataset_list("demo", "pai-h200").unwrap();
@@ -333,7 +333,10 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         "dataset-{}.json",
         ml_exp_core::canonical::digest(&json!(["demo", "pai-h200", ready.asset_id])).unwrap()
     ));
-    private(&ready_file, &json!({"state":ready,"archive_verified":true}));
+    private(
+        &ready_file,
+        &json!({"state":ready,"archive_verified":true,"image_recipe":null,"image_started":false,"image":null,"copy_request_id":null,"copy_status":null,"diagnostic":null}),
+    );
     let mut large = request.clone();
     large.run_id = "full-inventory".into();
     large.data = vec![ml_exp_core::datasets::Input {
@@ -378,7 +381,7 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     staging.ready = None;
     fs::write(
         &ready_file,
-        serde_json::to_vec(&json!({"state":staging,"archive_verified":true})).unwrap(),
+        serde_json::to_vec(&json!({"state":staging,"archive_verified":true,"image_recipe":null,"image_started":false,"image":null,"copy_request_id":null,"copy_status":null,"diagnostic":null})).unwrap(),
     )
     .unwrap();
     let mut download_run = request.clone();
@@ -475,7 +478,7 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     )
     .unwrap();
     copy.command[3] = "# original frozen launcher\n".to_owned() + &copy.command[3];
-    let frozen_copy = json!({"state":ready,"archive_verified":true,"copy_runtime":runtime,"copy_storage":storage,"copy_request_id":"7".repeat(32),"copy_intent":copy});
+    let frozen_copy = json!({"state":ready,"archive_verified":true,"image_recipe":null,"image_started":false,"image":null,"copy_status":null,"diagnostic":null,"copy_runtime":runtime,"copy_storage":storage,"copy_request_id":"7".repeat(32),"copy_intent":copy});
     fs::write(&ready_file, serde_json::to_vec(&frozen_copy).unwrap()).unwrap();
     let intent_bytes = fs::read(&ready_file).unwrap();
     let restarted = open();
@@ -523,7 +526,7 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     absent.ready = None;
     fs::write(
         &ready_file,
-        serde_json::to_vec(&json!({"state":absent,"archive_verified":true})).unwrap(),
+        serde_json::to_vec(&json!({"state":absent,"archive_verified":true,"image_recipe":null,"image_started":false,"image":null,"copy_request_id":null,"copy_status":null,"diagnostic":null})).unwrap(),
     )
     .unwrap();
     // Reading returns the same frozen Submission after the inventory is recomputed.
@@ -537,7 +540,7 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     partial.parts.clear();
     fs::write(
         &ready_file,
-        serde_json::to_vec(&json!({"state":partial,"archive_verified":true})).unwrap(),
+        serde_json::to_vec(&json!({"state":partial,"archive_verified":true,"image_recipe":null,"image_started":false,"image":null,"copy_request_id":null,"copy_status":null,"diagnostic":null})).unwrap(),
     )
     .unwrap();
     // Reading stays with the frozen Submission; only a first spend looks at the
