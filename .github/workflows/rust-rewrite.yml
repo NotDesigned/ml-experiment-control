@@ -76,6 +76,7 @@ jobs:
         run: python rust/tests/test_native_build_bridge.py
       - run: python rust/tests/test_materialization_launcher.py
       - run: python rust/tests/test_native_deploy.py
+      - run: python rust/tests/test_no_replay_structure.py
       - run: python -m unittest discover -s tests -p test_sync_diagnostic.py -v
 
   client-platforms:
