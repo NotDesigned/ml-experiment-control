@@ -4,7 +4,7 @@ use ml_exp_core::state::RunState;
 use serde_json::Value;
 
 fn fixture() -> Value {
-    serde_json::from_str(include_str!("fixtures/slurm/python-reference.json")).unwrap()
+    serde_json::from_str(include_str!("fixtures/slurm/cases.json")).unwrap()
 }
 fn sample() -> JobSpec {
     serde_json::from_value(fixture()["render_cases"][0]["spec"].clone()).unwrap()

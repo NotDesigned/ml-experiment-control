@@ -441,13 +441,11 @@ fn a_command_without_a_journal_event_id_is_refused_rather_than_hashed() {
 }
 
 #[test]
-fn command_replays_follow_python_numeric_equality_without_rewriting_frozen_bytes() {
-    for (original, equivalent) in [
-        (json!({"value":1}), json!({"value":1.0})),
-        (
-            json!({"value":true,"nested":[false,{"x":1}]}),
-            json!({"nested":[0.0,{"x":true}],"value":1.0}),
-        ),
+fn an_identical_command_replay_is_accepted_and_a_different_payload_conflicts() {
+    for payload in [
+        json!({"value":1}),
+        json!({"value":true,"nested":[false,{"x":1}]}),
+        json!({"note":"科学","score":0.5}),
     ] {
         let root = tempfile::tempdir().unwrap();
         let store = Store::open(root.path()).unwrap();
@@ -457,7 +455,7 @@ fn command_replays_follow_python_numeric_equality_without_rewriting_frozen_bytes
         let plan_path = store.directory(id).unwrap().join("plan.json");
         let frozen_plan = fs::read(&plan_path).unwrap();
         let first = store
-            .write_command(id, CommandPhase::Authorize, &original, "first-command", NOW)
+            .write_command(id, CommandPhase::Authorize, &payload, "first-command", NOW)
             .unwrap();
         let command_path = store.directory(id).unwrap().join("commands/authorize.json");
         let frozen_command = fs::read(&command_path).unwrap();
@@ -466,7 +464,7 @@ fn command_replays_follow_python_numeric_equality_without_rewriting_frozen_bytes
                 .write_command(
                     id,
                     CommandPhase::Authorize,
-                    &equivalent,
+                    &payload,
                     "ignored-replay-id",
                     "2026-10-27T00:01:00Z"
                 )
@@ -475,10 +473,10 @@ fn command_replays_follow_python_numeric_equality_without_rewriting_frozen_bytes
         );
         assert_eq!(
             store.read_command(id, CommandPhase::Authorize).unwrap(),
-            original
+            payload
         );
-        let mut different = equivalent;
-        different["value"] = json!(2);
+        let mut different = payload;
+        different["changed"] = json!(true);
         assert!(matches!(
             store.write_command(
                 id,

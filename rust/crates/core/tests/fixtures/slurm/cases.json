@@ -1,37 +1,4 @@
 {
-  "schema_version": 1,
-  "baseline_commit": "e725faec689fb8395e692e27d00a8896fa7fe5a5",
-  "generation": "Evaluated unchanged Python functions and allocation parser AST with synthetic inputs; no subprocess, SSH, scheduler, production config or credential access. Native hardening differences are labelled separately.",
-  "sources": [
-    {
-      "path": "src/experiment_control/backends/slurm.py",
-      "sha256": "9a6211594602375c151fdcf0ede6a76a4df1efb3938e9ebba879b14657b779b3",
-      "symbols": [
-        "normalize_state",
-        "scheduler_job_name",
-        "render_job",
-        "parse_accounting",
-        "SlurmBackend.validate"
-      ]
-    },
-    {
-      "path": "server/src/ml_exp_server/runs/allocation_status.py",
-      "sha256": "50bc8ec6956e6699059b71d70c790f1af483dccd343342060551dce0276ca46d",
-      "symbols": [
-        "count",
-        "parse"
-      ],
-      "baseline_sha256": "3eaedaf5a0d8d26dbd8a75b474c43c41b59cb3b17d4fddfed0a6bbbdfbc37ba7",
-      "integration_note": "Reference expected values were evaluated from the unchanged baseline parser. Current source adds only the optional native parser dispatch; sha256 tracks this integrated shell, baseline_sha256 preserves original provenance."
-    },
-    {
-      "path": "src/experiment_control/submission.py",
-      "sha256": "ec5b38bb27ea71d818deda7babdaa3229058c8f1e01a278a21c83ba94486ebad",
-      "symbols": [
-        "submission_marker"
-      ]
-    }
-  ],
   "normalization_cases": [
     {
       "raw": "PENDING",
