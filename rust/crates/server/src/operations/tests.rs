@@ -429,7 +429,7 @@ fn a_command_without_a_journal_event_id_is_refused_rather_than_hashed() {
         ml_exp_io::write_atomic(
             &commands.join("authorize.json"),
             &serde_json::to_vec(&record).unwrap(),
-            true,
+            false,
         )
         .unwrap();
         assert!(matches!(
