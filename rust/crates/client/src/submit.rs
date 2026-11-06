@@ -181,6 +181,7 @@ pub fn spec(
         dockerfile: options
             .dockerfile
             .or(file.runtime.dockerfile)
+            .map(|path| path.trim_start_matches("./").to_owned())
             .unwrap_or_else(|| "Dockerfile".into()),
         command,
         gpus: options
@@ -223,6 +224,8 @@ pub struct Hooks<'a> {
     pub progress: &'a mut dyn FnMut(&str),
     pub poll: Duration,
     pub deadline: Duration,
+    /// How long to wait for a server that reports nothing about a job before saying so.
+    pub silence: Duration,
     /// Keep showing the backend's status until the job ends.
     pub follow: bool,
     pub follow_poll: Duration,
@@ -259,9 +262,13 @@ pub fn latest(directory: &Path) -> Result<Latest, Error> {
 }
 /// The latest Submission, for commands that need one to exist.
 fn sent(latest: &Latest) -> Result<&str, Error> {
-    latest.submission_id.as_deref().ok_or(Error::Observation(
-        "the latest submission is still being prepared, so nothing is running yet",
-    ))
+    latest.submission_id.as_deref().ok_or_else(|| {
+        Error::Submit(format!(
+            "the latest `ml-exp submit`, {}, has not sent a job. Any earlier job is unaffected; \
+             `ml-exp run --help` acts on one by its ID",
+            latest.run_id
+        ))
+    })
 }
 
 /// `90`, `90s`, `10m`, `2h` or `1d`.
@@ -500,35 +507,30 @@ pub fn resources(spec: &Spec, executor: &str, limits: &Value) -> Result<(u32, u3
     })
 }
 
-pub fn plan(
+/// Who this job is, known from the inputs alone and before asking the server anything.
+pub struct Identity {
+    pub request_id: String,
+    pub preparation_id: String,
+    pub run_id: String,
+    pub base_image: String,
+}
+pub fn identify(
     spec: &Spec,
-    archive_sha256: &str,
+    content_sha256: &str,
     dockerfile: &str,
-    executor: &Value,
     directory_name: &str,
-) -> Result<Plan, Error> {
+) -> Result<Identity, Error> {
     let base_image = base_image(dockerfile)?;
-    let chosen = executor["executor_id"]
-        .as_str()
-        .ok_or(Error::Response)?
-        .to_owned();
-    let (gpus, cpus, memory_gb) = resources(spec, &chosen, &executor["limits"])?;
-    ml_exp_core::environment::validate(&spec.env).map_err(|_| {
-        Error::Submit(
-            "an environment variable has an invalid or reserved name; \
-             the platform sets directories, Run identity and ML_EXPD_ names itself"
-                .into(),
-        )
-    })?;
     // What was asked for, not what today's limits and shapes resolve it to, so that a
     // repeat finds the same job even if the operator has changed them since. The server
     // is left out: preparations are already per server, and it can have many spellings.
+    // The content, not the archive, so that a change of compression changes nothing.
     let identity = canonical::digest(&json!([
         "ml-exp-submit.v2",
         spec.project,
         spec.executor,
         directory_name,
-        archive_sha256,
+        content_sha256,
         spec.dockerfile,
         base_image,
         spec.command,
@@ -553,11 +555,32 @@ pub fn plan(
     identity::validate_id(&run_id)
         .map_err(|_| Error::Submit(format!("{run_id} is not a valid Run name")))?;
     let preparation_id = preparation::id(&spec.project, &request_id).map_err(Error::Observation)?;
-    Ok(Plan {
+    Ok(Identity {
         request_id,
         preparation_id,
         run_id,
         base_image,
+    })
+}
+/// What it will run on and spend, which depends on the executor as it is today.
+pub fn resolve(spec: &Spec, identity: Identity, executor: &Value) -> Result<Plan, Error> {
+    let chosen = executor["executor_id"]
+        .as_str()
+        .ok_or(Error::Response)?
+        .to_owned();
+    let (gpus, cpus, memory_gb) = resources(spec, &chosen, &executor["limits"])?;
+    ml_exp_core::environment::validate(&spec.env).map_err(|_| {
+        Error::Submit(
+            "an environment variable has an invalid or reserved name; \
+             the platform sets directories, Run identity and ML_EXPD_ names itself"
+                .into(),
+        )
+    })?;
+    Ok(Plan {
+        request_id: identity.request_id,
+        preparation_id: identity.preparation_id,
+        run_id: identity.run_id,
+        base_image: identity.base_image,
         executor: chosen,
         gpus,
         cpus,
@@ -567,14 +590,25 @@ pub fn plan(
             .unwrap_or((f64::from(gpus) * spec.walltime_seconds as f64 / 36.0).ceil() / 100.0),
     })
 }
-impl Plan {
-    fn latest(&self, spec: &Spec, submission: Option<&str>, unsettled: bool) -> Latest {
-        Latest {
-            project: spec.project.clone(),
-            run_id: self.run_id.clone(),
-            submission_id: submission.map(str::to_owned),
-            unsettled,
-        }
+pub fn plan(
+    spec: &Spec,
+    content_sha256: &str,
+    dockerfile: &str,
+    executor: &Value,
+    directory_name: &str,
+) -> Result<Plan, Error> {
+    resolve(
+        spec,
+        identify(spec, content_sha256, dockerfile, directory_name)?,
+        executor,
+    )
+}
+fn latest_for(spec: &Spec, run_id: &str, submission: Option<&str>, unsettled: bool) -> Latest {
+    Latest {
+        project: spec.project.clone(),
+        run_id: run_id.to_owned(),
+        submission_id: submission.map(str::to_owned),
+        unsettled,
     }
 }
 fn slug(name: &str) -> String {
@@ -668,7 +702,10 @@ fn request(spec: &Spec, plan: &Plan, source_id: &str) -> Result<preparation::Req
 }
 
 /// Why waiting longer cannot help. Stopping the wait never stops anything on the server.
-fn stopped(view: &Value) -> Option<String> {
+///
+/// A missing receipt alone proves nothing: after an API restart the build may still be
+/// running, and it reports just that. Only the builder saying it is idle ends that wait.
+fn stopped(view: &Value, builder_idle: bool) -> Option<String> {
     if let Some(code) = view["error_code"].as_str() {
         return Some(format!("data preparation failed with {code}"));
     }
@@ -679,6 +716,19 @@ fn stopped(view: &Value) -> Option<String> {
         Some("PREPARED" | "RECONCILE_REQUIRED")
     );
     if idle && !error.is_null() && error["code"] != "BUILD_EXECUTING" {
+        let id = runtime["runtime_id"].as_str().unwrap_or("RUNTIME");
+        let project = view["project"].as_str().unwrap_or("PROJECT");
+        let logs = format!("`ml-exp env logs {id} --project {project}`");
+        let code = error["code"].as_str().unwrap_or("UNKNOWN");
+        let unresolved = matches!(code, "BUILD_RECEIPT_MISSING" | "NATIVE_BUILD_RPC_UNCERTAIN");
+        if unresolved && error["build_failure"].is_null() {
+            return builder_idle.then(|| {
+                format!(
+                    "the image build is not running and left no result ({code}), so its outcome \
+                     is unresolved. See {logs}; running this command again checks once more"
+                )
+            });
+        }
         // The original failure is kept beside a later "receipt missing".
         let cause = if error["build_failure"].is_null() {
             error
@@ -690,9 +740,9 @@ fn stopped(view: &Value) -> Option<String> {
             .as_str()
             .map(|reason| format!(" ({reason})"))
             .unwrap_or_default();
-        let id = runtime["runtime_id"].as_str().unwrap_or("RUNTIME");
         return Some(format!(
-            "the image build failed with {code}{reason}; see `ml-exp env logs {id} --project PROJECT`"
+            "the image build failed with {code}{reason}. See {logs}; \
+             changing the code or the Dockerfile starts a new build"
         ));
     }
     if view["data"]["new_request_allowed"] == true {
@@ -745,7 +795,7 @@ fn show_build(
     health: &Value,
     view: &mut BuildView,
     progress: &mut dyn FnMut(&str),
-) {
+) -> Option<bool> {
     let command = runtime::Command::Progress {
         project: spec.project.clone(),
         runtime: runtime.to_owned(),
@@ -755,7 +805,7 @@ fn show_build(
         .and_then(|plan| runtime::execute(client, plan, health))
         .ok()
     else {
-        return;
+        return None;
     };
     let state = &value["progress"];
     if let Some(phase) = state["phase"].as_str().filter(|phase| *phase != view.phase) {
@@ -779,6 +829,7 @@ fn show_build(
         progress("[build] no new output for two minutes; it may still be working");
     }
     view.warned = state["no_progress_warning"] == true;
+    state["status"].as_str().map(|status| status != "EXECUTING")
 }
 
 fn show(client: &Client, id: &str, health: &Value) -> Result<Value, Error> {
@@ -860,7 +911,7 @@ fn send(client: &Client, id: &str, health: &Value) -> Result<Value, Error> {
     };
     if unsent(&current["status"]) {
         return Err(Error::Submit(format!(
-            "no job was sent: {id} is still {}. Run this command again",
+            "no job has been sent: {id} is still {}. Run this command again",
             current["status"].as_str().unwrap_or("unsent")
         )));
     }
@@ -904,11 +955,23 @@ fn describe(submission: &Value) -> Option<String> {
     }
     Some(line)
 }
-/// Read-only. Stopping here, for any reason, leaves the job running.
-///
-/// The Submission view is the one place with the latest state on every backend: Slurm's
-/// comes from background polling, and only `GET` overlays it. A cloud job is also asked
-/// of the provider first, which is what brings its view up to date.
+/// A provider read for a cloud job, which is what brings its view up to date. Slurm's
+/// view comes from background polling, and only `GET` overlays it.
+fn refreshed(client: &Client, id: &str, current: Value, health: &Value) -> Result<Value, Error> {
+    if current.get("cloud_observation").is_none() {
+        return show(client, id, health);
+    }
+    submissions::plan(submissions::Command::Refresh { submission: id })
+        .and_then(|plan| submissions::execute(client, &plan, health))?;
+    show(client, id, health)
+}
+/// Whether the view carries state newer than the moment of submission.
+fn reporting(submission: &Value) -> bool {
+    submission.get("cloud_observation").is_some()
+        || submission.get("native_scheduler_observation").is_some()
+}
+/// Read-only. Stopping here, for any reason, leaves the job running. A long job is only
+/// ever watched longer: time alone is not a reason to stop, only having nothing to read.
 fn follow(
     client: &Client,
     id: &str,
@@ -917,37 +980,28 @@ fn follow(
     hooks: &mut Hooks<'_>,
 ) -> Value {
     (hooks.progress)("Ctrl-C stops watching; the job keeps running");
-    let refresh = |client: &Client| {
-        submissions::plan(submissions::Command::Refresh { submission: id })
-            .and_then(|plan| submissions::execute(client, &plan, health))
-    };
     let mut latest = current;
     let mut last = String::new();
     let mut failures = 0;
-    let mut changed = Instant::now();
+    let started = Instant::now();
     loop {
-        let read = if latest.get("cloud_observation").is_some() {
-            refresh(client).and_then(|_| show(client, id, health))
-        } else {
-            show(client, id, health)
-        };
-        match read {
+        match refreshed(client, id, latest.clone(), health) {
             Ok(value) => {
                 failures = 0;
                 latest = value;
                 if let Some(line) = describe(&latest).filter(|line| *line != last) {
                     (hooks.progress)(&line);
                     last = line;
-                    changed = Instant::now();
                 }
                 if over(&latest) {
                     return latest;
                 }
-                if changed.elapsed() >= hooks.deadline {
+                if !reporting(&latest) && started.elapsed() >= hooks.silence {
                     (hooks.progress)(
-                        "stopped watching: no change for a long time. The job keeps running; \
-                         `ml-exp status` shows it",
+                        "stopped watching: this server is not reporting the job's state, so it \
+                         may have ended. Its background polling may be off",
                     );
+                    latest["watching_stopped"] = json!(true);
                     return latest;
                 }
             }
@@ -956,6 +1010,7 @@ fn follow(
                 (hooks.progress)(
                     "stopped watching: the status cannot be read. The job keeps running",
                 );
+                latest["watching_stopped"] = json!(true);
                 return latest;
             }
         }
@@ -992,27 +1047,44 @@ fn watch(
     latest
 }
 
-fn outcome(spec: &Spec, plan: &Plan, state: &Path, submission: &Value, existing: bool) -> Value {
+fn outcome(
+    spec: &Spec,
+    identity: (&str, &str),
+    state: &Path,
+    submission: &Value,
+    existing: bool,
+) -> Value {
+    let (run_id, preparation_id) = identity;
     let id = submission["submission_id"].as_str().unwrap_or_default();
     let state = state.display();
     json!({
         "project": spec.project,
-        "run_id": plan.run_id,
-        "preparation_id": plan.preparation_id,
+        "run_id": run_id,
+        "preparation_id": preparation_id,
         "submission_id": id,
         "status": submission["status"],
         "job_state": job_state(submission),
+        "job_over": over(submission),
+        "watching_stopped": submission["watching_stopped"] == true,
         "already_submitted": existing,
         "state_file": state.to_string(),
         "next": ["ml-exp status", "ml-exp logs", "ml-exp results"],
     })
 }
 
-/// A job that ended without success, so that scripts do not read it as success.
-pub fn failed_state(value: &Value) -> Option<&str> {
-    value["job_state"]
-        .as_str()
-        .filter(|state| finished(state) && *state != "SUCCEEDED")
+/// Why this command should not read as a success, even though its output is complete.
+pub fn failure(value: &Value) -> Option<String> {
+    if value["job_over"] == true {
+        return value["job_state"]
+            .as_str()
+            .filter(|state| *state != "SUCCEEDED")
+            .map(|state| format!("the job ended {state}"));
+    }
+    if value["status"] != "VERIFIED" {
+        return Some("the job is not confirmed yet; `ml-exp status` shows it".into());
+    }
+    (value["watching_stopped"] == true)
+        .then(|| "stopped watching before the job ended; `ml-exp status` shows it".into())
 }
 
 /// The default output. `--json` gives the same fields.
@@ -1049,21 +1121,12 @@ pub fn run(
     mut hooks: Hooks<'_>,
 ) -> Result<Value, Error> {
     let health = client.health()?;
-    let executors = client.get("/api/executors")?;
-    let rows = executors["executors"]
-        .as_array()
-        .ok_or(Error::Response)?
-        .as_slice();
-    let executor = choose(spec, rows)?;
     let dockerfile = read_dockerfile(&spec.directory, &spec.dockerfile)?;
     let archive = sources::pack_directory(&spec.directory)?;
-    if !archive
-        .paths
-        .iter()
-        .any(|path| path == spec.dockerfile.trim_start_matches("./"))
-    {
+    if !archive.paths.iter().any(|path| *path == spec.dockerfile) {
         return Err(Error::Submit(format!(
-            "{} would not be uploaded; git ignores it, so remove it from .gitignore",
+            "{} is not among the files to upload; it must be inside the directory, \
+             and git must not ignore it",
             spec.dockerfile
         )));
     }
@@ -1073,18 +1136,21 @@ pub fn run(
         .ok()
         .and_then(|path| path.file_name().map(|n| n.to_string_lossy().into_owned()))
         .unwrap_or_default();
-    let plan = plan(spec, &archive.sha256, &dockerfile, executor, &name)?;
+    let identity = identify(spec, &archive.content_sha256, &dockerfile, &name)?;
     ml_exp_io::create_private_dir(state_directory).map_err(|_| Error::Config)?;
-    let state = state_directory.join(format!("{}.json", plan.preparation_id));
+    // The identity leaves the server out, and this state file belongs to one server.
+    let server = canonical::digest(&json!(client.base_url())).map_err(|_| Error::Response)?;
+    let state = state_directory.join(format!("{}-{}.json", identity.preparation_id, &server[..8]));
     let path = format!(
         "/api/projects/{}/experiment-preparations/{}",
-        spec.project, plan.preparation_id
+        spec.project, identity.preparation_id
     );
     let saved = match client.get(&path) {
         Ok(view) => Some(view),
         Err(Error::Http(failure)) if failure.status == 404 => None,
         Err(error) => return Err(error),
     };
+    // Before anything about today's executors can refuse: a job that exists stays reachable.
     if let Some(id) = saved
         .as_ref()
         .and_then(|view| view["submission"]["submission_id"].as_str())
@@ -1092,23 +1158,41 @@ pub fn run(
         let current = show(client, id, &health)?;
         if may_exist(&current["status"]) {
             // A later `retry` of this Run stays the latest; this must not move it back.
-            let newest = latest(state_directory).ok();
-            if newest.is_none_or(|newest| newest.run_id != plan.run_id) {
-                remember(state_directory, &plan.latest(spec, Some(id), false));
+            let known = latest(state_directory).is_ok_and(|newest| {
+                newest.run_id == identity.run_id && newest.submission_id.is_some()
+            });
+            if !known {
+                remember(
+                    state_directory,
+                    &latest_for(spec, &identity.run_id, Some(id), false),
+                );
             }
             let current = observe(client, id, current, &health)?;
             let current = watch(
                 client,
                 &spec.project,
-                &plan.run_id,
+                &identity.run_id,
                 id,
                 current,
                 &health,
                 &mut hooks,
             );
-            return Ok(outcome(spec, &plan, &state, &current, true));
+            return Ok(outcome(
+                spec,
+                (&identity.run_id, &identity.preparation_id),
+                &state,
+                &current,
+                true,
+            ));
         }
     }
+    let executors = client.get("/api/executors")?;
+    let rows = executors["executors"]
+        .as_array()
+        .ok_or(Error::Response)?
+        .as_slice();
+    let executor = choose(spec, rows)?;
+    let plan = resolve(spec, identity, executor)?;
     if executor["enabled"] != true || executor["run_creation"] != true {
         return Err(Error::Submit(format!(
             "{} is not accepting new Runs",
@@ -1123,14 +1207,31 @@ pub fn run(
     if !(hooks.confirm)(&summary(spec, &plan, archive.paths.len()))? {
         return Err(Error::Observation("not submitted; nothing was sent"));
     }
-    remember(state_directory, &plan.latest(spec, None, false));
-    let source_id = publish(client, spec, archive, &health, hooks.progress)?;
-    let request = request(spec, &plan, &source_id)?;
-    preparations::prepare(client, &spec.project, &request, &state, &health)?;
+    remember(
+        state_directory,
+        &latest_for(spec, &plan.run_id, None, false),
+    );
+    // Already prepared means already frozen, whatever today's limits would resolve to.
+    if saved.is_none() {
+        let source_id = publish(client, spec, archive, &health, hooks.progress)?;
+        let request = request(spec, &plan, &source_id)?;
+        preparations::prepare(client, &spec.project, &request, &state, &health)?;
+    }
     let id = prepared(client, spec, &plan, &health, &mut hooks)?;
-    remember(state_directory, &plan.latest(spec, Some(&id), true));
+    remember(
+        state_directory,
+        &latest_for(spec, &plan.run_id, Some(&id), true),
+    );
     let current = send(client, &id, &health)?;
-    remember(state_directory, &plan.latest(spec, Some(&id), false));
+    remember(
+        state_directory,
+        &latest_for(
+            spec,
+            &plan.run_id,
+            Some(&id),
+            current["status"] != "VERIFIED",
+        ),
+    );
     let current = watch(
         client,
         &spec.project,
@@ -1140,7 +1241,13 @@ pub fn run(
         &health,
         &mut hooks,
     );
-    Ok(outcome(spec, &plan, &state, &current, false))
+    Ok(outcome(
+        spec,
+        (&plan.run_id, &plan.preparation_id),
+        &state,
+        &current,
+        false,
+    ))
 }
 
 /// Stop the latest job, after saying which one.
@@ -1172,7 +1279,8 @@ pub fn cancel(client: &Client, directory: &Path, hooks: Hooks<'_>) -> Result<Val
 ///
 /// Repeating this must never start a further job by accident. A prepared Attempt that was
 /// not sent is finished rather than replaced. If a send's outcome was never learned, the
-/// repeat only finds out what happened. A new Attempt needs the last job to have ended.
+/// repeat only finds out what happened. The server decides whether the last job has ended;
+/// the client only refuses early where its own view is fresh.
 pub fn retry(
     client: &Client,
     directory: &Path,
@@ -1191,51 +1299,79 @@ pub fn retry(
         .as_str()
         .ok_or(Error::Response)?
         .to_owned();
-    let summary = &current["preflight_summary"];
-    let spend = summary["max_gpu_hours"].as_f64().unwrap_or(0.0);
+    if current["status"] == "BLOCKED" {
+        dispatch(client, &parent, &health)?;
+        return Err(Error::Submit(format!(
+            "{parent} is blocked; nothing was sent"
+        )));
+    }
+    let existing_attempt = unsent(&current["status"]) || latest.unsettled;
+    if checkpoint.is_some() && existing_attempt {
+        return Err(Error::Submit(format!(
+            "{attempt} of {} already exists and was prepared without --checkpoint; \
+             run `ml-exp retry` to finish it first",
+            latest.run_id
+        )));
+    }
     let settled = |id: &str, unsettled: bool| Latest {
         project: latest.project.clone(),
         run_id: latest.run_id.clone(),
         submission_id: Some(id.to_owned()),
         unsettled,
     };
-    let (id, attempt_now) = if unsent(&current["status"]) {
+    let spend_of = |view: &Value| {
+        view["preflight_summary"]["max_gpu_hours"]
+            .as_f64()
+            .unwrap_or(0.0)
+    };
+    let spend = spend_of(&current);
+    let resources = current["preflight_summary"]["resources"].clone();
+    let id = if unsent(&current["status"]) {
         let question = format!(
-            "Send {} {attempt}, prepared but not sent yet\n  resources {}\n  spend     up to {spend} more GPU hours",
-            latest.run_id, summary["resources"],
+            "Send {} {attempt}, prepared but not sent yet\n  resources {resources}\n  spend     up to {spend} more GPU hours",
+            latest.run_id,
         );
         if !(hooks.confirm)(&question)? {
             return Err(Error::Observation("not submitted; nothing was sent"));
         }
-        (parent.clone(), attempt.clone())
-    } else if latest.unsettled {
-        let current = observe(client, &parent, current, &health)?;
-        remember(directory, &settled(&parent, false));
-        let current = watch(
-            client,
-            &latest.project,
-            &latest.run_id,
-            &parent,
-            current,
-            &health,
-            &mut hooks,
-        );
-        return Ok(retried(&latest, &parent, &current, true));
+        parent.clone()
     } else {
-        if !job_state(&current).is_some_and(finished) {
+        // Anything unresolved is resolved first, and only what is confirmed can be followed.
+        let current = observe(client, &parent, current, &health)?;
+        if current["status"] != "VERIFIED" {
+            remember(directory, &settled(&parent, true));
             return Err(Error::Submit(format!(
-                "{} {attempt} has not ended ({}); `ml-exp cancel` stops it",
+                "{attempt} of {} is {}: a job may exist and its outcome is unresolved. \
+                 Nothing new was sent; try again later, or see `ml-exp run reconcile --help`",
                 latest.run_id,
-                job_state(&current)
-                    .or(current["status"].as_str())
-                    .unwrap_or("unknown"),
+                current["status"].as_str().unwrap_or("unknown"),
+            )));
+        }
+        if latest.unsettled {
+            remember(directory, &settled(&parent, false));
+            let current = watch(
+                client,
+                &latest.project,
+                &latest.run_id,
+                &parent,
+                current,
+                &health,
+                &mut hooks,
+            );
+            return Ok(retried(&latest, &parent, &current, true));
+        }
+        let current = refreshed(client, &parent, current.clone(), &health).unwrap_or(current);
+        if reporting(&current) && current.get("cloud_observation").is_some() && !over(&current) {
+            return Err(Error::Submit(format!(
+                "{attempt} of {} has not ended ({}); `ml-exp cancel` stops it",
+                latest.run_id,
+                job_state(&current).unwrap_or("unknown"),
             )));
         }
         let question = format!(
-            "Run {} again after {attempt}, from {}\n  resources {}\n  spend     up to {spend} more GPU hours",
+            "Run {} again after {attempt}, from {}\n  resources {resources}\n  spend     up to {spend} more GPU hours",
             latest.run_id,
             checkpoint.as_deref().unwrap_or("the start"),
-            summary["resources"],
         );
         if !(hooks.confirm)(&question)? {
             return Err(Error::Observation("not submitted; nothing was sent"));
@@ -1255,7 +1391,7 @@ pub fn retry(
             max_gpu_hours: spend,
             reason: REASON.into(),
         };
-        let created = submissions::execute(
+        submissions::execute(
             client,
             &submissions::plan(submissions::Command::Retry {
                 submission: &parent,
@@ -1273,19 +1409,14 @@ pub fn retry(
             })?,
             &health,
         )?;
-        let id = prepared["submission_id"]
+        prepared["submission_id"]
             .as_str()
             .ok_or(Error::Response)?
-            .to_owned();
-        let attempt_now = created["attempt_id"]
-            .as_str()
-            .unwrap_or_default()
-            .to_owned();
-        (id, attempt_now)
+            .to_owned()
     };
     remember(directory, &settled(&id, true));
     let current = send(client, &id, &health)?;
-    remember(directory, &settled(&id, false));
+    remember(directory, &settled(&id, current["status"] != "VERIFIED"));
     let current = watch(
         client,
         &latest.project,
@@ -1295,11 +1426,7 @@ pub fn retry(
         &health,
         &mut hooks,
     );
-    let mut value = retried(&latest, &id, &current, false);
-    if value["attempt_id"].is_null() {
-        value["attempt_id"] = json!(attempt_now);
-    }
-    Ok(value)
+    Ok(retried(&latest, &id, &current, false))
 }
 fn retried(latest: &Latest, id: &str, current: &Value, existing: bool) -> Value {
     json!({
@@ -1309,6 +1436,8 @@ fn retried(latest: &Latest, id: &str, current: &Value, existing: bool) -> Value 
         "submission_id": id,
         "status": current["status"],
         "job_state": job_state(current),
+        "job_over": over(current),
+        "watching_stopped": current["watching_stopped"] == true,
         "already_submitted": existing,
         "next": ["ml-exp status", "ml-exp logs", "ml-exp results"],
     })
@@ -1368,6 +1497,7 @@ fn prepared(
     let mut last = "";
     let mut runtime: Option<String> = None;
     let mut build = BuildView::default();
+    let mut builder_idle = false;
     let mut tick = 0;
     loop {
         if tick % ADVANCE_EVERY == 0 {
@@ -1377,7 +1507,7 @@ fn prepared(
                     if let Some(submission) = view["submission"]["submission_id"].as_str() {
                         return Ok(submission.to_owned());
                     }
-                    if let Some(reason) = stopped(&view) {
+                    if let Some(reason) = stopped(&view, builder_idle) {
                         return Err(Error::Submit(format!(
                             "{reason}. No training job was submitted"
                         )));
@@ -1395,7 +1525,11 @@ fn prepared(
         }
         tick += 1;
         if let Some(runtime) = &runtime {
-            show_build(client, spec, runtime, health, &mut build, hooks.progress);
+            if let Some(idle) =
+                show_build(client, spec, runtime, health, &mut build, hooks.progress)
+            {
+                builder_idle = idle;
+            }
         }
         if started.elapsed() >= hooks.deadline {
             return Err(Error::Submit(
@@ -1785,8 +1919,8 @@ mod tests {
     }
     #[test]
     fn only_failures_that_waiting_cannot_fix_stop_the_wait() {
-        assert!(stopped(&json!({"runtime":{"status":"EXECUTING"}})).is_none());
-        assert!(stopped(&json!({"runtime":{"status":"PREPARED"}})).is_none());
+        assert!(stopped_now(&json!({"runtime":{"status":"EXECUTING"}})).is_none());
+        assert!(stopped_now(&json!({"runtime":{"status":"PREPARED"}})).is_none());
         assert!(
             stopped(
                 &json!({"runtime":{"status":"EXECUTING","build_error":{"code":"BUILD_EXECUTING"}}})
@@ -1799,7 +1933,7 @@ mod tests {
             json!({"error_code":"SCRIPT_FAILED"}),
             json!({"data":{"new_request_allowed":true}}),
         ] {
-            assert!(stopped(&view).is_some(), "{view}");
+            assert!(stopped_now(&view).is_some(), "{view}");
         }
     }
     #[test]
@@ -1887,16 +2021,48 @@ mod tests {
         assert!(reported.contains("not confirmed"), "{reported}");
         let reported = report(&json!({"status":"VERIFIED","run_id":"r","next":[]}));
         assert!(reported.starts_with("Submitted"), "{reported}");
-        assert_eq!(failed_state(&json!({"job_state":"FAILED"})), Some("FAILED"));
-        assert_eq!(failed_state(&json!({"job_state":"SUCCEEDED"})), None);
-        assert_eq!(failed_state(&json!({"job_state":"RUNNING"})), None);
+        assert_eq!(
+            failure(&json!({"status":"VERIFIED","job_state":"FAILED","job_over":true})).as_deref(),
+            Some("the job ended FAILED")
+        );
+        assert!(
+            failure(&json!({"status":"VERIFIED","job_state":"SUCCEEDED","job_over":true}))
+                .is_none()
+        );
+        assert!(failure(&json!({"status":"VERIFIED","job_state":"RUNNING"})).is_none());
+        assert!(
+            failure(&json!({"status":"VERIFIED","job_state":"CANCELLED"})).is_none(),
+            "may still run"
+        );
+        assert!(failure(&json!({"status":"RECONCILE_REQUIRED"})).is_some());
+        assert!(failure(&json!({"status":"VERIFIED","watching_stopped":true})).is_some());
+    }
+    fn stopped_now(view: &Value) -> Option<String> {
+        stopped(view, false)
+    }
+    #[test]
+    fn a_missing_receipt_waits_until_the_builder_says_it_is_idle() {
+        for code in ["BUILD_RECEIPT_MISSING", "NATIVE_BUILD_RPC_UNCERTAIN"] {
+            let view = json!({"project":"demo","runtime":{"status":"RECONCILE_REQUIRED",
+                "runtime_id":"runtime.x","build_error":{"code":code}}});
+            assert!(
+                stopped(&view, false).is_none(),
+                "the build may still be running"
+            );
+            let text = stopped(&view, true).unwrap();
+            assert!(
+                text.contains("unresolved") && !text.contains("failed"),
+                "{text}"
+            );
+            assert!(text.contains("--project demo"), "{text}");
+        }
     }
     #[test]
     fn a_build_that_failed_stops_the_wait_with_its_original_cause() {
         let view = json!({"runtime":{"status":"RECONCILE_REQUIRED","runtime_id":"runtime.x",
             "build_error":{"code":"BUILD_RECEIPT_MISSING",
                 "build_failure":{"code":"BAD_DOCKERFILE","details":{"reason":"no_digest"}}}}});
-        let text = stopped(&view).unwrap();
+        let text = stopped_now(&view).unwrap();
         assert!(
             text.contains("BAD_DOCKERFILE") && text.contains("no_digest"),
             "{text}"

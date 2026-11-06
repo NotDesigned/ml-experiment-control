@@ -819,8 +819,11 @@ fn submissions_directory(config: &std::path::Path) -> PathBuf {
 /// The short commands are the `run` commands, with the latest submission filled in.
 fn expand(command: Command, config: &std::path::Path) -> Result<Command, ml_exp_client::Error> {
     let directory = submissions_directory(config);
+    let unnamed = |target: &Target| {
+        target.state.is_none() && target.project.is_none() && target.run.is_none()
+    };
     let fill = |target: &mut Target| -> Result<(), ml_exp_client::Error> {
-        if target.state.is_none() && target.project.is_none() && target.run.is_none() {
+        if unnamed(target) {
             let latest = ml_exp_client::submit::latest(&directory)?;
             target.project = Some(latest.project);
             target.run = Some(latest.run_id);
@@ -834,6 +837,18 @@ fn expand(command: Command, config: &std::path::Path) -> Result<Command, ml_exp_
             watch,
             seconds,
         } => {
+            // A submit that has not sent a job yet has only its preparation to show.
+            if unnamed(&target) {
+                let latest = ml_exp_client::submit::latest(&directory)?;
+                if latest.submission_id.is_none() {
+                    return Ok(Command::Run {
+                        command: Run::Preparation {
+                            project: latest.project,
+                            run: latest.run_id,
+                        },
+                    });
+                }
+            }
             fill(&mut target)?;
             Command::Run {
                 command: Run::Status {
@@ -1568,6 +1583,7 @@ fn hooks<'a>(
         progress,
         poll: std::time::Duration::from_secs(5),
         deadline: std::time::Duration::from_secs(6 * 3600),
+        silence: std::time::Duration::from_secs(600),
         follow,
         follow_poll: std::time::Duration::from_secs(30),
     }
@@ -1575,22 +1591,22 @@ fn hooks<'a>(
 fn printed(line: &str) {
     eprintln!("{line}");
 }
-/// A job that ended without success is reported and is also a failed command.
+/// The output is complete, and the command still fails if the job did not succeed.
 fn report(value: serde_json::Value, json: bool) -> Result<Output, Box<dyn std::error::Error>> {
-    let failed = ml_exp_client::submit::failed_state(&value).map(str::to_owned);
+    let failed = ml_exp_client::submit::failure(&value);
     let output = if json {
         Output::Json(value)
     } else {
         Output::Text(ml_exp_client::submit::report(&value))
     };
-    let Some(state) = failed else {
+    let Some(reason) = failed else {
         return Ok(output);
     };
     match output {
         Output::Json(value) => println!("{}", serde_json::to_string_pretty(&value)?),
         Output::Text(text) => println!("{text}"),
     }
-    Err(format!("the job ended {state}").into())
+    Err(reason.into())
 }
 /// Show what will be spent and ask, once. No terminal means no one can answer.
 fn confirm(summary: &str, yes: bool) -> Result<bool, ml_exp_client::Error> {

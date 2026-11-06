@@ -22,6 +22,8 @@ pub struct PreparedArchive {
     pub bytes: u64,
     /// The members when this side packed it; an archive read back does not list them.
     pub paths: Vec<String>,
+    /// Paths, executable bits and contents, so it does not change with the compression.
+    pub content_sha256: String,
 }
 /// Callers cannot replace the route, length, or archive identity after planning.
 #[derive(Clone, Debug)]
@@ -233,9 +235,11 @@ pub fn inspect_archive(mut file: File) -> Result<PreparedArchive, Error> {
         return Err(packing());
     }
     file.seek(SeekFrom::Start(0)).map_err(|_| packing())?;
+    let sha256 = format!("{:x}", digest.finalize());
     Ok(PreparedArchive {
         file,
-        sha256: format!("{:x}", digest.finalize()),
+        content_sha256: sha256.clone(),
+        sha256,
         bytes,
         paths: Vec::new(),
     })
@@ -293,6 +297,18 @@ fn path_policy(path: &str) -> PathPolicy {
     }
 }
 
+/// Hashes exactly the bytes that go into the archive, without reading them twice.
+struct Hashing<'a, R> {
+    inner: R,
+    digest: &'a mut Sha256,
+}
+impl<R: Read> Read for Hashing<'_, R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let count = self.inner.read(buffer)?;
+        self.digest.update(&buffer[..count]);
+        Ok(count)
+    }
+}
 struct BoundedWriter {
     file: File,
     bytes: u64,
@@ -316,26 +332,26 @@ impl Write for BoundedWriter {
 }
 
 /// What git would keep in this directory: tracked files, and untracked ones it does
-/// not ignore. A tracked path that is a directory is a submodule, kept whole.
+/// not ignore, by each nested repository's own rules. A listed directory with no
+/// repository of its own is an uninitialized submodule, and holds nothing.
 struct Selection {
     files: std::collections::BTreeSet<String>,
     directories: std::collections::BTreeSet<String>,
 }
 impl Selection {
-    fn from_listing(listing: &[u8]) -> Option<Self> {
-        let mut files = std::collections::BTreeSet::new();
+    fn new(paths: Vec<String>) -> Self {
         let mut directories = std::collections::BTreeSet::new();
-        for raw in listing.split(|byte| *byte == 0).filter(|p| !p.is_empty()) {
-            // An untracked nested repository is listed once, as `nested/`, and kept whole.
-            let path = std::str::from_utf8(raw).ok()?.trim_end_matches('/');
-            let mut child = path;
+        for path in &paths {
+            let mut child = path.as_str();
             while let Some((parent, _)) = child.rsplit_once('/') {
                 directories.insert(parent.to_owned());
                 child = parent;
             }
-            files.insert(path.to_owned());
         }
-        Some(Self { files, directories })
+        Self {
+            files: paths.into_iter().collect(),
+            directories,
+        }
     }
     fn includes(&self, path: &str) -> bool {
         if self.files.contains(path) || self.directories.contains(path) {
@@ -368,22 +384,43 @@ fn git_selection(directory: &Path) -> Result<Option<Selection>, Error> {
             directory.display()
         ))
     };
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(directory)
-        .args(["-c", "core.fsmonitor=false", "ls-files", "-z"])
-        .args(["--cached", "--others", "--exclude-standard"])
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .output()
-        .map_err(|_| unreadable())?;
-    if !output.status.success() {
-        return Err(unreadable());
+    let list = |root: &Path| -> Option<Vec<String>> {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["-c", "core.fsmonitor=false", "ls-files", "-z"])
+            .args(["--cached", "--others", "--exclude-standard"])
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|path| !path.is_empty())
+            .map(|path| std::str::from_utf8(path).ok().map(str::to_owned))
+            .collect()
+    };
+    let mut files = Vec::new();
+    let mut pending = vec![(directory.to_path_buf(), String::new())];
+    while let Some((root, prefix)) = pending.pop() {
+        for path in list(&root).ok_or_else(unreadable)? {
+            // A nested repository is listed as `nested/` and a submodule as `nested`.
+            let path = path.trim_end_matches('/');
+            let full = member(&prefix, path);
+            let inner = root.join(path);
+            if inner.join(".git").exists() {
+                pending.push((inner, full));
+            } else {
+                files.push(full);
+            }
+        }
     }
-    Selection::from_listing(&output.stdout)
-        .map(Some)
-        .ok_or_else(unreadable)
+    Ok(Some(Selection::new(files)))
 }
 fn member(relative: &str, name: &str) -> String {
     if relative.is_empty() {
@@ -540,6 +577,7 @@ pub fn pack_directory(path: &Path) -> Result<PreparedArchive, Error> {
         .mtime(0)
         .write(writer, flate2::Compression::default());
     let mut archive = tar::Builder::new(compressed);
+    let mut content = Sha256::new();
     for entry in &entries {
         let mut file = entry
             .parent
@@ -560,7 +598,13 @@ pub fn pack_directory(path: &Path) -> Result<PreparedArchive, Error> {
         header.set_mode(if executable { 0o500 } else { 0o400 });
         header.set_size(entry.metadata.len());
         header.set_cksum();
-        let mut body = (&mut file).take(entry.metadata.len());
+        content.update(entry.path.as_bytes());
+        content.update([0, u8::from(executable)]);
+        content.update(entry.metadata.len().to_le_bytes());
+        let mut body = Hashing {
+            inner: (&mut file).take(entry.metadata.len()),
+            digest: &mut content,
+        };
         archive
             .append_data(&mut header, &entry.path, &mut body)
             .map_err(|_| {
@@ -572,7 +616,7 @@ pub fn pack_directory(path: &Path) -> Result<PreparedArchive, Error> {
                     ),
                 )
             })?;
-        if body.limit() != 0
+        if body.inner.limit() != 0
             || !same_metadata(&entry.metadata, &file.metadata().map_err(|_| packing())?)
         {
             return Err(packing());
@@ -603,5 +647,6 @@ pub fn pack_directory(path: &Path) -> Result<PreparedArchive, Error> {
     }
     let mut prepared = inspect_archive(writer.file)?;
     prepared.paths = entries.into_iter().map(|entry| entry.path).collect();
+    prepared.content_sha256 = format!("{:x}", content.finalize());
     Ok(prepared)
 }

@@ -34,6 +34,15 @@ struct World {
     execute_never_arrives: bool,
     /// Cloud reports through its observation; Slurm through the Submission's result.
     cloud: bool,
+    /// Whether the server's background polling reports a Slurm job's later states.
+    polling: bool,
+    /// A build left running by an API restart: no receipt yet, with the builder alive.
+    restarted: bool,
+    builder_gone: bool,
+    no_executors: bool,
+    cpu_limit: u32,
+    /// The first prepared request, which any later one must equal.
+    prepared_request: Option<Value>,
     /// The backend's states, oldest first; the last one stays.
     job_states: Vec<(&'static str, &'static str)>,
     reads_down: bool,
@@ -57,6 +66,12 @@ impl World {
             authorize_never_arrives: false,
             execute_never_arrives: false,
             cloud: true,
+            polling: true,
+            restarted: false,
+            builder_gone: false,
+            no_executors: false,
+            cpu_limit: 8,
+            prepared_request: None,
             job_states: vec![("RUNNING", "Running"), ("SUCCEEDED", "Succeeded")],
             reads_down: false,
             progress_reads: 0,
@@ -80,7 +95,11 @@ impl World {
                 value["cloud_observation"] = json!({"observation":{"job_id":"job",
                     "provider_state":own,"state":state,"queue":null}});
             } else {
-                value["execution"]["result"]["observation"] = json!({"status":{"state":state}});
+                let shown = if self.polling { state } else { "QUEUED" };
+                value["execution"]["result"]["observation"] = json!({"status":{"state":shown}});
+                if self.polling {
+                    value["native_scheduler_observation"] = json!(true);
+                }
             }
         }
         if !self.cloud {
@@ -101,8 +120,12 @@ impl World {
         let ready = self.continues > self.continues_until_ready;
         json!({"project":"demo","preparation_id":id,"run_id":"train",
             "runtime":{"runtime_id":RUNTIME,
-                "status":if self.build_failed {"RECONCILE_REQUIRED"} else if ready {"READY"} else {"EXECUTING"},
-                "build_error":if self.build_failed {json!({"code":"BAD_DOCKERFILE"})} else {Value::Null}},
+                "status":if self.build_failed || (self.restarted && !ready) {"RECONCILE_REQUIRED"} else if ready {"READY"} else {"EXECUTING"},
+                "build_error":if self.build_failed {
+                    json!({"code":"BUILD_RECEIPT_MISSING","build_failure":{"code":"BAD_DOCKERFILE"}})
+                } else if self.restarted && !ready {
+                    json!({"code":"BUILD_RECEIPT_MISSING"})
+                } else {Value::Null}},
             "phase":"ENVIRONMENT_PREPARATION","status":"PREPARING",
             "confirmation":format!("PREPARE {}",id.unwrap_or_default()),
             "submission":if ready {
@@ -125,10 +148,11 @@ impl World {
                     "native-cancellation.v1"],
                     "scheduler_mutations":true}),
             ),
+            ("GET", "/api/executors") if self.no_executors => (200, json!({"executors":[]})),
             ("GET", "/api/executors") => (
                 200,
                 json!({"executors":[{"executor_id":"pai","enabled":true,"run_creation":true,
-                    "limits":{"gpus":1,"cpus":8,"memory_gb":32,"walltime_seconds":3600}}]}),
+                    "limits":{"gpus":1,"cpus":self.cpu_limit,"memory_gb":32,"walltime_seconds":3600}}]}),
             ),
             ("GET", r) if r.contains("/source-imports/") => (404, json!({"code":"NOT_FOUND"})),
             ("POST", "/api/source-imports/archive") => {
@@ -152,6 +176,12 @@ impl World {
             ("POST", "/api/projects/demo/experiment-preparations") => {
                 self.prepared = true;
                 let request: Value = serde_json::from_slice(body).unwrap();
+                match &self.prepared_request {
+                    Some(first) if *first != request => {
+                        return Some((409, json!({"code":"CLOUD_EVIDENCE_INVALID"})));
+                    }
+                    _ => self.prepared_request = Some(request.clone()),
+                }
                 let id = ml_exp_core::preparation::id("demo", request["request_id"].as_str()?);
                 (200, json!({"project":"demo","preparation_id":id.unwrap()}))
             }
@@ -165,13 +195,17 @@ impl World {
                 value["submission_id"] = json!(id);
                 value["confirmation"] = json!(format!("EXECUTE {id}"));
                 // Slurm's view has the latest state; a cloud view waits for a refresh.
-                if !self.cloud && self.status == "VERIFIED" {
+                if !self.cloud && self.polling && self.status == "VERIFIED" {
                     self.advance_job();
                 }
                 (200, value)
             }
             ("POST", r) if r.ends_with("/cancel") => (200, self.submission()),
             ("POST", r) if r.ends_with("/retry") => {
+                let (state, _) = self.job_states[0];
+                if !matches!(state, "SUCCEEDED" | "FAILED" | "CANCELLED") {
+                    return Some((409, json!({"code":"CLOUD_EVIDENCE_INVALID"})));
+                }
                 let request: ml_exp_core::first_submission::native::retry::Request =
                     serde_json::from_slice(body).unwrap();
                 let (run, _) = request.parent().unwrap();
@@ -240,7 +274,8 @@ impl World {
                 (
                     200,
                     json!({"runtime_id":RUNTIME,"lines":lines,
-                        "progress":{"phase":"BUILDING_ON_DSW","message":"Docker build running"}}),
+                        "progress":{"phase":"BUILDING_ON_DSW","message":"Docker build running",
+                            "status":if self.builder_gone {"RECONCILE_REQUIRED"} else {"EXECUTING"}}}),
                 )
             }
             _ => (404, json!({"code":"NOT_FOUND"})),
@@ -410,6 +445,7 @@ impl Files {
                 poll: Duration::from_millis(1),
                 deadline: Duration::from_secs(5),
                 follow,
+                silence: Duration::from_millis(30),
                 follow_poll: Duration::from_millis(1),
             },
         )
@@ -581,6 +617,7 @@ fn an_unknown_executor_or_too_many_gpus_is_refused_before_the_question() {
                 poll: Duration::from_millis(1),
                 deadline: Duration::from_secs(5),
                 follow: false,
+                silence: Duration::from_millis(30),
                 follow_poll: Duration::from_millis(1),
             },
         );
@@ -687,6 +724,7 @@ fn quiet(confirm: &mut dyn FnMut(&str) -> Result<bool, Error>) -> Hooks<'_> {
         poll: Duration::from_millis(1),
         deadline: Duration::from_secs(5),
         follow: false,
+        silence: Duration::from_millis(30),
         follow_poll: Duration::from_millis(1),
     }
 }
@@ -703,6 +741,7 @@ fn submitted_train(files: &Files, fake: &Fake) {
             poll: Duration::from_millis(1),
             deadline: Duration::from_secs(5),
             follow: false,
+            silence: Duration::from_millis(30),
             follow_poll: Duration::from_millis(1),
         },
     )
@@ -728,6 +767,7 @@ fn cancel_says_what_it_will_stop_and_declining_sends_nothing() {
             poll: Duration::from_millis(1),
             deadline: Duration::from_secs(5),
             follow: false,
+            silence: Duration::from_millis(30),
             follow_poll: Duration::from_millis(1),
         },
     );
@@ -746,6 +786,7 @@ fn cancel_says_what_it_will_stop_and_declining_sends_nothing() {
             poll: Duration::from_millis(1),
             deadline: Duration::from_secs(5),
             follow: false,
+            silence: Duration::from_millis(30),
             follow_poll: Duration::from_millis(1),
         },
     )
@@ -774,6 +815,7 @@ fn retry_creates_the_next_attempt_and_sends_exactly_one_new_job() {
             poll: Duration::from_millis(1),
             deadline: Duration::from_secs(5),
             follow: false,
+            silence: Duration::from_millis(30),
             follow_poll: Duration::from_millis(1),
         },
     )
@@ -813,6 +855,7 @@ fn declining_a_retry_creates_nothing() {
             poll: Duration::from_millis(1),
             deadline: Duration::from_secs(5),
             follow: false,
+            silence: Duration::from_millis(30),
             follow_poll: Duration::from_millis(1),
         },
     );
@@ -829,7 +872,10 @@ fn a_lost_request_that_sent_nothing_is_not_reported_as_submitted() {
         world.execute_never_arrives = !lost_at_authorize;
         let fake = Fake::start(world);
         let error = files.run(&fake, true, &mut Vec::new()).unwrap_err();
-        assert!(error.to_string().contains("no job was sent"), "{error}");
+        assert!(
+            error.to_string().contains("no job has been sent"),
+            "{error}"
+        );
         // Repeating after the network recovers finishes it, with one job.
         {
             let mut world = fake.world.lock().unwrap();
@@ -857,34 +903,156 @@ fn following_a_slurm_job_reads_the_view_that_has_the_latest_state_and_ends() {
 }
 
 #[test]
-fn following_stops_when_nothing_changes_for_a_long_time() {
+fn watching_says_so_when_the_server_reports_nothing_and_does_not_claim_success() {
     let files = Files::new();
     let mut world = World::new();
-    world.job_states = vec![("RUNNING", "Running")];
-    world.status = "VERIFIED";
-    world.prepared = true;
-    world.continues = 2;
+    world.cloud = false;
+    world.polling = false;
     let fake = Fake::start(world);
     let mut shown = Vec::new();
-    let value = submit::run(
-        &fake.client(),
-        &files.spec(),
-        &files.root.path().join("states"),
-        Hooks {
-            confirm: &mut |_| Ok(true),
-            progress: &mut |line| shown.push(line.to_owned()),
-            poll: Duration::from_millis(1),
-            deadline: Duration::from_millis(30),
-            follow: true,
-            follow_poll: Duration::from_millis(1),
-        },
-    )
-    .unwrap();
-    assert_eq!(value["job_state"], "RUNNING");
+    let value = files
+        .drive(&fake, true, &mut Vec::new(), true, &mut shown)
+        .unwrap();
+    assert_eq!(value["watching_stopped"], true);
+    assert_eq!(value["job_over"], false);
+    assert!(submit::failure(&value).is_some(), "not read as success");
     assert!(
-        shown.iter().any(|line| line.contains("keeps running")),
+        shown.iter().any(|line| line.contains("not reporting")),
         "{shown:?}"
     );
+}
+
+#[test]
+fn a_long_cloud_job_is_watched_for_as_long_as_it_runs() {
+    let files = Files::new();
+    let mut world = World::new();
+    world.job_states = vec![("RUNNING", "Running"); 400];
+    world.job_states.push(("SUCCEEDED", "Succeeded"));
+    let fake = Fake::start(world);
+    let mut shown = Vec::new();
+    let value = files
+        .drive(&fake, true, &mut Vec::new(), true, &mut shown)
+        .unwrap();
+    assert_eq!(
+        value["job_state"], "SUCCEEDED",
+        "well past the 30 ms silence limit"
+    );
+    assert_eq!(value["watching_stopped"], false);
+}
+
+#[test]
+fn retry_on_a_server_not_polling_slurm_leaves_the_decision_to_the_server() {
+    let files = Files::new();
+    let mut world = ended();
+    world.cloud = false;
+    world.polling = false;
+    let fake = Fake::start(world);
+    submitted_train(&files, &fake);
+    let states = files.root.path().join("states");
+    submit::retry(&fake.client(), &states, None, quiet(&mut |_| Ok(true))).unwrap();
+    assert_eq!(fake.count("POST", "/retry"), 1);
+}
+
+#[test]
+fn a_build_left_running_by_a_restart_is_not_called_failed() {
+    let files = Files::new();
+    let mut world = World::new();
+    world.restarted = true;
+    let fake = Fake::start(world);
+    let value = files.run(&fake, true, &mut Vec::new()).unwrap();
+    assert_eq!(value["status"], "VERIFIED");
+}
+
+#[test]
+fn a_build_that_left_nothing_says_its_outcome_is_unresolved() {
+    let files = Files::new();
+    let mut world = World::new();
+    world.restarted = true;
+    world.builder_gone = true;
+    world.continues_until_ready = u32::MAX;
+    let fake = Fake::start(world);
+    let text = files
+        .run(&fake, true, &mut Vec::new())
+        .unwrap_err()
+        .to_string();
+    assert!(text.contains("unresolved"), "{text}");
+    assert_eq!(fake.count("POST", "/execute"), 0);
+}
+
+#[test]
+fn a_job_stays_reachable_when_its_executor_has_gone() {
+    let files = Files::new();
+    let fake = Fake::start(World::new());
+    files.run(&fake, true, &mut Vec::new()).unwrap();
+    fake.world.lock().unwrap().no_executors = true;
+    let mut asked = Vec::new();
+    let value = files.run(&fake, true, &mut asked).unwrap();
+    assert_eq!(value["already_submitted"], true);
+    assert!(asked.is_empty());
+}
+
+#[test]
+fn a_changed_limit_does_not_conflict_with_what_was_already_prepared() {
+    let files = Files::new();
+    let mut world = World::new();
+    world.authorize_never_arrives = true;
+    let fake = Fake::start(world);
+    assert!(files.run(&fake, true, &mut Vec::new()).is_err());
+    {
+        let mut world = fake.world.lock().unwrap();
+        world.authorize_never_arrives = false;
+        world.cpu_limit = 4;
+    }
+    let value = files.run(&fake, true, &mut Vec::new()).unwrap();
+    assert_eq!(value["status"], "VERIFIED");
+    assert_eq!(fake.count("POST", "/experiment-preparations"), 1);
+}
+
+#[test]
+fn another_server_does_not_inherit_this_servers_state_file() {
+    let files = Files::new();
+    let first = Fake::start(World::new());
+    files.run(&first, true, &mut Vec::new()).unwrap();
+    let second = Fake::start(World::new());
+    let value = files.run(&second, true, &mut Vec::new()).unwrap();
+    assert_eq!(value["status"], "VERIFIED");
+    assert_eq!(second.count("POST", "/execute"), 1);
+}
+
+#[test]
+fn an_unresolved_send_stays_unsettled_and_retry_reconciles_it() {
+    let files = Files::new();
+    let fake = Fake::start(ended());
+    submitted_train(&files, &fake);
+    {
+        let mut world = fake.world.lock().unwrap();
+        world.status = "RECONCILE_REQUIRED";
+        world.next_action = "RECONCILE";
+    }
+    let states = files.root.path().join("states");
+    let value = submit::retry(&fake.client(), &states, None, quiet(&mut |_| Ok(true))).unwrap();
+    assert_eq!(fake.count("POST", "/reconcile"), 1);
+    // The fake's reconcile confirms it, so this was a real request for a new Attempt.
+    assert_eq!(value["status"], "VERIFIED");
+}
+
+#[test]
+fn a_checkpoint_is_not_silently_ignored_for_an_attempt_already_prepared() {
+    let files = Files::new();
+    let fake = Fake::start(ended());
+    submitted_train(&files, &fake);
+    fake.world.lock().unwrap().status = "AUTHORIZED";
+    let states = files.root.path().join("states");
+    let text = submit::retry(
+        &fake.client(),
+        &states,
+        Some(format!("checkpoint.{}", "a".repeat(64))),
+        quiet(&mut |_| Ok(true)),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(text.contains("--checkpoint"), "{text}");
+    assert_eq!(fake.count("POST", "/execute"), 1);
 }
 
 #[test]
@@ -922,7 +1090,7 @@ fn nothing_can_act_on_a_submission_that_is_still_being_prepared() {
     let text = submit::cancel(&fake.client(), &states, quiet(&mut |_| Ok(true)))
         .unwrap_err()
         .to_string();
-    assert!(text.contains("still being prepared"), "{text}");
+    assert!(text.contains("has not sent a job"), "{text}");
     assert!(submit::retry(&fake.client(), &states, None, quiet(&mut |_| Ok(true))).is_err());
     assert_eq!(fake.mutations(), mutations);
 }
@@ -964,7 +1132,7 @@ fn repeating_retry_after_an_unknown_outcome_only_finds_out_what_happened() {
 }
 
 #[test]
-fn retry_is_refused_while_the_job_has_not_ended() {
+fn retry_is_refused_while_a_cloud_job_has_not_ended() {
     let files = Files::new();
     let mut world = World::new();
     world.job_states = vec![("RUNNING", "Running")];
