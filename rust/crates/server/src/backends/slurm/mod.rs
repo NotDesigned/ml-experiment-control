@@ -4,6 +4,7 @@
 mod transport;
 pub use transport::*;
 pub mod action;
+pub mod service;
 
 #[cfg(test)]
 mod tests;

@@ -183,7 +183,10 @@ def runs_module_failures(root):
 def service_crossing_failures(root):
     """Neither service names the other: each asks through a one-question trait."""
     failures = []
-    for home, other in [("cloud_runs", "submissions"), ("submissions", "cloud_runs")]:
+    for home, other in [
+        ("cloud_runs", "submissions"),
+        ("backends/slurm/service", "cloud_runs"),
+    ]:
         pattern = re.compile(rf"\b{other}::Service\b")
         for path in rust_files(root, SERVER / home):
             for line in code_lines(root, path):
@@ -308,12 +311,14 @@ class GuardDetects(unittest.TestCase):
 
     def test_a_service_naming_the_other_fails(self):
         self.write(SERVER / "cloud_runs/preparations.rs", "// submissions::Service\nuse crate::why;\n")
-        self.write(SERVER / "submissions/service.rs", "pub trait RuntimeBuilder {}\n")
+        self.write(SERVER / "backends/slurm/service/engine.rs", "pub trait RuntimeBuilder {}\n")
         self.assertEqual(service_crossing_failures(self.root), [])
         self.write(
             SERVER / "cloud_runs/preparations.rs", "slurm: Option<&crate::submissions::Service>,\n"
         )
-        self.write(SERVER / "submissions/service.rs", "cloud: Arc<crate::cloud_runs::Service>,\n")
+        self.write(
+            SERVER / "backends/slurm/service/engine.rs", "cloud: Arc<crate::cloud_runs::Service>,\n"
+        )
         self.assertEqual(len(service_crossing_failures(self.root)), 2)
 
 

@@ -31,8 +31,8 @@ mod renewal;
 pub mod runs;
 pub mod sources;
 pub mod storage;
-pub mod submissions;
 pub mod tracking;
+// Tests pinned by the no-replay guard name this path.
 use axum::{
     Json, Router,
     extract::{Request, State},
@@ -41,6 +41,8 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
+#[doc(hidden)]
+pub use backends::slurm::service as submissions;
 use ml_exp_io::read_private;
 use serde_json::json;
 use std::{path::Path, sync::Arc};
