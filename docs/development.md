@@ -40,13 +40,16 @@ builder rollout, verify a real daemon build and receipt. See the native guide.
 
 ## CI and publication
 
-`native-quality` checks PRs. On `main`, it reuses a successful PR run only after
-verifying its exact Git tree and matching run-attempt evidence; missing evidence
-or an API failure causes full checks. Direct changes to `main` receive full
-checks. Rust fmt, clippy, all workspace tests, executable smoke, the optional
-image bridge and client tests on Linux ARM64, macOS Intel/Apple Silicon and
-Windows x86_64 are required. The final `test` job fails if a required job is skipped
-or unsuccessful without verified reuse evidence.
+`native-quality` checks PRs on Linux x86_64 only: Rust fmt, clippy, all workspace
+tests, executable smoke and the optional image bridge. A problem specific to another
+platform therefore shows up after merging, or at release.
+
+On `main`, client tests on Linux ARM64, macOS Intel/Apple Silicon and Windows x86_64
+always run, because a PR's evidence does not cover them. The Linux checks reuse a
+successful PR run only after verifying its exact Git tree and matching run-attempt
+evidence; missing evidence or an API failure causes full checks, and direct changes to
+`main` receive full checks. The final `test` job fails if a required job is skipped or
+unsuccessful without verified reuse evidence.
 
 `native-release` builds and tests the exact release executables, including a
 static musl worker. A manual run packages candidates without publication. After
