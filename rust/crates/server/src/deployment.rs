@@ -239,6 +239,15 @@ impl Settings {
             return Err(at("registry_already_exists"));
         }
         let reads = crate::read_config::load(&self.read_config).map_err(why!(at("read_config")))?;
+        // A new registry would discover whatever Runs an old root holds. Names only.
+        for root in reads.projects.iter().flat_map(|p| &p.run_roots) {
+            let names = ml_exp_io::directory::Directory::open(root, false)
+                .and_then(|directory| directory.entry_names())
+                .map_err(why!(at("project_run_root")))?;
+            if !names.is_empty() {
+                return Err(at("project_run_root_not_empty"));
+            }
+        }
         let workspace = crate::read_config::initialize(&reads.registry_root)
             .map_err(why!(at("registry_creation")))?;
         let mut stores = vec!["registry"];

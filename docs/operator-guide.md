@@ -83,6 +83,8 @@ startup does not initialize missing stores.
 A `registry_root` holding the retired `.rust-preview-workspace.json` marker refuses
 every command with `registry_predates_clean_restart`. Set `registry_root` to a new
 path and run `--initialize`. Nothing in the old registry is read or changed.
+`--initialize` also refuses a Project run root that is not empty, with
+`project_run_root_not_empty`, because a new registry would discover what it holds.
 
 ## Upgrade a release
 

@@ -388,3 +388,18 @@ fn absent_registry_is_created_with_the_new_marker_and_an_altered_marker_is_refus
         }
     }
 }
+
+#[test]
+fn initialize_refuses_an_occupied_run_root_and_leaves_no_registry() {
+    let fixture = Fixture::new();
+    let root = fixture.temp.path();
+    fs::create_dir(root.join("runs/old-run")).unwrap();
+    fs::write(root.join("runs/old-run/manifest.yaml"), b"\xff not yaml").unwrap();
+    let before = tree(root);
+    refused(
+        &fixture.command("--initialize"),
+        "project_run_root_not_empty",
+    );
+    assert!(!fixture.registry.exists());
+    assert_eq!(before, tree(root));
+}
