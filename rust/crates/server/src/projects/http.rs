@@ -390,7 +390,6 @@ mod tests {
         let initial = fixture.files();
         let health = fixture.get("/api/health").await;
         assert_eq!(health["projects"], 1);
-        assert_eq!(health["project_writes"], false);
         assert_eq!(health["scheduler_mutations"], false);
         assert!(
             health["capabilities"]

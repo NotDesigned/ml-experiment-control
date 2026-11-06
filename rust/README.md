@@ -8,12 +8,9 @@ Code implementation, automated verification, provider acceptance and production
 cutover are separate milestones. See [the migration status](../docs/rust-rewrite.md).
 Never initialize a new registry over existing production state.
 
-`GET /api/actions/policy` supports the older client's connection check. It reports
-configured native permissions without contacting a provider. `GET /api/readiness`
-still reports `training=INCOMPLETE`: full backend GPU acceptance has not been
-recorded. A successful connection
-check is not training acceptance; the older client's `check --training` remains
-unsuccessful while training readiness is incomplete. Readiness now includes
+`GET /api/readiness` still reports `training=INCOMPLETE`: full backend GPU
+acceptance has not been recorded. A successful connection check is not training
+acceptance. Readiness now includes
 `checks`, `backends` and `submission_available_backends`. Configuration permission,
 cached provider connectivity and recorded GPU acceptance are reported separately.
 These GETs do not query providers or start jobs.

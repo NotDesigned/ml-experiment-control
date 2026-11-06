@@ -186,12 +186,10 @@ fn health_document(
         "status":"ok", "server_version":env!("CARGO_PKG_VERSION"),
         "api_protocol_version":API_PROTOCOL_VERSION, "min_client_protocol_version":2,
         "openapi_path":"/api/v2/openapi.json", "capabilities":capabilities,
-        "authentication":"bearer", "transport_security":"http", "projects":projects,
-        "workspace_id":workspace_id, "local_reads_configured":reads, "collector_enabled":false,
-        "collector_requested":false, "collector_error":null, "storage_maintenance_error":null,
-        "project_write_recovery_errors":[], "project_writes":false, "source_imports":sources.is_some(),
+        "projects":projects, "workspace_id":workspace_id, "local_reads_configured":reads,
         "source_archive_limits":sources.map(sources::Service::limits),
-        "scheduler_mutations":submissions.is_some_and(submissions::Service::enabled), "run_writes":submissions.is_some_and(submissions::Service::can_create_runs), "local_evidence_rebuild":false, "telemetry_enabled":false,
+        "scheduler_mutations":submissions.is_some_and(submissions::Service::enabled),
+        "run_writes":submissions.is_some_and(submissions::Service::can_create_runs),
         "deployment":readiness::observe(None)
     })
 }
@@ -301,31 +299,6 @@ async fn readiness(State(state): State<Arc<AppState>>) -> Response {
     .await
 }
 
-/// Compatibility summary for connection checks. These are configured native
-/// permissions, not provider admission evidence or authorization for old Actions.
-fn policy_document(sources: bool, scheduler: bool, administration: bool) -> serde_json::Value {
-    json!({
-        "allow_project_writes":false,
-        "allow_source_imports":sources,
-        "allow_scheduler_mutations":scheduler,
-        "allow_local_evidence_rebuild":false,
-        "allow_resource_deletions":administration,
-        "scope":"native_namespaces"
-    })
-}
-
-async fn action_policy(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    let reads = state.reads.as_deref();
-    let slurm = reads.and_then(read_api::Api::submissions);
-    let cloud = reads.and_then(read_api::Api::cloud);
-    Json(policy_document(
-        reads.is_some_and(|api| api.sources().is_some()),
-        slurm.as_ref().is_some_and(|service| service.enabled())
-            || cloud.as_ref().is_some_and(|service| service.enabled()),
-        reads.is_some_and(|api| api.administration().is_some()),
-    ))
-}
-
 fn schema_document() -> serde_json::Value {
     let parameter = |name: &str| json!({"$ref":format!("#/components/parameters/{name}")});
     let operation = |description: &str, parameters: Vec<serde_json::Value>| {
@@ -378,7 +351,7 @@ fn schema_document() -> serde_json::Value {
     let mut collection = run();
     collection.push(parameter("attempt"));
     let mut document = json!({"openapi":"3.1.0", "info":{"title":"ML-Expd Rust isolated preview", "version":env!("CARGO_PKG_VERSION"),
-    "description":"Incomplete native migration. Experiment GETs only observe approved isolated evidence. Explicit project lifecycle POSTs update their dedicated registry ledger. Separately configured native Slurm submissions can prepare, authorize, execute once and reconcile the original owned job. The optional native Slurm artifact path explicitly collects backend results, streams exact archives and accepts verified ACKs; original outputs and checkpoints remain. Legacy collection JSON alone never establishes download availability."},
+    "description":"Experiment GETs only observe approved isolated evidence. Explicit project lifecycle POSTs update their dedicated registry ledger. Separately configured native submissions can prepare, authorize, execute once and reconcile the original owned job. The optional artifact path explicitly collects backend results, streams exact archives and accepts verified ACKs; original outputs and checkpoints remain. Collection JSON alone never establishes download availability."},
     "components":{"securitySchemes":{"bearer":{"type":"http","scheme":"bearer"}},"parameters":{
         "protocol":{"in":"header","name":CLIENT_PROTOCOL_HEADER,"required":true,"schema":{"type":"integer","const":2}},
         "project":{"in":"path","name":"project","required":true,"schema":{"type":"string"}},
@@ -681,7 +654,6 @@ pub fn app(auth: Auth, reads: Option<Arc<read_api::Api>>) -> Router {
     Router::new()
         .route("/api/health", get(health))
         .route("/api/readiness", get(readiness))
-        .route("/api/actions/policy", get(action_policy))
         .route("/api/v2/openapi.json", get(schema))
         .merge(read_http::routes())
         .merge(projects::http::routes())
@@ -748,9 +720,6 @@ mod tests {
             ("/api/readiness", "", 426),
             ("/api/readiness", "1", 426),
             ("/api/readiness", "2", 200),
-            ("/api/actions/policy", "", 426),
-            ("/api/actions/policy", "1", 426),
-            ("/api/actions/policy", "2", 200),
             ("/api/actions/execute", "2", 501),
         ] {
             let response = make()
@@ -768,15 +737,7 @@ mod tests {
         }
     }
     #[tokio::test]
-    async fn policy_is_authenticated_read_only_and_closed_without_configuration() {
-        let make = || {
-            app(
-                Auth {
-                    token: TOKEN.into(),
-                },
-                None,
-            )
-        };
+    async fn reads_are_authenticated_and_other_methods_are_refused() {
         for (method, authorization, expected) in [
             (Method::GET, false, StatusCode::UNAUTHORIZED),
             (Method::GET, true, StatusCode::OK),
@@ -784,23 +745,21 @@ mod tests {
         ] {
             let mut request = Request::builder()
                 .method(method)
-                .uri("/api/actions/policy")
+                .uri("/api/readiness")
                 .header(CLIENT_PROTOCOL_HEADER, "2");
             if authorization {
                 request = request.header("authorization", format!("Bearer {TOKEN}"));
             }
-            let response = make()
-                .oneshot(request.body(Body::empty()).unwrap())
-                .await
-                .unwrap();
+            let response = app(
+                Auth {
+                    token: TOKEN.into(),
+                },
+                None,
+            )
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
             assert_eq!(response.status(), expected);
-            if expected == StatusCode::OK {
-                let data: serde_json::Value =
-                    serde_json::from_slice(&to_bytes(response.into_body(), 65536).await.unwrap())
-                        .unwrap();
-                assert_eq!(data, policy_document(false, false, false));
-                assert!(!data.to_string().contains(TOKEN));
-            }
         }
     }
     #[tokio::test]
@@ -924,7 +883,6 @@ mod schema_tests {
             }
         }
         for path in [
-            "/api/actions/policy",
             "/api/executors",
             "/api/backends/{executor}/capacity",
             "/api/projects/{project}/experiment-preparations",
@@ -968,7 +926,6 @@ mod schema_tests {
                 .iter()
                 .any(|v| v == "project-lifecycle.v1")
         );
-        assert_eq!(lifecycle["project_writes"], false);
         assert_eq!(lifecycle["scheduler_mutations"], false);
     }
 }

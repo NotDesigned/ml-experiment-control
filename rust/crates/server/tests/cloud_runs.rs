@@ -706,10 +706,10 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         .expect("native cloud startup");
     let client = ml_exp_client::Client::new(&format!("http://{address}"), token.into()).unwrap();
     let health = client.negotiate().unwrap();
-    let policy = client.get("/api/actions/policy").unwrap();
-    assert_eq!(policy["allow_source_imports"], true);
-    assert_eq!(policy["allow_scheduler_mutations"], false);
-    assert_eq!(policy["allow_resource_deletions"], false);
+    assert_eq!(health["scheduler_mutations"], false);
+    let capabilities = health["capabilities"].as_array().unwrap();
+    assert!(capabilities.iter().any(|v| v == "source-archive.v1"));
+    assert!(!capabilities.iter().any(|v| v == "native-administration.v1"));
     assert_eq!(
         client.get("/api/readiness").unwrap()["training"],
         "INCOMPLETE"

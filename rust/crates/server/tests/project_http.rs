@@ -224,7 +224,6 @@ fn native_cli_lifecycle_and_auto_discovered_reads_survive_restart_without_resurr
             .unwrap()
             .contains(&json!("project-lifecycle.v1"))
     );
-    assert_eq!(health["project_writes"], false);
     assert_eq!(health["scheduler_mutations"], false);
     let rows = client.get("/api/projects").unwrap();
     let rows = rows.as_array().unwrap();

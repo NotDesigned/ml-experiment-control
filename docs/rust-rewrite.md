@@ -16,14 +16,10 @@ Lock contention is not a frozen-identity failure. Scheduler observation times
 remain unknown where the retained record has no timestamp; PAI image-pull events
 are not yet included in the cached Run summary.
 
-`GET /api/actions/policy` exposes native permission flags for older client
-connection checks. It neither enables old Action mutation routes nor probes a
-provider. The reported `training=INCOMPLETE` describes remaining acceptance work,
-not an unfinished file transfer: Slurm GPU training/restore and SenseCore GPU
-acceptance remain unproven. PAI CPU/H200 and W&B cloud
-acceptance passed in bounded tests. These do not establish large-model or all-backend
-acceptance. The older client's normal `check` can succeed; `check --training`
-continues to fail closed.
+The reported `training=INCOMPLETE` describes remaining acceptance work, not an
+unfinished file transfer: Slurm GPU training/restore and SenseCore GPU acceptance
+remain unproven. PAI CPU/H200 and W&B cloud acceptance passed in bounded tests.
+These do not establish large-model or all-backend acceptance.
 
 “Connected” below means the CLI/API/service/worker code exists. It does not mean an
 actual provider run has passed.
