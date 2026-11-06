@@ -1,7 +1,10 @@
 use super::{Definition, Settings};
 use crate::{
     backends::cloud::{
-        self, Client, Credentials, action::Runner, adapter::Adapter, outbox::Outbox,
+        self, Client, Credentials,
+        action::Runner,
+        adapter::{Adapter, Shared},
+        outbox::Outbox,
     },
     deletion::RunFence,
     experiments,
@@ -32,9 +35,9 @@ const NAME: &str = "cloud-submissions";
 const LOCK: &str = ".cloud-runs.lock";
 struct Backend {
     definition: Definition,
-    adapter: Adapter,
-    collector: Option<Adapter>,
-    data_copier: Option<Adapter>,
+    adapter: Adapter<Shared>,
+    collector: Option<Adapter<Shared>>,
+    data_copier: Option<Adapter<Shared>>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -102,6 +105,21 @@ fn missing() -> cloud::Error {
         uncertain: false,
     }
 }
+/// One signed REST client for one adapter of this backend.
+fn client_transport(definition: &Definition) -> cloud::Result<Shared> {
+    let credentials = Credentials::load(&definition.credentials_file)?;
+    if !credentials.matches_profile(&definition.profile) {
+        return Err(cloud::Error::configuration());
+    }
+    let mut client = Client::new(
+        credentials,
+        Duration::from_secs(definition.timeout_seconds.into()),
+    )?;
+    if let Some(path) = &definition.registry_auth_file {
+        client = client.with_registry_auth(path)?;
+    }
+    Ok(Arc::new(client))
+}
 impl Service {
     pub fn initialize(settings: &read_config::Settings) -> cloud::Result<()> {
         settings
@@ -138,6 +156,39 @@ impl Service {
         lifecycle: Option<Arc<projects::Service>>,
         tracking: ml_exp_core::tracking::RoutingSettings,
     ) -> cloud::Result<Self> {
+        Self::open_using(
+            settings,
+            config,
+            sources,
+            lifecycle,
+            tracking,
+            &client_transport,
+        )
+    }
+    /// Test seam: every adapter of every backend sends through `transport`, and
+    /// no credential file is read. Debug sessions and image builds keep their
+    /// own `Client` and do not pass through this seam.
+    #[doc(hidden)]
+    pub fn open_with_transport(
+        settings: read_config::Settings,
+        config: Settings,
+        sources: Arc<sources::Service>,
+        lifecycle: Option<Arc<projects::Service>>,
+        tracking: ml_exp_core::tracking::RoutingSettings,
+        transport: Shared,
+    ) -> cloud::Result<Self> {
+        Self::open_using(settings, config, sources, lifecycle, tracking, &|_| {
+            Ok(transport.clone())
+        })
+    }
+    fn open_using(
+        settings: read_config::Settings,
+        config: Settings,
+        sources: Arc<sources::Service>,
+        lifecycle: Option<Arc<projects::Service>>,
+        tracking: ml_exp_core::tracking::RoutingSettings,
+        transport: &dyn Fn(&Definition) -> cloud::Result<Shared>,
+    ) -> cloud::Result<Self> {
         settings
             .validate()
             .map_err(why!(cloud::Error::configuration()))?;
@@ -162,45 +213,16 @@ impl Service {
         let mut backends = BTreeMap::new();
         for definition in config.backends {
             definition.validate()?;
-            let credentials = Credentials::load(&definition.credentials_file)?;
-            if !credentials.matches_profile(&definition.profile) {
-                return Err(cloud::Error::configuration());
-            }
-            let mut client = Client::new(
-                credentials,
-                Duration::from_secs(definition.timeout_seconds.into()),
-            )?;
-            if let Some(path) = &definition.registry_auth_file {
-                client = client.with_registry_auth(path)?;
-            }
-            let adapter = Adapter::new(definition.profile.clone(), client)?;
+            let adapter = Adapter::new(definition.profile.clone(), transport(&definition)?)?;
             let collector = definition
                 .collector
                 .as_ref()
-                .map(|profile| {
-                    let mut client = Client::new(
-                        Credentials::load(&definition.credentials_file)?,
-                        Duration::from_secs(definition.timeout_seconds.into()),
-                    )?;
-                    if let Some(path) = &definition.registry_auth_file {
-                        client = client.with_registry_auth(path)?;
-                    }
-                    Adapter::new(profile.clone(), client)
-                })
+                .map(|profile| Adapter::new(profile.clone(), transport(&definition)?))
                 .transpose()?;
             let data_copier = definition
                 .data_copier
                 .as_ref()
-                .map(|profile| {
-                    let mut client = Client::new(
-                        Credentials::load(&definition.credentials_file)?,
-                        Duration::from_secs(definition.timeout_seconds.into()),
-                    )?;
-                    if let Some(path) = &definition.registry_auth_file {
-                        client = client.with_registry_auth(path)?;
-                    }
-                    Adapter::new(profile.clone(), client)
-                })
+                .map(|profile| Adapter::new(profile.clone(), transport(&definition)?))
                 .transpose()?;
             if backends
                 .insert(

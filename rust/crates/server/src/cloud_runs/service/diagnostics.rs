@@ -115,7 +115,7 @@ impl Service {
     #[allow(clippy::too_many_arguments)]
     fn diagnostic(
         &self,
-        collector: &Adapter,
+        collector: &Adapter<Shared>,
         parent: &Job,
         lineage: Value,
         config: Value,
@@ -225,7 +225,12 @@ impl Service {
             "remote_refresh_performed":execute}),
         )
     }
-    fn provider_read(&self, collector: &Adapter, job: &Job, lines: u32) -> cloud::Result<Value> {
+    fn provider_read(
+        &self,
+        collector: &Adapter<Shared>,
+        job: &Job,
+        lines: u32,
+    ) -> cloud::Result<Value> {
         let handle = self
             .sync_outbox
             .optional_status(job)?

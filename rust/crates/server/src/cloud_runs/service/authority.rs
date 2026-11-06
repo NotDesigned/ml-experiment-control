@@ -66,7 +66,7 @@ impl Service {
     pub(super) fn execution_adapter(
         &self,
         execution: &Execution,
-    ) -> cloud::Result<Adapter<&Client>> {
+    ) -> cloud::Result<Adapter<&Shared>> {
         let request: run::Create = serde_json::from_value(read(
             &self
                 .authority(&execution.job.project, &execution.job.run_id)?
