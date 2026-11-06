@@ -195,6 +195,13 @@ impl Service {
         });
         value["data_image"] = json!(saved.image);
         value["copy_job"] = json!(saved.copy_status);
+        value["new_request_allowed"] = json!(
+            saved.state.ready.is_none()
+                && saved
+                    .copy_status
+                    .as_ref()
+                    .is_some_and(data_copies::allows_new_request)
+        );
         value["diagnostic"] = json!(saved.diagnostic);
         value["import_source"] = json!(saved.import_source);
         value["runtime_id"] = json!(saved.copy_runtime.as_ref().map(|r| &r.runtime_id));

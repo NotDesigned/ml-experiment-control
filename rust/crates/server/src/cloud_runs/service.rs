@@ -519,6 +519,11 @@ pub(crate) fn failure(error: cloud::Error) -> read_api::Error {
                 "DATA_COPY_IDENTITY_CONFLICT",
                 "observe the original dataset copy request and Runtime; another copy was not created",
             ),
+            ("DATA_COPY_REQUEST_SUPERSEDED", _) => (
+                409,
+                "DATA_COPY_REQUEST_SUPERSEDED",
+                "a newer request replaced this dataset copy request; another copy was not created",
+            ),
             ("DATA_COPY_RUNTIME_REQUIRED", _) => (
                 422,
                 "DATA_COPY_RUNTIME_REQUIRED",
@@ -590,6 +595,7 @@ mod oss_import;
 pub(super) mod debug;
 
 mod capacity;
+mod data_copies;
 mod data_delivery;
 mod maintenance;
 mod materialization;

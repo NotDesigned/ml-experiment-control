@@ -74,10 +74,34 @@ on exit. During the second phase, copying parts does not fetch signed URLs.
 
 The complete command, channels, Runtime and request are retained before any
 provider effect. Repeating the same call observes the same CPU job, including
-after an API restart or launcher/URL change. Failed or uncertain jobs are not
-automatically replaced. `data show` reads cached evidence without querying the
+after an API restart or launcher/URL change. Failed or uncertain jobs are never
+replaced automatically. `data show` reads cached evidence without querying the
 provider. Only a complete verified READY receipt allows later training to reuse
 the cache without another download.
+
+The launcher and worker keep the config in a private scratch file. On the provider
+request it travels in arguments of at most 64 KiB, and a request above 1 MiB is
+refused before any provider call. Whether a provider passes the joined command to a
+shell as one argument, which Linux limits to 128 KiB, has not been verified.
+
+## Replace a failed copy
+
+Repeat the original request until `data show` reports `new_request_allowed: true`.
+That means the last observation proved this exact job FAILED, was CANCELLED or was
+PREEMPTED. Then publish with a new request ID, on PAI or SenseCore. A fresh provider
+read must prove the same thing again before the new job is prepared.
+
+Anything else returns `DATA_COPY_IDENTITY_CONFLICT` and creates nothing: a job that
+was never prepared or never started, a submission with no provider record (absence
+cannot prove an uncertain create did not land), a failed read, a running job, or
+SUCCEEDED without READY. The worker exits non-zero unless READY was acknowledged, so
+that last case is contradictory evidence.
+
+The new job has its own deterministic identity from the new request ID. On PAI,
+`--runtime` may name another READY Runtime; without it the original Runtime is kept.
+The old job stays retained for `data diagnose`. Publishing the old ID again returns
+`DATA_COPY_REQUEST_SUPERSEDED` and creates nothing. `experiment continue` shows the
+failure and never chooses a new ID. READY still requires the worker's verified receipt.
 
 ## Read-only diagnostics
 

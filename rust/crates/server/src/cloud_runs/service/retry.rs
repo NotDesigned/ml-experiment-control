@@ -79,15 +79,8 @@ impl Service {
                 &|| self.still_live(&guard, project, run),
                 cancelled,
             )?;
-            let termination: ml_exp_core::cloud::JobObservation =
-                serde_json::from_value(state["observation"].clone())
-                    .map_err(why!(cloud::Error::evidence()))?;
-            if !state["diagnostic"].is_null()
-                || state["handle"]["job_id"] != termination.job_id
-                || !termination.state.is_terminal()
-            {
-                return Err(cloud::Error::evidence());
-            }
+            let termination =
+                super::sync_jobs::proven_terminal(&state)?.ok_or_else(cloud::Error::evidence)?;
             let checkpoint = match &request.resume_from {
                 Some(reference) => {
                     self.restore_reference(project, &parent.execution.backend_id, reference)?

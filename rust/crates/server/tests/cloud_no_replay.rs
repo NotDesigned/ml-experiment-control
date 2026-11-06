@@ -13,6 +13,7 @@ use ml_exp_core::{
     slurm::{ExecutionConfig, JobSpec, Resources, SlurmConfig, Storage, helper},
     sources::Policy,
 };
+use ml_exp_io::directory::{Directory, FileLock, LockOptions};
 use ml_exp_server::{
     backends::{
         cloud::{
@@ -51,6 +52,8 @@ const RENEWED_GATE_EXPIRES: &str = "2026-10-29T03:00:00Z";
 const PAI_JOB_ID: &str = "dlc-owned";
 const SENSECORE_USER: &str = "12345678-1234-1234-1234-123456789abc";
 const REQUEST_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const REQUEST_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const REQUEST_C: &str = "cccccccccccccccccccccccccccccccc";
 
 #[derive(Clone, Copy)]
 enum Kind {
@@ -1041,6 +1044,7 @@ struct CopyWorld {
     rows: Vec<Value>,
     calls: Vec<String>,
     lose_create_reply: bool,
+    reads_down: bool,
 }
 struct CopyProvider {
     kind: Kind,
@@ -1056,6 +1060,17 @@ impl CopyProvider {
             .iter()
             .filter(|action| matches!(action.as_str(), "CreateJob" | "CreateTrainingJob"))
             .count()
+    }
+    /// Set the newest job's state, named as SenseCore names it.
+    fn set_state(&self, state: &str) {
+        let (field, text) = match (self.kind, state) {
+            (Kind::Sensecore, _) => ("state", state),
+            (Kind::Pai, "FAILED") => ("Status", "Failed"),
+            (Kind::Pai, "SUCCEEDED") => ("Status", "Succeeded"),
+            (Kind::Pai, "CANCELLED") => ("Status", "Stopped"),
+            (Kind::Pai, other) => panic!("no PAI state for {other}"),
+        };
+        self.world().rows.last_mut().unwrap()[field] = json!(text);
     }
     fn row_for_create(&self, body: &Value, number: usize) -> (Value, Value) {
         match self.kind {
@@ -1083,6 +1098,13 @@ impl Transport for CopyProvider {
         let mut world = self.world();
         world.calls.push(request.action.clone());
         let named = |row: &&Value, field: &str, name: &str| row[field] == name;
+        if world.reads_down && !request.action.starts_with("Create") {
+            return Err(cloud::Error {
+                code: "PROVIDER_DOWN".into(),
+                http_status: Some(503),
+                uncertain: false,
+            });
+        }
         match request.action.as_str() {
             "CreateJob" | "CreateTrainingJob" => {
                 if world.lose_create_reply {
@@ -1246,19 +1268,73 @@ impl CopyFixture {
             .unwrap(),
         )
     }
+    fn sync_effects(&self) -> std::path::PathBuf {
+        self.f
+            .settings
+            .registry_root
+            .join("cloud-submissions/sync-effects")
+    }
+    fn sync_entry_paths(&self) -> Vec<std::path::PathBuf> {
+        fs::read_dir(self.sync_effects())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| !path.file_name().unwrap().to_str().unwrap().starts_with('.'))
+            .collect()
+    }
     /// Every entry in the synchronous outbox, exactly as it is on disk.
     fn sync_entries(&self) -> Vec<Value> {
-        fs::read_dir(
+        self.sync_entry_paths()
+            .into_iter()
+            .map(|path| serde_json::from_slice(&fs::read(path).unwrap()).unwrap())
+            .collect()
+    }
+    /// While this is held the outbox refuses `prepare`, which leaves the state a crash
+    /// leaves between the durable copy request and `Outbox::prepare`.
+    fn hold_sync_outbox(&self) -> FileLock {
+        Directory::open(&self.sync_effects(), false)
+            .unwrap()
+            .lock(
+                std::ffi::OsStr::new(".cloud-effects.lock"),
+                LockOptions::default(),
+            )
+            .unwrap()
+    }
+    /// Put the one entry back to prepared, as if the service stopped before `started`.
+    fn rewind_sync_entry_to_prepared(&self) {
+        let paths = self.sync_entry_paths();
+        let [path] = paths.as_slice() else {
+            panic!("expected one entry");
+        };
+        let mut entry: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        entry["started"] = json!(false);
+        entry["handle"] = Value::Null;
+        entry["observation"] = Value::Null;
+        fs::write(path, serde_json::to_vec(&entry).unwrap()).unwrap();
+        let mut world = self.provider.world();
+        world.rows.clear();
+        world.calls.clear();
+    }
+    fn superseded_copy(&self, request: &str) -> Option<Value> {
+        let digest =
+            canonical::digest(&json!(["demo", self.f.executor, self.asset, request])).unwrap();
+        fs::read(
             self.f
                 .settings
                 .registry_root
-                .join("cloud-submissions/sync-effects"),
+                .join("cloud-submissions/slots")
+                .join(format!("superseded-copy-{digest}.json")),
         )
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| !path.file_name().unwrap().to_str().unwrap().starts_with('.'))
-        .map(|path| serde_json::from_slice(&fs::read(path).unwrap()).unwrap())
-        .collect()
+        .ok()
+        .map(|bytes| serde_json::from_slice(&bytes).unwrap())
+    }
+    fn assert_new_request_refused(&self, service: &Arc<Service>) {
+        let creates = self.provider.creates();
+        let entries = self.sync_entries().len();
+        let error = self.publish(service, REQUEST_B).unwrap_err();
+        assert_eq!(error.code, "DATA_COPY_IDENTITY_CONFLICT");
+        assert_eq!(self.provider.creates(), creates);
+        assert_eq!(self.sync_entries().len(), entries);
+        assert!(self.superseded_copy(REQUEST_A).is_none());
     }
     fn publish(&self, service: &Arc<Service>, request: &str) -> cloud::Result<Value> {
         let runtime = match self.kind {
@@ -1327,4 +1403,173 @@ fn a_long_file_inventory_reaches_the_provider_in_bounded_arguments() {
             assert!(lengths.sum::<usize>() > 128 * 1024);
         }
     }
+}
+
+#[test]
+fn an_unprepared_copy_refuses_a_new_request_and_can_still_be_driven() {
+    for kind in KINDS {
+        let c = CopyFixture::new(kind, 3);
+        let service = c.open();
+        {
+            let _effects = c.hold_sync_outbox();
+            let error = c.publish(&service, REQUEST_A).unwrap_err();
+            assert_eq!(error.code, "CLOUD_EFFECT_BUSY");
+        }
+        assert!(c.sync_entries().is_empty());
+        c.assert_new_request_refused(&service);
+        assert_eq!(c.provider.creates(), 0);
+        assert_eq!(
+            c.publish(&service, REQUEST_A).unwrap()["copy_job"]["phase"],
+            "OWNED"
+        );
+        assert_eq!(c.provider.creates(), 1);
+    }
+}
+
+#[test]
+fn a_prepared_copy_that_never_started_refuses_a_new_request() {
+    for kind in KINDS {
+        let c = CopyFixture::new(kind, 3);
+        let service = c.open();
+        c.publish(&service, REQUEST_A).unwrap();
+        c.rewind_sync_entry_to_prepared();
+        c.assert_new_request_refused(&service);
+        assert_eq!(c.provider.creates(), 0);
+        assert_eq!(c.sync_entries()[0]["started"], false);
+    }
+}
+
+#[test]
+fn a_started_copy_with_no_handle_refuses_a_new_request() {
+    for kind in KINDS {
+        let c = CopyFixture::new(kind, 3);
+        c.provider.world().lose_create_reply = true;
+        let service = c.open();
+        let first = c.publish(&service, REQUEST_A).unwrap();
+        assert_eq!(first["copy_job"]["phase"], "RECONCILE_REQUIRED");
+        assert_eq!(first["new_request_allowed"], false);
+        c.provider.world().lose_create_reply = false;
+        c.provider.world().reads_down = true;
+        c.assert_new_request_refused(&service);
+        c.provider.world().reads_down = false;
+        // The provider has no record of the job. That cannot fence a create in flight.
+        c.assert_new_request_refused(&service);
+        assert_eq!(c.provider.creates(), 1);
+        assert!(c.sync_entries()[0]["handle"].is_null());
+    }
+}
+
+#[test]
+fn a_running_or_succeeded_copy_refuses_a_new_request() {
+    for kind in KINDS {
+        let c = CopyFixture::new(kind, 3);
+        let service = c.open();
+        c.publish(&service, REQUEST_A).unwrap();
+        c.assert_new_request_refused(&service);
+        // SUCCEEDED without READY contradicts the worker's exit rule.
+        c.provider.set_state("SUCCEEDED");
+        let view = c.publish(&service, REQUEST_A).unwrap();
+        assert_eq!(view["new_request_allowed"], false);
+        c.assert_new_request_refused(&service);
+        assert_eq!(c.provider.creates(), 1);
+    }
+}
+
+#[test]
+fn a_failure_seen_earlier_needs_a_fresh_read_before_a_new_request() {
+    for kind in KINDS {
+        let c = CopyFixture::new(kind, 3);
+        let service = c.open();
+        c.publish(&service, REQUEST_A).unwrap();
+        c.provider.set_state("FAILED");
+        c.publish(&service, REQUEST_A).unwrap();
+        c.provider.world().reads_down = true;
+        c.assert_new_request_refused(&service);
+        c.provider.world().reads_down = false;
+        c.publish(&service, REQUEST_B).unwrap();
+        assert_eq!(c.provider.creates(), 2);
+    }
+}
+
+#[test]
+fn a_proven_failure_permits_one_new_job_and_retires_the_old_request() {
+    for kind in KINDS {
+        for ended in ["FAILED", "CANCELLED"] {
+            let c = CopyFixture::new(kind, 3);
+            let service = c.open();
+            c.publish(&service, REQUEST_A).unwrap();
+            c.provider.set_state(ended);
+            let failed = c.publish(&service, REQUEST_A).unwrap();
+            assert_eq!(failed["new_request_allowed"], true);
+            assert_eq!(c.provider.creates(), 1);
+            let old_job = c.sync_entries()[0]["job"].clone();
+
+            let replaced = c.publish(&service, REQUEST_B).unwrap();
+            assert_eq!(c.provider.creates(), 2);
+            assert_eq!(replaced["copy_job"]["phase"], "OWNED");
+            assert_eq!(replaced["new_request_allowed"], false);
+            assert_ne!(replaced["copy_job"]["slot"], failed["copy_job"]["slot"]);
+            assert_eq!(c.sync_entries().len(), 2);
+            assert_eq!(c.superseded_copy(REQUEST_A).unwrap()["job"], old_job);
+
+            // Repeating either id creates nothing, also after a restart.
+            c.publish(&service, REQUEST_B).unwrap();
+            drop(service);
+            let service = c.open();
+            c.publish(&service, REQUEST_B).unwrap();
+            let error = c.publish(&service, REQUEST_A).unwrap_err();
+            assert_eq!(error.code, "DATA_COPY_REQUEST_SUPERSEDED");
+            assert_eq!(c.provider.creates(), 2);
+
+            // The new job is the current one, so it decides the next request.
+            let error = c.publish(&service, REQUEST_C).unwrap_err();
+            assert_eq!(error.code, "DATA_COPY_IDENTITY_CONFLICT");
+            assert_eq!(c.provider.creates(), 2);
+        }
+    }
+}
+
+#[test]
+fn a_superseded_pai_request_stays_readable() {
+    let c = CopyFixture::new(Kind::Pai, 3);
+    let service = c.open();
+    c.publish(&service, REQUEST_A).unwrap();
+    c.provider.set_state("FAILED");
+    c.publish(&service, REQUEST_B).unwrap();
+    let diagnostic = |request| {
+        service
+            .data_diagnostic("demo", c.f.executor, &c.asset, request, false, T_RECONCILE)
+            .unwrap_err()
+            .code
+    };
+    assert_eq!(diagnostic(REQUEST_A), "CLOUD_SUBMISSION_NOT_FOUND");
+    assert_eq!(diagnostic(REQUEST_C), "DATA_COPY_IDENTITY_CONFLICT");
+}
+
+#[test]
+fn a_crash_after_retaining_the_old_job_leaves_its_request_current() {
+    let c = CopyFixture::new(Kind::Pai, 3);
+    let service = c.open();
+    c.publish(&service, REQUEST_A).unwrap();
+    c.provider.set_state("FAILED");
+    // Compiling the new job fails after the old one is retained and before the switch.
+    let absent = format!("runtime.{}", "9".repeat(64));
+    assert!(
+        service
+            .publish_dataset(
+                "demo",
+                c.f.executor,
+                &c.asset,
+                REQUEST_B,
+                Some(absent.as_str())
+            )
+            .is_err()
+    );
+    assert!(c.superseded_copy(REQUEST_A).is_some());
+    c.publish(&service, REQUEST_A).unwrap();
+    assert_eq!(c.provider.creates(), 1);
+    c.publish(&service, REQUEST_B).unwrap();
+    assert_eq!(c.provider.creates(), 2);
+    let error = c.publish(&service, REQUEST_A).unwrap_err();
+    assert_eq!(error.code, "DATA_COPY_REQUEST_SUPERSEDED");
 }

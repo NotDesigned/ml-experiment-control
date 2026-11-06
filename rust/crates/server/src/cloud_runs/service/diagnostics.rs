@@ -146,15 +146,9 @@ impl Service {
                 check,
                 &AtomicBool::new(false),
             )?;
-            let evidence: ml_exp_core::cloud::JobObservation =
-                serde_json::from_value(original["observation"].clone())
-                    .map_err(why!(cloud::Error::evidence()))?;
-            if !original["diagnostic"].is_null()
-                || original["handle"]["job_id"] != evidence.job_id
-                || !evidence.state.is_terminal()
-            {
+            let Some(evidence) = super::sync_jobs::proven_terminal(&original)? else {
                 return Err(unavailable("DIAGNOSTIC_PARENT_NOT_TERMINAL"));
-            }
+            };
             let saved = Saved {
                 lineage: lineage.clone(),
                 parent: parent.clone(),
@@ -239,10 +233,7 @@ impl Service {
         let saved = self
             .data_saved(project, executor, asset)?
             .ok_or_else(missing)?;
-        if saved.copy_request_id.as_deref() != Some(request) {
-            return Err(unavailable("DATA_COPY_IDENTITY_CONFLICT"));
-        }
-        let copy = saved.copy_intent.ok_or_else(cloud::Error::evidence)?;
+        let copy = self.copy_job_of_request(saved, project, executor, asset, request)?;
         let collector = self
             .backends
             .get(executor)
@@ -366,10 +357,7 @@ impl Service {
         let saved = self
             .data_saved(project, executor, asset)?
             .ok_or_else(missing)?;
-        if saved.copy_request_id.as_deref() != Some(request) {
-            return Err(unavailable("DATA_COPY_IDENTITY_CONFLICT"));
-        }
-        let parent = saved.copy_intent.ok_or_else(cloud::Error::evidence)?;
+        let parent = self.copy_job_of_request(saved, project, executor, asset, request)?;
         let (import, _) = ml_exp_core::cloud::data::materialization_inputs(&parent)
             .map_err(why!(cloud::Error::evidence()))?;
         let lineage =

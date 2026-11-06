@@ -384,35 +384,32 @@ impl Service {
                 read_only_storage: false,
             })
         };
-        if let Some(previous) = saved
+        let superseding = match saved
             .copy_request_id
-            .as_ref()
-            .filter(|id| id.as_str() != request_id)
+            .as_deref()
+            .filter(|id| *id != request_id)
         {
-            let job = job_for(previous)?;
-            let check = || self.project_hash(project).map(|_| ());
-            let state = self.sync_outbox.reconcile(
-                copier,
-                &job,
-                ml_exp_core::cloud::pai::Allocation::Guaranteed,
-                &check,
-                &AtomicBool::new(false),
-            )?;
-            if !state["observation"]["state"].as_str().is_some_and(|s| {
-                matches!(
-                    s,
-                    "FAILED" | "CANCELLED" | "TIMEOUT" | "SUCCEEDED" | "PREEMPTED"
-                )
-            }) {
-                return Err(cloud::Error::evidence());
+            Some(previous) => {
+                let old = job_for(previous)?;
+                self.prove_copy_replaceable(copier, &old, project, executor, asset, request_id)?;
+                Some((previous.to_owned(), old))
             }
-        }
+            None => None,
+        };
         let job = job_for(request_id)?;
         {
             let _lock = self.lock()?;
             saved = self
                 .data_saved(project, executor, asset)?
                 .ok_or_else(missing)?;
+            if saved.state.ready.is_some() {
+                return Ok(Self::data_view(saved));
+            }
+            if let Some((previous, old)) = &superseding {
+                self.retain_superseded_copy(&saved, project, executor, asset, previous, old)?;
+                saved.copy_status = None;
+                saved.diagnostic = None;
+            }
             saved.copy_request_id = Some(request_id.into());
             self.slots
                 .replace_regular(
