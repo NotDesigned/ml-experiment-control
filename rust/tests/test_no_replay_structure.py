@@ -31,18 +31,18 @@ PINS = {
     "rust/crates/server/src/backends/slurm/tests/submission_tests.rs": "f0bec35ffa76196fe0d8845acf561a9026d779ec81a56274172b64e39f53cc85",
     "rust/crates/server/src/backends/slurm/tests/action_tests.rs": "4947f58528888cf04ab64acaa39f8b16e6adeeb02445de9c582b3a7c99ed4bcc",
     "rust/crates/server/src/operations/store.rs": "1038a3f5be12140276318ece41b24432f18d8f87ed3d5df9c404a5168832661f",
-    "rust/crates/server/tests/cloud_runs.rs": "b279b151a28e9168599c902cb490df99d8340d26ed054765a32fe85546afe926",
+    "rust/crates/server/tests/cloud_runs.rs": "97ebd43b97e61fe851d85447fc99ecec3502341e183208761d592b037949aaf6",
     "rust/crates/core/src/operations.rs": "f956e2c25597de20d76b42b04cebbb11b52083e6ca85275ab751fbb279cc3ec2",
     "rust/crates/core/src/slurm/action.rs": "61d6fb7e14248434b39f5a73208412d232d9134c784512e114c12892b8de9548",
     "rust/crates/core/src/cloud/action.rs": "5829a8a03252f9100341b46217e37e9f40f202630f251377d3777f6faba3d13f",
     "rust/crates/core/src/cloud/exchange.rs": "0d8257ef48ca52d3bb560d4bab582d6df28af98988cc45c100df60f74e4b664a",
-    "rust/crates/worker/src/slurm/ledger.rs": "4c945a908455aa68bdcdadbc5fbfaa3c9e4cc0f6bb373c56511423ce68138910",
+    "rust/crates/worker/src/slurm/ledger.rs": "0ec0b45b7a7001c69fa29a13e8f8abbcc26c9db29b787c2650b09ba8b13afa75",
     "rust/crates/worker/src/slurm/ledger/artifacts.rs": "0ef666d31c8a89f19c595ad19e75974eb67d220cb9f5c50efdf8efe6cee53995",
     "rust/crates/worker/src/slurm/ledger/checkpoints.rs": "f54f98d9a36bf7d47ad75e79202e69c7b56035af2ec62048b08b3a774a6e082c",
-    "rust/crates/worker/src/slurm/ledger/history.rs": "95a9db48c2cb38e8020510f6d3f4a15c5bf33ef0dc62bb56f22854d0ded7c254",
+    "rust/crates/worker/src/slurm/ledger/history.rs": "41f7b30c0b7e779e57eb55a29691f3c862b13352ad5cff7803dbfecfc9440655",
     "rust/crates/worker/src/slurm/ledger/jobs.rs": "695018e2b31111048c48eac6581140aa6f8f14b8c98561bd6f4f4efa2a0909f0",
     "rust/crates/worker/src/slurm/ledger/observation.rs": "19b00eb7ac7bbc8e5023e39a05a29f9f39beb0e32bfd6c1700916620c495ad04",
-    "rust/crates/worker/src/slurm/ledger/staging.rs": "002a35855102960c2349606b2cb2e993eb49e298a46ac02ae86faf1ded035a2a",
+    "rust/crates/worker/src/slurm/ledger/staging.rs": "8a1bd6762de01e69ffe8b28311fd033a64b8768b8c4dbb51272fc903bb765902",
 }
 
 # Every line in the server crate's production code that calls a method named

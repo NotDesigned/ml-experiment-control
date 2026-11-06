@@ -21,15 +21,7 @@ pub fn verify(root: &Directory, definition: &Definition, sealed: bool) -> io::Re
 }
 pub fn verify_inventory(root: &Directory, files: &[FileReceipt], sealed: bool) -> io::Result<()> {
     ml_exp_core::data_preparation::content_hash(files).map_err(|_| invalid())?;
-    if sealed {
-        verify_sealed_directories(root, 0, &mut 0)?;
-    }
-    let mut paths = Vec::new();
-    artifacts::walk(root, "", &mut paths, &mut 0, Kind::Data)?;
-    paths.sort();
-    if paths != files.iter().map(|f| f.path.clone()).collect::<Vec<_>>() {
-        return Err(invalid());
-    }
+    require_file_set(root, files, sealed)?;
     for record in files {
         let mut file = artifacts::open(root, &record.path, Kind::Data)?;
         if sealed {
@@ -48,6 +40,32 @@ pub fn verify_inventory(root: &Directory, files: &[FileReceipt], sealed: bool) -
         {
             return Err(invalid());
         }
+    }
+    Ok(())
+}
+/// A sealed tree with the expected files and sizes, without reading any content.
+/// This is for a check that repeats; the job's `verify` is what proves the bytes.
+pub fn verify_file_sizes(root: &Directory, definition: &Definition) -> io::Result<()> {
+    definition.validate().map_err(|_| invalid())?;
+    require_file_set(root, &definition.files, true)?;
+    for record in &definition.files {
+        let file = artifacts::open(root, &record.path, Kind::Data)?;
+        require_sealed(&file)?;
+        if file.metadata()?.len() != record.bytes {
+            return Err(invalid());
+        }
+    }
+    Ok(())
+}
+fn require_file_set(root: &Directory, files: &[FileReceipt], sealed: bool) -> io::Result<()> {
+    if sealed {
+        verify_sealed_directories(root, 0, &mut 0)?;
+    }
+    let mut paths = Vec::new();
+    artifacts::walk(root, "", &mut paths, &mut 0, Kind::Data)?;
+    paths.sort();
+    if paths != files.iter().map(|f| f.path.clone()).collect::<Vec<_>>() {
+        return Err(invalid());
     }
     Ok(())
 }
@@ -255,6 +273,50 @@ mod tests {
             .unwrap();
         assert!(verify(&tree, &definition, true).is_err());
         remove_staging(&destination, &tree).unwrap();
+    }
+    #[test]
+    fn the_size_check_refuses_a_changed_shape_and_leaves_content_to_the_hash() {
+        use std::os::unix::fs::PermissionsExt;
+        let source = tempfile::tempdir().unwrap();
+        std::fs::write(source.path().join("tokens.bin"), b"abcd").unwrap();
+        let source = Directory::open(source.path(), false).unwrap();
+        let mut archive = tempfile::tempfile().unwrap();
+        let (sha256, archive_bytes, files) = artifacts::pack_data(&source, &mut archive).unwrap();
+        let definition = Definition {
+            sha256,
+            archive_bytes,
+            files,
+        };
+        let destination = tempfile::tempdir().unwrap();
+        let path = destination.path().join("tree");
+        let root = Directory::open(destination.path(), false).unwrap();
+        let tree = root.create_new_child(OsStr::new("tree")).unwrap();
+        extract(&mut archive, &tree, &definition).unwrap();
+        seal(&tree).unwrap();
+        verify_file_sizes(&tree, &definition).unwrap();
+
+        let file = path.join("tokens.bin");
+        let rewrite = |bytes: &[u8]| {
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+            std::fs::write(&file, bytes).unwrap();
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o400)).unwrap();
+        };
+        rewrite(b"abcx");
+        verify_file_sizes(&tree, &definition).unwrap();
+        assert!(verify(&tree, &definition, true).is_err());
+        rewrite(b"abc");
+        assert!(verify_file_sizes(&tree, &definition).is_err());
+        rewrite(b"abcd");
+        verify_file_sizes(&tree, &definition).unwrap();
+
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(verify_file_sizes(&tree, &definition).is_err());
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o400)).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(path.join("extra"), b"").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o500)).unwrap();
+        assert!(verify_file_sizes(&tree, &definition).is_err());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
     #[test]
     fn extra_files_links_and_bad_member_hash_never_publish_a_dataset() {

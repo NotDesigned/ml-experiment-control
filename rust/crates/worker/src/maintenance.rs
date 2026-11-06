@@ -12,7 +12,7 @@ fn invalid() -> io::Error {
 #[serde(deny_unknown_fields)]
 struct Target {
     path: String,
-    inode: Option<(u64, u64)>,
+    inode: Option<u64>,
     done: bool,
 }
 #[derive(Serialize, Deserialize)]
@@ -109,7 +109,7 @@ pub fn run(plan: &Plan) -> io::Result<serde_json::Value> {
                     if parent.entry_exists(OsStr::new(&name))? {
                         let directory = parent.child(OsStr::new(&name), false)?;
                         inspect(&directory, 0, &mut 0)?;
-                        Some(directory.identity()?)
+                        Some(directory.identity()?.1)
                     } else {
                         None
                     }
@@ -122,13 +122,6 @@ pub fn run(plan: &Plan) -> io::Result<serde_json::Value> {
                 inode,
                 done: false,
             });
-        }
-        if let ml_exp_core::maintenance::Selection::Checkpoint { checkpoint } = &plan.selection {
-            let (context, manifest) =
-                ml_exp_core::checkpoints::validate_document(checkpoint, None, None)
-                    .map_err(|_| invalid())?;
-            let state = Directory::open(std::path::Path::new(&context.state_root), false)?;
-            ml_exp_io::checkpoints::verify_sealed(&state, &manifest).map_err(|_| invalid())?;
         }
         let saved = Saved {
             plan: plan.clone(),
@@ -150,7 +143,7 @@ pub fn run(plan: &Plan) -> io::Result<serde_json::Value> {
             match parent(&root, &target.path) {
                 Ok((parent, leaf)) if parent.entry_exists(OsStr::new(&leaf))? => {
                     let directory = parent.child(OsStr::new(&leaf), false)?;
-                    if directory.identity()? != inode {
+                    if directory.identity()?.1 != inode {
                         return Err(invalid());
                     }
                     // The reviewed plan and worker lock already fence execution.
@@ -182,7 +175,12 @@ mod tests {
         managed::Config,
     };
     use serde_json::json;
-    use std::{collections::BTreeMap, fs, path::Path};
+    use std::{
+        collections::BTreeMap,
+        fs,
+        os::unix::fs::{MetadataExt, PermissionsExt},
+        path::Path,
+    };
 
     fn config(attempt: &Path) -> Config {
         let identity = launch::Identity {
@@ -289,5 +287,58 @@ mod tests {
         assert!(attempt.join("worker/launch-manifest.json").exists());
         // A repeated plan returns its saved receipt and removes nothing new.
         assert!(run(&outputs).is_ok());
+    }
+
+    #[test]
+    fn a_corrupt_generation_is_deleted_without_proof_of_its_content() {
+        let temp = tempfile::tempdir().unwrap();
+        let attempt = temp.path().join("runs/demo/train/attempts/attempt-001");
+        let config = config(&attempt);
+        let document = sealed_generation(&attempt);
+        let generation = attempt.join("state/checkpoints/step-4");
+        fs::set_permissions(&generation, fs::Permissions::from_mode(0o700)).unwrap();
+        let file = generation.join("state.bin");
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::write(&file, b"damaged, and a different size").unwrap();
+        fs::write(generation.join("extra"), b"not in the manifest").unwrap();
+        let selection = Selection::Checkpoint {
+            checkpoint: Box::new(document),
+        };
+        assert_eq!(
+            run(&plan(&config, selection, 'a')).unwrap()["paths"],
+            json!(["state/checkpoints/step-4"])
+        );
+        assert!(!generation.exists());
+    }
+
+    #[test]
+    fn a_resumed_removal_binds_the_target_by_inode_alone() {
+        let temp = tempfile::tempdir().unwrap();
+        let attempt = temp.path().join("runs/demo/train/attempts/attempt-001");
+        let config = config(&attempt);
+        fs::create_dir_all(attempt.join("state")).unwrap();
+        let plan = plan(&config, Selection::State, 'a');
+        let inode = fs::metadata(attempt.join("state")).unwrap().ino();
+        let store = attempt.join("worker/.storage-maintenance");
+        fs::create_dir(&store).unwrap();
+        let saved = |inode| {
+            serde_json::to_vec(&Saved {
+                plan: plan.clone(),
+                targets: vec![Target {
+                    path: "state".into(),
+                    inode: Some(inode),
+                    done: false,
+                }],
+                complete: false,
+            })
+            .unwrap()
+        };
+        let name = store.join(format!("{}.json", plan.id().unwrap()));
+        fs::write(&name, saved(inode + 1)).unwrap();
+        assert!(run(&plan).is_err());
+        assert!(attempt.join("state").exists());
+        fs::write(&name, saved(inode)).unwrap();
+        run(&plan).unwrap();
+        assert!(!attempt.join("state").exists());
     }
 }

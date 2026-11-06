@@ -52,10 +52,10 @@ fn one_pending_prepared_packet_cannot_stand_in_for_a_fresh_process_observation()
     // The lost packet said PREPARED, but training then actually executed.
     managed::run(&package.config, &AtomicBool::new(false)).unwrap();
     assert!(!once(&package, &sender).unwrap()); // only acknowledges the old packet
-    let state: State =
+    let mut state: State =
         serde_json::from_slice(&std::fs::read(package.config.attempt_root.join(STATE)).unwrap())
             .unwrap();
-    let fresh = packet(&package, &state).unwrap();
+    let fresh = packet(&package, &mut state).unwrap();
     assert_eq!(fresh.sequence, 2);
     assert_eq!(fresh.evidence.worker.phase, Phase::Finished);
     assert!(once(&package, &sender).unwrap());
@@ -152,4 +152,94 @@ fn lost_ack_replays_only_the_exact_packet_and_a_corrupt_checkpoint_does_not_bloc
     )
     .unwrap();
     assert!(matches!(once(&package, &sender), Err(Error::Binding)));
+}
+#[test]
+fn one_ready_marker_is_verified_once_and_a_new_marker_is_verified_again() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("runs");
+    let work = temp.path().join("code");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::create_dir(&work).unwrap();
+    let mut package = launch::compile(Input {
+        root: root.to_str().unwrap(),
+        project: "demo",
+        run: "train",
+        attempt: "attempt-001",
+        workdir: work.to_str().unwrap(),
+        argv: &["/bin/true".into()],
+        timeout_seconds: 3,
+        worker_sha256: &format!("sha256:{}", "a".repeat(64)),
+        storage: storage(temp.path(), &root),
+        channel: channel(),
+    })
+    .unwrap();
+    let state_root = package.config.attempt_root.join("state");
+    package.checkpoint_context = Some(ml_exp_core::checkpoints::Context {
+        project: "demo".into(),
+        run_id: "train".into(),
+        attempt_id: "attempt-001".into(),
+        source_id: format!("source.{}", "c".repeat(64)),
+        image_id: format!("sha256:{}", "d".repeat(64)),
+        storage_scope: format!("sha256:{}", "e".repeat(64)),
+        state_root: state_root.to_str().unwrap().into(),
+    });
+    crate::cloud::prepare(&package, &BTreeMap::new()).unwrap();
+    let generation = state_root.join("checkpoints/step-4");
+    std::fs::create_dir_all(&generation).unwrap();
+    let file = generation.join("state.bin");
+    std::fs::write(&file, b"weights").unwrap();
+    let marker = |step: u64| {
+        let bytes = serde_json::to_vec(&serde_json::json!({"step":step,"files":[{
+            "path":"checkpoints/step-4/state.bin","bytes":7,
+            "sha256":"9a129038d9a00aed0cf6a7ea059ca50a813449061ab87848cf1a13eafdf33b2c"}]}))
+        .unwrap();
+        std::fs::write(state_root.join("checkpoint.ready.json"), &bytes).unwrap();
+        ml_exp_core::slurm::helper::sha256_bytes(&bytes)
+    };
+    let rewrite = |bytes: &[u8]| {
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::write(&file, bytes).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o400)).unwrap();
+    };
+    let saved = || -> Option<String> {
+        let bytes = std::fs::read(package.config.attempt_root.join(STATE)).unwrap();
+        serde_json::from_slice::<State>(&bytes)
+            .unwrap()
+            .verified_ready_sha256
+    };
+    let sender = Sender {
+        calls: Mutex::new(Vec::new()),
+        lose_first: false,
+        checkpoint_error: Mutex::new(None),
+    };
+    let first = marker(4);
+    assert!(!once(&package, &sender).unwrap());
+    assert_eq!(*sender.checkpoint_error.lock().unwrap(), None);
+    assert_eq!(saved().as_ref(), Some(&first));
+    assert_eq!(
+        std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+        0o400
+    );
+
+    // Changed bytes under the same marker prove the next packet did not hash.
+    rewrite(b"changed");
+    assert!(!once(&package, &sender).unwrap());
+    assert_eq!(*sender.checkpoint_error.lock().unwrap(), None);
+
+    // A new marker is verified, and its failure is not remembered as success.
+    marker(5);
+    assert!(!once(&package, &sender).unwrap());
+    assert_eq!(
+        sender.checkpoint_error.lock().unwrap().as_deref(),
+        Some("CHECKPOINT_VERIFICATION_FAILED")
+    );
+    assert_eq!(saved().as_ref(), Some(&first));
+
+    // So the same marker is tried again once its files are right.
+    rewrite(b"weights");
+    let second = marker(5);
+    assert!(!once(&package, &sender).unwrap());
+    assert_eq!(*sender.checkpoint_error.lock().unwrap(), None);
+    assert_eq!(saved().as_ref(), Some(&second));
 }

@@ -105,6 +105,106 @@ fn damaged_shared_evidence_never_starts_a_scheduler_submission() {
     }
 }
 #[test]
+fn shared_damage_found_just_before_start_leaves_the_attempt_able_to_submit() {
+    let (root, helper, request) = staged_fixture();
+    assert_eq!(handle(&helper, &request).outcome, ReplyOutcome::Prepared);
+    let submit = Request::submit(request.intent().clone()).unwrap();
+    let worker = attempt(root.path()).join("worker");
+    assert_eq!(
+        helper
+            .submit_after(&submit, || fs::create_dir(&worker).unwrap())
+            .unwrap(),
+        ReplyOutcome::Unknown {
+            reason: UnknownReason::StorageUnavailable
+        }
+    );
+    assert_eq!(calls(root.path()), 0);
+    assert!(!claim(root.path()).join("submit.started.json").exists());
+    fs::remove_dir(&worker).unwrap();
+    assert_eq!(handle(&helper, &request).outcome, ReplyOutcome::Prepared);
+    assert_eq!(
+        handle(&helper, &submit).outcome,
+        ReplyOutcome::Submitted {
+            job_id: "12345".into()
+        }
+    );
+    assert_eq!(calls(root.path()), 1);
+}
+/// A Run whose one dataset is a sealed tree holding `tokens.bin`, which contains "abcd".
+fn request_with_dataset(root: &Path) -> (Request, PathBuf) {
+    let base = request_at(root);
+    let (manifest, script) = base.prepared_content().unwrap();
+    let sha256 = "b".repeat(64);
+    let tree = root
+        .join("data/demo")
+        .join(format!("asset.{sha256}"))
+        .join("tree");
+    fs::create_dir_all(&tree).unwrap();
+    let file = tree.join("tokens.bin");
+    fs::write(&file, b"abcd").unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o400)).unwrap();
+    fs::set_permissions(&tree, fs::Permissions::from_mode(0o500)).unwrap();
+    let mut document: Value = serde_json::from_str(manifest).unwrap();
+    document["native_datasets"] = json!([{
+        "name": "tokens",
+        "receipt": {
+            "contract": ml_exp_core::datasets::CONTRACT,
+            "project": "demo",
+            "target": target(),
+            "asset_id": format!("asset.{sha256}"),
+            "definition": {
+                "sha256": sha256,
+                "archive_bytes": 4096,
+                "files": [{
+                    "path": "tokens.bin",
+                    "bytes": 4,
+                    "sha256": "88d4266fd4e6338d13b845fcf289579d209c897823b9217da3e161936f031589",
+                }],
+            },
+            "root": tree.to_str().unwrap(),
+        },
+    }]);
+    let manifest = document.to_string();
+    let mut intent = base.intent().clone();
+    intent.manifest_sha256 = helper::sha256_bytes(manifest.as_bytes());
+    (
+        Request::prepare(intent, manifest, script.into()).unwrap(),
+        tree,
+    )
+}
+#[test]
+fn submission_checks_dataset_files_and_sizes_and_leaves_their_content_to_the_job() {
+    let (root, helper, _) = staged_fixture();
+    let (request, tree) = request_with_dataset(root.path());
+    assert_eq!(handle(&helper, &request).outcome, ReplyOutcome::Prepared);
+    let file = tree.join("tokens.bin");
+    let rewrite = |bytes: &[u8]| {
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::write(&file, bytes).unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o400)).unwrap();
+    };
+    let submit = Request::submit(request.intent().clone()).unwrap();
+    rewrite(b"abc");
+    assert_eq!(
+        handle(&helper, &submit).outcome,
+        ReplyOutcome::Unknown {
+            reason: UnknownReason::StorageUnavailable
+        }
+    );
+    assert_eq!(calls(root.path()), 0);
+    assert!(!claim(root.path()).join("submit.started.json").exists());
+    // The same size with other content is the job's own hash to refuse.
+    rewrite(b"abcx");
+    assert_eq!(
+        handle(&helper, &submit).outcome,
+        ReplyOutcome::Submitted {
+            job_id: "12345".into()
+        }
+    );
+    assert_eq!(calls(root.path()), 1);
+    fs::set_permissions(&tree, fs::Permissions::from_mode(0o700)).unwrap();
+}
+#[test]
 fn replaced_shared_root_or_changed_configuration_cannot_be_opened_after_restart() {
     let (root, helper, request) = staged_fixture();
     assert_eq!(handle(&helper, &request).outcome, ReplyOutcome::Prepared);

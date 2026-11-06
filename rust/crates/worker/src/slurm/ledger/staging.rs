@@ -191,9 +191,11 @@ impl Helper {
         }
         let package = &sealed.plan.managed;
         if fresh {
+            // Preparation hashed these files and the job hashes them again. This
+            // repeats under the global lock, so it does not read their content.
             for dataset in &package.config.datasets {
                 let root = Directory::open(std::path::Path::new(&dataset.receipt.root), false)?;
-                ml_exp_io::datasets::verify(&root, &dataset.receipt.definition, true)?;
+                ml_exp_io::datasets::verify_file_sizes(&root, &dataset.receipt.definition)?;
             }
         }
         if attempt.read_regular(

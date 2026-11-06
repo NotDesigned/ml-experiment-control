@@ -13,8 +13,9 @@ ml-exp admin retire --project P --run R --confirmation 'CONFIRMATION_RETURNED_BY
 ```
 
 `admin plan` prepares removal of one terminal Attempt's `outputs`, persistent `state`
-or one `checkpoint` (with `--checkpoint`). Datasets and source trees are out of
-scope. `admin retire` retires a terminal Run registration and keeps small audit
+or one `checkpoint` (with `--checkpoint`). The checkpoint is selected by its manifest
+and not hashed first, so a corrupt generation can be removed. Datasets and source
+trees are out of scope. `admin retire` retires a terminal Run registration and keeps small audit
 records. Real provider cleanup remains pending acceptance; see the
 [acceptance status](acceptance-status.md).
 

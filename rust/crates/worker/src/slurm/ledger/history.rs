@@ -48,7 +48,6 @@ impl Helper {
                     config_sha256: helper::sha256_bytes(&package.config_bytes()?),
                     start: None,
                     next: Cursor {
-                        device: 0,
                         inode: 0,
                         offset_bytes: 0,
                         prefix_sha256: helper::sha256_bytes(&[]),
@@ -65,9 +64,7 @@ impl Helper {
             let before = file.metadata()?;
             let start = request.history_cursor();
             let offset = start.map(|v| v.offset_bytes).unwrap_or(0);
-            if offset > before.len()
-                || start.is_some_and(|c| c.device != before.dev() || c.inode != before.ino())
-            {
+            if offset > before.len() || start.is_some_and(|c| c.inode != before.ino()) {
                 return Err(Error::Metadata);
             }
             let mut hash = Sha256::new();
@@ -108,7 +105,6 @@ impl Helper {
                 config_sha256: helper::sha256_bytes(&package.config_bytes()?),
                 start: start.cloned(),
                 next: Cursor {
-                    device: before.dev(),
                     inode: before.ino(),
                     offset_bytes: offset + count as u64,
                     prefix_sha256: format!("sha256:{:x}", hash.finalize()),

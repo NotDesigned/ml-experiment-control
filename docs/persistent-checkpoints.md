@@ -47,6 +47,9 @@ The list must exactly cover one generation of regular files. Links, special
 files, traversal and changing bytes are rejected. Never modify/reuse a published
 generation. The worker verifies size/SHA/stability and seals permissions 0444/0555.
 This is permission protection, not a kernel read-only mount or off-site backup.
+On cloud backends the worker does this once for each ready marker and does not hash
+the same marker again, so damage after sealing is found when a restore hashes the
+generation, not by a later report.
 
 ## Register and restore
 
