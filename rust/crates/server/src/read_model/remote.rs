@@ -41,7 +41,7 @@ pub(crate) fn project_worker(
     let metadata = json!({"project":snapshot.project,"run_id":snapshot.run_id,"attempt_id":attempt.attempt_id,
             "worker_state":evidence.worker.phase,"process_state":if evidence.worker.phase == Phase::Finished { receipt.as_ref().map(|r|json!(r.training)).unwrap_or(Value::Null) } else {json!("UNKNOWN")},
             "observed_at":observed_at,"observation_kind":"shared-storage-sample","heartbeat_proven":false,
-            "process_evidence":receipt.as_ref().map(|r|json!({"return_code":r.process.exit_code,"exit_code":r.process.exit_code,"termination_signal":r.process.termination_signal,"timed_out":r.process.timed_out,"cancelled":r.process.cancelled,"launch_error":r.process.error,"managed_training":r.training,"managed_contract":r.contract}))});
+            "process_evidence":receipt.as_ref().map(|r|json!({"return_code":r.process.exit_code,"exit_code":r.process.exit_code,"termination_signal":r.process.termination_signal,"timed_out":r.process.timed_out,"cancelled":r.process.cancelled,"launch_error":r.process.error,"stdout_dropped_bytes":r.process.stdout_dropped_bytes,"stderr_dropped_bytes":r.process.stderr_dropped_bytes,"managed_training":r.training,"managed_contract":r.contract}))});
     attempt.collection = EvidenceDocument::Present {
         source: source.clone(),
         raw_sha256: helper::sha256_bytes(
@@ -161,4 +161,123 @@ pub(crate) fn project_artifacts(
         modified_at_unix: None,
     };
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::experiments::{AttemptSnapshot, Document, ManifestSource, Provenance};
+    use ml_exp_core::{
+        launch,
+        managed::{
+            evidence::{CONTRACT, Observation, ProcessEvidence, Publication, Receipt, Training},
+            remote::OBSERVATION_CONTRACT,
+        },
+    };
+
+    #[test]
+    fn process_evidence_counts_what_each_log_dropped() {
+        let digest = "sha256:a".to_owned();
+        let document = |source: ManifestSource| Document {
+            source,
+            raw_sha256: digest.clone(),
+            metadata: Default::default(),
+        };
+        let log = || LogTail {
+            source: None,
+            lines: vec![],
+            available_lines: 0,
+            truncated: false,
+            offset_bytes: 0,
+            sampled_bytes: 0,
+            modified_at_unix: None,
+            diagnostics: vec![],
+        };
+        let mut snapshot = Snapshot {
+            project: "demo".into(),
+            run_id: "train".into(),
+            run: document(ManifestSource::RunJson),
+            current_status: EvidenceDocument::Missing,
+            current_attempt_id: None,
+            current_selection_source: None,
+            attempts: vec![AttemptSnapshot {
+                attempt_id: "attempt-001".into(),
+                manifest: document(ManifestSource::AttemptJson),
+                provenance: Provenance {
+                    compared_fields_complete: false,
+                    compared_fields: vec![],
+                    missing_fields: vec![],
+                },
+                status: EvidenceDocument::Missing,
+                collection: EvidenceDocument::Missing,
+                stdout: log(),
+                stderr: log(),
+                metrics: MetricTail {
+                    source: None,
+                    records: vec![],
+                    source_attempt_id: None,
+                    truncated: false,
+                    diagnostics: vec![],
+                },
+            }],
+            diagnostics: vec![],
+        };
+        let binding = Binding {
+            project: "demo".into(),
+            run_id: "train".into(),
+            attempt_id: "attempt-001".into(),
+            project_sha256: digest.clone(),
+            run_sha256: digest.clone(),
+            attempt_sha256: digest.clone(),
+            source_receipt_sha256: digest.clone(),
+            backend_config_sha256: digest.clone(),
+        };
+        let identity = launch::Identity {
+            project: "demo".into(),
+            run_id: "train".into(),
+            attempt_id: "attempt-001".into(),
+        };
+        let evidence = Evidence {
+            contract: OBSERVATION_CONTRACT.into(),
+            config_sha256: digest.clone(),
+            job_id: digest.clone(),
+            worker: Observation {
+                contract: CONTRACT.into(),
+                identity: identity.clone(),
+                manifest_sha256: digest.clone(),
+                phase: Phase::Finished,
+                safe_to_retry: false,
+                receipt: Some(Receipt {
+                    contract: CONTRACT.into(),
+                    identity,
+                    manifest_sha256: digest.clone(),
+                    process: ProcessEvidence {
+                        exit_code: Some(0),
+                        termination_signal: None,
+                        timed_out: false,
+                        cancelled: false,
+                        error: None,
+                        stdout_sha256: None,
+                        stderr_sha256: None,
+                        stdout_dropped_bytes: 7,
+                        stderr_dropped_bytes: 0,
+                    },
+                    training: Training::Completed,
+                    publication: Publication::NotImplemented,
+                    download_available: false,
+                    runtime_environment_sha256: None,
+                }),
+                runtime_environment_sha256: None,
+            },
+            stdout: Window::unavailable(Problem::Missing),
+            stderr: Window::unavailable(Problem::Missing),
+            metrics: Window::unavailable(Problem::Missing),
+        };
+        project_worker(&mut snapshot, &binding, &evidence, "action", "now").unwrap();
+        let EvidenceDocument::Present { metadata, .. } = &snapshot.attempts[0].collection else {
+            panic!("worker evidence was not projected");
+        };
+        assert_eq!(metadata["process_evidence"]["stdout_dropped_bytes"], 7);
+        assert_eq!(metadata["process_evidence"]["stderr_dropped_bytes"], 0);
+    }
 }

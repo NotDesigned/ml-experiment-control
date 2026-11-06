@@ -143,6 +143,28 @@ fn managed_child() {
             private_file(&lock, b"replacement lock\n");
         }
         "complete" => {}
+        mode @ ("flood" | "flood-and-kill-worker") => {
+            let flood = vec![b'x'; 9 * 1024 * 1024];
+            let mut out = std::io::stdout();
+            out.write_all(&flood).unwrap();
+            out.write_all(b"\nFLOOD_END\n").unwrap();
+            out.flush().unwrap();
+            let mut err = std::io::stderr();
+            err.write_all(&flood).unwrap();
+            err.write_all(b"\nFLOOD_END\n").unwrap();
+            err.flush().unwrap();
+            if mode == "flood-and-kill-worker" {
+                let log = output.join("stderr.log");
+                let started = Instant::now();
+                while !fs::read(&log).unwrap().ends_with(b"FLOOD_END\n")
+                    && started.elapsed() < Duration::from_secs(3)
+                {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                // SAFETY: this sealed fixture's parent is the worker under test.
+                unsafe { libc::kill(libc::getppid(), libc::SIGKILL) };
+            }
+        }
         mode => panic!("unknown synthetic fixture mode: {mode}"),
     }
 }
@@ -461,6 +483,65 @@ fn post_execution_storage_failure_keeps_started_unknown_and_prevents_replay() {
     assert!(managed::inspect(&fixture.config).is_err());
     assert!(managed::run(&fixture.config, &AtomicBool::new(false)).is_err());
     assert_eq!(fixture.count(), 1);
+}
+
+#[test]
+fn a_flooded_log_exits_successfully_and_the_receipt_records_what_it_dropped() {
+    let fixture = Fixture::new("flood");
+    fixture.initialize();
+    let executed = fixture.cli(None);
+    assert!(
+        executed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&executed.stderr)
+    );
+    let reply: Value = serde_json::from_slice(&executed.stdout).unwrap();
+    assert_eq!(reply["receipt"]["training"], "COMPLETED");
+    let process = &reply["receipt"]["process"];
+    assert!(process["error"].is_null());
+    let seam = ml_exp_io::process::SEAM;
+    for stream in ["stdout", "stderr"] {
+        let log = fs::read(
+            fixture
+                .config
+                .attempt_root
+                .join(format!("outputs/{stream}.log")),
+        )
+        .unwrap();
+        assert!(log.len() <= 8 * 1024 * 1024);
+        assert_eq!(log[4 * 1024 * 1024..][..seam.len()], *seam);
+        assert!(
+            log[log.len() - 4096..]
+                .windows(b"FLOOD_END".len())
+                .any(|bytes| bytes == b"FLOOD_END")
+        );
+        assert_eq!(
+            process[format!("{stream}_sha256").as_str()],
+            format!("{:x}", Sha256::digest(&log))
+        );
+        assert!(process[format!("{stream}_dropped_bytes").as_str()].as_u64() > Some(0));
+    }
+    assert_eq!(fixture.count(), 1);
+}
+
+#[test]
+fn killing_the_worker_leaves_the_end_of_the_log_on_disk() {
+    let fixture = Fixture::new("flood-and-kill-worker");
+    fixture.initialize();
+    let executed = fixture.cli(None);
+    assert!(!executed.status.success());
+    let log = fs::read(fixture.config.attempt_root.join("outputs/stderr.log")).unwrap();
+    assert!(log.len() <= 8 * 1024 * 1024);
+    assert!(log.ends_with(b"FLOOD_END\n"));
+    let seam = ml_exp_io::process::SEAM;
+    assert_eq!(log[4 * 1024 * 1024..][..seam.len()], *seam);
+    assert!(
+        !fixture
+            .config
+            .attempt_root
+            .join("managed-receipt.json")
+            .exists()
+    );
 }
 
 #[test]

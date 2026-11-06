@@ -399,6 +399,11 @@ impl Directory {
         Ok(file)
     }
 
+    /// Make this directory's entries durable.
+    pub fn sync(&self) -> io::Result<()> {
+        self.inner.file.sync_all()
+    }
+
     /// Change only this fixed directory's owner mode. Unsealing is for an
     /// operation's own unpublished staging tree, never an existing source.
     pub fn source_mode(&self, sealed: bool) -> io::Result<()> {

@@ -33,6 +33,18 @@ explicitly. Before an Attempt is bound, only status can inspect preparation.
 | AVAILABLE + SHA256_VERIFIED | Result archive is ready for verified client download |
 | Download ACK accepted | Exact verified local receipt and retention choice were recorded |
 
+A worker's captured log is one file of at most 8 MiB. Past that it keeps its first
+4 MiB, the line `[ml-expd: output dropped here; this log keeps its start and its
+end]`, and the last 2 to 4 MiB of output. Script preparation logs work the same
+way; the Slurm gateway's copy of them has a 1 MiB limit. The end is written to the
+file as the job runs, so an OOM or a preemption leaves it there; a node lost
+outright can lose the last few seconds. This is a marker, not a failure.
+`stdout_dropped_bytes` and `stderr_dropped_bytes` in the process evidence count
+what went, and the log hashes describe the file as kept. A worker killed before
+its receipt leaves the seam line and no count. A log changed other than through
+its pipe still fails with `LOG_IDENTITY_OR_CONTENT_CHANGED`, and the launch command
+then exits non-zero, on Slurm and cloud alike.
+
 `ml-exp run diagnose --state experiment.state.json` is the explicit exception for
 PAI: it asks the provider for the job's `ReasonCode`, `ReasonMessage`, pods, events
 and a bounded log tail (`--lines`, up to 2000). Use it when status and `run logs` are

@@ -186,34 +186,79 @@ fn pre_cancelled_execution_creates_receipt_without_starting_command() {
 }
 
 #[test]
-fn log_floods_are_bounded_and_existing_receipt_reports_incomplete_capture() {
+fn a_log_flood_is_a_marker_and_each_log_keeps_both_ends() {
     let root = tempfile::tempdir().unwrap();
     let output = root.path().join("outputs");
     let result = execute(
         root.path(),
         &output,
-        &shell("head -c 9437184 /dev/zero; head -c 9437184 /dev/zero >&2"),
+        &shell(
+            "printf first; head -c 9437184 /dev/zero; printf last; \
+             printf first >&2; head -c 9437184 /dev/zero >&2; printf last >&2",
+        ),
         Duration::from_secs(5),
     )
     .unwrap();
     assert_eq!(result.exit_code, Some(0));
-    assert!(!result.succeeded());
-    let failure = result.error.unwrap();
-    assert_eq!(
-        (failure.stage, failure.code),
-        ("LOG_CAPTURE", "OUTPUT_LIMIT_EXCEEDED")
-    );
-    for name in ["stdout.log", "stderr.log"] {
+    assert!(result.succeeded());
+    assert!(result.error.is_none());
+    let sent = 9437184 + "firstlast".len() as u64;
+    for (name, hash, dropped) in [
+        (
+            "stdout.log",
+            &result.stdout_sha256,
+            result.stdout_dropped_bytes,
+        ),
+        (
+            "stderr.log",
+            &result.stderr_sha256,
+            result.stderr_dropped_bytes,
+        ),
+    ] {
+        let log = fs::read(output.join(name)).unwrap();
+        assert!(log.len() <= 8 * 1024 * 1024);
+        assert!(log.starts_with(b"first") && log.ends_with(b"last"));
         assert_eq!(
-            fs::metadata(output.join(name)).unwrap().len(),
-            8 * 1024 * 1024
+            log[4 * 1024 * 1024..][..ml_exp_io::process::SEAM.len()],
+            *ml_exp_io::process::SEAM
+        );
+        assert_eq!(
+            dropped,
+            sent - (log.len() - ml_exp_io::process::SEAM.len()) as u64
+        );
+        assert_eq!(
+            hash.as_deref(),
+            Some(ml_exp_io::sha256_file(&output.join(name)).unwrap().as_str())
         );
     }
     let receipt: serde_json::Value =
         serde_json::from_slice(&fs::read(output.join("execution.json")).unwrap()).unwrap();
     assert_eq!(receipt["contract"], "native-local-execution.v1");
-    assert_eq!(receipt["error"]["code"], "OUTPUT_LIMIT_EXCEEDED");
-    assert_eq!(receipt.as_object().unwrap().len(), 8);
+    assert!(receipt["error"].is_null());
+    assert_eq!(receipt["stdout_dropped_bytes"], result.stdout_dropped_bytes);
+    assert_eq!(receipt["stderr_dropped_bytes"], result.stderr_dropped_bytes);
+    assert_eq!(receipt.as_object().unwrap().len(), 10);
+}
+
+#[test]
+fn the_end_of_a_flooded_log_is_in_the_file_while_the_job_runs() {
+    let root = tempfile::tempdir().unwrap();
+    let output = root.path().join("outputs");
+    let result = execute(
+        root.path(),
+        &output,
+        &shell(
+            "head -c 9437184 /dev/zero; printf LAST-LINE; i=0; \
+             while [ \"$(tail -c 9 \"$OUTPUT_DIR/stdout.log\")\" != LAST-LINE ]; do \
+               i=$((i+1)); [ $i -gt 200 ] && exit 9; sleep 0.01; \
+             done",
+        ),
+        Duration::from_secs(5),
+    )
+    .unwrap();
+    assert_eq!(result.exit_code, Some(0));
+    assert!(result.succeeded());
+    assert!(result.stdout_dropped_bytes > 0);
 }
 
 #[test]

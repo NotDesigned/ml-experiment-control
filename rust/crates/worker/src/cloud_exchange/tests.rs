@@ -70,6 +70,58 @@ fn one_pending_prepared_packet_cannot_stand_in_for_a_fresh_process_observation()
         vec![1, 1, 2]
     );
 }
+#[test]
+fn a_log_that_dropped_output_reports_its_end_and_no_hash_mismatch() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("runs");
+    let work = temp.path().join("code");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::create_dir(&work).unwrap();
+    let package = launch::compile(Input {
+        root: root.to_str().unwrap(),
+        project: "demo",
+        run: "train",
+        attempt: "attempt-001",
+        workdir: work.to_str().unwrap(),
+        argv: &[
+            "/bin/sh".into(),
+            "-c".into(),
+            "PATH=/usr/bin:/bin; head -c 9437184 /dev/zero | tr '\\0' x; printf last-line".into(),
+        ],
+        timeout_seconds: 3,
+        worker_sha256: &format!("sha256:{}", "a".repeat(64)),
+        storage: storage(temp.path(), &root),
+        channel: channel(),
+    })
+    .unwrap();
+    crate::cloud::prepare(&package, &BTreeMap::new()).unwrap();
+    let finished = managed::run(&package.config, &AtomicBool::new(false)).unwrap();
+    assert!(finished.succeeded());
+    let process = &finished.receipt.as_ref().unwrap().process;
+    assert!(process.stdout_dropped_bytes > 0);
+    let log = package.config.output_path().join("stdout.log");
+    assert_eq!(
+        process.stdout_sha256.as_deref(),
+        Some(ml_exp_io::sha256_file(&log).unwrap().as_str())
+    );
+    let mut state = State {
+        package_sha256: crate::cloud::package_sha(&package).unwrap(),
+        sequence: 0,
+        packet_sha256: None,
+        cursor: None,
+        complete: false,
+        pending: None,
+        verified_ready_sha256: None,
+    };
+    let sent = packet(&package, &mut state).unwrap();
+    assert_eq!(sent.evidence.stdout.problem, Some(Problem::Truncated));
+    assert!(sent.evidence.stdout.text.ends_with("last-line"));
+    assert_eq!(
+        sent.evidence.stdout.total_bytes,
+        std::fs::metadata(&log).unwrap().len()
+    );
+    assert_eq!(sent.evidence.stderr.problem, None);
+}
 impl Transport for Sender {
     fn send(&self, _: &exchange::Channel, packet: &Packet) -> Result<Ack> {
         let mut calls = self.calls.lock().unwrap();

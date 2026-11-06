@@ -111,6 +111,8 @@ impl From<crate::Execution> for ProcessEvidence {
             }),
             stdout_sha256: value.stdout_sha256,
             stderr_sha256: value.stderr_sha256,
+            stdout_dropped_bytes: value.stdout_dropped_bytes,
+            stderr_dropped_bytes: value.stderr_dropped_bytes,
         }
     }
 }

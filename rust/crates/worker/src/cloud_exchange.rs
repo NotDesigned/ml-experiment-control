@@ -76,6 +76,8 @@ fn packet(package: &Package, state: &mut State) -> Result<Packet> {
         Err(error) => return Err(error),
     };
     if let Some(receipt) = &worker.receipt {
+        // The receipt hashes the whole retained log, so only a window that holds
+        // all of it can be compared.
         for (window, expected) in [
             (&mut stdout, &receipt.process.stdout_sha256),
             (&mut stderr, &receipt.process.stderr_sha256),
