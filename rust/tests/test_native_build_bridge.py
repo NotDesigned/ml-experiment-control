@@ -8,6 +8,7 @@ import hashlib
 import fcntl
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -224,6 +225,32 @@ class NativeBridge(unittest.TestCase):
             self.assertFalse(root.exists())
             ImageBuilder(valid)
             self.assertTrue(root.is_dir())
+
+    def test_check_refuses_what_the_builder_would_refuse_and_starts_nothing(self):
+        def check(path):
+            return subprocess.run(
+                [sys.executable, "-m", "ml_exp_server.image_builder", "--config", str(path), "--check"],
+                env={"PYTHONPATH": os.pathsep.join(entry for entry in sys.path if entry)},
+                capture_output=True, text=True, timeout=60)
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            state, socket_path = base / "state", base / "socket" / "builder.sock"
+            valid = {"socket": str(socket_path), "state_root": str(state),
+                     "native_worker_bin": "/worker", "native_source_root": "/sources"}
+            config = base / "builder.json"
+            config.write_text(json.dumps(valid))
+            result = check(config)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            config.write_text(json.dumps({**valid, "acr_fallback": {"prefer": True}}))
+            result = check(config)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("unknown builder configuration: acr_fallback", result.stderr)
+            self.assertNotIn("Traceback", result.stderr)
+            result = check(base / "missing.json")
+            self.assertEqual(result.returncode, 1)
+            self.assertNotIn("Traceback", result.stderr)
+            self.assertFalse(state.exists())
+            self.assertFalse(socket_path.parent.exists())
 
     def test_shipped_builder_examples_are_accepted(self):
         from ml_exp_server.image_builder import ImageBuilder

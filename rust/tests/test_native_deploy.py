@@ -87,7 +87,8 @@ class Deploy(unittest.TestCase):
         (self.root / "deployment.json").write_text(json.dumps({
             "api_unit": "api.service", "builder_unit": "builder.service",
             "server_config": str(self.base / "server.json"), "client_config": str(client),
-            "cloud_config": str(self.cloud), "builder_state": str(self.state),
+            "cloud_config": str(self.cloud), "builder_config": str(self.base / "builder.json"),
+            "builder_state": str(self.state),
             "python": sys.executable, "python_site_packages": str(self.site),
             "publisher_locks": [str(self.lock)]}))
         self.fake = self.base / "fake-bin"
@@ -102,7 +103,7 @@ class Deploy(unittest.TestCase):
             f'[ "$1" = show ] && cat {self.status}\nexit 0\n')
         systemctl.chmod(0o755)
 
-    def bundle(self, version, tag="new"):
+    def bundle(self, version, tag="new", bridge=""):
         source = self.base / f"bundle-{version}-{tag}"
         assets = []
         for name in BINARIES:
@@ -114,7 +115,7 @@ class Deploy(unittest.TestCase):
         for name in ("experiment_control/new.py", "ml_exp_server/image_builder.py", "ml_exp_worker/new.py"):
             path = source / "python" / name
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(f"tag = {tag!r}\n")
+            path.write_text(f"tag = {tag!r}\n" + (bridge if name.endswith("image_builder.py") else ""))
             python[name] = digest(path)
         (source / "release-info.json").write_text(json.dumps(
             {"version": version, "source_commit": "c" * 40, "python": python}))
@@ -274,6 +275,24 @@ class Deploy(unittest.TestCase):
         self.assertNotIn("--initialize", self.server_calls())
         self.assertFalse((self.root / "bin/ml-expd-rs").exists())
         self.assertEqual(self.calls(), [])
+
+    def test_refused_builder_configuration_stops_the_deploy_before_any_change(self):
+        archive = self.bundle("1.1.0", bridge='import sys\nsys.exit("refused: " + " ".join(sys.argv[1:]))\n')
+        for args in ((), ("--apply",)):
+            result = self.deploy(archive, *args)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn(f"refused: --config {self.base / 'builder.json'} --check", result.stderr)
+            self.assertEqual(self.version(), "1.0.0")
+            self.assertEqual(self.calls(), [])
+
+    def test_deployment_settings_must_name_the_builder_configuration(self):
+        path = self.root / "deployment.json"
+        settings = json.loads(path.read_text())
+        del settings["builder_config"]
+        path.write_text(json.dumps(settings))
+        result = self.deploy(self.bundle("1.1.0"))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("deployment.json lacks builder_config", result.stderr)
 
     def test_first_install_refuses_any_trace_of_an_earlier_install(self):
         archive = self.bundle("1.1.0")
