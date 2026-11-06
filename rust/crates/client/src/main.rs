@@ -1696,12 +1696,27 @@ fn help_all() -> std::process::ExitCode {
     }
     std::process::ExitCode::SUCCESS
 }
-fn main() -> std::process::ExitCode {
+fn client() -> std::process::ExitCode {
     if std::env::args().nth(1).as_deref() == Some("--help-all") {
         return help_all();
     }
     match run(Args::parse()) {
         Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+/// The command tree is large, and it outgrew the 1 MB main thread of a Windows debug build.
+const STACK_BYTES: usize = 8 * 1024 * 1024;
+fn main() -> std::process::ExitCode {
+    let thread = std::thread::Builder::new()
+        .stack_size(STACK_BYTES)
+        .spawn(client);
+    match thread.map(std::thread::JoinHandle::join) {
+        Ok(Ok(code)) => code,
+        Ok(Err(_)) => std::process::ExitCode::FAILURE,
         Err(error) => {
             eprintln!("{error}");
             std::process::ExitCode::FAILURE
