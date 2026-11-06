@@ -245,10 +245,58 @@ pub struct Latest {
     pub unsettled: bool,
 }
 const LATEST: &str = "latest.json";
+const RUNS: &str = "runs";
 /// Only a convenience: failing to save this must not disturb a submission.
 fn remember(directory: &Path, latest: &Latest) {
-    if let Ok(bytes) = serde_json::to_vec(latest) {
-        let _ = ml_exp_io::write_atomic(&directory.join(LATEST), &bytes, false);
+    let Ok(bytes) = serde_json::to_vec(latest) else {
+        return;
+    };
+    let _ = ml_exp_io::write_atomic(&directory.join(LATEST), &bytes, false);
+    // Each Run also keeps its own record, so it can still be named after a newer one.
+    let own = Path::new(&latest.project).join(&latest.run_id);
+    if !directory.ends_with(&own) {
+        let directory = directory.join(RUNS).join(own);
+        if std::fs::create_dir_all(&directory).is_ok() {
+            let _ = ml_exp_io::write_atomic(&directory.join(LATEST), &bytes, false);
+        }
+    }
+}
+/// Where the record of a named Run is kept, for the commands that act on the latest
+/// one by default. `--project` is only needed when two Projects used the same Run name.
+pub fn run_directory(directory: &Path, project: Option<&str>, run: &str) -> Result<PathBuf, Error> {
+    let runs = directory.join(RUNS);
+    let valid = |id: &str| {
+        ml_exp_core::identity::validate_id(id)
+            .map_err(|_| Error::Submit(format!("{id} is not a valid name")))
+    };
+    valid(run)?;
+    let unknown = || {
+        Error::Submit(format!(
+            "this machine has no record of submitting {run}; `ml-exp run --help` acts on a \
+             Submission by its ID"
+        ))
+    };
+    if let Some(project) = project {
+        valid(project)?;
+        let found = runs.join(project).join(run);
+        return if found.join(LATEST).is_file() {
+            Ok(found)
+        } else {
+            Err(unknown())
+        };
+    }
+    let mut found: Vec<PathBuf> = std::fs::read_dir(&runs)
+        .map_err(|_| unknown())?
+        .flatten()
+        .map(|entry| entry.path().join(run))
+        .filter(|path| path.join(LATEST).is_file())
+        .collect();
+    match found.len() {
+        0 => Err(unknown()),
+        1 => Ok(found.remove(0)),
+        _ => Err(Error::Submit(format!(
+            "more than one Project has a Run named {run}; say which with --project"
+        ))),
     }
 }
 pub fn latest(directory: &Path) -> Result<Latest, Error> {
@@ -2095,6 +2143,33 @@ mod tests {
     }
     fn stopped_now(view: &Value) -> Option<String> {
         stopped(view, false)
+    }
+    #[test]
+    fn an_earlier_run_can_still_be_named() {
+        let root = tempfile::tempdir().unwrap();
+        let record = |project: &str, run: &str| Latest {
+            project: project.into(),
+            run_id: run.into(),
+            submission_id: Some(format!("action-{run}")),
+            unsettled: false,
+        };
+        remember(root.path(), &record("demo", "first"));
+        remember(root.path(), &record("demo", "second"));
+        remember(root.path(), &record("other", "second"));
+        assert_eq!(latest(root.path()).unwrap().project, "other");
+        let first = run_directory(root.path(), None, "first").unwrap();
+        assert_eq!(latest(&first).unwrap().run_id, "first");
+        assert!(
+            run_directory(root.path(), None, "second").is_err(),
+            "ambiguous"
+        );
+        let second = run_directory(root.path(), Some("demo"), "second").unwrap();
+        assert_eq!(latest(&second).unwrap().project, "demo");
+        assert!(run_directory(root.path(), Some("demo"), "absent").is_err());
+        assert!(run_directory(root.path(), Some(".."), "first").is_err());
+        // A Run's own directory is not given another copy of itself.
+        remember(&first, &record("demo", "first"));
+        assert!(!first.join(RUNS).exists());
     }
     #[test]
     fn only_a_proven_failure_may_build_again() {

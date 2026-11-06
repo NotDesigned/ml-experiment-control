@@ -104,8 +104,14 @@ For every field and each separate step, see `ml-exp run start` and `ml-exp run e
         #[arg(long, default_value_t = 80)]
         lines: i64,
     },
-    /// Download and verify the results of the latest submission.
+    /// Download and verify the results of the latest submission, or of a named Run.
     Results {
+        /// Act on this Run rather than the latest submission from this machine.
+        #[arg(long)]
+        run: Option<String>,
+        /// Only needed when two Projects used the same Run name.
+        #[arg(long, requires = "run")]
+        project: Option<String>,
         /// Named after the Run unless given.
         #[arg(long)]
         output: Option<PathBuf>,
@@ -113,14 +119,26 @@ For every field and each separate step, see `ml-exp run start` and `ml-exp run e
         #[arg(long)]
         keep: bool,
     },
-    /// Cancel the latest submission, after saying which one.
+    /// Cancel the latest submission or a named Run, after saying which one.
     Cancel {
+        /// Act on this Run rather than the latest submission from this machine.
+        #[arg(long)]
+        run: Option<String>,
+        /// Only needed when two Projects used the same Run name.
+        #[arg(long, requires = "run")]
+        project: Option<String>,
         /// Skip the question. Required without a terminal.
         #[arg(long)]
         yes: bool,
     },
-    /// Run the latest submission's Run again, from the start or a checkpoint.
+    /// Run the latest submission's Run or a named Run again, from the start or a checkpoint.
     Retry {
+        /// Act on this Run rather than the latest submission from this machine.
+        #[arg(long)]
+        run: Option<String>,
+        /// Only needed when two Projects used the same Run name.
+        #[arg(long, requires = "run")]
+        project: Option<String>,
         /// A checkpoint from `ml-exp run checkpoints`. From the start unless given.
         #[arg(long)]
         checkpoint: Option<String>,
@@ -812,6 +830,17 @@ fn submissions_directory(config: &std::path::Path) -> PathBuf {
         .unwrap_or(std::path::Path::new("."))
         .join("submissions")
 }
+/// The records of the named Run, or the latest submission's when none is named.
+fn chosen(
+    directory: &std::path::Path,
+    project: Option<&str>,
+    run: Option<&str>,
+) -> Result<PathBuf, ml_exp_client::Error> {
+    match run {
+        Some(run) => ml_exp_client::submit::run_directory(directory, project, run),
+        None => Ok(directory.to_owned()),
+    }
+}
 /// The short commands are the `run` commands, with the latest submission filled in.
 fn expand(command: Command, config: &std::path::Path) -> Result<Command, ml_exp_client::Error> {
     let directory = submissions_directory(config);
@@ -879,8 +908,17 @@ fn expand(command: Command, config: &std::path::Path) -> Result<Command, ml_exp_
                 },
             }
         }
-        Command::Results { output, keep } => {
-            let latest = ml_exp_client::submit::latest(&directory)?;
+        Command::Results {
+            output,
+            keep,
+            run,
+            project,
+        } => {
+            let latest = ml_exp_client::submit::latest(&chosen(
+                &directory,
+                project.as_deref(),
+                run.as_deref(),
+            )?)?;
             let submission = latest
                 .submission_id
                 .ok_or(ml_exp_client::Error::Observation(
@@ -1222,10 +1260,14 @@ fn run(mut args: Args) -> Result<(), Box<dyn std::error::Error>> {
                         args.json,
                     )?
                 }
-                Command::Cancel { yes } => {
+                Command::Cancel { yes, run, project } => {
                     let value = ml_exp_client::submit::cancel(
                         &client,
-                        &submissions_directory(&config),
+                        &chosen(
+                            &submissions_directory(&config),
+                            project.as_deref(),
+                            run.as_deref(),
+                        )?,
                         hooks(&mut |summary| confirm(summary, yes), &mut printed, false),
                     )?;
                     if args.json {
@@ -1240,10 +1282,16 @@ fn run(mut args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     checkpoint,
                     yes,
                     detach,
+                    run,
+                    project,
                 } => report(
                     ml_exp_client::submit::retry(
                         &client,
-                        &submissions_directory(&config),
+                        &chosen(
+                            &submissions_directory(&config),
+                            project.as_deref(),
+                            run.as_deref(),
+                        )?,
                         checkpoint,
                         hooks(&mut |summary| confirm(summary, yes), &mut printed, !detach),
                     )?,

@@ -72,6 +72,8 @@ ml-exp cancel     # ask, then stop it
 ml-exp retry      # ask, then run it again; --checkpoint resumes from one
 ```
 
+`results`, `cancel` and `retry` act on your latest submission unless given `--run NAME`.
+
 **Running it again.** The job's identity comes from the directory name, the code and the
 settings, so repeating the same command goes back to the same job and sends nothing new.
 This is what makes it safe to repeat after a lost connection. To run again, change the
