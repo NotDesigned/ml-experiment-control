@@ -364,7 +364,6 @@ mod tests {
                 path,
                 serde_json::to_vec(&value).unwrap(),
                 true,
-                true,
             )
             .await
         }
@@ -504,7 +503,6 @@ mod tests {
                     Method::POST,
                     "/api/project-lifecycle/demo/pause",
                     vec![b'x'; MAX_BODY + 1],
-                    true,
                     true
                 )
                 .await
@@ -517,7 +515,6 @@ mod tests {
                     Method::POST,
                     "/api/project-lifecycle/demo/pause",
                     b"{\"reason\":\"one\",\"reason\":\"two\"}".to_vec(),
-                    true,
                     true
                 )
                 .await

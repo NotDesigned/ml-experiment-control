@@ -520,7 +520,7 @@ fn bounded_tails_never_claim_complete_history_even_with_a_complete_live_journal(
         count: 1,
     }];
     assert!(matches!(
-        read_model::attempt_metrics(&snapshot, "attempt-001", &query, None),
+        read_model::attempt_metrics(&snapshot, "attempt-001", &MetricQuery::default(), None),
         Err(read_model::Error::Evidence)
     ));
 }

@@ -22,7 +22,9 @@ ProtectSystem=strict
 ProtectHome=yes
 RuntimeDirectory=ml-exp-builder
 RuntimeDirectoryMode=0750
-ReadWritePaths=/var/lib/ml-exp/builder /etc/ml-exp/build-docker
+StateDirectory=ml-exp/builder
+StateDirectoryMode=0700
+ReadWritePaths=/etc/ml-exp/build-docker
 
 [Install]
 WantedBy=multi-user.target
