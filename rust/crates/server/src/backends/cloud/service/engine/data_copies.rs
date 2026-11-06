@@ -3,7 +3,7 @@
 //! id can still be read but can never be driven again.
 use super::{sync_jobs::proven_terminal, *};
 use ml_exp_core::{
-    cloud::{Job, pai::Allocation, sensecore},
+    cloud::{Job, pai::Allocation},
     state::RunState,
 };
 
@@ -36,16 +36,14 @@ fn identity_conflict() -> cloud::Error {
     }
 }
 /// `data_copy_cli` exits non-zero unless READY was acknowledged, so SUCCEEDED without
-/// READY is contradictory evidence and never permits a second copy. The raw state
-/// matters too: SenseCore also reports CANCELLED for jobs that may still run.
+/// READY is contradictory evidence and never permits a second copy.
 pub(super) fn allows_new_request(status: &Value) -> bool {
     matches!(
         proven_terminal(status),
-        Ok(Some(observation)) if match observation.state {
-            RunState::Failed | RunState::Preempted => true,
-            RunState::Cancelled => !sensecore::may_still_run(&observation.provider_state),
-            _ => false,
-        }
+        Ok(Some(observation)) if matches!(
+            observation.state,
+            RunState::Failed | RunState::Cancelled | RunState::Preempted
+        )
     )
 }
 impl Service {

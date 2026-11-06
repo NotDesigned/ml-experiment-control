@@ -793,6 +793,38 @@ fn retry_is_refused_on_absent_or_non_terminal_evidence() {
     }
 }
 
+/// SenseCore reports CANCELLED for these too, but neither shows the job is over, so a
+/// new Attempt could train beside the old job.
+#[test]
+fn a_sensecore_job_that_may_still_run_cannot_be_retried() {
+    for raw in ["DELETING", "SUSPENDED"] {
+        let f = Fixture::new(Kind::Sensecore);
+        let service = f.open();
+        let flag = AtomicBool::new(false);
+        let (action, _) = f.authorized(&service, "train");
+        f.execute(&service, &action).unwrap();
+        let next = f.run_directory("train").join("attempts/attempt-002");
+        f.provider.world().row["state"] = json!(raw);
+        assert_eq!(
+            service
+                .retry(&action, retry_request("train"), T_RECONCILE, &flag)
+                .unwrap_err()
+                .code,
+            "CLOUD_EVIDENCE_INVALID",
+            "{raw}"
+        );
+        assert!(!next.exists(), "{raw}");
+
+        f.provider.world().row["state"] = json!("DELETED");
+        let retried = service
+            .retry(&action, retry_request("train"), T_RECONCILE, &flag)
+            .unwrap();
+        assert_eq!(retried["retry_state"], "CREATED", "{raw}");
+        assert!(next.exists(), "{raw}");
+        assert_eq!(f.provider.creates(), 1, "{raw}");
+    }
+}
+
 #[test]
 fn renew_is_refused_once_started() {
     for kind in KINDS {
