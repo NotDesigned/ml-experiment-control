@@ -872,9 +872,8 @@ mod tests {
         let mut request = spec();
         request.executor = "sc".into();
         assert!(choose(&request, &[closed, plain]).is_err());
-        let exact = shape("sc", 8, 8, 8);
-        let row = choose(&request, &[shape("sc-a", 1, 8, 32), exact]).unwrap();
-        assert_eq!(row["executor_id"], "sc");
+        let rows = [shape("sc-a", 1, 8, 32), shape("sc", 8, 8, 8)];
+        assert_eq!(choose(&request, &rows).unwrap()["executor_id"], "sc");
     }
     #[test]
     fn spend_is_rounded_up_so_the_budget_covers_the_time() {
