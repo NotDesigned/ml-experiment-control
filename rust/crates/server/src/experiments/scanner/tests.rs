@@ -142,7 +142,10 @@ fn canonical_corruption_foreign_identity_and_science_only_copies_are_not_absence
                 &run.join("manifest.json"),
                 b"{\"project\":\"other\",\"run_id\":\"trial\"}",
             ),
-            "science-only" => write(&run.join("collected_run/manifest.json"), &native("copied")),
+            "science-only" => write(
+                &run.join("attempts/attempt-001/attempt.json"),
+                &native("copied"),
+            ),
             _ => unreachable!(),
         }
         let result = fixture.discover();

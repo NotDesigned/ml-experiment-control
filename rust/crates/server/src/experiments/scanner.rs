@@ -138,7 +138,7 @@ pub(super) fn scan(
                     let text = name.to_str().ok_or(DiscoveryError::UnsafeEntry)?;
                     identity::validate_observation_id(text)
                         .map_err(why!(DiscoveryError::UnsafeEntry))?;
-                    if matches!(text, "attempts" | "collected_run" | "uploaded_outputs") {
+                    if text == "attempts" {
                         return Err(DiscoveryError::UnsupportedLayout);
                     }
                     if components.len() >= MAX_DEPTH {
