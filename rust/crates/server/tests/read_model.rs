@@ -1,6 +1,6 @@
 use ml_exp_server::{
     experiments::{Diagnostic, EvidenceDocument, EvidenceProblem, LogTail},
-    read_model::{self, LiveMetrics, LogQuery, LogStream, MetricFormat, MetricQuery},
+    read_model::{self, LiveMetrics, LogQuery, LogStream, MetricQuery},
 };
 use serde_json::{Value, json};
 #[path = "common/read_model.rs"]
@@ -278,25 +278,17 @@ fn scientific_metric_names_units_and_contexts_survive_metadata_redaction() {
         json!({"step":0,"token":0,"password":1,"api_key":2}),
         json!({"name":"password","unit":"bits/raw byte","value":3,"variant_id":"α","dataset_id":"d","checkpoint_id":"c","protocol_id":"p","summary":true}),
     ];
-    let query = MetricQuery {
-        format: MetricFormat::Records,
-        ..MetricQuery::default()
-    };
-    let result = read_model::attempt_metrics(&snapshot, "attempt-001", &query, None).unwrap();
+    let result =
+        read_model::attempt_metrics(&snapshot, "attempt-001", &MetricQuery::default(), None)
+            .unwrap();
     assert_eq!(result["records"][0]["name"], "token");
     assert_eq!(result["records"][0]["value"], 0);
     assert_eq!(result["records"][1]["name"], "password");
     assert_eq!(result["records"][1]["value"], 1);
     assert_eq!(result["records"][3]["variant_id"], "α");
     assert_eq!(result["records"][3]["summary"], true);
-    let legacy =
-        read_model::attempt_metrics(&snapshot, "attempt-001", &MetricQuery::default(), None)
-            .unwrap();
-    assert_eq!(legacy["points"][0]["token"], 0);
-    assert_eq!(legacy["points"][0]["password"], 1);
-    assert_eq!(legacy["evaluation"], contract);
     assert!(
-        !serde_json::to_string(&legacy)
+        !serde_json::to_string(&result)
             .unwrap()
             .contains("secret-env")
     );
@@ -328,16 +320,9 @@ fn scientific_assignment_spellings_are_preserved_in_all_four_read_views() {
         assert_eq!(detail["checkpoint_id"], "token=checkpoint");
         assert_eq!(detail["summary"], false);
     }
-    let metrics = read_model::attempt_metrics(
-        &snapshot,
-        "attempt-001",
-        &MetricQuery {
-            format: MetricFormat::Records,
-            ..MetricQuery::default()
-        },
-        None,
-    )
-    .unwrap();
+    let metrics =
+        read_model::attempt_metrics(&snapshot, "attempt-001", &MetricQuery::default(), None)
+            .unwrap();
     assert_eq!(metrics["records"][0]["name"], "token=entropy");
     assert_eq!(metrics["records"][0]["unit"], "secret=joule");
     snapshot.attempts[0].metrics.records =
@@ -450,10 +435,7 @@ fn canonical_failure_undeclared_and_conflict_records_remain_diagnostics_without_
         assert_eq!(canonical, before);
         let projected = read_model::metric_payload(
             &canonical,
-            &MetricQuery {
-                format: MetricFormat::Records,
-                ..MetricQuery::default()
-            },
+            &MetricQuery::default(),
             &json!({}),
             None,
             None,
@@ -475,10 +457,7 @@ fn canonical_failure_undeclared_and_conflict_records_remain_diagnostics_without_
     read_model::validate_journal_observations(records, &json!({})).unwrap();
     let projected = read_model::metric_payload(
         records,
-        &MetricQuery {
-            format: MetricFormat::Records,
-            ..MetricQuery::default()
-        },
+        &MetricQuery::default(),
         &json!({}),
         None,
         None,
@@ -522,14 +501,10 @@ fn bounded_tails_never_claim_complete_history_even_with_a_complete_live_journal(
     snapshot.attempts[0].metrics.records = vec![metric("loss", json!(3), 1)];
     snapshot.attempts[0].metrics.truncated = true;
     let records = live(&[metric("loss", json!(2), 2)]);
-    let query = MetricQuery {
-        format: MetricFormat::Records,
-        ..MetricQuery::default()
-    };
     let result = read_model::attempt_metrics(
         &snapshot,
         "attempt-001",
-        &query,
+        &MetricQuery::default(),
         Some(LiveMetrics {
             attempt_id: "attempt-001",
             records: &records,

@@ -118,14 +118,11 @@ explicit retry.
 Attempt is supplied, the client first reads `GET /api/runs/P/R/attempts` and binds
 the request to its current Attempt. These reads do not submit work.
 
-With `metric-records.v1`, the client requests `format=records` and repeats `name`
-to filter metric names. The compact response contains normalized `records`, full
-history `validation`, `total_records`, `downsampled`, `missing_names`, frozen
-`protocol_id` and exact Run/Attempt identity. Validation runs before filtering or
-sampling. It omits the duplicate legacy points/keys representation and filesystem
-paths. Omitting `format` keeps the old response; `keys` remains a legacy field
-filter. Mixing `format=records` with `keys` is rejected. See [metrics](metrics.md)
-for explicit result summaries and scoped requirements.
+Repeat `name` to filter metric names. The compact response contains normalized
+`records`, full history `validation`, `total_records`, `downsampled`,
+`missing_names`, frozen `protocol_id` and exact Run/Attempt identity. Validation
+runs before filtering or sampling. Unknown query parameters are refused. See
+[metrics](metrics.md) for explicit result summaries and scoped requirements.
 
 `ml-exp run cancel` and `ml-exp run retry` POST
 `/api/submissions/ID/cancel` and `/api/submissions/ID/retry`. Authorization and
@@ -219,7 +216,7 @@ changing source, parameters or restore reference requires a new Run.
 |---|---|
 | `GET /api/runs/P/R` / `/attempts` | Run evidence and exact executions |
 | `GET /api/attempts/P/R::A/logs` | Stored bounded stdout/stderr |
-| `GET /api/attempts/P/R::A/metrics?format=records&name=loss` | Compact normalized [metrics](metrics.md); repeat `name` |
+| `GET /api/attempts/P/R::A/metrics?name=loss` | Compact normalized [metrics](metrics.md); repeat `name` |
 | `GET /api/runs/P/R/attempts/A/checkpoints` / `/checkpoints/CHECKPOINT_ID` | Registered checkpoint metadata |
 | `POST /api/submissions/S/checkpoint` | Verify and register a complete backend checkpoint |
 | `GET /api/runs/P/R/attempts/A/collection` | Training, collection and verification states |

@@ -997,7 +997,7 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
             .is_err()
     );
     let records = client
-        .get("/api/attempts/demo/train::attempt-001/metrics?format=records")
+        .get("/api/attempts/demo/train::attempt-001/metrics")
         .unwrap();
     assert_eq!(records["records"].as_array().unwrap().len(), 2, "{records}");
     let logs = client

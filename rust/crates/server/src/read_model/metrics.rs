@@ -5,26 +5,14 @@ use ml_exp_core::{
     observation::numeric_tolerant_equal,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashMap};
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum MetricFormat {
-    #[default]
-    Legacy,
-    Records,
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MetricQuery {
-    #[serde(default)]
-    pub format: MetricFormat,
     #[serde(default = "default_points")]
     pub max_points: usize,
-    #[serde(default)]
-    pub keys: Option<String>,
     #[serde(default)]
     pub names: Option<Vec<String>>,
 }
@@ -34,9 +22,7 @@ const fn default_points() -> usize {
 impl Default for MetricQuery {
     fn default() -> Self {
         Self {
-            format: MetricFormat::Legacy,
             max_points: default_points(),
-            keys: None,
             names: None,
         }
     }
@@ -45,11 +31,6 @@ impl MetricQuery {
     pub fn validate(&self) -> Result<()> {
         if self.max_points == 0 {
             return Err(Error::Query("INVALID_MAX_POINTS"));
-        }
-        if self.format == MetricFormat::Records && self.keys.is_some()
-            || self.format == MetricFormat::Legacy && self.names.is_some()
-        {
-            return Err(Error::Query("INVALID_METRIC_FORMAT"));
         }
         if self.names.as_ref().is_some_and(|names| {
             names.len() > 256
@@ -368,8 +349,7 @@ pub fn merge_metrics(
 }
 
 /// The metric payload, including complete-history validation before
-/// filtering/downsampling. Source paths are explicit inputs. `records` is the
-/// compact format, and `legacy` names the older points shape on the wire.
+/// filtering/downsampling. Source paths are explicit inputs.
 pub fn metric_payload(
     records: &[Value],
     query: &MetricQuery,
@@ -402,140 +382,54 @@ pub fn metric_payload(
         .filter(|r| r["status"] == "CONFLICTING")
         .count();
     let incomplete = contexts.iter().filter(|c| c["state"] == "PARTIAL").count();
-    let mut validation = json!({"coverage":"complete_history","total_records":records.len(),
+    let missing = array(&complete, "missing_metrics")?
+        .iter()
+        .chain(
+            contexts
+                .iter()
+                .filter_map(|c| c["missing_metrics"].as_array())
+                .flatten(),
+        )
+        .map(|v| v.as_str().map(str::to_owned).ok_or(Error::Evidence))
+        .collect::<Result<Vec<_>>>()?;
+    let validation = json!({"coverage":"complete_history","total_records":normalized_records.len(),
         "failed_records":failed,"conflicting_records":conflicting,"incomplete_contexts":incomplete,
-        "state":if failed > 0 || conflicting > 0 { json!("FAILED") } else if incomplete > 0 { json!("PARTIAL") } else { complete["state"].clone() }});
-    if query.format == MetricFormat::Records {
-        validation["total_records"] = json!(normalized_records.len());
-        let missing = array(&complete, "missing_metrics")?
-            .iter()
-            .chain(
-                contexts
-                    .iter()
-                    .filter_map(|c| c["missing_metrics"].as_array())
-                    .flatten(),
-            )
-            .map(|v| v.as_str().map(str::to_owned).ok_or(Error::Evidence))
-            .collect::<Result<Vec<_>>>()?;
-        validation["missing_metrics"] = json!(string_set(missing));
-        let available = normalized_records
-            .iter()
-            .filter_map(|r| r["name"].as_str())
-            .collect::<BTreeSet<_>>();
-        let selected = normalized_records
-            .iter()
-            .filter(|r| {
-                query.names.as_ref().is_none_or(|names| {
-                    names.is_empty() || names.iter().any(|name| r["name"] == *name)
-                })
-            })
-            .collect::<Vec<_>>();
-        let total = selected.len();
-        let sampled = indices(total, query.max_points)
-            .into_iter()
-            .map(|i| {
-                let mut record = selected[i].as_object().cloned().ok_or(Error::Evidence)?;
-                record.shift_remove("source");
-                record.shift_remove("sources");
-                Ok(Value::Object(record))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let missing_names = string_set(
+        "state":if failed > 0 || conflicting > 0 { json!("FAILED") } else if incomplete > 0 { json!("PARTIAL") } else { complete["state"].clone() },
+        "missing_metrics":string_set(missing)});
+    let available = normalized_records
+        .iter()
+        .filter_map(|r| r["name"].as_str())
+        .collect::<BTreeSet<_>>();
+    let selected = normalized_records
+        .iter()
+        .filter(|r| {
             query
                 .names
-                .iter()
-                .flatten()
-                .filter(|n| !available.contains(n.as_str()))
-                .cloned(),
-        );
-        return bounded(
-            json!({"records":sampled,"validation":validation,"total_records":total,
-            "downsampled":total > query.max_points,"missing_names":missing_names,
-            "protocol_id":complete["protocol_id"],"source_attempt_id":source_attempt_id}),
-        );
-    }
-    let wanted = query
-        .keys
-        .as_ref()
-        .filter(|keys| !keys.is_empty())
-        .map(|keys| {
-            keys.split(',')
-                .map(str::trim)
-                .filter(|key| !key.is_empty())
-                .collect::<Vec<_>>()
-        });
-    let mut available = BTreeSet::new();
-    let mut numeric = BTreeSet::new();
-    for record in records {
-        for (key, value) in record.as_object().ok_or(Error::Evidence)? {
-            if key == "step" || key == "timestamp" {
-                continue;
-            }
-            if value.is_string() || value.is_number() || value.is_boolean() {
-                available.insert(key.clone());
-            }
-            if value.is_number() || value.is_boolean() {
-                numeric.insert(key.clone());
-            }
-        }
-    }
-    let sampled = indices(records.len(), query.max_points)
+                .as_ref()
+                .is_none_or(|names| names.is_empty() || names.iter().any(|name| r["name"] == *name))
+        })
+        .collect::<Vec<_>>();
+    let total = selected.len();
+    let sampled = indices(total, query.max_points)
         .into_iter()
-        .map(|i| records[i].clone())
-        .collect::<Vec<_>>();
-    let mut points = Vec::new();
-    for record in &sampled {
-        let fields = record.as_object().ok_or(Error::Evidence)?;
-        let mut point = Map::new();
-        point.insert(
-            "step".into(),
-            record.get("step").cloned().unwrap_or(Value::Null),
-        );
-        point.insert(
-            "timestamp".into(),
-            record.get("timestamp").cloned().unwrap_or(Value::Null),
-        );
-        let keys = wanted
-            .as_ref()
-            .filter(|keys| !keys.is_empty())
-            .cloned()
-            .unwrap_or_else(|| {
-                fields
-                    .keys()
-                    .filter(|key| *key != "step" && *key != "timestamp")
-                    .map(String::as_str)
-                    .collect()
-            });
-        for key in keys {
-            if let Some(value) = record.get(key).filter(|value| {
-                finite(value) || wanted.is_some() && (value.is_string() || value.is_boolean())
-            }) {
-                point.insert(key.to_owned(), value.clone());
-            }
-        }
-        points.push(Value::Object(point));
-    }
-    let result = metric_result(
-        &sampled,
-        Some(&schema),
-        protocol(contract),
-        source,
-        normalized,
-    )?;
-    let keys = wanted
-        .as_ref()
-        .filter(|v| !v.is_empty())
-        .map(|v| json!(v))
-        .unwrap_or_else(|| json!(numeric));
-    let missing = wanted
-        .iter()
-        .flatten()
-        .filter(|key| !available.contains(**key))
-        .map(|v| json!(v))
-        .collect::<Vec<_>>();
+        .map(|i| {
+            let mut record = selected[i].as_object().cloned().ok_or(Error::Evidence)?;
+            record.shift_remove("source");
+            record.shift_remove("sources");
+            Ok(Value::Object(record))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let missing_names = string_set(
+        query
+            .names
+            .iter()
+            .flatten()
+            .filter(|n| !available.contains(n.as_str()))
+            .cloned(),
+    );
     bounded(
-        json!({"metrics":result,"evaluation":contract,"validation":validation,"points":points,
-        "keys":keys,"missing_keys":missing,"total_records":records.len(),"downsampled":records.len() > sampled.len(),
-        "source":source,"source_attempt_id":source_attempt_id}),
+        json!({"records":sampled,"validation":validation,"total_records":total,
+        "downsampled":total > query.max_points,"missing_names":missing_names,
+        "protocol_id":complete["protocol_id"],"source_attempt_id":source_attempt_id}),
     )
 }

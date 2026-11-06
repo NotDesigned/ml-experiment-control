@@ -225,7 +225,7 @@ fn multiple_packets_lost_ack_restart_exact_replay_finish_and_public_reads() {
         total
     );
     let records = client
-        .get("/api/attempts/demo/train::attempt-001/metrics?format=records&max_points=4000")
+        .get("/api/attempts/demo/train::attempt-001/metrics?max_points=4000")
         .unwrap();
     assert!(
         serde_json::to_string(&records)

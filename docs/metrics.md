@@ -142,17 +142,14 @@ Parquet/JSONL artifacts so they can be regrouped without rerunning the model.
 
 ## Compact API and validation
 
-Current clients use `metric-records.v1`:
-
 ```http
-GET /api/attempts/P/R::attempt-001/metrics?format=records&name=validation_loss&max_points=2000
+GET /api/attempts/P/R::attempt-001/metrics?name=validation_loss&max_points=2000
 ```
 
 Repeat `name` for multiple exact metric names; a comma is part of a name, not a
-separator. The retired Run-level `/api/runs/P/R/metrics` route, which is not native, supported the same query,
-resolving the current Attempt. Responses contain identity fields, `protocol_id`,
-`records`, `validation`, `total_records`, `downsampled`, `missing_names` and
-`source_attempt_id`. They omit legacy duplicate projections and server paths.
+separator. Responses contain identity fields, `protocol_id`, `records`,
+`validation`, `total_records`, `downsampled`, `missing_names` and
+`source_attempt_id`. They omit server paths.
 
 `total_records` counts matching normalized records. `validation` checks complete
 history before name filtering/downsampling, including required metrics, failed
@@ -160,11 +157,6 @@ records and conflicts. Use full exported JSONL for analysis of every point.
 `summary:true` is distinct from history even at the same step. Missing observations
 are `NOT_OBSERVED`; incomplete contexts are `PARTIAL`; invalid values, units,
 protocols or conflicting rewrites are `FAILED`. Identical observations deduplicate.
-
-Legacy HTTP callers that omit `format` retain their existing response. The API's
-legacy `keys` parameter selects record fields; it is not a metric-name filter and
-cannot be combined with `format=records`. Prefer CLI `--name`; it requires the
-new capability instead of guessing legacy semantics.
 
 ## Delivery and retention
 

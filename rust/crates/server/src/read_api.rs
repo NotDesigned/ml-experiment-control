@@ -4,7 +4,7 @@ use crate::{
     deletion::RunFence,
     experiments::{self, RunRef, Snapshot, Store},
     read_config,
-    read_model::{self, LiveMetrics, LogQuery, MetricFormat, MetricQuery},
+    read_model::{self, LiveMetrics, LogQuery, MetricQuery},
 };
 use ml_exp_core::identity::{validate_attempt, validate_id, validate_observation_id};
 use ml_exp_io::directory::Directory;
@@ -206,15 +206,7 @@ pub fn metric_query(raw: Option<&str>) -> Result<MetricQuery, Error> {
             return Err(invalid_query());
         }
         match key.as_str() {
-            "format" => {
-                query.format = match value.as_str() {
-                    "records" => MetricFormat::Records,
-                    "legacy" => MetricFormat::Legacy,
-                    _ => return Err(invalid_query()),
-                }
-            }
             "max_points" => query.max_points = value.parse().map_err(|_| invalid_query())?,
-            "keys" => query.keys = Some(value),
             "name" => names.push(value),
             _ => return Err(invalid_query()),
         }
@@ -1036,7 +1028,7 @@ mod tests {
     #[test]
     fn query_decoding_preserves_unicode_and_rejects_ambiguous_or_lossy_inputs() {
         let q = metric_query(Some(
-            "format=records&name=%E8%AE%AD%E7%BB%83%2Floss&name=token&max_points=2",
+            "name=%E8%AE%AD%E7%BB%83%2Floss&name=token&max_points=2",
         ))
         .unwrap();
         assert_eq!(q.names.unwrap(), vec!["训练/loss", "token"]);
@@ -1045,8 +1037,8 @@ mod tests {
             "name=%GG",
             "name=%",
             "max_points=1&max_points=2",
-            "format=records&keys=loss",
-            "format=legacy&name=loss",
+            "format=records",
+            "keys=loss",
             "unknown=x",
             "max_points=0",
         ] {

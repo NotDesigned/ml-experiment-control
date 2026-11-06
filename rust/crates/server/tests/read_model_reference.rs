@@ -10,9 +10,7 @@ fn literal(text: &str) -> Value {
 }
 fn metric_payload(input: &Value) -> Result<Value, Error> {
     let query = MetricQuery {
-        format: serde_json::from_value(input["format"].clone()).unwrap(),
         max_points: input["max_points"].as_u64().unwrap() as usize,
-        keys: input["keys"].as_str().map(str::to_owned),
         names: input
             .get("names")
             .map(|v| serde_json::from_value(v.clone()).unwrap()),
@@ -28,15 +26,10 @@ fn metric_payload(input: &Value) -> Result<Value, Error> {
 }
 
 #[test]
-fn metric_payload_reports_records_and_the_points_shape_with_coverage() {
-    for case in [
-        literal(
-            r#"{"operation":"metric_payload","input":{"records":[{"step":0,"timestamp":null,"loss":0,"accuracy":false,"tag":"α"}],"keys":null,"max_points":2,"source":null,"source_attempt_id":null,"contract":{},"format":"records","names":[]},"expected":{"records":[{"step":0,"name":"loss","value":0,"unit":null,"invalid_value":null,"variant_id":null,"protocol_id":null,"status":"UNDECLARED","error":"UNIT_NOT_DECLARED","errors":["UNIT_NOT_DECLARED"]}],"validation":{"coverage":"complete_history","total_records":1,"failed_records":0,"conflicting_records":0,"incomplete_contexts":1,"state":"PARTIAL","missing_metrics":[]},"total_records":1,"downsampled":false,"missing_names":[],"protocol_id":null,"source_attempt_id":null}}"#,
-        ),
-        literal(
-            r#"{"operation":"metric_payload","input":{"records":[{}],"keys":", ","max_points":2,"source":null,"source_attempt_id":"attempt-001","contract":{},"format":"legacy"},"expected":{"metrics":{"state":"NOT_OBSERVED","required_metrics":[],"missing_metrics":[],"records":[],"contexts":[],"current":null,"protocol_id":null},"evaluation":{},"validation":{"coverage":"complete_history","total_records":1,"failed_records":0,"conflicting_records":0,"incomplete_contexts":0,"state":"NOT_OBSERVED"},"points":[{"step":null,"timestamp":null}],"keys":[],"missing_keys":[],"total_records":1,"downsampled":false,"source":null,"source_attempt_id":"attempt-001"}}"#,
-        ),
-    ] {
+fn metric_payload_reports_records_with_coverage() {
+    for case in [literal(
+        r#"{"operation":"metric_payload","input":{"records":[{"step":0,"timestamp":null,"loss":0,"accuracy":false,"tag":"α"}],"max_points":2,"source":null,"source_attempt_id":null,"contract":{},"names":[]},"expected":{"records":[{"step":0,"name":"loss","value":0,"unit":null,"invalid_value":null,"variant_id":null,"protocol_id":null,"status":"UNDECLARED","error":"UNIT_NOT_DECLARED","errors":["UNIT_NOT_DECLARED"]}],"validation":{"coverage":"complete_history","total_records":1,"failed_records":0,"conflicting_records":0,"incomplete_contexts":1,"state":"PARTIAL","missing_metrics":[]},"total_records":1,"downsampled":false,"missing_names":[],"protocol_id":null,"source_attempt_id":null}}"#,
+    )] {
         assert_eq!(metric_payload(&case["input"]).unwrap(), case["expected"]);
     }
 }
@@ -46,36 +39,34 @@ fn downsampling_keeps_both_ends_and_reports_that_it_sampled() {
     let records: Vec<Value> = (0..5)
         .map(|step| json!({"step":step,"loss":step}))
         .collect();
-    for (format, rows) in [("records", "records"), ("legacy", "points")] {
-        for (max_points, steps, downsampled) in [
-            (1, json!([4]), true),
-            (2, json!([0, 4]), true),
-            (3, json!([0, 2, 4]), true),
-            (5, json!([0, 1, 2, 3, 4]), false),
-            (9, json!([0, 1, 2, 3, 4]), false),
-        ] {
-            let payload = metric_payload(&json!({"records":records,"keys":null,
-                "max_points":max_points,"contract":{},"format":format}))
-            .unwrap();
-            let actual: Vec<Value> = payload[rows]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|row| row["step"].clone())
-                .collect();
-            assert_eq!(Value::Array(actual), steps);
-            assert_eq!(payload["downsampled"], downsampled);
-            assert_eq!(payload["total_records"], 5);
-            assert_eq!(payload["validation"]["total_records"], 5);
-        }
+    for (max_points, steps, downsampled) in [
+        (1, json!([4]), true),
+        (2, json!([0, 4]), true),
+        (3, json!([0, 2, 4]), true),
+        (5, json!([0, 1, 2, 3, 4]), false),
+        (9, json!([0, 1, 2, 3, 4]), false),
+    ] {
+        let payload =
+            metric_payload(&json!({"records":records,"max_points":max_points,"contract":{}}))
+                .unwrap();
+        let actual: Vec<Value> = payload["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["step"].clone())
+            .collect();
+        assert_eq!(Value::Array(actual), steps);
+        assert_eq!(payload["downsampled"], downsampled);
+        assert_eq!(payload["total_records"], 5);
+        assert_eq!(payload["validation"]["total_records"], 5);
     }
 }
 
 #[test]
-fn filters_report_the_names_and_keys_they_did_not_find() {
+fn filters_report_the_names_they_did_not_find() {
     let records = json!([{"step":0,"loss":1,"accuracy":2},{"step":1,"loss":3,"accuracy":4}]);
-    let payload = metric_payload(&json!({"records":records,"keys":null,"max_points":10,
-        "contract":{},"format":"records","names":["loss","absent"]}))
+    let payload = metric_payload(&json!({"records":records,"max_points":10,
+        "contract":{},"names":["loss","absent"]}))
     .unwrap();
     assert_eq!(payload["missing_names"], json!(["absent"]));
     assert_eq!(payload["total_records"], 2);
@@ -83,30 +74,16 @@ fn filters_report_the_names_and_keys_they_did_not_find() {
     let rows = payload["records"].as_array().unwrap();
     assert_eq!(rows.len(), 2);
     assert!(rows.iter().all(|row| row["name"] == "loss"));
-    let payload = metric_payload(
-        &json!({"records":records,"keys":"loss, absent","max_points":10,
-        "contract":{},"format":"legacy"}),
-    )
-    .unwrap();
-    assert_eq!(payload["keys"], json!(["loss", "absent"]));
-    assert_eq!(payload["missing_keys"], json!(["absent"]));
-    assert_eq!(
-        payload["points"],
-        json!([{"step":0,"timestamp":null,"loss":1},{"step":1,"timestamp":null,"loss":3}])
-    );
 }
 
 #[test]
 fn metric_payload_refuses_invalid_queries_with_a_stable_code() {
     for case in [
         literal(
-            r#"{"operation":"metric_payload","input":{"records":[],"keys":null,"max_points":0,"source":null,"source_attempt_id":null,"contract":{},"format":"legacy"},"error":"INVALID_MAX_POINTS"}"#,
+            r#"{"operation":"metric_payload","input":{"records":[],"max_points":0,"source":null,"source_attempt_id":null,"contract":{}},"error":"INVALID_MAX_POINTS"}"#,
         ),
         literal(
-            r#"{"operation":"metric_payload","input":{"records":[],"keys":"","max_points":1,"source":null,"source_attempt_id":null,"contract":{},"format":"records"},"error":"INVALID_METRIC_FORMAT"}"#,
-        ),
-        literal(
-            r#"{"operation":"metric_payload","input":{"records":[],"keys":null,"max_points":1,"source":null,"source_attempt_id":null,"contract":{},"format":"records","names":[""]},"error":"INVALID_METRIC_NAMES"}"#,
+            r#"{"operation":"metric_payload","input":{"records":[],"max_points":1,"source":null,"source_attempt_id":null,"contract":{},"names":[""]},"error":"INVALID_METRIC_NAMES"}"#,
         ),
     ] {
         let error = metric_payload(&case["input"]).unwrap_err();

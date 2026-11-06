@@ -579,8 +579,6 @@ enum Run {
         target: Target,
         #[arg(long, default_value_t = 2000)]
         max_points: i64,
-        #[arg(long)]
-        keys: Option<String>,
         #[arg(long = "name")]
         names: Vec<String>,
     },
@@ -1277,7 +1275,6 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                             lines,
                         } => Output::Json(read::observe(
                             &client,
-                            &health,
                             saved.as_ref(),
                             target.selection(),
                             read::View::Logs { stream, lines },
@@ -1298,16 +1295,13 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                         Run::Metrics {
                             target,
                             max_points,
-                            keys,
                             names,
                         } => Output::Json(read::observe(
                             &client,
-                            &health,
                             saved.as_ref(),
                             target.selection(),
                             read::View::Metrics {
                                 max_points,
-                                keys,
                                 names: (!names.is_empty()).then_some(names),
                             },
                         )?),

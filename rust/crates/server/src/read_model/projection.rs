@@ -134,31 +134,6 @@ fn clean_record_metadata(record: &mut Value) {
         }
     }
 }
-fn clean_metric_result(result: &mut Value) {
-    if let Some(records) = result.get_mut("records").and_then(Value::as_array_mut) {
-        for record in records {
-            clean_record_metadata(record);
-        }
-    }
-    if let Some(contexts) = result.get_mut("contexts").and_then(Value::as_array_mut) {
-        for context in contexts {
-            if let Some(records) = context.get_mut("records").and_then(Value::as_array_mut) {
-                for record in records {
-                    clean_record_metadata(record);
-                }
-            }
-        }
-    }
-    if let Some(records) = result
-        .get_mut("current")
-        .and_then(|c| c.get_mut("records"))
-        .and_then(Value::as_array_mut)
-    {
-        for record in records {
-            clean_record_metadata(record);
-        }
-    }
-}
 fn clock(now: f64) -> Result<()> {
     if now.is_finite() {
         Ok(())
@@ -942,12 +917,6 @@ pub fn attempt_metrics(
         for record in records {
             clean_record_metadata(record);
         }
-    }
-    if let Some(result) = value.get_mut("metrics") {
-        clean_metric_result(result);
-    }
-    if let Some(source) = value.get_mut("source") {
-        *source = experiment_redact::redact_json(source.take());
     }
     // Arbitrary scientific names, units, contexts and values remain intact.
     // Raw manifests use the full metadata policy; this normalized metric view

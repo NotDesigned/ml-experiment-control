@@ -287,7 +287,6 @@ fn saved_submission_reads_committed_identity_without_bootstrap_or_latest_guess()
         };
         let logs = read::observe(
             &client,
-            &health,
             Some(&saved),
             selected,
             read::View::Logs {
@@ -415,7 +414,6 @@ fn native_clients_pin_exact_attempt_and_keep_scientific_metric_dimensions() {
     );
     let logs = read::observe(
         &client,
-        &health,
         None,
         selected(Some("attempt-001")),
         read::View::Logs {
@@ -430,12 +428,10 @@ fn native_clients_pin_exact_attempt_and_keep_scientific_metric_dimensions() {
     );
     let metrics = read::observe(
         &client,
-        &health,
         None,
         selected(Some("attempt-001")),
         read::View::Metrics {
             max_points: 100,
-            keys: None,
             names: Some(vec!["validation/loss".into()]),
         },
     )
@@ -575,7 +571,7 @@ fn authentication_protocol_and_query_errors_never_echo_request_credentials() {
     let error = http_failure(
         server
             .client()
-            .get("/api/attempts/demo/train::attempt-001/metrics?format=records")
+            .get("/api/attempts/demo/train::attempt-001/metrics")
             .unwrap_err(),
         409,
     );
@@ -677,7 +673,7 @@ fn copied_or_wrong_science_journals_never_supply_live_metrics() {
         let client = server.client();
         let error = http_failure(
             client
-                .get("/api/attempts/demo/train::attempt-001/metrics?format=records")
+                .get("/api/attempts/demo/train::attempt-001/metrics")
                 .unwrap_err(),
             409,
         );
@@ -726,7 +722,7 @@ fn malformed_internal_journal_observations_never_become_complete_science() {
         let client = server.client();
         for path in [
             "/api/runs/demo/train",
-            "/api/attempts/demo/train::attempt-001/metrics?format=records",
+            "/api/attempts/demo/train::attempt-001/metrics",
         ] {
             let error = http_failure(client.get(path).unwrap_err(), 409);
             assert_eq!(

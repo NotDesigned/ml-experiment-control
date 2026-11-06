@@ -435,9 +435,7 @@ fn schema_document() -> serde_json::Value {
     ]);
     let mut metrics = exact();
     metrics.extend([
-        query("format", json!({"type":"string","enum":["legacy","records"],"default":"legacy"}), "Use records to preserve metric definitions, units, variants and protocol context"),
         query("max_points", json!({"type":"integer","minimum":1,"default":2000}), "Maximum downsampled output points; validation precedes filtering"),
-        query("keys", json!({"type":"string"}), "Comma-separated legacy metric keys"),
         json!({"in":"query","name":"name","style":"form","explode":true,"schema":{"type":"array","items":{"type":"string"}},"description":"Repeat to select exact record metric names"})
     ]);
     let mut collection = run();
