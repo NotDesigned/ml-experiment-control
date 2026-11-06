@@ -465,13 +465,13 @@ fn plain_line() -> Vec<u8> {
 }
 fn long_history() -> Vec<u8> {
     (0..65)
-        .map(|step| {
+        .flat_map(|step| {
             format!(
                 "{{\"name\": \"loss\", \"value\": 2.5, \"unit\": \"nats/token\", \"step\": {step}, \"variant_id\": \"a\"}}\n"
             )
+            .into_bytes()
         })
-        .collect::<String>()
-        .into_bytes()
+        .collect()
 }
 fn padded_line(total: usize) -> Vec<u8> {
     let mut line = br#"{"name":"loss","value":1,"unit":"u","padding":""#.to_vec();
