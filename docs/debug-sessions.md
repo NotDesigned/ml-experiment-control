@@ -39,12 +39,13 @@ ml-exp debug delete "$debug_identity" --confirmation "DELETE $debug_identity"
 ml-exp debug refresh "$debug_identity"
 ```
 
-CCI supports create/query/stop; DSW also supports delete. The profile catalog
-returns `operations` and `expiry_action`. Requesting CCI deletion returns
-`DEBUG_DELETE_UNSUPPORTED` without a provider mutation.
+CCI supports create/query/stop; DSW also supports delete. Each profile in the
+catalog reports `delete_supported`. Requesting CCI deletion returns
+`CLOUD_CONFIGURATION_INVALID` without a provider mutation.
 
 Stop/delete requests can remain `STOPPING`/`DELETING` while the provider acts.
-The server continues requested cleanup every 20 seconds. A permission denial
+The server continues requested cleanup about every 30 seconds, at most 16 machines
+per pass. A permission denial
 (HTTP 403) pauses automatic retries; fix the permission and explicitly refresh. DSW deletion is complete
 only after the machine is absent. Stopping CCI releases compute and removes its
 session-owned DNAT rule; the stopped CCI and internal Service metadata remain.
@@ -63,8 +64,8 @@ DSW always has a four-hour hard ceiling, even if the shared debug-session maximu
 is configured higher. A shorter operator lease still takes precedence.
 
 - DSW: a **native shutdown timer** is installed and read back. Its absolute
-  deadline never advances on refresh. Server expiry cleanup also deletes the
-  stopped instance.
+  deadline never advances on refresh. On expiry the server also stops the instance.
+  It deletes an instance only on an explicit `delete`.
 - CCI: the injected SSH process has an **absolute expiry deadline**, and the
   server stops the instance and removes its own port rule on expiry. This is
   **not a provider-side compute shutdown timer**: if ML-Expd is unavailable,

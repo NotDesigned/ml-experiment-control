@@ -53,11 +53,6 @@ pub fn training(process: &ProcessEvidence) -> Training {
         Training::Unknown
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum Publication {
-    NotImplemented,
-}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Receipt {
@@ -66,7 +61,6 @@ pub struct Receipt {
     pub manifest_sha256: String,
     pub process: ProcessEvidence,
     pub training: Training,
-    pub publication: Publication,
     pub download_available: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_environment_sha256: Option<String>,

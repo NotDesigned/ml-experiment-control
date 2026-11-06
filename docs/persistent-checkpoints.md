@@ -46,8 +46,9 @@ Finish/flush the files, then atomically replace `STATE_DIR/checkpoint.ready.json
 
 The list must exactly cover one generation of regular files. Links, special
 files, traversal and changing bytes are rejected. Never modify/reuse a published
-generation. The worker verifies size/SHA/stability and seals permissions 0444/0555.
-This is permission protection, not a kernel read-only mount or off-site backup.
+generation. The worker verifies size/SHA/stability and seals files 0400 and directories
+0500. This is permission protection, which does not stop root, not a kernel read-only
+mount or off-site backup.
 On cloud backends the worker does this once for each ready marker and does not hash
 the same marker again, so damage after sealing is found when a restore hashes the
 generation, not by a later report.
@@ -112,10 +113,11 @@ metadata means no registered API reference yet. Result-upload failure does not
 delete persistent state, but a REGISTERED checkpoint alone is not a downloadable
 archive. See [output recovery](recovery.md#output-recovery). Retain referenced
 generations deliberately; no automatic state garbage collection exists.
-On supported Slurm/SenseCore backends an administrator can explicitly
-[delete a completed managed Run](resource-deletion.md), including its persistent
-generations. Frozen restore consumers block deletion. DLC remote Run deletion
-is unsupported; shared uploaded snapshot assets have a separate lifecycle.
+An administrator can explicitly [remove](resource-deletion.md) a terminal Attempt's
+`outputs`, its `state` or one generation, on Slurm, SenseCore and PAI DLC. On the cloud
+backends this runs as a zero-GPU job and needs the backend's `collector`. A generation
+that a frozen `resume_from` names blocks the plan. Real provider cleanup has not been
+accepted on any backend. Dataset assets have a separate lifecycle.
 
 Checkpoint/snapshot queries read registered metadata and validate its frozen
 Run/Attempt identity without downloading or expanding result archives. A released

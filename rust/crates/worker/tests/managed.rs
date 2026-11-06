@@ -1,6 +1,6 @@
 #![cfg(unix)]
 use ml_exp_core::launch;
-use ml_exp_worker::managed::{self, Config, Error, Phase, Publication, Training};
+use ml_exp_worker::managed::{self, Config, Error, Phase, Training};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -181,7 +181,12 @@ fn sealed_training_executes_once_with_explicit_environment_and_durable_receipt()
     let receipt = result.receipt.unwrap();
     assert!(receipt.succeeded());
     assert_eq!(receipt.training, Training::Completed);
-    assert_eq!(receipt.publication, Publication::NotImplemented);
+    assert!(
+        serde_json::to_value(&receipt)
+            .unwrap()
+            .get("publication")
+            .is_none()
+    );
     assert!(!receipt.download_available);
     assert_eq!(receipt.identity.project, "demo");
     assert_eq!(receipt.identity.run_id, "train");

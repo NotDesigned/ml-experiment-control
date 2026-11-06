@@ -64,8 +64,7 @@ old callback URL; restoring its callbacks is a separate operation.
 
 The current image parser lacks custom frontends/escape directives, heredocs,
 ARG-based FROM and external-image COPY --from. Training image publication targets
-linux/amd64. The 1 GiB transient transfer buffer and PAI duration maxima were
-explicitly requested. Cache verification still reads and hashes full files;
+linux/amd64. The PAI duration maxima were explicitly requested. Cache verification still reads and hashes full files;
 its cost scales with dataset size.
 
 Readiness gaps are reported separately from configured submission capabilities. No

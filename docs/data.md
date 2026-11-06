@@ -5,6 +5,22 @@ identities and lifecycles. Downloading results does not remove datasets or
 checkpoint state. The API stores transfer metadata and bounded part buffers;
 large dataset payloads live on backend storage or the configured object store.
 
+## Storage model
+
+Every backend has one primary storage: shared storage on Slurm, NAS on SenseCore and
+personal CPFS on PAI. A Run's `STATE_DIR` and `OUTPUT_DIR` and every verified dataset
+tree live there, and it is the only storage training reads and writes.
+
+On cloud backends, objects in OSS carry dataset parts and result archives between the
+client and primary storage. The platform moves those objects through signed part URLs.
+Training code never reads or writes there, and no OSS path is mounted. Slurm uses no
+object store: parts arrive over SSH and its archive stays on shared storage.
+
+A second location, if one is ever added, would map roles (runs, state, datasets) to
+paths on declared mounts in the backend configuration. Clients and training code would
+not change: `STATE_DIR` is still `STATE_DIR`. The storage scope that checks
+`resume_from` would have to cover where state lives. None of this is implemented.
+
 ## Upload and reuse
 
 Select an executor from `ml-exp backend`, then upload regular files:
@@ -38,7 +54,7 @@ not interchangeable.
 | Backend | Delivery before training |
 | --- | --- |
 | Slurm | Client → bounded API buffer → connected SSH gateway → shared storage. Offline compute nodes read the shared cache. |
-| SenseCore | Client → bounded API buffer → CCR data image → debug CPU ACP → NAS. A CPU receipt establishes readiness. |
+| SenseCore | Client → bounded API buffer → OSS objects → CCR data image, built from those objects on a PAI DSW → debug CPU ACP → NAS. A CPU receipt establishes readiness. |
 | PAI | Client → bounded API buffer → personal OSS objects → verified personal CPFS cache. Import runs before training, optionally in a separate CPU job. |
 
 A cache is scoped to its executor/storage identity. An asset's presence on one
@@ -190,14 +206,21 @@ ml-exp data import-oss --project study --executor pai-h200 \
   --object-key users/USER/datasets/version-1.tar \
   --sha256 ARCHIVE_SHA256 --archive-bytes ARCHIVE_BYTES
 ml-exp data download --project study --executor pai-h200 \
-  --asset asset.ACTUAL_HASH --output ./downloaded-data
+  --asset asset.ACTUAL_HASH --output ./downloaded-data.tar
 ```
 
-Import streams and verifies the archive and member inventory; it is not a claim
-that CPFS is ready. Use separate CPU publication or the PAI inline import above.
-Downloads obtain object-part tickets, verify the archive and every file, and
-publish into a new local directory. Dataset downloads send no result ACK and
-never delete the OSS original. Bucket, endpoint, prefix and credentials are
+Import is a copy. The API reads the object once to verify the archive and list its
+members, then again part by part, storing the bytes as ordinary dataset parts under the
+platform's prefix. The original stays where it is, so the bucket holds both until you
+remove the original yourself. Every part passes through the API host. A large object
+can exceed the 1230-second request limit; repeating the same request reads from the
+first part again and does not store accepted parts twice. The result is `ARCHIVED`, not
+a claim that CPFS is ready. Use separate CPU publication or the PAI inline import above.
+
+Downloads obtain object-part tickets, verify the archive and every file, and publish
+one tar file at `--output`, which must not already exist. They do not unpack it.
+Dataset downloads send no result ACK and never delete the dataset or the original
+object. Bucket, endpoint, prefix and credentials are
 operator configuration; credentials are not sent to clients. Native OSS
 filesystem mounts remain disabled; CPFS supplies the training filesystem.
 

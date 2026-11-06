@@ -45,8 +45,6 @@ pub enum RetentionStatus {
     Scheduled,
     Releasing,
     Released,
-    Expiring,
-    Expired,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -152,15 +150,6 @@ fn validate_retention(retention: &Retention, expected_sha: &str) -> Result<()> {
             timestamp(retention.release_after.as_deref().unwrap())?;
             timestamp(retention.released_at.as_deref().unwrap())?;
         }
-        RetentionStatus::Expiring | RetentionStatus::Expired => {
-            if retention.release_after.is_none() {
-                return Err(Error::Transition);
-            }
-            timestamp(retention.release_after.as_deref().unwrap())?;
-            if let Some(released_at) = retention.released_at.as_deref() {
-                timestamp(released_at)?;
-            }
-        }
     }
     Ok(())
 }
@@ -250,9 +239,7 @@ pub fn begin_release(receipt: &ArchiveReceipt, retention: &Retention) -> Result<
             ..retention.clone()
         }),
         RetentionStatus::Released => Ok(retention.clone()),
-        RetentionStatus::Keep | RetentionStatus::Expiring | RetentionStatus::Expired => {
-            Err(Error::Unavailable)
-        }
+        RetentionStatus::Keep => Err(Error::Unavailable),
     }
 }
 
@@ -301,6 +288,16 @@ mod tests {
             }],
             object_key: format!("demo/run-1/attempt-001/{}.tar", "a".repeat(64)),
         }
+    }
+    #[test]
+    fn nothing_expires_an_archive() {
+        for status in ["EXPIRING", "EXPIRED"] {
+            assert!(serde_json::from_value::<RetentionStatus>(status.into()).is_err());
+        }
+        assert_eq!(
+            serde_json::from_value::<RetentionStatus>("RELEASED".into()).unwrap(),
+            RetentionStatus::Released
+        );
     }
     #[test]
     fn proof_and_release_are_exact_and_replay_safe() {

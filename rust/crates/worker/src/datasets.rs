@@ -246,10 +246,6 @@ impl Store {
         stale: bool,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
-        if directory.entry_exists(OsStr::new("unpacked"))? {
-            let old = directory.child(OsStr::new("unpacked"), false)?;
-            tree::remove_staging(directory, &old)?;
-        }
         if directory.entry_exists(OsStr::new("archive.tar"))? {
             directory.remove_staged_regular(OsStr::new("archive.tar"))?;
         }

@@ -432,8 +432,9 @@ impl Service {
         let snapshot = store
             .snapshot_metadata(reference)
             .map_err(why!(invalid()))?;
-        // The caller retires tracking separately from physical payloads. Every
-        // Attempt must have exact terminal native provider evidence.
+        // Retiring removes no bytes and later refuses a new plan, so the operator
+        // removes bytes first. Every Attempt must have exact terminal native
+        // provider evidence.
         for attempt in &snapshot.attempts {
             let owner = Owner::of_run(
                 RunKind::of(&snapshot.run.metadata),
@@ -483,7 +484,7 @@ impl Service {
             .mark(project, run, &facts, now)
             .map_err(why!(invalid()))?;
         Ok(
-            json!({"project":project,"run_id":run,"status":"DELETED","payloads_removed":false,"audit_records_preserved":true}),
+            json!({"project":project,"run_id":run,"status":"RETIRED","payloads_removed":false,"audit_records_preserved":true}),
         )
     }
 }

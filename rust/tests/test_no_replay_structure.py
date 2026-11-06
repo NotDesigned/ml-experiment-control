@@ -28,7 +28,7 @@ PINS = {
     "rust/crates/server/src/backends/cloud/action.rs": "a09c4a78734245d578dbbbaa75c62a86e0ee2a49f81737c100e4cc5e2d7123dc",
     "rust/crates/server/src/backends/slurm/action.rs": "15ad4038d8525dde13d1439c97faa1475bc371e078603f3c8eb1ab0444b609ba",
     "rust/crates/server/src/backends/slurm/transport.rs": "1be44752888a9c93cbd7d4ac81643ab3c2977f7c345e61f8e36410ca60c9af5c",
-    "rust/crates/server/src/backends/slurm/tests/submission_tests.rs": "f0bec35ffa76196fe0d8845acf561a9026d779ec81a56274172b64e39f53cc85",
+    "rust/crates/server/src/backends/slurm/tests/submission_tests.rs": "b68d0760936dbb823c0717abfd0858122349d63f49c4771294e44f110d906d76",
     "rust/crates/server/src/backends/slurm/tests/action_tests.rs": "4947f58528888cf04ab64acaa39f8b16e6adeeb02445de9c582b3a7c99ed4bcc",
     "rust/crates/server/src/operations/store.rs": "1038a3f5be12140276318ece41b24432f18d8f87ed3d5df9c404a5168832661f",
     "rust/crates/server/tests/cloud_runs.rs": "97ebd43b97e61fe851d85447fc99ecec3502341e183208761d592b037949aaf6",

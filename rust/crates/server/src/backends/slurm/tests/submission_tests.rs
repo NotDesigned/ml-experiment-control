@@ -124,7 +124,6 @@ impl Fixture {
             storage: Storage {
                 run_dir: format!("{mount}/runs/demo/train"),
                 project_data_root: format!("{mount}/data/demo"),
-                additional_roots: BTreeMap::new(),
             },
             resources: Resources {
                 gpus: 1,

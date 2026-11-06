@@ -279,9 +279,10 @@ GET, partial download or a failed checksum never authorizes release.
 
 Release-enabled ACK permits immediate removal of the generated transfer
 archive; there is no 24-hour delay. It does not remove backend checkpoints,
-original outputs or dataset assets. Physical object-store cleanup can lag, and
-configured payload expiry is independent of ACK; `--keep` is not a permanent
-backup guarantee. Released archives return `410 ARTIFACT_RELEASED`. Redownload
+original outputs or dataset assets. Physical object-store cleanup can lag. The
+platform has no timer that expires an archive, but `--keep` is not a permanent
+backup guarantee: a lifecycle rule on the bucket would act outside the platform.
+Released archives return `410 ARTIFACT_RELEASED`. Redownload
 requires an explicit new export from retained backend outputs, not training.
 See [administrative deletion](resource-deletion.md) for separate state removal.
 

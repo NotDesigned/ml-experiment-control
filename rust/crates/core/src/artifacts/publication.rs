@@ -176,12 +176,6 @@ impl State {
         } else if self.retention.status != RetentionStatus::Keep {
             return Err(Error::Transition);
         }
-        if matches!(
-            self.retention.status,
-            RetentionStatus::Expired | RetentionStatus::Expiring
-        ) {
-            return Err(Error::Transition);
-        }
         Ok(())
     }
     /// Remote observations may complete an ACK, but cannot undo a durable
@@ -194,7 +188,6 @@ impl State {
             RetentionStatus::Scheduled => 1,
             RetentionStatus::Releasing => 2,
             RetentionStatus::Released => 3,
-            _ => 4,
         };
         if self.bundle != next.bundle
             || rank(next.retention.status) < rank(self.retention.status)

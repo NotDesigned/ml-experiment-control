@@ -245,15 +245,12 @@ fn interrupted_extraction_and_lost_ready_receipt_reconcile_original_identity() {
     let f = Fixture::new();
     f.begin();
     let uploaded = f.upload();
-    fs::create_dir(f.directory().join("unpacked")).unwrap();
-    fs::write(f.directory().join("unpacked/incomplete"), b"owned scratch").unwrap();
     fs::write(f.directory().join("archive.tar"), b"incomplete tar").unwrap();
     let ready = f.complete().unwrap().state;
     // Simulate successful tree publication followed by loss of the state commit.
     let directory = Directory::open(&f.directory(), false).unwrap();
     Store::save(&directory, &uploaded).unwrap();
     assert_eq!(f.complete().unwrap().state, ready);
-    assert!(!f.directory().join("unpacked").exists());
 }
 
 #[test]

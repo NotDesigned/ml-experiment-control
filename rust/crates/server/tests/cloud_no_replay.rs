@@ -1154,7 +1154,6 @@ fn slurm_side(f: &Fixture) -> (slurm_service::Service, String, std::path::PathBu
         storage: Storage {
             run_dir: format!("{mount}/runs/demo/train"),
             project_data_root: format!("{mount}/data/demo"),
-            additional_roots: BTreeMap::new(),
         },
         resources: Resources {
             gpus: 1,
@@ -2675,6 +2674,45 @@ async fn a_run_that_cannot_be_read_or_is_deleted_has_no_owner() {
         assert!(f.provider.calls().is_empty());
         assert!(!ssh_calls.exists());
     }
+}
+
+/// The order the docs give: bytes first, then the Run. Retiring removes nothing and
+/// says so, and it is the end of the line for new plans.
+#[test]
+fn a_run_retires_after_its_bytes_and_takes_no_later_plan() {
+    let c = CopyFixture::new(Kind::Pai, 1);
+    let service = Arc::new(c.open());
+    let (action, _) = c.f.authorized(&service, "train");
+    c.f.execute(&service, &action).unwrap();
+    c.provider.world().rows[0]["Status"] = json!("Failed");
+    let plan = |request: &str| {
+        service.maintenance_plan(
+            &action,
+            ml_exp_core::maintenance::Selection::Outputs,
+            request.into(),
+            T_RECONCILE,
+        )
+    };
+    let outputs = plan(REQUEST_A).unwrap();
+    service.maintenance_execute(&action, &outputs).unwrap();
+
+    administration::Service::initialize(&c.f.settings).unwrap();
+    let admin =
+        administration::Service::open(c.f.settings.clone(), None, Some(service.clone())).unwrap();
+    assert!(
+        admin
+            .retire("demo", "train", "RETIRE demo/train", T_RECONCILE)
+            .is_err()
+    );
+    let fence = RunFence::new(&c.f.settings.registry_root);
+    assert!(!fence.is_deleted("demo", "train").unwrap());
+    let retired = admin
+        .retire("demo", "train", "DELETE demo/train", T_RECONCILE)
+        .unwrap();
+    assert_eq!(retired["status"], "RETIRED");
+    assert_eq!(retired["payloads_removed"], false);
+    assert!(fence.is_deleted("demo", "train").unwrap());
+    assert!(plan(REQUEST_B).is_err());
 }
 
 #[test]

@@ -151,7 +151,6 @@ fn evidence_requires_exact_sealed_identity_and_immutable_terminal_receipt() {
             stderr_dropped_bytes: 0,
         },
         training: Training::Completed,
-        publication: Publication::NotImplemented,
         download_available: false,
         runtime_environment_sha256: None,
     });

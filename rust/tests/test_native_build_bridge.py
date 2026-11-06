@@ -25,6 +25,17 @@ from ml_exp_server.projects.source_revisions import _tree_digest
 
 
 class NativeBridge(unittest.TestCase):
+    def test_dsw_mounts_only_cpfs_and_no_key_mounts_oss(self):
+        from ml_exp_server.pai_storage import PaiStorage
+        api = SimpleNamespace(config={'region': 'cn-hangzhou'})
+        oss = {'oss_uri': 'oss://bucket.oss-cn-hangzhou.aliyuncs.com/users/u/', 'oss_mount_path': '/mnt/oss'}
+        self.assertEqual(PaiStorage({}, api).datasets(), [])
+        self.assertEqual(PaiStorage(oss, api).datasets(), [])
+        cpfs = {'cpfs_uri': 'bmcpfs://cpfs-abc.cn-hangzhou.cpfs.aliyuncs.com/', 'workspace_user': 'u'}
+        mounts = PaiStorage({**cpfs, **oss}, api).datasets()
+        self.assertEqual([m['MountPath'] for m in mounts], ['/mnt/ml-expd-personal', '/mnt/models', '/mnt/datasets'])
+        self.assertTrue(all(m['Uri'].startswith('bmcpfs://') for m in mounts))
+
     def test_dsw_docker_hub_receipt_accepts_engine_normalization_only_for_same_repository(self):
         from ml_exp_worker.dsw_build_worker import published_image
         sha = '@sha256:' + 'a' * 64

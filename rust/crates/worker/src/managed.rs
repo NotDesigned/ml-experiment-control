@@ -512,7 +512,6 @@ pub fn run(config: &Config, cancelled: &AtomicBool) -> Result<Observation> {
         manifest_sha256: target.sha256,
         training: training(&process),
         process,
-        publication: Publication::NotImplemented,
         download_available: false,
         runtime_environment_sha256: initial.runtime_environment_sha256.clone(),
     };

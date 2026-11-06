@@ -120,7 +120,7 @@ impl Watch {
         );
         let published = matches!(
             reported_state(&value, "publication", "status")?,
-            Some("AVAILABLE" | "RELEASED" | "EXPIRED" | "FAILED")
+            Some("AVAILABLE" | "RELEASED" | "FAILED")
         );
         if terminal && published {
             Ok(Decision::Complete {

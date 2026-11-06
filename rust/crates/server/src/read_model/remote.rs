@@ -170,7 +170,7 @@ mod tests {
     use ml_exp_core::{
         launch,
         managed::{
-            evidence::{CONTRACT, Observation, ProcessEvidence, Publication, Receipt, Training},
+            evidence::{CONTRACT, Observation, ProcessEvidence, Receipt, Training},
             remote::OBSERVATION_CONTRACT,
         },
     };
@@ -263,7 +263,6 @@ mod tests {
                         stderr_dropped_bytes: 0,
                     },
                     training: Training::Completed,
-                    publication: Publication::NotImplemented,
                     download_available: false,
                     runtime_environment_sha256: None,
                 }),

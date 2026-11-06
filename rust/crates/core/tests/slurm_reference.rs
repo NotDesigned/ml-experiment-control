@@ -166,6 +166,9 @@ fn typed_configuration_accepts_exactly_the_valid_cases() {
     let mut s = sample();
     s.backend.kind = "wyd".into();
     assert!(s.validate().is_err());
+    let mut extra = f["config_cases"][0]["spec"].clone();
+    extra["storage"]["additional_roots"] = serde_json::json!({"hf_home":"/shared/cache"});
+    assert!(serde_json::from_value::<JobSpec>(extra).is_err());
 }
 #[test]
 fn lexical_mount_image_resource_and_time_validation_is_explicit() {
