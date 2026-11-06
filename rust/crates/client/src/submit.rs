@@ -34,6 +34,8 @@ pub struct Plan {
     pub preparation_id: String,
     pub run_id: String,
     pub base_image: String,
+    pub executor: String,
+    pub gpus: u32,
     pub cpus: u32,
     pub memory_gb: u32,
     pub max_gpu_hours: f64,
@@ -127,8 +129,57 @@ fn pinned(image: &str) -> bool {
     })
 }
 
-/// Sized from the GPU count unless given, within what this executor allows.
-pub fn resources(spec: &Spec, limits: &Value) -> Result<(u32, u32), Error> {
+/// `--executor` names one executor, or a family of fixed shapes by its prefix. A family
+/// takes the smallest shape that holds the request, and the question shows which.
+pub fn choose<'a>(spec: &Spec, rows: &'a [Value]) -> Result<&'a Value, Error> {
+    if let Some(row) = rows.iter().find(|row| row["executor_id"] == spec.executor) {
+        return Ok(row);
+    }
+    let prefix = format!("{}-", spec.executor);
+    let family: Vec<&Value> = rows
+        .iter()
+        .filter(|row| {
+            row["limits"]["fixed_resources"] == true
+                && row["enabled"] == true
+                && row["run_creation"] == true
+                && row["executor_id"]
+                    .as_str()
+                    .is_some_and(|id| id.starts_with(&prefix))
+        })
+        .collect();
+    if family.is_empty() {
+        return Err(Error::Submit(format!(
+            "no executor named {}; `ml-exp backend` lists them",
+            spec.executor
+        )));
+    }
+    let size = |row: &Value, key: &str| row["limits"][key].as_u64().unwrap_or(0);
+    family
+        .into_iter()
+        .filter(|row| {
+            u64::from(spec.gpus) <= size(row, "gpus")
+                && u64::from(spec.cpus.unwrap_or(0)) <= size(row, "cpus")
+                && u64::from(spec.memory_gb.unwrap_or(0)) <= size(row, "memory_gb")
+        })
+        .min_by_key(|row| {
+            (
+                size(row, "gpus"),
+                size(row, "cpus"),
+                size(row, "memory_gb"),
+                row["executor_id"].to_string(),
+            )
+        })
+        .ok_or_else(|| {
+            Error::Submit(format!(
+                "no {} shape holds this request; `ml-exp backend` lists them",
+                spec.executor
+            ))
+        })
+}
+
+/// GPUs, CPUs and memory for this executor. A fixed shape always runs whole, so the
+/// request only has to fit. Otherwise they are sized from the GPU count unless given.
+pub fn resources(spec: &Spec, executor: &str, limits: &Value) -> Result<(u32, u32, u32), Error> {
     let limit = |key: &str| limits[key].as_u64();
     let cap = |wanted: u32, key: &str| match limit(key) {
         Some(max) => wanted.min(u32::try_from(max).unwrap_or(u32::MAX)),
@@ -136,8 +187,7 @@ pub fn resources(spec: &Spec, limits: &Value) -> Result<(u32, u32), Error> {
     };
     let exceeded = |what: &str, wanted: u64, max: u64| {
         Error::Submit(format!(
-            "{what} {wanted} exceeds {max} on {}; `ml-exp backend` lists each executor's limits",
-            spec.executor
+            "{what} {wanted} exceeds {max} on {executor}; `ml-exp backend` lists each executor's limits"
         ))
     };
     if let Some(max) = limit("gpus").filter(|max| u64::from(spec.gpus) > *max) {
@@ -147,17 +197,38 @@ pub fn resources(spec: &Spec, limits: &Value) -> Result<(u32, u32), Error> {
         return Err(exceeded("--time in seconds", spec.walltime_seconds, max));
     }
     let scaled = |each: u32, minimum: u32| spec.gpus.saturating_mul(each).max(minimum);
-    let cpus = spec.cpus.unwrap_or_else(|| cap(scaled(8, 2), "cpus"));
-    let memory = spec
-        .memory_gb
-        .unwrap_or_else(|| cap(scaled(32, 4), "memory_gb"));
+    let fixed = limits["fixed_resources"] == true;
+    let (gpus, default_cpus, default_memory) = if fixed {
+        (
+            cap(u32::MAX, "gpus"),
+            cap(u32::MAX, "cpus"),
+            cap(u32::MAX, "memory_gb"),
+        )
+    } else {
+        (
+            spec.gpus,
+            cap(scaled(8, 2), "cpus"),
+            cap(scaled(32, 4), "memory_gb"),
+        )
+    };
+    if spec.gpus == 0 && gpus > 0 {
+        return Err(Error::Submit(format!(
+            "{executor} always has {gpus} GPUs; use a CPU executor for --gpus 0"
+        )));
+    }
+    let cpus = spec.cpus.unwrap_or(default_cpus);
+    let memory = spec.memory_gb.unwrap_or(default_memory);
     if let Some(max) = limit("cpus").filter(|max| u64::from(cpus) > *max) {
         return Err(exceeded("--cpus", cpus.into(), max));
     }
     if let Some(max) = limit("memory_gb").filter(|max| u64::from(memory) > *max) {
         return Err(exceeded("--memory", memory.into(), max));
     }
-    Ok((cpus, memory))
+    Ok(if fixed {
+        (gpus, default_cpus, default_memory)
+    } else {
+        (gpus, cpus, memory)
+    })
 }
 
 pub fn plan(
@@ -165,22 +236,26 @@ pub fn plan(
     server: &str,
     archive_sha256: &str,
     dockerfile: &str,
-    limits: &Value,
+    executor: &Value,
     directory_name: &str,
 ) -> Result<Plan, Error> {
     let base_image = base_image(dockerfile)?;
-    let (cpus, memory_gb) = resources(spec, limits)?;
+    let chosen = executor["executor_id"]
+        .as_str()
+        .ok_or(Error::Response)?
+        .to_owned();
+    let (gpus, cpus, memory_gb) = resources(spec, &chosen, &executor["limits"])?;
     // The reason and display text stay out: only what changes the job is identity.
     let identity = canonical::digest(&json!([
         "ml-exp-submit.v1",
         server,
         spec.project,
-        spec.executor,
+        chosen,
         archive_sha256,
         spec.dockerfile,
         base_image,
         spec.command,
-        spec.gpus,
+        gpus,
         cpus,
         memory_gb,
         spec.walltime_seconds,
@@ -202,9 +277,11 @@ pub fn plan(
         preparation_id,
         run_id,
         base_image,
+        executor: chosen,
+        gpus,
         cpus,
         memory_gb,
-        max_gpu_hours: (f64::from(spec.gpus) * spec.walltime_seconds as f64 / 36.0).ceil() / 100.0,
+        max_gpu_hours: (f64::from(gpus) * spec.walltime_seconds as f64 / 36.0).ceil() / 100.0,
     })
 }
 fn slug(name: &str) -> String {
@@ -226,10 +303,10 @@ pub fn summary(spec: &Spec, plan: &Plan) -> String {
     format!(
         "Run {}\n  executor  {}\n  command   {}\n  image     {}\n  resources {} GPU, {} CPU, {} GB\n  time      up to {} seconds\n  spend     up to {} GPU hours",
         plan.run_id,
-        spec.executor,
+        plan.executor,
         spec.command.join(" "),
         plan.base_image,
-        spec.gpus,
+        plan.gpus,
         plan.cpus,
         plan.memory_gb,
         spec.walltime_seconds,
@@ -240,9 +317,9 @@ pub fn summary(spec: &Spec, plan: &Plan) -> String {
 fn request(spec: &Spec, plan: &Plan, source_id: &str) -> Result<preparation::Request, Error> {
     let mut run = json!({
         "run_id": plan.run_id,
-        "executor": spec.executor,
+        "executor": plan.executor,
         "command": spec.command,
-        "resources": {"gpus": spec.gpus, "cpus": plan.cpus, "memory_gb": plan.memory_gb},
+        "resources": {"gpus": plan.gpus, "cpus": plan.cpus, "memory_gb": plan.memory_gb},
         "walltime_seconds": spec.walltime_seconds,
         "seed": spec.seed,
     });
@@ -257,7 +334,7 @@ fn request(spec: &Spec, plan: &Plan, source_id: &str) -> Result<preparation::Req
         "request_id": plan.request_id,
         "runtime": {
             "source_id": source_id,
-            "executor": spec.executor,
+            "executor": plan.executor,
             "base_image": plan.base_image,
             "dockerfile": spec.dockerfile,
         },
@@ -421,15 +498,11 @@ pub fn run(
 ) -> Result<Value, Error> {
     let health = client.health()?;
     let executors = client.get("/api/executors")?;
-    let executor = executors["executors"]
+    let rows = executors["executors"]
         .as_array()
-        .and_then(|rows| rows.iter().find(|row| row["executor_id"] == spec.executor))
-        .ok_or_else(|| {
-            Error::Submit(format!(
-                "no executor named {}; `ml-exp backend` lists them",
-                spec.executor
-            ))
-        })?;
+        .ok_or(Error::Response)?
+        .as_slice();
+    let executor = choose(spec, rows)?;
     let dockerfile = read_dockerfile(&spec.directory, &spec.dockerfile)?;
     let archive = sources::pack_directory(&spec.directory)?;
     let name = spec
@@ -443,7 +516,7 @@ pub fn run(
         client.base_url(),
         &archive.sha256,
         &dockerfile,
-        &executor["limits"],
+        executor,
         &name,
     )?;
     let state = state_directory.join(format!("{}.json", plan.preparation_id));
@@ -469,7 +542,7 @@ pub fn run(
     if executor["enabled"] != true || executor["run_creation"] != true {
         return Err(Error::Submit(format!(
             "{} is not accepting new Runs",
-            spec.executor
+            plan.executor
         )));
     }
     if health["scheduler_mutations"] != true {
@@ -614,7 +687,7 @@ mod tests {
             "https://api.example",
             &"a".repeat(64),
             &format!("FROM {PINNED}\n"),
-            &json!({}),
+            &json!({"executor_id":spec.executor,"limits":{}}),
             "source",
         )
         .unwrap()
@@ -700,7 +773,7 @@ mod tests {
             "https://api.example",
             &"b".repeat(64),
             &format!("FROM {PINNED}\n"),
-            &json!({}),
+            &json!({"executor_id":"pai-h200","limits":{}}),
             "source",
         )
         .unwrap();
@@ -710,23 +783,98 @@ mod tests {
     #[test]
     fn resources_follow_the_gpus_and_stay_within_the_executor() {
         let mut one = spec();
-        assert_eq!(resources(&one, &json!({})).unwrap(), (8, 32));
+        assert_eq!(resources(&one, "pai", &json!({})).unwrap(), (1, 8, 32));
         assert_eq!(
-            resources(&one, &json!({"cpus":4,"memory_gb":8})).unwrap(),
-            (4, 8)
+            resources(&one, "pai", &json!({"cpus":4,"memory_gb":8})).unwrap(),
+            (1, 4, 8)
         );
         one.gpus = 0;
-        assert_eq!(resources(&one, &json!({})).unwrap(), (2, 4));
+        assert_eq!(resources(&one, "pai", &json!({})).unwrap(), (0, 2, 4));
         one.gpus = 2;
-        assert!(resources(&one, &json!({"gpus":1})).is_err());
+        assert!(resources(&one, "pai", &json!({"gpus":1})).is_err());
         one.gpus = 1;
         one.cpus = Some(9);
-        assert!(resources(&one, &json!({"cpus":8})).is_err());
+        assert!(resources(&one, "pai", &json!({"cpus":8})).is_err());
         one.cpus = None;
         one.memory_gb = Some(9);
-        assert!(resources(&one, &json!({"memory_gb":8})).is_err());
+        assert!(resources(&one, "pai", &json!({"memory_gb":8})).is_err());
         one.memory_gb = None;
-        assert!(resources(&one, &json!({"walltime_seconds":599})).is_err());
+        assert!(resources(&one, "pai", &json!({"walltime_seconds":599})).is_err());
+    }
+    fn shape(id: &str, gpus: u32, cpus: u32, memory_gb: u32) -> Value {
+        json!({"executor_id":id,"enabled":true,"run_creation":true,
+            "limits":{"gpus":gpus,"cpus":cpus,"memory_gb":memory_gb,"fixed_resources":true}})
+    }
+    #[test]
+    fn a_fixed_shape_runs_whole_and_the_request_only_has_to_fit() {
+        let limits = shape("x", 2, 28, 396)["limits"].clone();
+        let mut one = spec();
+        assert_eq!(resources(&one, "x", &limits).unwrap(), (2, 28, 396));
+        one.cpus = Some(20);
+        one.memory_gb = Some(300);
+        assert_eq!(resources(&one, "x", &limits).unwrap(), (2, 28, 396));
+        one.cpus = Some(29);
+        assert!(resources(&one, "x", &limits).is_err());
+        one.cpus = None;
+        one.memory_gb = Some(397);
+        assert!(resources(&one, "x", &limits).is_err());
+        one.memory_gb = None;
+        one.gpus = 3;
+        assert!(resources(&one, "x", &limits).is_err());
+        one.gpus = 0;
+        assert!(resources(&one, "x", &limits).is_err());
+        let mut planned_shape = spec();
+        planned_shape.executor = "x".into();
+        let plan = plan(
+            &planned_shape,
+            "https://api.example",
+            &"a".repeat(64),
+            &format!("FROM {PINNED}\n"),
+            &shape("x", 2, 28, 396),
+            "source",
+        )
+        .unwrap();
+        assert_eq!((plan.gpus, plan.cpus, plan.memory_gb), (2, 28, 396));
+        assert_eq!(plan.max_gpu_hours, 0.34, "the spend covers the whole shape");
+    }
+    #[test]
+    fn a_family_takes_the_smallest_shape_that_holds_the_request() {
+        let rows = [
+            shape("sc-8gpu-a", 8, 64, 1024),
+            shape("sc-2gpu-a", 2, 44, 460),
+            shape("sc-2gpu-b", 2, 28, 396),
+            shape("sc-1gpu-a", 1, 22, 230),
+            shape("sc-1gpu-b", 1, 14, 198),
+        ];
+        let chosen = |gpus, cpus, memory_gb| {
+            let mut request = spec();
+            request.executor = "sc".into();
+            request.gpus = gpus;
+            request.cpus = cpus;
+            request.memory_gb = memory_gb;
+            choose(&request, &rows)
+                .ok()
+                .map(|row| row["executor_id"].as_str().unwrap().to_owned())
+        };
+        assert_eq!(chosen(1, None, None).as_deref(), Some("sc-1gpu-b"));
+        assert_eq!(chosen(1, Some(20), None).as_deref(), Some("sc-1gpu-a"));
+        assert_eq!(chosen(1, None, Some(300)).as_deref(), Some("sc-2gpu-b"));
+        assert_eq!(chosen(3, None, None).as_deref(), Some("sc-8gpu-a"));
+        assert_eq!(chosen(9, None, None), None);
+        assert_eq!(chosen(1, Some(65), None), None);
+    }
+    #[test]
+    fn a_family_is_only_fixed_shapes_that_accept_runs_and_an_exact_name_wins() {
+        let mut closed = shape("sc-a", 1, 8, 32);
+        closed["run_creation"] = json!(false);
+        let plain =
+            json!({"executor_id":"sc-b","enabled":true,"run_creation":true,"limits":{"gpus":1}});
+        let mut request = spec();
+        request.executor = "sc".into();
+        assert!(choose(&request, &[closed, plain]).is_err());
+        let exact = shape("sc", 8, 8, 8);
+        let row = choose(&request, &[shape("sc-a", 1, 8, 32), exact]).unwrap();
+        assert_eq!(row["executor_id"], "sc");
     }
     #[test]
     fn spend_is_rounded_up_so_the_budget_covers_the_time() {
@@ -742,7 +890,7 @@ mod tests {
                 "https://api.example",
                 &"a".repeat(64),
                 &format!("FROM {PINNED}\n"),
-                &json!({}),
+                &json!({"executor_id":"pai-h200","limits":{}}),
                 "source"
             )
             .is_err()

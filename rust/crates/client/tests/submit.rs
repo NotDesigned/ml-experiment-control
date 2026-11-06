@@ -129,7 +129,6 @@ impl World {
 /// Method, path and body of each request, in order.
 type Requests = Mutex<Vec<(String, String, Vec<u8>)>>;
 struct Fake {
-    world: Arc<Mutex<World>>,
     requests: Arc<Requests>,
     stop: Arc<AtomicBool>,
     address: std::net::SocketAddr,
@@ -140,11 +139,11 @@ impl Fake {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         listener.set_nonblocking(true).unwrap();
-        let world = Arc::new(Mutex::new(world));
+        let world = Mutex::new(world);
         let requests = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(AtomicBool::new(false));
         let worker = {
-            let (world, requests, stop) = (world.clone(), requests.clone(), stop.clone());
+            let (requests, stop) = (requests.clone(), stop.clone());
             std::thread::spawn(move || {
                 while !stop.load(Ordering::Relaxed) {
                     match listener.accept() {
@@ -155,7 +154,6 @@ impl Fake {
             })
         };
         Self {
-            world,
             requests,
             stop,
             address,

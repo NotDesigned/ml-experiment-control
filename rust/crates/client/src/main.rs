@@ -64,13 +64,14 @@ For every field and each separate step, see `ml-exp run start` and `ml-exp run e
         /// Uses the saved project unless given.
         #[arg(long)]
         project: Option<String>,
-        /// Uses the saved executor unless given; `ml-exp backend` lists them.
+        /// Uses the saved executor unless given; `ml-exp backend` lists them. A prefix of
+        /// fixed shapes, such as `sensecore-n6ls`, takes the smallest shape that fits.
         #[arg(long)]
         executor: Option<String>,
-        /// Sized from --gpus unless given.
+        /// Sized from --gpus unless given. A fixed shape always runs whole.
         #[arg(long)]
         cpus: Option<u32>,
-        /// In GB. Sized from --gpus unless given.
+        /// In GB. Sized from --gpus unless given. A fixed shape always runs whole.
         #[arg(long)]
         memory: Option<u32>,
         /// An uploaded dataset, as NAME=asset.HASH. Training reads it through DATASETS_JSON.
