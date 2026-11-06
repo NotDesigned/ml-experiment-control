@@ -23,15 +23,18 @@ use ml_exp_server::{
         },
         slurm::{Budget, SshConfig},
     },
+    background::{Cycle, Polled},
     cloud_runs::{Service, Settings},
     operations::{ClaimContext, Store},
     read_config, sources, submissions,
 };
 use serde_json::{Value, json};
 use std::{
+    cell::Cell,
     collections::BTreeMap,
     fs,
     io::Cursor,
+    ops::Range,
     os::unix::fs::PermissionsExt,
     path::Path,
     sync::{
@@ -92,6 +95,13 @@ impl FakeProvider {
             .calls
             .iter()
             .filter(|action| matches!(action.as_str(), "CreateJob" | "CreateTrainingJob"))
+            .count()
+    }
+    fn reads(&self) -> usize {
+        self.world()
+            .calls
+            .iter()
+            .filter(|action| matches!(action.as_str(), "GetJob" | "GetTrainingJob"))
             .count()
     }
     fn bind(&self, job: &Job) {
@@ -403,6 +413,9 @@ impl Fixture {
             &self.transition(),
             &AtomicBool::new(false),
         )
+    }
+    fn get(&self, service: &Service, action: &str) -> Value {
+        service.get(action, T_RECONCILE).unwrap()
     }
     fn reconcile(&self, service: &Service, action: &str) -> Value {
         service
@@ -822,6 +835,127 @@ fn renew_is_refused_once_started() {
 /// The Slurm service over the same registry: one real authorized Action, and an
 /// SSH program that only records that it was called. Copied from the fixture in
 /// `backends/slurm/tests/submission_tests.rs`, which is private to its crate.
+/// The real cloud observer, one second per step, with the default 10 s interval.
+struct Observer<P: Polled> {
+    polled: P,
+    cycle: Cycle,
+}
+impl<P: Polled> Observer<P> {
+    fn walk(&mut self, seconds: Range<u64>) {
+        let clock = Cell::new(0);
+        for second in seconds {
+            clock.set(second);
+            self.cycle
+                .step(&self.polled, &|| clock.get(), &AtomicBool::new(false));
+        }
+    }
+}
+fn observer(service: Arc<Service>) -> Observer<impl Polled> {
+    Observer {
+        polled: service.observer_polling(),
+        cycle: Cycle::new(ml_exp_core::polling::Policy {
+            enabled: true,
+            ..Default::default()
+        }),
+    }
+}
+
+#[test]
+fn an_observed_job_costs_one_provider_read_per_cycle() {
+    for kind in KINDS {
+        let f = Fixture::new(kind);
+        let service = Arc::new(f.open());
+        let (action, _) = f.authorized(&service, "train");
+        assert_eq!(f.execute(&service, &action).unwrap()["status"], "VERIFIED");
+        let (calls, reads) = (f.provider.calls().len(), f.provider.reads());
+        let mut observer = observer(service.clone());
+        // Scheduler at 0, then Worker at 1 and History at 2 with no provider call.
+        observer.walk(0..3);
+        assert_eq!(f.provider.reads(), reads + 1);
+        observer.walk(3..12);
+        assert_eq!(f.provider.reads(), reads + 1);
+        observer.walk(12..15);
+        assert_eq!(f.provider.reads(), reads + 2);
+        observer.walk(15..24);
+        assert_eq!(f.provider.reads(), reads + 2);
+        observer.walk(24..27);
+        assert_eq!(f.provider.reads(), reads + 3);
+        assert_eq!(f.provider.calls().len(), calls + 3);
+        assert_eq!(f.provider.creates(), 1);
+    }
+}
+
+#[test]
+fn a_provider_outage_is_read_at_the_same_rate_and_never_creates() {
+    for kind in KINDS {
+        let f = Fixture::new(kind);
+        let service = Arc::new(f.open());
+        let (action, _) = f.authorized(&service, "train");
+        f.execute(&service, &action).unwrap();
+        let reads = f.provider.reads();
+        f.provider.world().down = true;
+        let mut observer = observer(service.clone());
+        // The outbox keeps a failed read as a diagnostic, so it counts as a sample.
+        observer.walk(0..27);
+        assert_eq!(f.provider.reads(), reads + 3);
+        let view = f.get(&service, &action);
+        assert_eq!(
+            view["cloud_observation"]["diagnostic"]["code"],
+            "PROVIDER_DOWN"
+        );
+        assert_eq!(f.provider.creates(), 1);
+    }
+}
+
+#[test]
+fn a_job_that_vanishes_under_the_observer_is_never_created_again() {
+    for kind in KINDS {
+        let f = Fixture::new(kind);
+        let service = Arc::new(f.open());
+        let (action, _) = f.authorized(&service, "train");
+        f.execute(&service, &action).unwrap();
+        let reads = f.provider.reads();
+        f.provider.world().exists = false;
+        observer(service.clone()).walk(0..120);
+        assert!(f.provider.reads() > reads);
+        assert_eq!(f.provider.creates(), 1);
+    }
+}
+
+#[test]
+fn an_action_awaiting_reconcile_is_not_sampled_at_all() {
+    for kind in KINDS {
+        let f = Fixture::new(kind);
+        f.provider.world().lose_create_reply = true;
+        let service = Arc::new(f.open());
+        let (action, _) = f.authorized(&service, "train");
+        let view = f.execute(&service, &action).unwrap();
+        assert_eq!(view["status"], "RECONCILE_REQUIRED");
+        let calls = f.provider.calls().len();
+        observer(service.clone()).walk(0..120);
+        assert_eq!(f.provider.calls().len(), calls);
+        assert_eq!(f.provider.creates(), 1);
+    }
+}
+
+#[test]
+fn a_terminal_job_leaves_the_observer_at_the_next_discovery() {
+    for kind in KINDS {
+        let f = Fixture::new(kind);
+        let service = Arc::new(f.open());
+        let (action, _) = f.authorized(&service, "train");
+        f.execute(&service, &action).unwrap();
+        let reads = f.provider.reads();
+        f.provider.world().terminal = true;
+        let mut observer = observer(service.clone());
+        observer.walk(0..30);
+        assert_eq!(f.provider.reads(), reads + 3);
+        observer.walk(30..120);
+        assert_eq!(f.provider.reads(), reads + 3);
+        assert_eq!(f.provider.creates(), 1);
+    }
+}
+
 fn slurm_side(f: &Fixture) -> (submissions::Service, String, std::path::PathBuf) {
     let root = f.temp.path();
     submissions::Service::initialize(&f.settings).unwrap();

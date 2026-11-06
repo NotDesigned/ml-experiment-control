@@ -21,7 +21,15 @@ impl Polled for Polling {
         }
         found
     }
-    fn sample(&self, action: &str, _: Phase, stop: &AtomicBool) -> Sample {
+    fn sample(&self, action: &str, phase: Phase, stop: &AtomicBool) -> Sample {
+        // Worker evidence and history arrive through the exchange. Only the
+        // scheduler phase has a provider read, so an Action costs one per cycle.
+        if phase != Phase::Scheduler {
+            return Sample {
+                ok: true,
+                busy: false,
+            };
+        }
         let ok = crate::projects::transition_context()
             .map_err(why!(()))
             .and_then(|(now, _)| self.0.refresh(action, &now, stop).map_err(why!(())))
@@ -30,6 +38,11 @@ impl Polled for Polling {
     }
 }
 impl Service {
+    /// The adapter alone, so a test can drive it without the thread.
+    #[doc(hidden)]
+    pub fn observer_polling(self: Arc<Self>) -> impl Polled {
+        Polling(self)
+    }
     pub fn start_observer(self: Arc<Self>) -> crate::backends::cloud::Result<Worker> {
         let leader = self
             .directory
