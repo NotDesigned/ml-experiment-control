@@ -110,40 +110,15 @@ def build(binary_dir, output, version, client_dir=None):
         raise ValueError("all native client platform artifacts are required")
     def client_name(target):
         return f"ml-exp-{target}" + (".exe" if "windows" in target else "")
+    required = {client_name(target) for target in REQUIRED_CLIENT_TARGETS}
+    known = required | {client_name(target) for target in OPTIONAL_CLIENT_TARGETS}
     present = {p.name for p in client_dir.iterdir()}
-    if not ({client_name(t) for t in REQUIRED_CLIENT_TARGETS} <= present
-            <= {client_name(t) for t in REQUIRED_CLIENT_TARGETS + OPTIONAL_CLIENT_TARGETS}):
+    if not required <= present <= known:
         raise ValueError("client platform artifacts are incomplete or unexpected")
     for target in REQUIRED_CLIENT_TARGETS + OPTIONAL_CLIENT_TARGETS:
         name = client_name(target)
         if name not in present:
             continue
-        path = client_dir / name
-        if path.is_symlink() or not path.is_file() or not 0 < path.stat().st_size <= 128 * 1024**2:
-            raise ValueError("native executable is missing or outside its size limit")
-        result = subprocess.run([str(path.resolve()), "--version"], check=True,
-                                capture_output=True, timeout=5, env={"LANG": "C"})
-        if result.stdout.decode().strip() != f"{name} {version}":
-            raise ValueError("native executable version differs")
-    if not static_worker(binary_dir / "ml-exp-worker-rs"):
-        raise ValueError("release worker must be a static Linux x86_64 ELF executable")
-    output.mkdir(mode=0o700, parents=False, exist_ok=False)
-    assets = []
-    for name in BINARIES:
-        filename = f"{name}-{TARGET}"
-        path = output / filename
-        shutil.copyfile(binary_dir / name, path)
-        path.chmod(0o755)
-        assets.append({"name": filename, "target": TARGET, "executable": name,
-                       "bytes": path.stat().st_size, "sha256": digest(path)})
-    if client_dir is None:
-        raise ValueError("all native client platform artifacts are required")
-    expected = {f"ml-exp-{target}" + (".exe" if "windows" in target else "")
-                for target in CLIENT_TARGETS}
-    if {p.name for p in client_dir.iterdir()} != expected:
-        raise ValueError("client platform artifacts are incomplete or unexpected")
-    for target in CLIENT_TARGETS:
-        name = f"ml-exp-{target}" + (".exe" if "windows" in target else "")
         path = client_dir / name
         if path.is_symlink() or not path.is_file() or not 0 < path.stat().st_size <= 128 * 1024**2 or not client_format(path, target):
             raise ValueError("invalid platform client executable")
