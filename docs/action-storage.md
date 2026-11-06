@@ -24,10 +24,3 @@ Program rollback must preserve newer state and check compatibility/active work;
 never restore an old DB merely to match an old program. A missing DB with
 `.sqlite-authoritative` present fails closed. Do not delete the DB/marker to force
 initialization.
-
-## Pre-SQLite records
-
-The native service has no conversion command. It refuses an Action directory that
-holds legacy `execution.json` or `journal.jsonl` without a database row, rather than
-reading it or resetting execution. The retired Python conversion and rollback-export
-commands are in this page at tag `v1.5.1`.

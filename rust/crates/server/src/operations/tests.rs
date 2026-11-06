@@ -63,8 +63,8 @@ fn observation_never_bootstraps_or_recovers_action_state() {
         writer.database().journal(id, 100).unwrap().len(),
         events.len() + 1
     );
-    // Missing rows and legacy execution files remain untouched, even though
-    // the authoritative database already exists for a different Action.
+    // A plan with no committed row stays incomplete evidence, even though the
+    // authoritative database already exists for a different Action.
     let orphan_id = "action-1111111111111111";
     let orphan = writer.directory(orphan_id).unwrap();
     fs::create_dir(&orphan).unwrap();
@@ -79,20 +79,6 @@ fn observation_never_bootstraps_or_recovers_action_state() {
     .unwrap();
     assert!(reader.observe(orphan_id).is_err());
     assert_eq!(writer.database().read(orphan_id).unwrap(), json!({}));
-    ml_exp_io::write_atomic(
-        &orphan.join("execution.json"),
-        b"{\"status\":\"EXECUTING\"}",
-        true,
-    )
-    .unwrap();
-    assert!(matches!(
-        reader.observe(orphan_id),
-        Err(Error::LegacyMigration)
-    ));
-    assert_eq!(
-        fs::read(orphan.join("execution.json")).unwrap(),
-        b"{\"status\":\"EXECUTING\"}"
-    );
     fs::remove_file(root.path().join(".actions.lock")).unwrap();
     assert!(reader.observe(id).is_err());
     assert!(Store::open_existing(root.path()).is_err());
@@ -419,6 +405,42 @@ fn journal_deduplicates_and_commands_never_modify_immutable_plan() {
 }
 
 #[test]
+fn a_command_without_a_journal_event_id_is_refused_rather_than_hashed() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::open(root.path()).unwrap();
+    let plan = action_plan();
+    let id = plan["action_id"].as_str().unwrap();
+    store.save_plan(&plan, NOW, &uid(1)).unwrap();
+    let payload = json!({"note":"explicit"});
+    assert!(matches!(
+        store.write_command(id, CommandPhase::Authorize, &payload, "", NOW),
+        Err(Error::Invalid(_))
+    ));
+    let commands = store.directory(id).unwrap().join("commands");
+    assert!(!commands.join("authorize.json").exists());
+    assert_eq!(store.database().journal(id, 100).unwrap().len(), 1);
+    store
+        .write_command(id, CommandPhase::Execute, &payload, "execute-1", NOW)
+        .unwrap();
+    for record in [
+        json!({"action_id":id,"phase":"authorize","payload":payload,"created_at":NOW}),
+        json!({"action_id":id,"phase":"authorize","payload":payload,"created_at":NOW,"journal_event_id":""}),
+    ] {
+        ml_exp_io::write_atomic(
+            &commands.join("authorize.json"),
+            &serde_json::to_vec(&record).unwrap(),
+            true,
+        )
+        .unwrap();
+        assert!(matches!(
+            store.write_command(id, CommandPhase::Authorize, &payload, "replay", NOW),
+            Err(Error::Invalid(_))
+        ));
+        assert_eq!(store.database().journal(id, 100).unwrap().len(), 2);
+    }
+}
+
+#[test]
 fn command_replays_follow_python_numeric_equality_without_rewriting_frozen_bytes() {
     for (original, equivalent) in [
         (json!({"value":1}), json!({"value":1.0})),
@@ -474,7 +496,7 @@ fn command_replays_follow_python_numeric_equality_without_rewriting_frozen_bytes
 }
 
 #[test]
-fn marker_missing_database_legacy_state_and_schema_drift_fail_closed() {
+fn marker_missing_database_and_schema_drift_fail_closed() {
     let root = tempfile::tempdir().unwrap();
     let store = Store::open(root.path()).unwrap();
     let id = "action-0123456789abcdef";
@@ -487,16 +509,7 @@ fn marker_missing_database_legacy_state_and_schema_drift_fail_closed() {
     assert!(!store.database().path().exists());
     let other = tempfile::tempdir().unwrap();
     let store = Store::open(other.path()).unwrap();
-    fs::create_dir(store.directory(id).unwrap()).unwrap();
-    fs::write(
-        store.directory(id).unwrap().join("execution.json"),
-        "{\"status\":\"AUTHORIZED\"}",
-    )
-    .unwrap();
-    assert!(matches!(
-        store.database().read(id),
-        Err(Error::LegacyMigration)
-    ));
+    store.database().read(id).unwrap();
     let dbpath = store.database().path();
     let connection = rusqlite::Connection::open(dbpath).unwrap();
     connection.execute_batch("PRAGMA user_version=9;").unwrap();

@@ -1,9 +1,6 @@
 use super::{Database, Error, Result};
-use ml_exp_core::{
-    canonical::python_json_bytes,
-    operations::{
-        self, Claim, Dispatch, Evidence, FrozenFiles, Policy, Reconcile, Scope, Transition,
-    },
+use ml_exp_core::operations::{
+    self, Claim, Dispatch, Evidence, FrozenFiles, Policy, Reconcile, Scope, Transition,
 };
 use ml_exp_io::directory::{Directory, FileLock, LockOptions, Wait, effective_uid};
 use serde_json::{Value, json};
@@ -573,6 +570,9 @@ impl Store {
         if !payload.is_object() {
             return Err(Error::Invalid("command payload"));
         }
+        if event_id.is_empty() {
+            return Err(Error::Invalid("command journal event id"));
+        }
         self.locked(|lock| {
             let directory = self.subdirectory(action_id, "commands", true, lock)?;
             let name = format!("{}.json", phase.name());
@@ -596,26 +596,17 @@ impl Store {
                 directory.publish_new(OsStr::new(&name), &serde_json::to_vec_pretty(&record)?)?;
                 record
             };
-            let event_id = match record
+            let event_id = record
                 .get("journal_event_id")
                 .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-            {
-                Some(id) => id.to_owned(),
-                None => format!(
-                    "{:x}",
-                    Sha256::digest(
-                        python_json_bytes(&record)
-                            .map_err(why!(Error::Invalid("legacy command encoding")))?
-                    )
-                ),
-            };
+                .filter(|id| !id.is_empty())
+                .ok_or(Error::Invalid("command journal event id"))?;
             let event = json!({
                 "timestamp": now,
                 "event": format!("{}_command_recorded", phase.name()),
                 "payload": {},
             });
-            self.database.append_event(action_id, &event, &event_id)?;
+            self.database.append_event(action_id, &event, event_id)?;
             Ok(record)
         })
     }

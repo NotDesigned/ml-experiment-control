@@ -62,7 +62,7 @@ fn transition_id(value: &Value) -> Result<&str, Error> {
 }
 
 /// Check every transition, including history before the current last event.
-/// Non-state legacy events retain their order without advancing the revision.
+/// Non-state events retain their order without advancing the revision.
 pub fn validate_journal(events: &[Value]) -> Result<u64, Error> {
     let mut revision = 0u64;
     let mut identities = BTreeSet::new();

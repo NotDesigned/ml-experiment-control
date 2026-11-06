@@ -26,8 +26,6 @@ pub enum Error {
     MissingAuthoritative,
     #[error("unsupported Action database schema")]
     UnsupportedSchema,
-    #[error("legacy Action requires explicit offline migration")]
-    LegacyMigration,
     #[error("Action execution revision does not match durable state")]
     InvalidRevision,
     #[error("Action not found")]
@@ -168,7 +166,7 @@ impl Database {
         )
     }
 
-    fn read_transaction(&self, connection: &Connection, action_id: &str) -> Result<Value> {
+    fn read_transaction(connection: &Connection, action_id: &str) -> Result<Value> {
         let row = connection
             .query_row(
                 "SELECT revision,payload FROM executions WHERE action_id=?",
@@ -177,19 +175,6 @@ impl Database {
             )
             .optional()?;
         let Some((revision, payload)) = row else {
-            let root = self.root_directory()?;
-            let directory = match root.child(OsStr::new(action_id), false) {
-                Ok(directory) => Some(directory),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                Err(error) => return Err(error.into()),
-            };
-            if let Some(directory) = directory {
-                if directory.entry_exists(OsStr::new("execution.json"))?
-                    || directory.entry_exists(OsStr::new("journal.jsonl"))?
-                {
-                    return Err(Error::LegacyMigration);
-                }
-            }
             return Ok(json!({}));
         };
         let value: Value = serde_json::from_str(&payload)?;
@@ -201,7 +186,7 @@ impl Database {
 
     pub fn read(&self, action_id: &str) -> Result<Value> {
         operations::validate_action_id(action_id)?;
-        self.transaction(|connection| self.read_transaction(connection, action_id))
+        self.transaction(|connection| Self::read_transaction(connection, action_id))
     }
 
     /// Explicit admission check, not a GET. Bootstrap an empty store if needed
@@ -234,7 +219,7 @@ impl Database {
             if version != 1 {
                 return Err(Error::UnsupportedSchema);
             }
-            let value = self.read_transaction(connection, action_id)?;
+            let value = Self::read_transaction(connection, action_id)?;
             if value.as_object().is_none_or(|map| map.is_empty()) {
                 return Err(Error::Invalid("execution has not been committed"));
             }
@@ -256,7 +241,7 @@ impl Database {
     ) -> Result<Value> {
         operations::validate_action_id(action_id)?;
         self.transaction(|connection| {
-            let current = self.read_transaction(connection,action_id)?;
+            let current = Self::read_transaction(connection,action_id)?;
             let (execution,event) = operations::commit_transition(&current,proposed,event,expected_status,transition_id)?;
             let revision = operations::revision(&execution)?;
             connection.execute("INSERT INTO executions VALUES (?,?,?) ON CONFLICT(action_id) DO UPDATE SET revision=excluded.revision,payload=excluded.payload",params![action_id,revision,serde_json::to_string(&execution)?])?;
@@ -271,7 +256,7 @@ impl Database {
             return Err(Error::Invalid("event_id"));
         }
         self.transaction(|connection| {
-            let current = self.read_transaction(connection, action_id)?;
+            let current = Self::read_transaction(connection, action_id)?;
             let mut record = event
                 .as_object()
                 .cloned()
@@ -303,7 +288,7 @@ impl Database {
             .try_into()
             .map_err(why!(Error::Invalid("journal limit")))?;
         self.transaction(|connection| {
-            self.read_transaction(connection, action_id)?;
+            Self::read_transaction(connection, action_id)?;
             let mut statement = connection.prepare(
                 "SELECT payload FROM events WHERE action_id=? ORDER BY seq DESC LIMIT ?",
             )?;

@@ -1,4 +1,4 @@
-//! Private durable publication reservations and disposable display projections.
+//! Private durable publication state and disposable display projections.
 //! Only trusted publisher code can save these states, never worker HTTP input.
 use super::*;
 use ml_exp_core::tracking;
@@ -50,13 +50,7 @@ impl Store {
             self.require_guard(guard)
         })
     }
-    pub fn display(
-        &self,
-        guard: &RecordGuard<'_>,
-        scope: &str,
-        through: i64,
-        version: i64,
-    ) -> Result<Value> {
+    pub fn display(&self, guard: &RecordGuard<'_>, scope: &str, through: i64) -> Result<Value> {
         self.require_scope(guard, scope)?;
         if self.read_only || through < 0 || through > self.total(guard, scope)? || through > 100_000
         {
@@ -83,54 +77,10 @@ impl Store {
                 after = row.seq;
             }
         }
-        let projection = projection
-            .at(through)
-            .map_err(why!(Error::Invalid("display cutoff")))?;
-        if matches!(version, 3 | 4) {
-            return (if version == 4 {
-                projection.client_document()
-            } else {
-                projection.stable_document()
-            })
-            .map_err(|error| match error {
-                tracking::Error::Display(code) => Error::Invalid(code),
-                _ => Error::Invalid("display document"),
-            });
-        }
-        if version != 2 {
-            return Err(Error::Invalid("unsupported display version"));
-        }
-        // Only already-started v2 publications retain destination reservations.
-        let binding = self.binding(guard)?.ok_or(Error::Unbound)?;
-        let destination = records::encoded(&json!([
-            binding["route"]["entity"],
-            binding["route"]["project"]
-        ]))?;
-        let mut names = Map::new();
-        let state = projection.state_value();
-        let series = state["series"]
-            .as_object()
-            .ok_or(Error::Invalid("display series"))?;
-        self.database.transaction(||self.require_guard(guard),|tx| {
-            for series in series.values() {
-                let context: Map<_,_> = ["name","unit","protocol_id","dataset_id"].iter().map(|key|((*key).into(),series["context"][*key].clone())).collect();
-                let context = Value::Object(context);
-                let signature = tracking::identity(&context,false).map_err(why!(Error::Invalid("display identity")))?;
-                let existing: Option<String> = tx.query_row("SELECT public_name FROM display_metrics WHERE destination=? AND signature=?",params![destination,signature],|row|row.get(0)).optional()?;
-                let name = if let Some(existing) = existing { existing } else {
-                    let stem = tracking::stem(context["name"].as_str().ok_or(Error::Invalid("metric name"))?);
-                    let used: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM display_metrics WHERE destination=? AND public_name=?)",params![destination,stem],|row|row.get(0))?;
-                    let name = if used {format!("{stem}/{}",tracking::fingerprint(&signature))} else {stem};
-                    tx.execute("INSERT INTO display_metrics VALUES (?,?,?,?)",params![destination,signature,name,records::encoded(&context)?])?;
-                    name
-                };
-                names.insert(signature,json!(name));
-            }
-            self.require_guard(guard)
-        })?;
         projection
             .at(through)
-            .and_then(|p| p.document(&names))
+            .map_err(why!(Error::Invalid("display cutoff")))?
+            .client_document()
             .map_err(why!(Error::Invalid("display document")))
     }
 }

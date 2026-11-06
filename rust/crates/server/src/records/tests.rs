@@ -1,7 +1,7 @@
 use std::fs;
 
 use ml_exp_core::records::{Event, JsonlImporter, Scope, normalized_metric};
-use rusqlite::{Connection, params};
+use rusqlite::Connection;
 use serde_json::{Value, json};
 
 use super::{Error, RemoteHistoryEvidence, RemoteObservation, Store};
@@ -46,7 +46,7 @@ fn proof(
         wandb_id: state["wandb_id"].as_str().unwrap().into(),
         through,
         observed,
-        display_version: display.then_some(2),
+        display_version: display.then_some(4),
         display_through: display.then_some(through),
     }
 }
@@ -171,6 +171,10 @@ fn publication_requires_exact_remote_prefix_and_ack_never_deletes_canonical_reco
     p.display_version = Some(999);
     p.display_through = Some(1);
     invalid.push(p);
+    let mut p = valid.clone();
+    p.display_version = Some(3);
+    p.display_through = Some(1);
+    invalid.push(p);
     for p in invalid {
         assert!(matches!(
             store.confirm_publication(&guard, &scope, &p, None, "bad"),
@@ -229,7 +233,7 @@ fn publication_requires_exact_remote_prefix_and_ack_never_deletes_canonical_reco
 }
 
 #[test]
-fn deletion_fences_proven_companions_and_retains_destination_schema_and_independent_suffix_runs() {
+fn deletion_fences_proven_companions_and_keeps_independent_suffix_runs() {
     let temp = tempfile::tempdir().unwrap();
     let store = Store::open(temp.path(), SEED).unwrap();
     for run in ["run-a", "run-a--preparation", "run-a--backfill"] {
@@ -244,13 +248,6 @@ fn deletion_fences_proven_companions_and_retains_destination_schema_and_independ
             .append(&guard, &scope, &[event("m1", metric(2.5, 1))])
             .unwrap();
     }
-    let connection = Connection::open(store.path()).unwrap();
-    connection
-        .execute(
-            "INSERT INTO display_metrics VALUES (?,?,?,?)",
-            params!["destination", "signature", "loss", "{}"],
-        )
-        .unwrap();
     assert!(matches!(
         store.delete_run("demo", "run-a", "t0"),
         Err(Error::DeletionNotStarted)
@@ -269,13 +266,6 @@ fn deletion_fences_proven_companions_and_retains_destination_schema_and_independ
     for run in ["run-a", "run-a--preparation", "run-a--backfill"] {
         assert!(store.guard("demo", run).is_err());
     }
-    assert_eq!(
-        connection
-            .query_row("SELECT COUNT(*) FROM display_metrics", [], |row| row
-                .get::<_, i64>(0))
-            .unwrap(),
-        1
-    );
     for run in ["trial", "trial--preparation", "trial--backfill"] {
         let scope = bound(
             &store,
@@ -529,61 +519,12 @@ fn verified_archive_import_matches_original_jsonl_framing_and_nonfinite_diagnose
 }
 
 #[test]
-fn original_sqlite_schema_is_read_without_mutation_and_additively_migrated() {
-    let fixture = reference();
-    let legacy = &fixture["legacy_database"];
+fn new_journal_starts_with_unacknowledged_display_columns() {
     let temp = tempfile::tempdir().unwrap();
-    fs::create_dir(temp.path().join("tracking")).unwrap();
-    let path = temp.path().join("tracking/outbox.sqlite");
-    let connection = Connection::open(&path).unwrap();
-    for sql in legacy["schema"].as_array().unwrap() {
-        connection.execute_batch(sql.as_str().unwrap()).unwrap();
-    }
-    for (table, rows) in legacy["tables"].as_object().unwrap() {
-        for row in rows.as_array().unwrap() {
-            let row = row.as_object().unwrap();
-            let keys = row.keys().map(|s| s.as_str()).collect::<Vec<_>>();
-            let placeholders = vec!["?"; keys.len()].join(",");
-            let values = row
-                .values()
-                .map(|value| match value {
-                    Value::Null => rusqlite::types::Value::Null,
-                    Value::String(s) => rusqlite::types::Value::Text(s.clone()),
-                    Value::Number(n) => rusqlite::types::Value::Integer(n.as_i64().unwrap()),
-                    _ => panic!("unexpected SQLite reference field"),
-                })
-                .collect::<Vec<_>>();
-            connection
-                .execute(
-                    &format!(
-                        "INSERT INTO {table} ({}) VALUES ({placeholders})",
-                        keys.join(",")
-                    ),
-                    rusqlite::params_from_iter(values),
-                )
-                .unwrap();
-        }
-    }
-    drop(connection);
-    // Existing compatible lock is required; readonly storage never creates it.
-    {
-        let fence = RunFence::new(temp.path());
-        let _guard = fence.shared().unwrap();
-    }
-    let before = fs::read(&path).unwrap();
-    let readonly = Store::read_only(temp.path());
-    let scope = legacy["scope"].as_str().unwrap();
-    {
-        let guard = readonly.guard("demo", "run-a").unwrap();
-        assert_eq!(
-            readonly.events(&guard, scope, 0, 128).unwrap()[0].event_id,
-            "original"
-        );
-    }
-    assert_eq!(fs::read(&path).unwrap(), before);
-    let store = Store::open(temp.path(), "ffffffffffffffffffffffffffffffff").unwrap();
+    let store = Store::open(temp.path(), SEED).unwrap();
+    let scope = bound(&store, "run-a", enabled(), json!({}));
     let guard = store.guard("demo", "run-a").unwrap();
-    let state = store.scope_status(&guard, scope).unwrap().unwrap();
+    let state = store.scope_status(&guard, &scope).unwrap().unwrap();
     assert_eq!(state["display_version"], 0);
     assert_eq!(state["display_confirmed"], 0);
     let connection = Connection::open(store.path()).unwrap();
@@ -597,43 +538,14 @@ fn original_sqlite_schema_is_read_without_mutation_and_additively_migrated() {
     );
     assert_eq!(
         connection
-            .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name='display_metrics'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
             .unwrap(),
         0
     );
-    for (table, rows) in legacy["tables"].as_object().unwrap() {
-        let mut statement = connection
-            .prepare(&format!("SELECT * FROM {table}"))
-            .unwrap();
-        let keys = statement
-            .column_names()
-            .into_iter()
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
-        let actual = statement
-            .query_map([], |row| {
-                let mut result = serde_json::Map::new();
-                for (i, key) in keys.iter().enumerate() {
-                    if ["display_version", "display_confirmed"].contains(&key.as_str()) {
-                        continue;
-                    }
-                    let value = match row.get_ref(i)? {
-                        rusqlite::types::ValueRef::Null => Value::Null,
-                        rusqlite::types::ValueRef::Integer(v) => json!(v),
-                        rusqlite::types::ValueRef::Text(s) => {
-                            json!(std::str::from_utf8(s).unwrap())
-                        }
-                        _ => panic!("unexpected type"),
-                    };
-                    result.insert(key.clone(), value);
-                }
-                Ok(Value::Object(result))
-            })
-            .unwrap()
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .unwrap();
-        assert_eq!(actual, *rows.as_array().unwrap(), "{table}");
-    }
 }
 
 #[test]

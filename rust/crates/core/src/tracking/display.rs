@@ -5,7 +5,6 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
-use sha2::{Digest, Sha256};
 
 use super::{Error, Result};
 use crate::{
@@ -14,8 +13,8 @@ use crate::{
     observation::python_equal,
 };
 
-const FIELDS: [&str; 4] = ["name", "unit", "protocol_id", "dataset_id"];
-pub const STABLE_DISPLAY_VERSION: i64 = 4;
+const FIELDS: [&str; 5] = ["name", "unit", "protocol_id", "dataset_id", "variant_id"];
+pub const DISPLAY_VERSION: i64 = 4;
 fn object(value: &Value) -> Result<&Map<String, Value>> {
     value.as_object().ok_or(Error::Display("object required"))
 }
@@ -39,31 +38,16 @@ fn text<'a>(value: &'a Value, key: &str) -> Result<&'a str> {
         .ok_or(Error::Display("string field required"))
 }
 
-pub fn identity(value: &Value, variant: bool) -> Result<String> {
+pub fn identity(value: &Value) -> Result<String> {
     object(value)?;
     let mut fields = Map::new();
-    for field in FIELDS.into_iter().chain(variant.then_some("variant_id")) {
+    for field in FIELDS {
         fields.insert(field.into(), get(value, field).clone());
     }
     Ok(
         String::from_utf8(canonical::python_json_bytes(&Value::Object(fields))?)
             .expect("canonical JSON is UTF-8"),
     )
-}
-pub fn fingerprint(value: &str) -> String {
-    format!("{:x}", Sha256::digest(value.as_bytes()))[..16].into()
-}
-pub fn stem(name: &str) -> String {
-    name.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || "_.-".contains(c) {
-                c
-            } else {
-                '_'
-            }
-        })
-        .take(64)
-        .collect()
 }
 pub fn number(value: &Value) -> Result<bool> {
     let Some(number) = value.as_number() else {
@@ -72,7 +56,7 @@ pub fn number(value: &Value) -> Result<bool> {
     let finite = number.as_f64().is_some_and(f64::is_finite);
     // Python math.isfinite raises on an integer too large for conversion. Such
     // integers never arise as valid normalized metrics, but fail rather than
-    // silently treating malformed legacy values as a successful empty display.
+    // silently treating malformed values as a successful empty display.
     if !finite && !number.to_string().contains(['.', 'e', 'E']) {
         return Err(Error::Display("integer exceeds finite float range"));
     }
@@ -162,13 +146,12 @@ impl Projection {
         if !truth(get(item, "name")) || !truth(get(item, "unit")) {
             return Ok(self);
         }
-        let key = identity(item, true)?;
+        let key = identity(item)?;
         let index = match self.series.iter().position(|series| series.key == key) {
             Some(index) => index,
             None => {
                 let context = FIELDS
                     .into_iter()
-                    .chain(["variant_id"])
                     .map(|key| (key.to_owned(), get(item, key).clone()))
                     .collect::<Map<_, _>>();
                 self.series.push(Series {
@@ -262,123 +245,6 @@ impl Projection {
         }
         Ok(self)
     }
-    pub fn state_value(&self) -> Value {
-        let series = self
-            .series
-            .iter()
-            .map(|series| (series.key.clone(), series.state()))
-            .collect::<Map<_, _>>();
-        json!({"cursor":self.cursor,"series":series})
-    }
-    /// Names are the existing destination-wide SQLite reservations. Allocation
-    /// and collision locking belong to the server's `display_metrics` table.
-    pub fn document(&self, names: &Map<String, Value>) -> Result<Value> {
-        let mut variants: Vec<(String, Vec<Value>)> = Vec::new();
-        for series in &self.series {
-            let base = identity(&series.context, false)?;
-            let variant = get(&series.context, "variant_id");
-            if variant.is_array() || variant.is_object() {
-                return Err(Error::Display("unhashable variant"));
-            }
-            let index = match variants.iter().position(|(key, _)| key == &base) {
-                Some(i) => i,
-                None => {
-                    variants.push((base, Vec::new()));
-                    variants.len() - 1
-                }
-            };
-            if !variants[index].1.iter().any(|v| python_equal(v, variant)) {
-                variants[index].1.push(variant.clone());
-            }
-        }
-        let mut result = Map::new();
-        for series in &self.series {
-            let base = identity(&series.context, false)?;
-            let name = names
-                .get(&base)
-                .and_then(Value::as_str)
-                .ok_or(Error::Display("missing public metric name"))?;
-            let multiple = variants
-                .iter()
-                .find(|(key, _)| key == &base)
-                .is_some_and(|(_, v)| v.len() > 1);
-            let suffix = format!("/variants/{}", fingerprint(&series.key));
-            let mut row = series.state();
-            row["latest"] = series
-                .summary
-                .as_ref()
-                .or(series.latest.as_ref())
-                .cloned()
-                .unwrap_or(Value::Null);
-            row["selection"] = json!(if series.summary.is_some() {
-                "explicit_summary"
-            } else {
-                "latest_observation"
-            });
-            row["name"] = json!(name);
-            row["multiple_variants"] = json!(multiple);
-            row["curve"] = json!(format!("curves/{name}"));
-            row["shadow"] = json!(format!("curves/{name}{suffix}"));
-            row["result"] = json!(format!(
-                "results/{name}{}",
-                if multiple { &suffix } else { "" }
-            ));
-            result.insert(series.key.clone(), row);
-        }
-        Ok(json!({"contract":"metric-display.v2","through":self.cursor,"series":result}))
-    }
-    /// Display names belong to an Attempt, not to a destination-wide identity
-    /// registry. Keep scientific identities in provenance and use caller labels
-    /// for variants, including the first variant seen in a streaming journal.
-    pub fn stable_document(&self) -> Result<Value> {
-        let mut fields = BTreeSet::new();
-        let mut result = Map::new();
-        for series in &self.series {
-            let name = text(&series.context, "name")?;
-            let suffix = match get(&series.context, "variant_id") {
-                Value::Null => String::new(),
-                Value::String(label) if !label.is_empty() => {
-                    // Escape separators injectively; ordinary labels stay readable.
-                    let label = label.replace('%', "%25").replace('/', "%2F");
-                    format!("/variants/{label}")
-                }
-                _ => return Err(Error::Display("DISPLAY_VARIANT_LABEL_REQUIRED")),
-            };
-            let public = format!("{name}{suffix}");
-            let curve = format!("curves/{public}");
-            let comparison = format!("results/{public}");
-            // Also reserve epoch/axis names: an explicit name ending in
-            // /by_epoch must not overwrite another metric's epoch curve.
-            for field in [
-                curve.clone(),
-                format!("{curve}/by_epoch"),
-                format!("axes/{public}/step"),
-                format!("axes/{public}/by_epoch/epoch"),
-                comparison.clone(),
-            ] {
-                if !fields.insert(field) {
-                    return Err(Error::Display("DISPLAY_NAME_CONFLICT"));
-                }
-            }
-            let mut row = series.state();
-            row["latest"] = series
-                .summary
-                .as_ref()
-                .or(series.latest.as_ref())
-                .cloned()
-                .unwrap_or(Value::Null);
-            row["selection"] = json!(if series.summary.is_some() {
-                "explicit_summary"
-            } else {
-                "latest_observation"
-            });
-            row["name"] = json!(name);
-            row["curve"] = json!(curve);
-            row["result"] = json!(comparison);
-            result.insert(series.key.clone(), row);
-        }
-        Ok(json!({"contract":"metric-display.v3","through":self.cursor,"series":result}))
-    }
     /// W&B keys belong to the caller. Scientific contexts stay in the journal;
     /// sharing a name intentionally shares one W&B metric, including variants.
     pub fn client_document(&self) -> Result<Value> {
@@ -406,28 +272,15 @@ impl Projection {
     }
 }
 
-fn display_version(display: &Value) -> Result<i64> {
-    match get(display, "contract").as_str() {
-        Some("metric-display.v2") => Ok(2),
-        Some("metric-display.v3") => Ok(3),
-        Some("metric-display.v4") => Ok(4),
-        _ => Err(Error::Display("unsupported metric display contract")),
+fn require_contract(display: &Value) -> Result<()> {
+    if get(display, "contract").as_str() != Some("metric-display.v4") {
+        return Err(Error::Display("unsupported metric display contract"));
     }
-}
-
-fn curve_keys<'a>(row: &'a Value, display: &Value) -> Result<Vec<(&'a str, bool)>> {
-    if display_version(display)? >= 3 {
-        Ok(vec![(text(row, "curve")?, true)])
-    } else {
-        let multiple = truth(get(row, "multiple_variants"));
-        Ok(vec![
-            (text(row, "curve")?, !multiple),
-            (text(row, "shadow")?, multiple),
-        ])
-    }
+    Ok(())
 }
 
 pub fn curve_record(event: &Value, display: &Value) -> Result<Value> {
+    require_contract(display)?;
     let payload = event
         .get("payload")
         .ok_or(Error::Display("event payload"))?;
@@ -444,7 +297,7 @@ pub fn curve_record(event: &Value, display: &Value) -> Result<Value> {
     let series = object(get(display, "series"))?;
     let mut record = Map::new();
     for item in observations {
-        let Some(row) = series.get(&identity(item, true)?) else {
+        let Some(row) = series.get(&identity(item)?) else {
             continue;
         };
         if get(item, "summary") == &Value::Bool(true) || !number(get(item, "value"))? {
@@ -456,41 +309,20 @@ pub fn curve_record(event: &Value, display: &Value) -> Result<Value> {
         if !valid_curve(item)? {
             continue;
         }
-        if display_version(display)? == 4 {
-            let name = text(row, "curve")?;
-            if record
-                .insert(name.into(), get(item, "value").clone())
-                .is_some()
-            {
-                return Err(Error::Display("DISPLAY_NAME_CONFLICT"));
-            }
-            for axis in ["step", "epoch"] {
-                if number(get(item, axis))? {
-                    record.insert(
-                        format!("ml_expd/axes/{name}/{axis}"),
-                        get(item, axis).clone(),
-                    );
-                }
-            }
-            continue;
+        let name = text(row, "curve")?;
+        if record
+            .insert(name.into(), get(item, "value").clone())
+            .is_some()
+        {
+            return Err(Error::Display("DISPLAY_NAME_CONFLICT"));
         }
-        let Some(axis) = axis(item)? else {
-            continue;
-        };
-        for (key, visible) in curve_keys(row, display)? {
-            // v2 always wrote its shadow, even when hidden.
-            if !visible && key == text(row, "curve")? {
-                continue;
+        for axis in ["step", "epoch"] {
+            if number(get(item, axis))? {
+                record.insert(
+                    format!("ml_expd/axes/{name}/{axis}"),
+                    get(item, axis).clone(),
+                );
             }
-            let key = format!("{key}{}", if axis == "epoch" { "/by_epoch" } else { "" });
-            record.insert(key.clone(), get(item, "value").clone());
-            record.insert(
-                format!(
-                    "axes/{}/{axis}",
-                    key.strip_prefix("curves/").unwrap_or(&key)
-                ),
-                get(item, axis).clone(),
-            );
         }
     }
     Ok(Value::Object(record))
@@ -508,73 +340,36 @@ fn definition(name: impl Into<String>, options: Value) -> DefinitionSpec {
     }
 }
 pub fn definition_specs(display: &Value) -> Result<Vec<DefinitionSpec>> {
-    if display_version(display)? == 4 {
-        let series = object(get(display, "series"))?;
-        let mut names = BTreeSet::new();
-        let mut specs = vec![definition(
-            "ml_expd/*",
-            json!({"hidden":true,"summary":"none","overwrite":true}),
-        )];
-        for row in series.values() {
-            let name = text(row, "curve")?;
-            if !names.insert(name) {
-                continue;
-            }
-            let mut options = json!({"hidden":false,"summary":"none","overwrite":true});
-            if let Some(axis) = ["step", "epoch"].into_iter().find(|axis| {
-                series.values().any(|r| {
-                    get(r, "curve").as_str() == Some(name)
-                        && get(get(r, "positions"), axis)
-                            .as_array()
-                            .is_some_and(|a| !a.is_empty())
-                })
-            }) {
-                let axis_key = format!("ml_expd/axes/{name}/{axis}");
-                specs.push(definition(
-                    &axis_key,
-                    json!({"hidden":true,"summary":"none","overwrite":true}),
-                ));
-                options["step_metric"] = json!(axis_key);
-                options["step_sync"] = json!(false);
-            }
-            specs.push(definition(name, options));
+    require_contract(display)?;
+    let series = object(get(display, "series"))?;
+    let mut names = BTreeSet::new();
+    let mut specs = vec![definition(
+        "ml_expd/*",
+        json!({"hidden":true,"summary":"none","overwrite":true}),
+    )];
+    for row in series.values() {
+        let name = text(row, "curve")?;
+        if !names.insert(name) {
+            continue;
         }
-        return Ok(specs);
-    }
-    let mut specs = vec![
-        definition(
-            "metrics/*",
-            json!({"hidden":true,"summary":"none","overwrite":true}),
-        ),
-        definition(
-            "axes/*",
-            json!({"hidden":true,"summary":"none","overwrite":true}),
-        ),
-        definition("ml_expd/*", json!({"hidden":true})),
-    ];
-    for series in object(get(display, "series"))?.values() {
-        for axis in ["step", "epoch"] {
-            for (key, visible) in curve_keys(series, display)? {
-                let key = format!("{key}{}", if axis == "epoch" { "/by_epoch" } else { "" });
-                let axis_key = format!(
-                    "axes/{}/{axis}",
-                    key.strip_prefix("curves/").unwrap_or(&key)
-                );
-                let two = get(get(series, "positions"), axis)
-                    .as_array()
-                    .map_or(0, Vec::len)
-                    == 2;
-                specs.push(definition(
-                    &axis_key,
-                    json!({"hidden":true,"summary":"none","overwrite":true}),
-                ));
-                specs.push(definition(key,json!({"step_metric":axis_key,"step_sync":false,"hidden":!(visible&&two),"summary":"none","overwrite":true})));
-            }
+        let mut options = json!({"hidden":false,"summary":"none","overwrite":true});
+        if let Some(axis) = ["step", "epoch"].into_iter().find(|axis| {
+            series.values().any(|r| {
+                get(r, "curve").as_str() == Some(name)
+                    && get(get(r, "positions"), axis)
+                        .as_array()
+                        .is_some_and(|a| !a.is_empty())
+            })
+        }) {
+            let axis_key = format!("ml_expd/axes/{name}/{axis}");
+            specs.push(definition(
+                &axis_key,
+                json!({"hidden":true,"summary":"none","overwrite":true}),
+            ));
+            options["step_metric"] = json!(axis_key);
+            options["step_sync"] = json!(false);
         }
-        specs.push(definition(
-            text(series, "result")?,
-            json!({"hidden":false,"overwrite":true}),
-        ));
+        specs.push(definition(name, options));
     }
     Ok(specs)
 }
@@ -589,11 +384,10 @@ pub struct SummaryPatch {
 pub fn summary_patch(
     display: &Value,
     remote_keys: &[String],
-    terminal: bool,
     coverage: &str,
 ) -> Result<SummaryPatch> {
+    require_contract(display)?;
     let series = object(get(display, "series"))?;
-    let client_names = display_version(display)? == 4;
     // Several contexts can intentionally use the same client name. Choose its
     // explicit summary, otherwise the last accepted observation, in journal order.
     let mut selected = Map::new();
@@ -605,38 +399,27 @@ pub fn summary_patch(
                 get(get(row, "latest"), "sequence").as_i64().unwrap_or(0),
             )
         };
-        if !client_names || selected.get(name).is_none_or(|old| rank(row) > rank(old)) {
+        if selected.get(name).is_none_or(|old| rank(row) > rank(old)) {
             selected.insert(name.into(), row.clone());
         }
     }
-    let rows = if client_names { &selected } else { series };
     let mut values = Map::new();
-    for row in rows.values() {
+    for row in selected.values() {
         let latest = get(row, "latest");
-        if terminal || client_names {
-            if latest.get("status").is_none() {
-                return Err(Error::Display("missing latest status"));
-            }
-            if get(latest, "status") == "VALID" && number(get(latest, "value"))? {
-                values.insert(text(row, "result")?.into(), get(latest, "value").clone());
-            }
+        if latest.get("status").is_none() {
+            return Err(Error::Display("missing latest status"));
+        }
+        if get(latest, "status") == "VALID" && number(get(latest, "value"))? {
+            values.insert(text(row, "result")?.into(), get(latest, "value").clone());
         }
     }
     let delete = remote_keys
         .iter()
-        .filter(|key| {
-            (if client_names {
-                selected.contains_key(key.as_str())
-            } else {
-                ["metrics/", "axes/", "curves/", "results/"]
-                    .iter()
-                    .any(|prefix| key.starts_with(prefix))
-            }) && !values.contains_key(*key)
-        })
+        .filter(|key| selected.contains_key(key.as_str()) && !values.contains_key(*key))
         .cloned()
         .collect();
     let mut definitions = Map::new();
-    for row in rows.values() {
+    for row in selected.values() {
         let latest = get(row, "latest");
         let mut context = object(get(row, "context"))?.clone();
         for key in [
@@ -649,9 +432,6 @@ pub fn summary_patch(
             "error",
         ] {
             context.insert(key.into(), get(latest, key).clone());
-        }
-        if latest.get("status").is_none() {
-            return Err(Error::Display("missing latest status"));
         }
         context.insert("selection".into(), get(row, "selection").clone());
         definitions.insert(text(row, "result")?.into(), Value::Object(context));
@@ -672,10 +452,7 @@ pub fn summary_patch(
         "ml_expd/display_through".into(),
         get(display, "through").clone(),
     );
-    values.insert(
-        "ml_expd/display_version".into(),
-        json!(display_version(display)?),
-    );
+    values.insert("ml_expd/display_version".into(), json!(DISPLAY_VERSION));
     Ok(SummaryPatch {
         delete,
         set: values,
