@@ -619,3 +619,45 @@ fn a_kept_symlink_is_named_rather_than_failing_the_whole_directory_silently() {
         "{text}"
     );
 }
+
+#[test]
+fn an_untracked_nested_repository_is_kept_whole() {
+    let temp = tempfile::tempdir().unwrap();
+    git(temp.path(), &["init", "-q"]);
+    std::fs::write(temp.path().join("train.py"), "code").unwrap();
+    let nested = temp.path().join("vendor");
+    std::fs::create_dir(&nested).unwrap();
+    git(&nested, &["init", "-q"]);
+    std::fs::write(nested.join("lib.py"), "dependency").unwrap();
+    assert_eq!(
+        members(sources::pack_directory(temp.path()).unwrap()),
+        ["train.py", "vendor/lib.py"]
+    );
+}
+#[test]
+fn a_repository_git_cannot_read_uploads_nothing() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join(".git"), "not a repository").unwrap();
+    std::fs::write(temp.path().join(".env"), "SECRET").unwrap();
+    std::fs::write(temp.path().join("train.py"), "code").unwrap();
+    let text = sources::pack_directory(temp.path())
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(text.contains("git could not list"), "{text}");
+}
+#[test]
+fn a_download_of_results_is_not_part_of_the_source() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("train.py"), "code").unwrap();
+    let first = sources::pack_directory(temp.path()).unwrap();
+    assert_eq!(first.paths, ["train.py"]);
+    let sha256 = first.sha256.clone();
+    std::fs::write(
+        temp.path()
+            .join(format!("run-1{}", sources::RESULTS_SUFFIX)),
+        "results",
+    )
+    .unwrap();
+    assert_eq!(sources::pack_directory(temp.path()).unwrap().sha256, sha256);
+}

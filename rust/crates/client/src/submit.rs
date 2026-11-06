@@ -37,7 +37,6 @@ pub struct Spec {
     pub env: BTreeMap<String, String>,
     /// Further Run fields from a configuration file, such as `metrics_schema`.
     pub extra: Map<String, Value>,
-    pub request_id: Option<String>,
     pub max_gpu_hours: Option<f64>,
     pub reason: Option<String>,
 }
@@ -66,7 +65,6 @@ pub struct Options {
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct File {
-    request_id: Option<String>,
     #[serde(default)]
     runtime: FileRuntime,
     #[serde(default)]
@@ -129,7 +127,7 @@ pub fn spec(
             serde_json::from_value(Value::Object(value)).map_err(|error| {
                 Error::Submit(format!(
                     "the experiment file is not usable: {error}. \
-                     `submit` derives the source and base image itself; \
+                     `submit` derives the request ID, source and base image itself; \
                      use `ml-exp run start` to fix them"
                 ))
             })?
@@ -150,6 +148,7 @@ pub fn spec(
         .into_iter()
         .map(|input| (input.name, input.asset_id))
         .collect();
+    data.retain(|(name, _)| !options.data.iter().any(|(given, _)| given == name));
     data.extend(options.data);
     let mut env = file.run.env;
     env.extend(options.env);
@@ -199,7 +198,6 @@ pub fn spec(
         data,
         env,
         extra: file.run.extra,
-        request_id: file.request_id,
         max_gpu_hours: file.approval.max_gpu_hours,
         reason: file.approval.reason,
     })
@@ -236,7 +234,12 @@ pub struct Hooks<'a> {
 pub struct Latest {
     pub project: String,
     pub run_id: String,
-    pub submission_id: String,
+    /// None while it is still being prepared: nothing can be running yet.
+    pub submission_id: Option<String>,
+    /// A send began and its outcome was never learned. Repeating `retry` must find
+    /// out what happened to this one rather than start another.
+    #[serde(default)]
+    pub unsettled: bool,
 }
 const LATEST: &str = "latest.json";
 /// Only a convenience: failing to save this must not disturb a submission.
@@ -253,6 +256,12 @@ pub fn latest(directory: &Path) -> Result<Latest, Error> {
     };
     let bytes = ml_exp_io::read_private(&directory.join(LATEST), 4096, true).map_err(|_| none())?;
     serde_json::from_slice(&bytes).map_err(|_| none())
+}
+/// The latest Submission, for commands that need one to exist.
+fn sent(latest: &Latest) -> Result<&str, Error> {
+    latest.submission_id.as_deref().ok_or(Error::Observation(
+        "the latest submission is still being prepared, so nothing is running yet",
+    ))
 }
 
 /// `90`, `90s`, `10m`, `2h` or `1d`.
@@ -294,13 +303,47 @@ pub fn parse_data(value: &str) -> Result<(String, String), String> {
         .ok_or_else(|| "use NAME=asset.HASH; ml-exp data upload returns the asset".into())
 }
 
+/// One instruction per entry: continuations joined, comments gone, as the builder reads them.
+fn instructions(dockerfile: &str) -> Vec<String> {
+    let mut all = Vec::new();
+    let mut current = String::new();
+    for line in dockerfile.lines().map(str::trim) {
+        if line.starts_with('#') {
+            continue;
+        }
+        if let Some(head) = line.strip_suffix('\\') {
+            current.push_str(head);
+            current.push(' ');
+        } else {
+            current.push_str(line);
+            all.push(std::mem::take(&mut current));
+        }
+    }
+    all.push(current);
+    all
+}
 /// The last external image, which the builder requires `base_image` to equal. The
-/// builder's parser stays the authority: this only saves writing the digest twice.
+/// builder's parser stays the authority: this saves writing the digest twice, and
+/// refuses what the builder is known to refuse before anything is confirmed or sent.
 pub fn base_image(dockerfile: &str) -> Result<String, Error> {
+    let refused = Error::Submit;
+    for line in dockerfile.lines() {
+        if let Some(comment) = line.trim().strip_prefix('#') {
+            let word = comment.trim_start().to_ascii_lowercase();
+            if ["syntax", "escape"].iter().any(|directive| {
+                word.strip_prefix(directive)
+                    .is_some_and(|rest| rest.trim_start().starts_with('='))
+            }) {
+                return Err(refused(
+                    "the builder does not support `# syntax=` or `# escape=`; remove that line"
+                        .into(),
+                ));
+            }
+        }
+    }
     let mut stages = Vec::new();
     let mut last = None;
-    let joined = dockerfile.replace("\\\r\n", " ").replace("\\\n", " ");
-    for line in joined.lines() {
+    for line in instructions(dockerfile) {
         let mut words = line.split_whitespace();
         if !words
             .next()
@@ -308,26 +351,37 @@ pub fn base_image(dockerfile: &str) -> Result<String, Error> {
         {
             continue;
         }
-        let parts: Vec<&str> = words.filter(|word| !word.starts_with("--")).collect();
-        let Some(image) = parts.first() else {
-            return Err(Error::Submit("the Dockerfile has an empty FROM".into()));
-        };
-        let image = image.to_string();
+        let mut parts: Vec<&str> = words.map(|word| word.trim_matches(['"', '\''])).collect();
+        if let Some(flag) = parts.first().filter(|word| word.starts_with("--")) {
+            if *flag != "--platform=linux/amd64" {
+                return Err(refused(format!(
+                    "the builder supports only linux/amd64 and no other FROM option, not {flag}"
+                )));
+            }
+            parts.remove(0);
+        }
+        let named = parts.len() == 3 && parts[1].eq_ignore_ascii_case("AS");
+        if parts.len() != 1 && !named {
+            return Err(refused(format!(
+                "this FROM is not one the builder accepts: {line}"
+            )));
+        }
+        let image = parts[0];
         if image != "scratch" && !stages.contains(&image.to_ascii_lowercase()) {
-            if !pinned(&image) {
-                return Err(Error::Submit(format!(
+            if !pinned(image) {
+                return Err(refused(format!(
                     "FROM {image} must be pinned as IMAGE@sha256:DIGEST; \
                      `ml-exp get /api/environments` lists approved bases"
                 )));
             }
-            last = Some(image);
+            last = Some(image.to_owned());
         }
-        if parts.len() == 3 && parts[1].eq_ignore_ascii_case("AS") {
+        if named {
             stages.push(parts[2].to_ascii_lowercase());
         }
     }
     last.ok_or_else(|| {
-        Error::Submit(
+        refused(
             "the Dockerfile needs a FROM pinned as IMAGE@sha256:DIGEST; \
              `ml-exp get /api/environments` lists approved bases"
                 .into(),
@@ -448,7 +502,6 @@ pub fn resources(spec: &Spec, executor: &str, limits: &Value) -> Result<(u32, u3
 
 pub fn plan(
     spec: &Spec,
-    server: &str,
     archive_sha256: &str,
     dockerfile: &str,
     executor: &Value,
@@ -467,31 +520,32 @@ pub fn plan(
                 .into(),
         )
     })?;
-    // The reason and display text stay out: only what changes the job is identity.
+    // What was asked for, not what today's limits and shapes resolve it to, so that a
+    // repeat finds the same job even if the operator has changed them since. The server
+    // is left out: preparations are already per server, and it can have many spellings.
     let identity = canonical::digest(&json!([
-        "ml-exp-submit.v1",
-        server,
+        "ml-exp-submit.v2",
         spec.project,
-        chosen,
+        spec.executor,
+        directory_name,
         archive_sha256,
         spec.dockerfile,
         base_image,
         spec.command,
-        gpus,
-        cpus,
-        memory_gb,
+        spec.gpus,
+        spec.cpus,
+        spec.memory_gb,
         spec.walltime_seconds,
         spec.seed,
         spec.run_id,
         spec.data,
         spec.env,
         spec.extra,
+        spec.max_gpu_hours.map(|hours| hours.to_string()),
+        spec.reason,
     ]))
     .map_err(|_| Error::Response)?;
-    let request_id = spec
-        .request_id
-        .clone()
-        .unwrap_or_else(|| identity[..32].to_owned());
+    let request_id = identity[..32].to_owned();
     let run_id = match &spec.run_id {
         Some(run) => run.clone(),
         None => format!("{}-{}", slug(directory_name), &identity[..8]),
@@ -514,11 +568,12 @@ pub fn plan(
     })
 }
 impl Plan {
-    fn latest(&self, spec: &Spec, submission: &str) -> Latest {
+    fn latest(&self, spec: &Spec, submission: Option<&str>, unsettled: bool) -> Latest {
         Latest {
             project: spec.project.clone(),
             run_id: self.run_id.clone(),
-            submission_id: submission.to_owned(),
+            submission_id: submission.map(str::to_owned),
+            unsettled,
         }
     }
 }
@@ -537,19 +592,36 @@ fn slug(name: &str) -> String {
 }
 
 /// What the user agrees to. It must show everything that decides the spend.
-pub fn summary(spec: &Spec, plan: &Plan) -> String {
-    format!(
-        "Run {}\n  executor  {}\n  command   {}\n  image     {}\n  resources {} GPU, {} CPU, {} GB\n  time      up to {} seconds\n  spend     up to {} GPU hours",
-        plan.run_id,
-        plan.executor,
-        spec.command.join(" "),
-        plan.base_image,
-        plan.gpus,
-        plan.cpus,
-        plan.memory_gb,
-        spec.walltime_seconds,
-        plan.max_gpu_hours,
-    )
+pub fn summary(spec: &Spec, plan: &Plan, files: usize) -> String {
+    let mut lines = vec![
+        format!("Run {}", plan.run_id),
+        format!("  executor  {}", plan.executor),
+        format!("  command   {}", spec.command.join(" ")),
+        format!("  image     {}", plan.base_image),
+        format!(
+            "  source    {files} files from {}",
+            spec.directory.display()
+        ),
+        format!(
+            "  resources {} GPU, {} CPU, {} GB",
+            plan.gpus, plan.cpus, plan.memory_gb
+        ),
+        format!("  time      up to {} seconds", spec.walltime_seconds),
+        format!("  spend     up to {} GPU hours", plan.max_gpu_hours),
+    ];
+    if !spec.data.is_empty() {
+        let names: Vec<&str> = spec.data.iter().map(|(name, _)| name.as_str()).collect();
+        lines.push(format!("  data      {}", names.join(", ")));
+    }
+    if !spec.env.is_empty() {
+        let names: Vec<&str> = spec.env.keys().map(String::as_str).collect();
+        lines.push(format!("  env       {}", names.join(", ")));
+    }
+    if !spec.extra.is_empty() {
+        let names: Vec<&str> = spec.extra.keys().map(String::as_str).collect();
+        lines.push(format!("  also      {}", names.join(", ")));
+    }
+    lines.join("\n")
 }
 
 fn request(spec: &Spec, plan: &Plan, source_id: &str) -> Result<preparation::Request, Error> {
@@ -595,17 +667,32 @@ fn request(spec: &Spec, plan: &Plan, source_id: &str) -> Result<preparation::Req
     Ok(request)
 }
 
-/// Why waiting longer cannot help. The next run of the command is the retry.
+/// Why waiting longer cannot help. Stopping the wait never stops anything on the server.
 fn stopped(view: &Value) -> Option<String> {
     if let Some(code) = view["error_code"].as_str() {
         return Some(format!("data preparation failed with {code}"));
     }
     let runtime = &view["runtime"];
-    if runtime["status"] == "PREPARED" && !runtime["build_error"].is_null() {
-        let code = runtime["build_error"]["code"].as_str().unwrap_or("UNKNOWN");
+    let error = &runtime["build_error"];
+    let idle = matches!(
+        runtime["status"].as_str(),
+        Some("PREPARED" | "RECONCILE_REQUIRED")
+    );
+    if idle && !error.is_null() && error["code"] != "BUILD_EXECUTING" {
+        // The original failure is kept beside a later "receipt missing".
+        let cause = if error["build_failure"].is_null() {
+            error
+        } else {
+            &error["build_failure"]
+        };
+        let code = cause["code"].as_str().unwrap_or("UNKNOWN");
+        let reason = cause["details"]["reason"]
+            .as_str()
+            .map(|reason| format!(" ({reason})"))
+            .unwrap_or_default();
         let id = runtime["runtime_id"].as_str().unwrap_or("RUNTIME");
         return Some(format!(
-            "the image build failed with {code}; see `ml-exp env logs {id}`"
+            "the image build failed with {code}{reason}; see `ml-exp env logs {id} --project PROJECT`"
         ));
     }
     if view["data"]["new_request_allowed"] == true {
@@ -702,19 +789,22 @@ fn show(client: &Client, id: &str, health: &Value) -> Result<Value, Error> {
     )
 }
 
-/// Past PREPARED and AUTHORIZED, the job may exist. Only observing is allowed then.
-fn dispatched(status: &Value) -> bool {
-    !status
-        .as_str()
-        .is_some_and(|status| matches!(status, "PREPARED" | "AUTHORIZED"))
+/// Only these can be sent. Anything else may already have a job, or can never have
+/// one until it is prepared again, so sending is out of the question.
+fn unsent(status: &Value) -> bool {
+    matches!(status.as_str(), Some("PREPARED" | "AUTHORIZED"))
+}
+/// Prepared again or never: BLOCKED and an expired gate have no job.
+fn may_exist(status: &Value) -> bool {
+    !unsent(status) && status != "BLOCKED"
 }
 
 fn dispatch(client: &Client, id: &str, health: &Value) -> Result<Value, Error> {
     let mut current = show(client, id, health)?;
     if current["next_action"] == "REPREPARE" {
         return Err(Error::Submit(format!(
-            "the prepared Submission expired before it was sent, and nothing was submitted; \
-             run `ml-exp run renew {id}`"
+            "the prepared Submission {id} expired or was blocked, and nothing was submitted; \
+             see `ml-exp run renew --help`"
         )));
     }
     if current["status"] == "PREPARED" {
@@ -760,6 +850,23 @@ fn observe(client: &Client, id: &str, current: Value, health: &Value) -> Result<
     }
 }
 
+/// Send once and say truthfully what is known afterwards. If a reply was lost and the
+/// server still shows it unsent, nothing was sent, and that must not read as success.
+fn send(client: &Client, id: &str, health: &Value) -> Result<Value, Error> {
+    let current = match dispatch(client, id, health) {
+        Ok(current) => current,
+        Err(Error::SubmissionOutcomeUnknown(_)) => show(client, id, health)?,
+        Err(error) => return Err(error),
+    };
+    if unsent(&current["status"]) {
+        return Err(Error::Submit(format!(
+            "no job was sent: {id} is still {}. Run this command again",
+            current["status"].as_str().unwrap_or("unsent")
+        )));
+    }
+    observe(client, id, current, health)
+}
+
 /// The scheduler's state, normalized, from either kind of backend.
 fn job_state(submission: &Value) -> Option<&str> {
     submission
@@ -772,6 +879,14 @@ fn finished(state: &str) -> bool {
         state,
         "SUCCEEDED" | "FAILED" | "CANCELLED" | "TIMEOUT" | "PREEMPTED"
     )
+}
+/// SenseCore also reports CANCELLED for a job that may still be running.
+fn over(submission: &Value) -> bool {
+    let own = submission["cloud_observation"]["observation"]["provider_state"]
+        .as_str()
+        .unwrap_or_default();
+    job_state(submission).is_some_and(finished)
+        && !ml_exp_core::cloud::sensecore::may_still_run(own)
 }
 /// The backend's own words when it gives them, such as PAI's `EnvPreparing`.
 fn describe(submission: &Value) -> Option<String> {
@@ -790,6 +905,10 @@ fn describe(submission: &Value) -> Option<String> {
     Some(line)
 }
 /// Read-only. Stopping here, for any reason, leaves the job running.
+///
+/// The Submission view is the one place with the latest state on every backend: Slurm's
+/// comes from background polling, and only `GET` overlays it. A cloud job is also asked
+/// of the provider first, which is what brings its view up to date.
 fn follow(
     client: &Client,
     id: &str,
@@ -805,16 +924,30 @@ fn follow(
     let mut latest = current;
     let mut last = String::new();
     let mut failures = 0;
+    let mut changed = Instant::now();
     loop {
-        match refresh(client) {
+        let read = if latest.get("cloud_observation").is_some() {
+            refresh(client).and_then(|_| show(client, id, health))
+        } else {
+            show(client, id, health)
+        };
+        match read {
             Ok(value) => {
                 failures = 0;
                 latest = value;
                 if let Some(line) = describe(&latest).filter(|line| *line != last) {
                     (hooks.progress)(&line);
                     last = line;
+                    changed = Instant::now();
                 }
-                if job_state(&latest).is_some_and(finished) {
+                if over(&latest) {
+                    return latest;
+                }
+                if changed.elapsed() >= hooks.deadline {
+                    (hooks.progress)(
+                        "stopped watching: no change for a long time. The job keeps running; \
+                         `ml-exp status` shows it",
+                    );
                     return latest;
                 }
             }
@@ -853,7 +986,7 @@ fn watch(
         return current;
     }
     let latest = follow(client, id, current, health, hooks);
-    if job_state(&latest).is_some_and(|state| finished(state) && state != "SUCCEEDED") {
+    if over(&latest) && job_state(&latest) != Some("SUCCEEDED") {
         explain_failure(client, project, run, hooks);
     }
     latest
@@ -875,12 +1008,22 @@ fn outcome(spec: &Spec, plan: &Plan, state: &Path, submission: &Value, existing:
     })
 }
 
+/// A job that ended without success, so that scripts do not read it as success.
+pub fn failed_state(value: &Value) -> Option<&str> {
+    value["job_state"]
+        .as_str()
+        .filter(|state| finished(state) && *state != "SUCCEEDED")
+}
+
 /// The default output. `--json` gives the same fields.
 pub fn report(value: &Value) -> String {
     let text = |key: &str| value[key].as_str().unwrap_or_default();
+    let confirmed = value["status"] == "VERIFIED";
     let mut lines = vec![format!(
         "{} {}: {}",
-        if value["already_submitted"] == true {
+        if !confirmed {
+            "Sent, but not confirmed yet;"
+        } else if value["already_submitted"] == true {
             "Already submitted"
         } else {
             "Submitted"
@@ -914,20 +1057,23 @@ pub fn run(
     let executor = choose(spec, rows)?;
     let dockerfile = read_dockerfile(&spec.directory, &spec.dockerfile)?;
     let archive = sources::pack_directory(&spec.directory)?;
+    if !archive
+        .paths
+        .iter()
+        .any(|path| path == spec.dockerfile.trim_start_matches("./"))
+    {
+        return Err(Error::Submit(format!(
+            "{} would not be uploaded; git ignores it, so remove it from .gitignore",
+            spec.dockerfile
+        )));
+    }
     let name = spec
         .directory
         .canonicalize()
         .ok()
         .and_then(|path| path.file_name().map(|n| n.to_string_lossy().into_owned()))
         .unwrap_or_default();
-    let plan = plan(
-        spec,
-        client.base_url(),
-        &archive.sha256,
-        &dockerfile,
-        executor,
-        &name,
-    )?;
+    let plan = plan(spec, &archive.sha256, &dockerfile, executor, &name)?;
     ml_exp_io::create_private_dir(state_directory).map_err(|_| Error::Config)?;
     let state = state_directory.join(format!("{}.json", plan.preparation_id));
     let path = format!(
@@ -944,8 +1090,12 @@ pub fn run(
         .and_then(|view| view["submission"]["submission_id"].as_str())
     {
         let current = show(client, id, &health)?;
-        if dispatched(&current["status"]) {
-            remember(state_directory, &plan.latest(spec, id));
+        if may_exist(&current["status"]) {
+            // A later `retry` of this Run stays the latest; this must not move it back.
+            let newest = latest(state_directory).ok();
+            if newest.is_none_or(|newest| newest.run_id != plan.run_id) {
+                remember(state_directory, &plan.latest(spec, Some(id), false));
+            }
             let current = observe(client, id, current, &health)?;
             let current = watch(
                 client,
@@ -970,22 +1120,17 @@ pub fn run(
             "the server does not allow submissions right now; nothing was sent",
         ));
     }
-    if !(hooks.confirm)(&summary(spec, &plan))? {
+    if !(hooks.confirm)(&summary(spec, &plan, archive.paths.len()))? {
         return Err(Error::Observation("not submitted; nothing was sent"));
     }
+    remember(state_directory, &plan.latest(spec, None, false));
     let source_id = publish(client, spec, archive, &health, hooks.progress)?;
     let request = request(spec, &plan, &source_id)?;
     preparations::prepare(client, &spec.project, &request, &state, &health)?;
     let id = prepared(client, spec, &plan, &health, &mut hooks)?;
-    remember(state_directory, &plan.latest(spec, &id));
-    let current = match dispatch(client, &id, &health) {
-        Ok(current) => current,
-        Err(Error::SubmissionOutcomeUnknown(_)) => {
-            let current = show(client, &id, &health)?;
-            observe(client, &id, current, &health)?
-        }
-        Err(error) => return Err(error),
-    };
+    remember(state_directory, &plan.latest(spec, Some(&id), true));
+    let current = send(client, &id, &health)?;
+    remember(state_directory, &plan.latest(spec, Some(&id), false));
     let current = watch(
         client,
         &spec.project,
@@ -1002,7 +1147,7 @@ pub fn run(
 pub fn cancel(client: &Client, directory: &Path, hooks: Hooks<'_>) -> Result<Value, Error> {
     let health = client.health()?;
     let latest = latest(directory)?;
-    let id = &latest.submission_id;
+    let id = sent(&latest)?;
     let current = show(client, id, &health)?;
     let question = format!(
         "Cancel {} ({}), now {}",
@@ -1023,9 +1168,11 @@ pub fn cancel(client: &Client, directory: &Path, hooks: Hooks<'_>) -> Result<Val
     )
 }
 
-/// Run the latest job's Run again as a new Attempt, from a checkpoint or the start.
-/// Repeating this after a lost reply finds the same Attempt. Once its job may exist,
-/// only observing is left, as in `submit`.
+/// Run the latest Run again as a new Attempt, from a checkpoint or the start.
+///
+/// Repeating this must never start a further job by accident. A prepared Attempt that was
+/// not sent is finished rather than replaced. If a send's outcome was never learned, the
+/// repeat only finds out what happened. A new Attempt needs the last job to have ended.
 pub fn retry(
     client: &Client,
     directory: &Path,
@@ -1038,92 +1185,133 @@ pub fn retry(
     };
     let health = client.health()?;
     let latest = latest(directory)?;
-    let parent = &latest.submission_id;
-    let current = show(client, parent, &health)?;
+    let parent = sent(&latest)?.to_owned();
+    let current = show(client, &parent, &health)?;
     let attempt = current["attempt_id"]
         .as_str()
         .ok_or(Error::Response)?
         .to_owned();
     let summary = &current["preflight_summary"];
     let spend = summary["max_gpu_hours"].as_f64().unwrap_or(0.0);
-    let question = format!(
-        "Run {} again after {attempt}, from {}\n  resources {}\n  spend     up to {spend} more GPU hours",
-        latest.run_id,
-        checkpoint.as_deref().unwrap_or("the start"),
-        summary["resources"],
-    );
-    if !(hooks.confirm)(&question)? {
-        return Err(Error::Observation("not submitted; nothing was sent"));
-    }
-    let start = StartFrom {
+    let settled = |id: &str, unsettled: bool| Latest {
+        project: latest.project.clone(),
         run_id: latest.run_id.clone(),
-        attempt_id: attempt.clone(),
+        submission_id: Some(id.to_owned()),
+        unsettled,
     };
-    let request = Request {
-        confirmation: String::new(),
-        restart_from: checkpoint.is_none().then_some(start),
-        resume_from: checkpoint.map(|checkpoint_id| Reference {
+    let (id, attempt_now) = if unsent(&current["status"]) {
+        let question = format!(
+            "Send {} {attempt}, prepared but not sent yet\n  resources {}\n  spend     up to {spend} more GPU hours",
+            latest.run_id, summary["resources"],
+        );
+        if !(hooks.confirm)(&question)? {
+            return Err(Error::Observation("not submitted; nothing was sent"));
+        }
+        (parent.clone(), attempt.clone())
+    } else if latest.unsettled {
+        let current = observe(client, &parent, current, &health)?;
+        remember(directory, &settled(&parent, false));
+        let current = watch(
+            client,
+            &latest.project,
+            &latest.run_id,
+            &parent,
+            current,
+            &health,
+            &mut hooks,
+        );
+        return Ok(retried(&latest, &parent, &current, true));
+    } else {
+        if !job_state(&current).is_some_and(finished) {
+            return Err(Error::Submit(format!(
+                "{} {attempt} has not ended ({}); `ml-exp cancel` stops it",
+                latest.run_id,
+                job_state(&current)
+                    .or(current["status"].as_str())
+                    .unwrap_or("unknown"),
+            )));
+        }
+        let question = format!(
+            "Run {} again after {attempt}, from {}\n  resources {}\n  spend     up to {spend} more GPU hours",
+            latest.run_id,
+            checkpoint.as_deref().unwrap_or("the start"),
+            summary["resources"],
+        );
+        if !(hooks.confirm)(&question)? {
+            return Err(Error::Observation("not submitted; nothing was sent"));
+        }
+        let start = StartFrom {
             run_id: latest.run_id.clone(),
             attempt_id: attempt.clone(),
-            checkpoint_id,
-        }),
-        max_gpu_hours: spend,
-        reason: REASON.into(),
-    };
-    submissions::execute(
-        client,
-        &submissions::plan(submissions::Command::Retry {
-            submission: parent,
-            request: &request,
-        })?,
-        &health,
-    )?;
-    let prepared = submissions::execute(
-        client,
-        &submissions::plan(submissions::Command::Prepare {
-            project: &latest.project,
-            run: &latest.run_id,
+        };
+        let request = Request {
+            confirmation: String::new(),
+            restart_from: checkpoint.is_none().then_some(start),
+            resume_from: checkpoint.map(|checkpoint_id| Reference {
+                run_id: latest.run_id.clone(),
+                attempt_id: attempt.clone(),
+                checkpoint_id,
+            }),
             max_gpu_hours: spend,
-            reason: REASON,
-        })?,
-        &health,
-    )?;
-    let id = prepared["submission_id"]
-        .as_str()
-        .ok_or(Error::Response)?
-        .to_owned();
-    let next = Latest {
-        submission_id: id.clone(),
-        ..latest
+            reason: REASON.into(),
+        };
+        let created = submissions::execute(
+            client,
+            &submissions::plan(submissions::Command::Retry {
+                submission: &parent,
+                request: &request,
+            })?,
+            &health,
+        )?;
+        let prepared = submissions::execute(
+            client,
+            &submissions::plan(submissions::Command::Prepare {
+                project: &latest.project,
+                run: &latest.run_id,
+                max_gpu_hours: spend,
+                reason: REASON,
+            })?,
+            &health,
+        )?;
+        let id = prepared["submission_id"]
+            .as_str()
+            .ok_or(Error::Response)?
+            .to_owned();
+        let attempt_now = created["attempt_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        (id, attempt_now)
     };
-    remember(directory, &next);
-    let sent = match dispatch(client, &id, &health) {
-        Ok(sent) => sent,
-        Err(Error::SubmissionOutcomeUnknown(_)) => {
-            let current = show(client, &id, &health)?;
-            observe(client, &id, current, &health)?
-        }
-        Err(error) => return Err(error),
-    };
-    let sent = watch(
+    remember(directory, &settled(&id, true));
+    let current = send(client, &id, &health)?;
+    remember(directory, &settled(&id, false));
+    let current = watch(
         client,
-        &next.project,
-        &next.run_id,
+        &latest.project,
+        &latest.run_id,
         &id,
-        sent,
+        current,
         &health,
         &mut hooks,
     );
-    Ok(json!({
-        "project": next.project,
-        "run_id": next.run_id,
-        "attempt_id": sent["attempt_id"],
+    let mut value = retried(&latest, &id, &current, false);
+    if value["attempt_id"].is_null() {
+        value["attempt_id"] = json!(attempt_now);
+    }
+    Ok(value)
+}
+fn retried(latest: &Latest, id: &str, current: &Value, existing: bool) -> Value {
+    json!({
+        "project": latest.project,
+        "run_id": latest.run_id,
+        "attempt_id": current["attempt_id"],
         "submission_id": id,
-        "status": sent["status"],
-        "job_state": job_state(&sent),
-        "already_submitted": false,
+        "status": current["status"],
+        "job_state": job_state(current),
+        "already_submitted": existing,
         "next": ["ml-exp status", "ml-exp logs", "ml-exp results"],
-    }))
+    })
 }
 
 fn read_dockerfile(directory: &Path, name: &str) -> Result<String, Error> {
@@ -1242,7 +1430,6 @@ mod tests {
     fn planned(spec: &Spec) -> Plan {
         plan(
             spec,
-            "https://api.example",
             &"a".repeat(64),
             &format!("FROM {PINNED}\n"),
             &json!({"executor_id":spec.executor,"limits":{}}),
@@ -1267,8 +1454,7 @@ mod tests {
     }
     #[test]
     fn the_command_line_wins_over_the_file_and_the_file_over_the_saved_settings() {
-        let file = br#"{"request_id":"11111111111111111111111111111111",
-            "runtime":{"dockerfile":"docker/Dockerfile"},
+        let file = br#"{"runtime":{"dockerfile":"docker/Dockerfile"},
             "run":{"executor":"from-file","command":["from-file"],
                 "resources":{"gpus":2,"cpus":3,"memory_gb":4},"walltime_seconds":60,"seed":7,
                 "run_id":"file-run","env":{"A":"file","B":"file"},
@@ -1297,10 +1483,6 @@ mod tests {
         assert_eq!(merged.env["B"], "file");
         assert_eq!(merged.data, [("x".to_owned(), "asset.x".to_owned())]);
         assert!(merged.extra.contains_key("metrics_schema"));
-        assert_eq!(
-            merged.request_id.as_deref(),
-            Some("11111111111111111111111111111111")
-        );
         assert_eq!(merged.max_gpu_hours, Some(9.0));
         assert_eq!(merged.reason.as_deref(), Some("because"));
     }
@@ -1371,6 +1553,7 @@ mod tests {
             br#"{"run":{"runtime_id":"runtime.x"}}"#,
             br#"{"run":{"resources":{"nodes":2}}}"#,
             br#"{"unknown":true}"#,
+            br#"{"request_id":"11111111111111111111111111111111"}"#,
             b"[]",
         ] {
             assert!(spec_of(complete(), Some(file)).is_err());
@@ -1399,7 +1582,6 @@ mod tests {
         assert!(
             plan(
                 &reserved,
-                "https://api.example",
                 &"a".repeat(64),
                 &format!("FROM {PINNED}\n"),
                 &json!({"executor_id":"pai-h200","limits":{}}),
@@ -1477,7 +1659,6 @@ mod tests {
         }
         let other_source = plan(
             &spec(),
-            "https://api.example",
             &"b".repeat(64),
             &format!("FROM {PINNED}\n"),
             &json!({"executor_id":"pai-h200","limits":{}}),
@@ -1534,7 +1715,6 @@ mod tests {
         planned_shape.executor = "x".into();
         let plan = plan(
             &planned_shape,
-            "https://api.example",
             &"a".repeat(64),
             &format!("FROM {PINNED}\n"),
             &shape("x", 2, 28, 396),
@@ -1593,7 +1773,6 @@ mod tests {
         assert!(
             plan(
                 &slug_only,
-                "https://api.example",
                 &"a".repeat(64),
                 &format!("FROM {PINNED}\n"),
                 &json!({"executor_id":"pai-h200","limits":{}}),
@@ -1616,6 +1795,7 @@ mod tests {
         );
         for view in [
             json!({"runtime":{"status":"PREPARED","build_error":{"code":"BAD"}}}),
+            json!({"runtime":{"status":"RECONCILE_REQUIRED","build_error":{"code":"BAD"}}}),
             json!({"error_code":"SCRIPT_FAILED"}),
             json!({"data":{"new_request_allowed":true}}),
         ] {
@@ -1661,13 +1841,100 @@ mod tests {
         assert!(describe(&json!({})).is_none());
     }
     #[test]
-    fn a_job_that_may_exist_is_never_treated_as_unsent() {
+    fn only_a_prepared_submission_can_be_sent_and_only_a_sent_one_may_have_a_job() {
         for status in ["PREPARED", "AUTHORIZED"] {
-            assert!(!dispatched(&json!(status)));
+            assert!(unsent(&json!(status)));
+            assert!(!may_exist(&json!(status)));
         }
-        for status in ["EXECUTING", "RECONCILE_REQUIRED", "VERIFIED", "BLOCKED"] {
-            assert!(dispatched(&json!(status)));
+        assert!(!unsent(&json!("BLOCKED")));
+        assert!(!may_exist(&json!("BLOCKED")));
+        for status in ["EXECUTING", "RECONCILE_REQUIRED", "VERIFIED"] {
+            assert!(!unsent(&json!(status)));
+            assert!(may_exist(&json!(status)));
         }
-        assert!(dispatched(&Value::Null));
+        assert!(may_exist(&Value::Null), "unknown is treated as maybe sent");
+    }
+    #[test]
+    fn a_job_that_may_still_run_is_not_over() {
+        let job = |state: &str, own: &str| json!({"cloud_observation":{"observation":{"state":state,"provider_state":own}}});
+        assert!(over(&job("FAILED", "Failed")));
+        assert!(over(&job("CANCELLED", "STOPPED")));
+        assert!(!over(&job("CANCELLED", "DELETING")));
+        assert!(!over(&job("CANCELLED", "SUSPENDED")));
+        assert!(!over(&job("RUNNING", "Running")));
+    }
+    #[test]
+    fn what_the_builder_refuses_is_refused_before_anything_is_confirmed() {
+        for text in [
+            format!("# syntax=docker/dockerfile:1\nFROM {PINNED}\n"),
+            format!("# escape = `\nFROM {PINNED}\n"),
+            format!("FROM --platform=linux/arm64 {PINNED}\n"),
+            format!("FROM {PINNED} foo\n"),
+            format!("FROM {PINNED} AS\n"),
+        ] {
+            assert!(base_image(&text).is_err(), "{text}");
+        }
+        for text in [
+            format!("# a comment\nFROM \"{PINNED}\"\n"),
+            format!("FROM \\\n  # note\n  {PINNED}\n"),
+        ] {
+            assert_eq!(base_image(&text).unwrap(), PINNED, "{text}");
+        }
+    }
+    #[test]
+    fn an_unconfirmed_send_says_so_and_a_failed_job_is_named() {
+        let reported = report(&json!({"status":"RECONCILE_REQUIRED","run_id":"r","next":[]}));
+        assert!(reported.contains("not confirmed"), "{reported}");
+        let reported = report(&json!({"status":"VERIFIED","run_id":"r","next":[]}));
+        assert!(reported.starts_with("Submitted"), "{reported}");
+        assert_eq!(failed_state(&json!({"job_state":"FAILED"})), Some("FAILED"));
+        assert_eq!(failed_state(&json!({"job_state":"SUCCEEDED"})), None);
+        assert_eq!(failed_state(&json!({"job_state":"RUNNING"})), None);
+    }
+    #[test]
+    fn a_build_that_failed_stops_the_wait_with_its_original_cause() {
+        let view = json!({"runtime":{"status":"RECONCILE_REQUIRED","runtime_id":"runtime.x",
+            "build_error":{"code":"BUILD_RECEIPT_MISSING",
+                "build_failure":{"code":"BAD_DOCKERFILE","details":{"reason":"no_digest"}}}}});
+        let text = stopped(&view).unwrap();
+        assert!(
+            text.contains("BAD_DOCKERFILE") && text.contains("no_digest"),
+            "{text}"
+        );
+    }
+    #[test]
+    fn a_family_choice_or_a_changed_limit_is_still_the_same_job() {
+        let mut family = spec();
+        family.executor = "sc".into();
+        let at = |row: Value| {
+            plan(
+                &family,
+                &"a".repeat(64),
+                &format!("FROM {PINNED}\n"),
+                &row,
+                "source",
+            )
+            .unwrap()
+        };
+        let small = at(shape("sc-1gpu-a", 1, 14, 198));
+        let large = at(shape("sc-2gpu-a", 2, 28, 396));
+        assert_eq!(small.request_id, large.request_id);
+        assert_eq!(small.run_id, large.run_id);
+        assert_ne!(small.executor, large.executor);
+    }
+    #[test]
+    fn the_directory_name_is_part_of_the_job_and_of_its_name() {
+        let named = |name: &str| {
+            plan(
+                &spec(),
+                &"a".repeat(64),
+                &format!("FROM {PINNED}\n"),
+                &json!({"executor_id":"pai-h200","limits":{}}),
+                name,
+            )
+            .unwrap()
+        };
+        assert_ne!(named("exp").request_id, named("exp2").request_id);
+        assert!(named("exp").run_id.starts_with("exp-"));
     }
 }

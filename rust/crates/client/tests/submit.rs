@@ -29,10 +29,18 @@ struct World {
     next_action: &'static str,
     build_failed: bool,
     lose_execute_reply: bool,
+    /// The request is lost on the way, so the server never acts on it.
+    authorize_never_arrives: bool,
+    execute_never_arrives: bool,
+    /// Cloud reports through its observation; Slurm through the Submission's result.
+    cloud: bool,
     /// The backend's states, oldest first; the last one stays.
     job_states: Vec<(&'static str, &'static str)>,
     reads_down: bool,
     progress_reads: usize,
+    reads: usize,
+    /// What a preparation names, which stays the first Submission after a retry.
+    preparation_submission: Option<&'static str>,
     action: &'static str,
     attempt: &'static str,
 }
@@ -46,34 +54,64 @@ impl World {
             next_action: "AUTHORIZE",
             build_failed: false,
             lose_execute_reply: false,
+            authorize_never_arrives: false,
+            execute_never_arrives: false,
+            cloud: true,
             job_states: vec![("RUNNING", "Running"), ("SUCCEEDED", "Succeeded")],
             reads_down: false,
             progress_reads: 0,
+            reads: 0,
+            preparation_submission: None,
             action: ID,
             attempt: "attempt-001",
         }
     }
     fn submission(&self) -> Value {
-        json!({"submission_id":self.action,"project":"demo","run_id":"train",
+        let (state, own) = self.job_states[0];
+        let mut value = json!({"submission_id":self.action,"project":"demo","run_id":"train",
             "attempt_id":self.attempt,
             "operation":"SUBMIT_RUN","status":self.status,"next_action":self.next_action,
             "confirmation":format!("EXECUTE {}",self.action),
             "preflight_summary":{"resources":{"gpus":1},"max_gpu_hours":0.5},
             "execution":{"status":self.status,"revision":0,
-                "result":{"submission":{"backend_job_id":"123"}}},
-            "cancellation":{"request_sha256":format!("sha256:{}","4".repeat(64)),"job_id":"123",
-                "requested_at":"2026-11-06T00:00:00Z","termination_verified":false,"observation":null}})
+                "result":{"submission":{"backend_job_id":"123"}}}});
+        if self.status == "VERIFIED" {
+            if self.cloud {
+                value["cloud_observation"] = json!({"observation":{"job_id":"job",
+                    "provider_state":own,"state":state,"queue":null}});
+            } else {
+                value["execution"]["result"]["observation"] = json!({"status":{"state":state}});
+            }
+        }
+        if !self.cloud {
+            value["cancellation"] = json!({"request_sha256":format!("sha256:{}","4".repeat(64)),
+                "job_id":"123","requested_at":"2026-11-06T00:00:00Z",
+                "termination_verified":false,"observation":null});
+        }
+        value
+    }
+    /// The backend moves on to its next state.
+    fn advance_job(&mut self) {
+        if self.job_states.len() > 1 {
+            self.job_states.remove(0);
+        }
     }
     fn view(&self, path: &str) -> Value {
         let id = path.rsplit('/').find(|p| p.starts_with("preparation-"));
         let ready = self.continues > self.continues_until_ready;
         json!({"project":"demo","preparation_id":id,"run_id":"train",
             "runtime":{"runtime_id":RUNTIME,
-                "status":if self.build_failed {"PREPARED"} else if ready {"READY"} else {"EXECUTING"},
+                "status":if self.build_failed {"RECONCILE_REQUIRED"} else if ready {"READY"} else {"EXECUTING"},
                 "build_error":if self.build_failed {json!({"code":"BAD_DOCKERFILE"})} else {Value::Null}},
             "phase":"ENVIRONMENT_PREPARATION","status":"PREPARING",
             "confirmation":format!("PREPARE {}",id.unwrap_or_default()),
-            "submission":if ready {self.submission()} else {Value::Null},
+            "submission":if ready {
+                let mut value = self.submission();
+                if let Some(id) = self.preparation_submission {
+                    value["submission_id"] = json!(id);
+                }
+                value
+            } else {Value::Null},
             "training_authorized":false,"scheduler_submitted":false})
     }
     fn reply(&mut self, method: &str, path: &str, body: &[u8]) -> Option<(u16, Value)> {
@@ -121,8 +159,14 @@ impl World {
                 self.continues += 1;
                 (200, self.view(r))
             }
-            ("GET", r) if r == format!("/api/submissions/{}", self.action) => {
-                (200, self.submission())
+            ("GET", r) if r.starts_with("/api/submissions/") && r.matches('/').count() == 3 => {
+                let mut value = self.submission();
+                value["submission_id"] = json!(r.rsplit('/').next());
+                // Slurm's view has the latest state; a cloud view waits for a refresh.
+                if !self.cloud && self.status == "VERIFIED" {
+                    self.advance_job();
+                }
+                (200, value)
             }
             ("POST", r) if r.ends_with("/cancel") => (200, self.submission()),
             ("POST", r) if r.ends_with("/retry") => {
@@ -149,11 +193,17 @@ impl World {
                 (200, self.submission())
             }
             ("POST", r) if r.ends_with("/authorize") => {
+                if self.authorize_never_arrives {
+                    return None;
+                }
                 self.status = "AUTHORIZED";
                 self.next_action = "EXECUTE";
                 (200, self.submission())
             }
             ("POST", r) if r.ends_with("/execute") => {
+                if self.execute_never_arrives {
+                    return None;
+                }
                 self.status = "EXECUTING";
                 self.next_action = "RECONCILE";
                 if self.lose_execute_reply {
@@ -172,15 +222,11 @@ impl World {
                 if self.reads_down {
                     return Some((503, json!({"code":"BUSY"})));
                 }
-                let (state, own) = if self.job_states.len() > 1 {
-                    self.job_states.remove(0)
-                } else {
-                    self.job_states[0]
-                };
-                let mut value = self.submission();
-                value["cloud_observation"] = json!({"observation":{"job_id":"job",
-                    "provider_state":own,"state":state,"queue":null}});
-                (200, value)
+                self.reads += 1;
+                if self.reads > 1 {
+                    self.advance_job();
+                }
+                (200, self.submission())
             }
             ("GET", r) if r.ends_with("/progress") => {
                 self.progress_reads += 1;
@@ -203,6 +249,7 @@ impl World {
 /// Method, path and body of each request, in order.
 type Requests = Mutex<Vec<(String, String, Vec<u8>)>>;
 struct Fake {
+    world: Arc<Mutex<World>>,
     requests: Arc<Requests>,
     stop: Arc<AtomicBool>,
     address: std::net::SocketAddr,
@@ -213,11 +260,11 @@ impl Fake {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         listener.set_nonblocking(true).unwrap();
-        let world = Mutex::new(world);
+        let world = Arc::new(Mutex::new(world));
         let requests = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(AtomicBool::new(false));
         let worker = {
-            let (requests, stop) = (requests.clone(), stop.clone());
+            let (world, requests, stop) = (world.clone(), requests.clone(), stop.clone());
             std::thread::spawn(move || {
                 while !stop.load(Ordering::Relaxed) {
                     match listener.accept() {
@@ -228,6 +275,7 @@ impl Fake {
             })
         };
         Self {
+            world,
             requests,
             stop,
             address,
@@ -407,7 +455,8 @@ fn the_latest_submission_is_remembered_for_the_short_commands() {
     let latest = submit::latest(&states).unwrap();
     assert_eq!(latest.project, "demo");
     assert_eq!(value["run_id"], latest.run_id);
-    assert_eq!(latest.submission_id, ID);
+    assert_eq!(latest.submission_id.as_deref(), Some(ID));
+    assert!(!latest.unsettled);
     assert_eq!(value["next"][0], "ml-exp status");
 }
 
@@ -624,6 +673,21 @@ fn repeating_the_command_goes_back_to_watching_the_same_job() {
     assert_eq!(fake.count("POST", "/execute"), 1);
 }
 
+fn ended() -> World {
+    let mut world = World::new();
+    world.job_states = vec![("FAILED", "Failed")];
+    world
+}
+fn quiet<'a>(confirm: &'a mut dyn FnMut(&str) -> Result<bool, Error>) -> Hooks<'a> {
+    Hooks {
+        confirm,
+        progress: Box::leak(Box::new(|_: &str| {})),
+        poll: Duration::from_millis(1),
+        deadline: Duration::from_secs(5),
+        follow: false,
+        follow_poll: Duration::from_millis(1),
+    }
+}
 fn submitted_train(files: &Files, fake: &Fake) {
     let mut spec = files.spec();
     spec.run_id = Some("train".into());
@@ -690,7 +754,7 @@ fn cancel_says_what_it_will_stop_and_declining_sends_nothing() {
 #[test]
 fn retry_creates_the_next_attempt_and_sends_exactly_one_new_job() {
     let files = Files::new();
-    let fake = Fake::start(World::new());
+    let fake = Fake::start(ended());
     submitted_train(&files, &fake);
     let states = files.root.path().join("states");
     assert_eq!(fake.count("POST", "/execute"), 1);
@@ -725,13 +789,16 @@ fn retry_creates_the_next_attempt_and_sends_exactly_one_new_job() {
         2,
         "one original and one new job"
     );
-    assert_eq!(submit::latest(&states).unwrap().submission_id, SECOND);
+    assert_eq!(
+        submit::latest(&states).unwrap().submission_id.as_deref(),
+        Some(SECOND)
+    );
 }
 
 #[test]
 fn declining_a_retry_creates_nothing() {
     let files = Files::new();
-    let fake = Fake::start(World::new());
+    let fake = Fake::start(ended());
     submitted_train(&files, &fake);
     let mutations = fake.mutations();
     let declined = submit::retry(
@@ -749,4 +816,214 @@ fn declining_a_retry_creates_nothing() {
     );
     assert!(declined.is_err());
     assert_eq!(fake.mutations(), mutations);
+}
+
+#[test]
+fn a_lost_request_that_sent_nothing_is_not_reported_as_submitted() {
+    for lost_at_authorize in [true, false] {
+        let files = Files::new();
+        let mut world = World::new();
+        world.authorize_never_arrives = lost_at_authorize;
+        world.execute_never_arrives = !lost_at_authorize;
+        let fake = Fake::start(world);
+        let error = files.run(&fake, true, &mut Vec::new()).unwrap_err();
+        assert!(error.to_string().contains("no job was sent"), "{error}");
+        // Repeating after the network recovers finishes it, with one job.
+        {
+            let mut world = fake.world.lock().unwrap();
+            world.authorize_never_arrives = false;
+            world.execute_never_arrives = false;
+        }
+        let value = files.run(&fake, true, &mut Vec::new()).unwrap();
+        assert_eq!(value["status"], "VERIFIED");
+    }
+}
+
+#[test]
+fn following_a_slurm_job_reads_the_view_that_has_the_latest_state_and_ends() {
+    let files = Files::new();
+    let mut world = World::new();
+    world.cloud = false;
+    world.job_states = vec![("RUNNING", ""), ("SUCCEEDED", "")];
+    let fake = Fake::start(world);
+    let mut shown = Vec::new();
+    let value = files
+        .drive(&fake, true, &mut Vec::new(), true, &mut shown)
+        .unwrap();
+    assert_eq!(value["job_state"], "SUCCEEDED");
+    assert_eq!(fake.count("POST", "/refresh"), 0, "no SSH call per poll");
+}
+
+#[test]
+fn following_stops_when_nothing_changes_for_a_long_time() {
+    let files = Files::new();
+    let mut world = World::new();
+    world.job_states = vec![("RUNNING", "Running")];
+    world.status = "VERIFIED";
+    world.prepared = true;
+    world.continues = 2;
+    let fake = Fake::start(world);
+    let mut shown = Vec::new();
+    let value = submit::run(
+        &fake.client(),
+        &files.spec(),
+        &files.root.path().join("states"),
+        Hooks {
+            confirm: &mut |_| Ok(true),
+            progress: &mut |line| shown.push(line.to_owned()),
+            poll: Duration::from_millis(1),
+            deadline: Duration::from_millis(30),
+            follow: true,
+            follow_poll: Duration::from_millis(1),
+        },
+    )
+    .unwrap();
+    assert_eq!(value["job_state"], "RUNNING");
+    assert!(
+        shown.iter().any(|line| line.contains("keeps running")),
+        "{shown:?}"
+    );
+}
+
+#[test]
+fn cancel_works_on_a_cloud_job_which_keeps_no_cancellation_record() {
+    let files = Files::new();
+    let fake = Fake::start(World::new());
+    submitted_train(&files, &fake);
+    let states = files.root.path().join("states");
+    submit::cancel(&fake.client(), &states, quiet(&mut |_| Ok(true))).unwrap();
+    assert_eq!(fake.count("POST", "/cancel"), 1);
+}
+
+#[test]
+fn cancel_checks_a_slurm_job_cancellation_record() {
+    let files = Files::new();
+    let mut world = World::new();
+    world.cloud = false;
+    let fake = Fake::start(world);
+    submitted_train(&files, &fake);
+    let states = files.root.path().join("states");
+    submit::cancel(&fake.client(), &states, quiet(&mut |_| Ok(true))).unwrap();
+    assert_eq!(fake.count("POST", "/cancel"), 1);
+}
+
+#[test]
+fn nothing_can_act_on_a_submission_that_is_still_being_prepared() {
+    let files = Files::new();
+    let mut world = World::new();
+    world.build_failed = true;
+    let fake = Fake::start(world);
+    assert!(files.run(&fake, true, &mut Vec::new()).is_err());
+    let states = files.root.path().join("states");
+    assert!(submit::latest(&states).unwrap().submission_id.is_none());
+    let mutations = fake.mutations();
+    let text = submit::cancel(&fake.client(), &states, quiet(&mut |_| Ok(true)))
+        .unwrap_err()
+        .to_string();
+    assert!(text.contains("still being prepared"), "{text}");
+    assert!(submit::retry(&fake.client(), &states, None, quiet(&mut |_| Ok(true))).is_err());
+    assert_eq!(fake.mutations(), mutations);
+}
+
+fn unsettle(files: &Files) {
+    let path = files.root.path().join("states/latest.json");
+    let mut latest = serde_json::from_slice::<Value>(&std::fs::read(&path).unwrap()).unwrap();
+    latest["unsettled"] = json!(true);
+    ml_exp_io::write_atomic(&path, latest.to_string().as_bytes(), false).unwrap();
+}
+
+#[test]
+fn repeating_retry_after_an_unknown_outcome_only_finds_out_what_happened() {
+    let files = Files::new();
+    let fake = Fake::start(ended());
+    submitted_train(&files, &fake);
+    unsettle(&files);
+    let states = files.root.path().join("states");
+    let mut asked = 0;
+    let value = submit::retry(
+        &fake.client(),
+        &states,
+        None,
+        quiet(&mut |_| {
+            asked += 1;
+            Ok(true)
+        }),
+    )
+    .unwrap();
+    assert_eq!(asked, 0);
+    assert_eq!(value["already_submitted"], true);
+    assert_eq!(fake.count("POST", "/retry"), 0, "no new Attempt");
+    assert_eq!(fake.count("POST", "/execute"), 1, "no new job");
+    assert!(!submit::latest(&states).unwrap().unsettled);
+    // Now that it is known, asking again is a real request for another Attempt.
+    submit::retry(&fake.client(), &states, None, quiet(&mut |_| Ok(true))).unwrap();
+    assert_eq!(fake.count("POST", "/retry"), 1);
+    assert_eq!(fake.count("POST", "/execute"), 2);
+}
+
+#[test]
+fn retry_is_refused_while_the_job_has_not_ended() {
+    let files = Files::new();
+    let mut world = World::new();
+    world.job_states = vec![("RUNNING", "Running")];
+    let fake = Fake::start(world);
+    submitted_train(&files, &fake);
+    let states = files.root.path().join("states");
+    let text = submit::retry(&fake.client(), &states, None, quiet(&mut |_| Ok(true)))
+        .unwrap_err()
+        .to_string();
+    assert!(text.contains("has not ended"), "{text}");
+    assert_eq!(fake.count("POST", "/retry"), 0);
+}
+
+#[test]
+fn retry_finishes_a_prepared_attempt_rather_than_starting_another() {
+    let files = Files::new();
+    let fake = Fake::start(ended());
+    submitted_train(&files, &fake);
+    {
+        let mut world = fake.world.lock().unwrap();
+        world.status = "AUTHORIZED";
+        world.next_action = "EXECUTE";
+    }
+    let states = files.root.path().join("states");
+    let value = submit::retry(&fake.client(), &states, None, quiet(&mut |_| Ok(true))).unwrap();
+    assert_eq!(value["status"], "VERIFIED");
+    assert_eq!(fake.count("POST", "/retry"), 0);
+    assert_eq!(fake.count("POST", "/execute"), 2);
+}
+
+#[test]
+fn repeating_submit_after_a_retry_keeps_the_newer_attempt_as_the_latest() {
+    let files = Files::new();
+    let fake = Fake::start(ended());
+    submitted_train(&files, &fake);
+    let states = files.root.path().join("states");
+    submit::retry(&fake.client(), &states, None, quiet(&mut |_| Ok(true))).unwrap();
+    fake.world.lock().unwrap().preparation_submission = Some(ID);
+    submitted_train(&files, &fake);
+    assert_eq!(
+        submit::latest(&states).unwrap().submission_id.as_deref(),
+        Some(SECOND)
+    );
+}
+
+#[test]
+fn a_dockerfile_git_ignores_is_named_before_anything_is_sent() {
+    let files = Files::new();
+    let source = files.root.path().join("source");
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&source)
+        .args(["init", "-q"])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    std::fs::write(source.join(".gitignore"), "Dockerfile\n").unwrap();
+    let fake = Fake::start(World::new());
+    let mut asked = Vec::new();
+    let text = files.run(&fake, true, &mut asked).unwrap_err().to_string();
+    assert!(text.contains(".gitignore"), "{text}");
+    assert!(asked.is_empty());
+    assert_eq!(fake.mutations(), 0);
 }

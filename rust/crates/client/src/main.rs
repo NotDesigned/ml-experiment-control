@@ -860,10 +860,16 @@ fn expand(command: Command, config: &std::path::Path) -> Result<Command, ml_exp_
         }
         Command::Results { output, keep } => {
             let latest = ml_exp_client::submit::latest(&directory)?;
+            let submission = latest
+                .submission_id
+                .ok_or(ml_exp_client::Error::Observation(
+                    "the latest submission is still being prepared, so it has no results yet",
+                ))?;
+            let name = format!("{}{}", latest.run_id, sources::RESULTS_SUFFIX);
             Command::Run {
                 command: Run::Download {
-                    output: output.unwrap_or_else(|| format!("{}.tar", latest.run_id).into()),
-                    submission: latest.submission_id,
+                    output: output.unwrap_or_else(|| name.into()),
+                    submission,
                     keep,
                 },
             }
@@ -1193,7 +1199,7 @@ fn run(mut args: Args) -> Result<(), Box<dyn std::error::Error>> {
                             hooks(&mut |summary| confirm(summary, yes), &mut printed, !detach),
                         )?,
                         args.json,
-                    )
+                    )?
                 }
                 Command::Cancel { yes } => {
                     let value = ml_exp_client::submit::cancel(
@@ -1201,7 +1207,13 @@ fn run(mut args: Args) -> Result<(), Box<dyn std::error::Error>> {
                         &submissions_directory(&config),
                         hooks(&mut |summary| confirm(summary, yes), &mut printed, false),
                     )?;
-                    Output::Json(value)
+                    if args.json {
+                        Output::Json(value)
+                    } else {
+                        Output::Text(
+                            "Cancel requested. `ml-exp status` shows when it has stopped.".into(),
+                        )
+                    }
                 }
                 Command::Retry {
                     checkpoint,
@@ -1215,7 +1227,7 @@ fn run(mut args: Args) -> Result<(), Box<dyn std::error::Error>> {
                         hooks(&mut |summary| confirm(summary, yes), &mut printed, !detach),
                     )?,
                     args.json,
-                ),
+                )?,
                 Command::Backend { executor, refresh } => {
                     client.health()?;
                     Output::Json(if let Some(executor) = executor {
@@ -1563,12 +1575,22 @@ fn hooks<'a>(
 fn printed(line: &str) {
     eprintln!("{line}");
 }
-fn report(value: serde_json::Value, json: bool) -> Output {
-    if json {
+/// A job that ended without success is reported and is also a failed command.
+fn report(value: serde_json::Value, json: bool) -> Result<Output, Box<dyn std::error::Error>> {
+    let failed = ml_exp_client::submit::failed_state(&value).map(str::to_owned);
+    let output = if json {
         Output::Json(value)
     } else {
         Output::Text(ml_exp_client::submit::report(&value))
+    };
+    let Some(state) = failed else {
+        return Ok(output);
+    };
+    match output {
+        Output::Json(value) => println!("{}", serde_json::to_string_pretty(&value)?),
+        Output::Text(text) => println!("{text}"),
     }
+    Err(format!("the job ended {state}").into())
 }
 /// Show what will be spent and ask, once. No terminal means no one can answer.
 fn confirm(summary: &str, yes: bool) -> Result<bool, ml_exp_client::Error> {
@@ -1579,15 +1601,15 @@ fn confirm(summary: &str, yes: bool) -> Result<bool, ml_exp_client::Error> {
     }
     if !std::io::stdin().is_terminal() {
         return Err(ml_exp_client::Error::Observation(
-            "not submitted: pass --yes to submit without a terminal",
+            "nothing was done: pass --yes to go ahead without a terminal",
         ));
     }
-    eprint!("Submit? [y/N] ");
+    eprint!("Proceed? [y/N] ");
     std::io::stderr().flush().ok();
     let mut answer = String::new();
     std::io::stdin()
         .read_line(&mut answer)
-        .map_err(|_| ml_exp_client::Error::Observation("not submitted: no answer"))?;
+        .map_err(|_| ml_exp_client::Error::Observation("nothing was done: no answer"))?;
     Ok(matches!(answer.trim(), "y" | "Y" | "yes"))
 }
 /// The default help lists what most people need. This one hides nothing.

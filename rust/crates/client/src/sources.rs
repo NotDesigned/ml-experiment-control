@@ -20,6 +20,8 @@ pub struct PreparedArchive {
     pub file: File,
     pub sha256: String,
     pub bytes: u64,
+    /// The members when this side packed it; an archive read back does not list them.
+    pub paths: Vec<String>,
 }
 /// Callers cannot replace the route, length, or archive identity after planning.
 #[derive(Clone, Debug)]
@@ -235,6 +237,7 @@ pub fn inspect_archive(mut file: File) -> Result<PreparedArchive, Error> {
         file,
         sha256: format!("{:x}", digest.finalize()),
         bytes,
+        paths: Vec::new(),
     })
 }
 fn same_metadata(before: &std::fs::Metadata, after: &std::fs::Metadata) -> bool {
@@ -263,6 +266,9 @@ enum PathPolicy {
     Skip,
     Reject,
 }
+/// `ml-exp results` names its downloads this way, so a download in the source directory
+/// does not become part of the source and a different job.
+pub const RESULTS_SUFFIX: &str = ".ml-exp-results.tar";
 fn path_policy(path: &str) -> PathPolicy {
     if path.is_empty()
         || path.len() > 4096
@@ -273,7 +279,7 @@ fn path_policy(path: &str) -> PathPolicy {
         return PathPolicy::Reject;
     }
     for part in path.split('/') {
-        if matches!(part, ".git" | ".venv" | "__pycache__") {
+        if matches!(part, ".git" | ".venv" | "__pycache__") || part.ends_with(RESULTS_SUFFIX) {
             return PathPolicy::Skip;
         }
     }
@@ -320,7 +326,8 @@ impl Selection {
         let mut files = std::collections::BTreeSet::new();
         let mut directories = std::collections::BTreeSet::new();
         for raw in listing.split(|byte| *byte == 0).filter(|p| !p.is_empty()) {
-            let path = std::str::from_utf8(raw).ok()?;
+            // An untracked nested repository is listed once, as `nested/`, and kept whole.
+            let path = std::str::from_utf8(raw).ok()?.trim_end_matches('/');
             let mut child = path;
             while let Some((parent, _)) = child.rsplit_once('/') {
                 directories.insert(parent.to_owned());
@@ -344,9 +351,23 @@ impl Selection {
         false
     }
 }
-/// None outside a git work tree, or without git: every file is then a candidate.
+/// None outside a git work tree. Inside one, git must answer: quietly uploading every
+/// file instead would send what .gitignore keeps out, including secrets and data.
 /// fsmonitor is the one setting that would make this listing run repository code.
-fn git_selection(directory: &Path) -> Option<Selection> {
+fn git_selection(directory: &Path) -> Result<Option<Selection>, Error> {
+    if !directory
+        .ancestors()
+        .any(|parent| parent.join(".git").exists())
+    {
+        return Ok(None);
+    }
+    let unreadable = || {
+        Error::Submit(format!(
+            "{} is in a git repository, but git could not list its files, so nothing was \
+             uploaded. Check that git is installed and that this directory is a safe.directory",
+            directory.display()
+        ))
+    };
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(directory)
@@ -356,11 +377,13 @@ fn git_selection(directory: &Path) -> Option<Selection> {
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE")
         .output()
-        .ok()?;
+        .map_err(|_| unreadable())?;
     if !output.status.success() {
-        return None;
+        return Err(unreadable());
     }
     Selection::from_listing(&output.stdout)
+        .map(Some)
+        .ok_or_else(unreadable)
 }
 fn member(relative: &str, name: &str) -> String {
     if relative.is_empty() {
@@ -414,7 +437,7 @@ pub fn pack_directory(path: &Path) -> Result<PreparedArchive, Error> {
     }
     let root = Directory::open(&normalized, false).map_err(|_| packing())?;
     let limits = policy();
-    let selection = git_selection(&normalized);
+    let selection = git_selection(&normalized)?;
     // Ignored names are not part of the source, so they neither count nor must stay still.
     let visible = |relative: &str, names: Vec<OsString>| -> Vec<OsString> {
         match &selection {
@@ -578,5 +601,7 @@ pub fn pack_directory(path: &Path) -> Result<PreparedArchive, Error> {
             return Err(packing());
         }
     }
-    inspect_archive(writer.file)
+    let mut prepared = inspect_archive(writer.file)?;
+    prepared.paths = entries.into_iter().map(|entry| entry.path).collect();
+    Ok(prepared)
 }
