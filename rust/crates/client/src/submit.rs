@@ -824,13 +824,10 @@ fn show_build(
         project: spec.project.clone(),
         runtime: runtime.to_owned(),
     };
-    let Some(value) = command
+    let value = command
         .plan()
         .and_then(|plan| runtime::execute(client, plan, health))
-        .ok()
-    else {
-        return None;
-    };
+        .ok()?;
     let state = &value["progress"];
     if let Some(phase) = state["phase"].as_str().filter(|phase| *phase != view.phase) {
         progress(&match state["message"].as_str() {
