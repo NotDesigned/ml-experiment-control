@@ -1,0 +1,781 @@
+//! The common case in one command: pack the source, confirm once, prepare and submit.
+//! Every step is an existing operation. The identity comes from the inputs, so the
+//! same command finds the same Submission again and never sends a second job.
+use crate::{Client, Error, preparations, sources, submissions};
+use ml_exp_core::{canonical, identity, preparation};
+use serde_json::{Value, json};
+use std::{
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
+};
+
+const DOCKERFILE_LIMIT: u64 = 256 * 1024;
+const REASON: &str = "ml-exp submit";
+
+pub struct Spec {
+    pub project: String,
+    pub executor: String,
+    pub directory: PathBuf,
+    pub dockerfile: String,
+    pub command: Vec<String>,
+    pub gpus: u32,
+    pub cpus: Option<u32>,
+    pub memory_gb: Option<u32>,
+    pub walltime_seconds: u64,
+    pub seed: i64,
+    pub run_id: Option<String>,
+    pub data: Vec<(String, String)>,
+}
+
+/// Everything derived before anything is sent.
+#[derive(Debug, PartialEq)]
+pub struct Plan {
+    pub request_id: String,
+    pub preparation_id: String,
+    pub run_id: String,
+    pub base_image: String,
+    pub cpus: u32,
+    pub memory_gb: u32,
+    pub max_gpu_hours: f64,
+}
+
+pub struct Hooks<'a> {
+    /// Shown what will be spent. Returning false stops before anything is sent.
+    pub confirm: &'a mut dyn FnMut(&str) -> Result<bool, Error>,
+    pub progress: &'a mut dyn FnMut(&str),
+    pub poll: Duration,
+    pub deadline: Duration,
+}
+
+/// `90`, `90s`, `10m`, `2h` or `1d`.
+pub fn parse_time(value: &str) -> Result<u64, String> {
+    let (number, unit) = match value.char_indices().last() {
+        Some((index, unit)) if unit.is_ascii_alphabetic() => (&value[..index], unit),
+        _ => (value, 's'),
+    };
+    let factor = match unit {
+        's' => 1,
+        'm' => 60,
+        'h' => 3600,
+        'd' => 86400,
+        _ => return Err("use a time such as 90s, 10m, 2h or 1d".into()),
+    };
+    number
+        .parse::<u64>()
+        .ok()
+        .and_then(|n| n.checked_mul(factor))
+        .filter(|seconds| *seconds > 0)
+        .ok_or_else(|| "use a time such as 90s, 10m, 2h or 1d".into())
+}
+
+/// `NAME=asset.HASH`.
+pub fn parse_data(value: &str) -> Result<(String, String), String> {
+    value
+        .split_once('=')
+        .filter(|(name, asset)| !name.is_empty() && asset.starts_with("asset."))
+        .map(|(name, asset)| (name.to_owned(), asset.to_owned()))
+        .ok_or_else(|| "use NAME=asset.HASH; ml-exp data upload returns the asset".into())
+}
+
+/// The last external image, which the builder requires `base_image` to equal. The
+/// builder's parser stays the authority: this only saves writing the digest twice.
+pub fn base_image(dockerfile: &str) -> Result<String, Error> {
+    let mut stages = Vec::new();
+    let mut last = None;
+    let joined = dockerfile.replace("\\\r\n", " ").replace("\\\n", " ");
+    for line in joined.lines() {
+        let mut words = line.split_whitespace();
+        if !words
+            .next()
+            .is_some_and(|word| word.eq_ignore_ascii_case("FROM"))
+        {
+            continue;
+        }
+        let parts: Vec<&str> = words.filter(|word| !word.starts_with("--")).collect();
+        let Some(image) = parts.first() else {
+            return Err(Error::Submit("the Dockerfile has an empty FROM".into()));
+        };
+        let image = image.to_string();
+        if image != "scratch" && !stages.contains(&image.to_ascii_lowercase()) {
+            if !pinned(&image) {
+                return Err(Error::Submit(format!(
+                    "FROM {image} must be pinned as IMAGE@sha256:DIGEST; \
+                     `ml-exp get /api/environments` lists approved bases"
+                )));
+            }
+            last = Some(image);
+        }
+        if parts.len() == 3 && parts[1].eq_ignore_ascii_case("AS") {
+            stages.push(parts[2].to_ascii_lowercase());
+        }
+    }
+    last.ok_or_else(|| {
+        Error::Submit(
+            "the Dockerfile needs a FROM pinned as IMAGE@sha256:DIGEST; \
+             `ml-exp get /api/environments` lists approved bases"
+                .into(),
+        )
+    })
+}
+fn pinned(image: &str) -> bool {
+    image.split_once("@sha256:").is_some_and(|(name, digest)| {
+        !name.is_empty()
+            && digest.len() == 64
+            && digest
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    })
+}
+
+/// Sized from the GPU count unless given, within what this executor allows.
+pub fn resources(spec: &Spec, limits: &Value) -> Result<(u32, u32), Error> {
+    let limit = |key: &str| limits[key].as_u64();
+    let cap = |wanted: u32, key: &str| match limit(key) {
+        Some(max) => wanted.min(u32::try_from(max).unwrap_or(u32::MAX)),
+        None => wanted,
+    };
+    let exceeded = |what: &str, wanted: u64, max: u64| {
+        Error::Submit(format!(
+            "{what} {wanted} exceeds {max} on {}; `ml-exp backend` lists each executor's limits",
+            spec.executor
+        ))
+    };
+    if let Some(max) = limit("gpus").filter(|max| u64::from(spec.gpus) > *max) {
+        return Err(exceeded("--gpus", spec.gpus.into(), max));
+    }
+    if let Some(max) = limit("walltime_seconds").filter(|max| spec.walltime_seconds > *max) {
+        return Err(exceeded("--time in seconds", spec.walltime_seconds, max));
+    }
+    let scaled = |each: u32, minimum: u32| spec.gpus.saturating_mul(each).max(minimum);
+    let cpus = spec.cpus.unwrap_or_else(|| cap(scaled(8, 2), "cpus"));
+    let memory = spec
+        .memory_gb
+        .unwrap_or_else(|| cap(scaled(32, 4), "memory_gb"));
+    if let Some(max) = limit("cpus").filter(|max| u64::from(cpus) > *max) {
+        return Err(exceeded("--cpus", cpus.into(), max));
+    }
+    if let Some(max) = limit("memory_gb").filter(|max| u64::from(memory) > *max) {
+        return Err(exceeded("--memory", memory.into(), max));
+    }
+    Ok((cpus, memory))
+}
+
+pub fn plan(
+    spec: &Spec,
+    server: &str,
+    archive_sha256: &str,
+    dockerfile: &str,
+    limits: &Value,
+    directory_name: &str,
+) -> Result<Plan, Error> {
+    let base_image = base_image(dockerfile)?;
+    let (cpus, memory_gb) = resources(spec, limits)?;
+    // The reason and display text stay out: only what changes the job is identity.
+    let identity = canonical::digest(&json!([
+        "ml-exp-submit.v1",
+        server,
+        spec.project,
+        spec.executor,
+        archive_sha256,
+        spec.dockerfile,
+        base_image,
+        spec.command,
+        spec.gpus,
+        cpus,
+        memory_gb,
+        spec.walltime_seconds,
+        spec.seed,
+        spec.run_id,
+        spec.data,
+    ]))
+    .map_err(|_| Error::Response)?;
+    let request_id = identity[..32].to_owned();
+    let run_id = match &spec.run_id {
+        Some(run) => run.clone(),
+        None => format!("{}-{}", slug(directory_name), &identity[..8]),
+    };
+    identity::validate_id(&run_id)
+        .map_err(|_| Error::Submit(format!("{run_id} is not a valid Run name")))?;
+    let preparation_id = preparation::id(&spec.project, &request_id).map_err(Error::Observation)?;
+    Ok(Plan {
+        request_id,
+        preparation_id,
+        run_id,
+        base_image,
+        cpus,
+        memory_gb,
+        max_gpu_hours: (f64::from(spec.gpus) * spec.walltime_seconds as f64 / 36.0).ceil() / 100.0,
+    })
+}
+fn slug(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        .take(40)
+        .collect();
+    let cleaned = cleaned.trim_start_matches(['-', '_']);
+    if cleaned.is_empty() {
+        "run".into()
+    } else {
+        cleaned.into()
+    }
+}
+
+/// What the user agrees to. It must show everything that decides the spend.
+pub fn summary(spec: &Spec, plan: &Plan) -> String {
+    format!(
+        "Run {}\n  executor  {}\n  command   {}\n  image     {}\n  resources {} GPU, {} CPU, {} GB\n  time      up to {} seconds\n  spend     up to {} GPU hours",
+        plan.run_id,
+        spec.executor,
+        spec.command.join(" "),
+        plan.base_image,
+        spec.gpus,
+        plan.cpus,
+        plan.memory_gb,
+        spec.walltime_seconds,
+        plan.max_gpu_hours,
+    )
+}
+
+fn request(spec: &Spec, plan: &Plan, source_id: &str) -> Result<preparation::Request, Error> {
+    let mut run = json!({
+        "run_id": plan.run_id,
+        "executor": spec.executor,
+        "command": spec.command,
+        "resources": {"gpus": spec.gpus, "cpus": plan.cpus, "memory_gb": plan.memory_gb},
+        "walltime_seconds": spec.walltime_seconds,
+        "seed": spec.seed,
+    });
+    if !spec.data.is_empty() {
+        run["data"] = spec
+            .data
+            .iter()
+            .map(|(name, asset)| json!({"name": name, "asset_id": asset}))
+            .collect();
+    }
+    let request: preparation::Request = serde_json::from_value(json!({
+        "request_id": plan.request_id,
+        "runtime": {
+            "source_id": source_id,
+            "executor": spec.executor,
+            "base_image": plan.base_image,
+            "dockerfile": spec.dockerfile,
+        },
+        "run": run,
+        "approval": {"max_gpu_hours": plan.max_gpu_hours, "reason": REASON},
+    }))
+    .map_err(|_| Error::Response)?;
+    request
+        .validate(&spec.project)
+        .map_err(Error::Observation)?;
+    Ok(request)
+}
+
+/// Why waiting longer cannot help. The next run of the command is the retry.
+fn stopped(view: &Value) -> Option<String> {
+    if let Some(code) = view["error_code"].as_str() {
+        return Some(format!("data preparation failed with {code}"));
+    }
+    let runtime = &view["runtime"];
+    if runtime["status"] == "PREPARED" && !runtime["build_error"].is_null() {
+        let code = runtime["build_error"]["code"].as_str().unwrap_or("UNKNOWN");
+        let id = runtime["runtime_id"].as_str().unwrap_or("RUNTIME");
+        return Some(format!(
+            "the image build failed with {code}; see `ml-exp env logs {id}`"
+        ));
+    }
+    if view["data"]["new_request_allowed"] == true {
+        return Some(
+            "the dataset copy failed; see `ml-exp data diagnose`, then run this command again"
+                .into(),
+        );
+    }
+    None
+}
+fn stage(view: &Value) -> String {
+    match view["runtime"]["status"].as_str() {
+        Some(status) if status != "READY" && status != "EXISTING" => {
+            format!("building the image ({status})")
+        }
+        _ => match view["phase"].as_str() {
+            Some("DATA_PREPARATION") => "preparing data".into(),
+            _ => "preparing".into(),
+        },
+    }
+}
+
+fn show(client: &Client, id: &str, health: &Value) -> Result<Value, Error> {
+    submissions::execute(
+        client,
+        &submissions::plan(submissions::Command::Show { submission: id })?,
+        health,
+    )
+}
+
+/// Past PREPARED and AUTHORIZED, the job may exist. Only observing is allowed then.
+fn dispatched(status: &Value) -> bool {
+    !status
+        .as_str()
+        .is_some_and(|status| matches!(status, "PREPARED" | "AUTHORIZED"))
+}
+
+fn dispatch(client: &Client, id: &str, health: &Value) -> Result<Value, Error> {
+    let mut current = show(client, id, health)?;
+    if current["next_action"] == "REPREPARE" {
+        return Err(Error::Submit(format!(
+            "the prepared Submission expired before it was sent, and nothing was submitted; \
+             run `ml-exp run renew {id}`"
+        )));
+    }
+    if current["status"] == "PREPARED" {
+        current = submissions::execute(
+            client,
+            &submissions::plan(submissions::Command::Authorize {
+                submission: id,
+                reason: REASON,
+            })?,
+            health,
+        )?;
+    }
+    if current["status"] != "AUTHORIZED" {
+        return Ok(current);
+    }
+    let confirmation = current["confirmation"]
+        .as_str()
+        .ok_or(Error::Response)?
+        .to_owned();
+    submissions::execute(
+        client,
+        &submissions::plan(submissions::Command::Execute {
+            submission: id,
+            confirmation: &confirmation,
+        })?,
+        health,
+    )
+}
+
+/// A reply was lost after the claim: find out what happened to the original job.
+fn observe(client: &Client, id: &str, current: Value, health: &Value) -> Result<Value, Error> {
+    if matches!(
+        current["status"].as_str(),
+        Some("EXECUTING" | "RECONCILE_REQUIRED")
+    ) {
+        submissions::execute(
+            client,
+            &submissions::plan(submissions::Command::Reconcile { submission: id })?,
+            health,
+        )
+    } else {
+        Ok(current)
+    }
+}
+
+fn outcome(spec: &Spec, plan: &Plan, state: &Path, submission: &Value, existing: bool) -> Value {
+    let id = submission["submission_id"].as_str().unwrap_or_default();
+    let state = state.display();
+    json!({
+        "project": spec.project,
+        "run_id": plan.run_id,
+        "preparation_id": plan.preparation_id,
+        "submission_id": id,
+        "status": submission["status"],
+        "already_submitted": existing,
+        "state_file": state.to_string(),
+        "next": [
+            format!("ml-exp run status --state {state}"),
+            format!("ml-exp run logs --state {state}"),
+            format!("ml-exp run download {id} --output results.tar"),
+        ],
+    })
+}
+
+/// The default output. `--json` gives the same fields.
+pub fn report(value: &Value) -> String {
+    let text = |key: &str| value[key].as_str().unwrap_or_default();
+    let mut lines = vec![format!(
+        "{} {}: {}",
+        if value["already_submitted"] == true {
+            "Already submitted"
+        } else {
+            "Submitted"
+        },
+        text("run_id"),
+        text("status")
+    )];
+    lines.extend(
+        value["next"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(|next| format!("  {next}")),
+    );
+    lines.join("\n")
+}
+
+pub fn run(
+    client: &Client,
+    spec: &Spec,
+    state_directory: &Path,
+    hooks: Hooks<'_>,
+) -> Result<Value, Error> {
+    let health = client.health()?;
+    let executors = client.get("/api/executors")?;
+    let executor = executors["executors"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["executor_id"] == spec.executor))
+        .ok_or_else(|| {
+            Error::Submit(format!(
+                "no executor named {}; `ml-exp backend` lists them",
+                spec.executor
+            ))
+        })?;
+    let dockerfile = read_dockerfile(&spec.directory, &spec.dockerfile)?;
+    let archive = sources::pack_directory(&spec.directory)?;
+    let name = spec
+        .directory
+        .canonicalize()
+        .ok()
+        .and_then(|path| path.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_default();
+    let plan = plan(
+        spec,
+        client.base_url(),
+        &archive.sha256,
+        &dockerfile,
+        &executor["limits"],
+        &name,
+    )?;
+    let state = state_directory.join(format!("{}.json", plan.preparation_id));
+    let path = format!(
+        "/api/projects/{}/experiment-preparations/{}",
+        spec.project, plan.preparation_id
+    );
+    let saved = match client.get(&path) {
+        Ok(view) => Some(view),
+        Err(Error::Http(failure)) if failure.status == 404 => None,
+        Err(error) => return Err(error),
+    };
+    if let Some(id) = saved
+        .as_ref()
+        .and_then(|view| view["submission"]["submission_id"].as_str())
+    {
+        let current = show(client, id, &health)?;
+        if dispatched(&current["status"]) {
+            let current = observe(client, id, current, &health)?;
+            return Ok(outcome(spec, &plan, &state, &current, true));
+        }
+    }
+    if executor["enabled"] != true || executor["run_creation"] != true {
+        return Err(Error::Submit(format!(
+            "{} is not accepting new Runs",
+            spec.executor
+        )));
+    }
+    if health["scheduler_mutations"] != true {
+        return Err(Error::Observation(
+            "the server does not allow submissions right now; nothing was sent",
+        ));
+    }
+    if !(hooks.confirm)(&summary(spec, &plan))? {
+        return Err(Error::Observation("not submitted; nothing was sent"));
+    }
+    let source_id = publish(client, spec, archive, &health, hooks.progress)?;
+    let request = request(spec, &plan, &source_id)?;
+    ml_exp_io::create_private_dir(state_directory).map_err(|_| Error::Config)?;
+    preparations::prepare(client, &spec.project, &request, &state, &health)?;
+    let id = prepared(
+        client,
+        spec,
+        &plan,
+        hooks.progress,
+        hooks.poll,
+        hooks.deadline,
+    )?;
+    let current = match dispatch(client, &id, &health) {
+        Ok(current) => current,
+        Err(Error::SubmissionOutcomeUnknown(_)) => {
+            let current = show(client, &id, &health)?;
+            observe(client, &id, current, &health)?
+        }
+        Err(error) => return Err(error),
+    };
+    Ok(outcome(spec, &plan, &state, &current, false))
+}
+
+fn read_dockerfile(directory: &Path, name: &str) -> Result<String, Error> {
+    let path = directory.join(name);
+    let missing = || {
+        Error::Submit(format!(
+            "{} needs a Dockerfile starting with FROM IMAGE@sha256:DIGEST; \
+             `ml-exp get /api/environments` lists approved bases",
+            directory.display()
+        ))
+    };
+    if std::fs::metadata(&path).map_err(|_| missing())?.len() > DOCKERFILE_LIMIT {
+        return Err(Error::Submit("the Dockerfile exceeds 256 KiB".into()));
+    }
+    std::fs::read_to_string(&path).map_err(|_| missing())
+}
+
+/// Identical bytes have one receipt, so a previous upload is simply reused.
+fn publish(
+    client: &Client,
+    spec: &Spec,
+    archive: sources::PreparedArchive,
+    health: &Value,
+    progress: &mut dyn FnMut(&str),
+) -> Result<String, Error> {
+    let receipt = match sources::lookup_archive(client, &spec.project, &archive.sha256, health) {
+        Ok(receipt) => receipt,
+        Err(Error::Http(failure)) if failure.status == 404 => {
+            progress("uploading source");
+            let plan = sources::plan_archive(&spec.project, &archive.sha256, archive.bytes)?;
+            sources::upload(client, &plan, archive.file, health)?
+        }
+        Err(error) => return Err(error),
+    };
+    receipt["source_id"]
+        .as_str()
+        .map(str::to_owned)
+        .ok_or(Error::Response)
+}
+
+/// Repeat the same safe continue until a Submission exists. A failure stops here
+/// rather than being retried: continue would start a failed build again.
+fn prepared(
+    client: &Client,
+    spec: &Spec,
+    plan: &Plan,
+    progress: &mut dyn FnMut(&str),
+    poll: Duration,
+    deadline: Duration,
+) -> Result<String, Error> {
+    let id = &plan.preparation_id;
+    let confirmation = format!("PREPARE {id}");
+    let started = Instant::now();
+    let mut lost_replies = 0;
+    let mut last = String::new();
+    loop {
+        match preparations::advance(client, &spec.project, id, &confirmation) {
+            Ok(view) => {
+                lost_replies = 0;
+                if let Some(submission) = view["submission"]["submission_id"].as_str() {
+                    return Ok(submission.to_owned());
+                }
+                if let Some(reason) = stopped(&view) {
+                    return Err(Error::Submit(format!(
+                        "{reason}. No training job was submitted"
+                    )));
+                }
+                let now = stage(&view);
+                if now != last {
+                    progress(&now);
+                    last = now;
+                }
+            }
+            Err(Error::Transport) if lost_replies < 3 => lost_replies += 1,
+            Err(error) => return Err(error),
+        }
+        if started.elapsed() >= deadline {
+            return Err(Error::Submit(
+                "still preparing, and no training job was submitted. \
+                 Run this command again to keep waiting"
+                    .into(),
+            ));
+        }
+        std::thread::sleep(poll);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    const PINNED: &str = "docker.io/library/python@sha256:0000000000000000000000000000000000000000000000000000000000000000";
+    fn spec() -> Spec {
+        Spec {
+            project: "demo".into(),
+            executor: "pai-h200".into(),
+            directory: "source".into(),
+            dockerfile: "Dockerfile".into(),
+            command: vec!["python3".into(), "train.py".into()],
+            gpus: 1,
+            cpus: None,
+            memory_gb: None,
+            walltime_seconds: 600,
+            seed: 0,
+            run_id: None,
+            data: vec![],
+        }
+    }
+    fn planned(spec: &Spec) -> Plan {
+        plan(
+            spec,
+            "https://api.example",
+            &"a".repeat(64),
+            &format!("FROM {PINNED}\n"),
+            &json!({}),
+            "source",
+        )
+        .unwrap()
+    }
+    #[test]
+    fn times_read_as_a_person_writes_them() {
+        for (text, seconds) in [
+            ("90", 90),
+            ("90s", 90),
+            ("10m", 600),
+            ("2h", 7200),
+            ("1d", 86400),
+        ] {
+            assert_eq!(parse_time(text), Ok(seconds), "{text}");
+        }
+        for text in ["", "0", "m", "10x", "-5m", "1.5h", "99999999999999999999d"] {
+            assert!(parse_time(text).is_err(), "{text}");
+        }
+    }
+    #[test]
+    fn data_names_an_uploaded_asset() {
+        assert_eq!(
+            parse_data("train=asset.abc"),
+            Ok(("train".to_owned(), "asset.abc".to_owned()))
+        );
+        for text in ["train", "=asset.abc", "train=./data"] {
+            assert!(parse_data(text).is_err(), "{text}");
+        }
+    }
+    #[test]
+    fn the_base_image_is_the_last_external_from() {
+        let other = PINNED.replace("python", "ubuntu");
+        for (text, expected) in [
+            (format!("FROM {PINNED}\nRUN true\n"), PINNED),
+            (format!("from {PINNED} as build\nFROM build\n"), PINNED),
+            (format!("FROM --platform=linux/amd64 {PINNED}\n"), PINNED),
+            (
+                format!("FROM {PINNED} AS a\nFROM {other}\n"),
+                other.as_str(),
+            ),
+            (
+                format!("FROM {other} AS a\nFROM {PINNED}\nFROM a\n"),
+                PINNED,
+            ),
+            (format!("FROM \\\n  {PINNED}\n"), PINNED),
+            (format!("# FROM {other}\nFROM {PINNED}\n"), PINNED),
+            (format!("FROM {PINNED} AS a\nFROM scratch\n"), PINNED),
+        ] {
+            assert_eq!(base_image(&text).unwrap(), expected, "{text}");
+        }
+        for text in [
+            "",
+            "FROM\n",
+            "FROM python:3.12\n",
+            "FROM scratch\n",
+            "RUN true\n",
+        ] {
+            assert!(base_image(text).is_err(), "{text}");
+        }
+    }
+    #[test]
+    fn the_same_inputs_are_the_same_job_and_anything_that_changes_the_job_is_not() {
+        let base = planned(&spec());
+        assert_eq!(base, planned(&spec()));
+        assert!(base.run_id.starts_with("source-"));
+        let changes: [fn(&mut Spec); 8] = [
+            |s| s.seed = 1,
+            |s| s.gpus = 2,
+            |s| s.walltime_seconds = 601,
+            |s| s.command.push("--flag".into()),
+            |s| s.executor = "other".into(),
+            |s| s.project = "other".into(),
+            |s| s.run_id = Some("named".into()),
+            |s| s.data.push(("train".into(), "asset.abc".into())),
+        ];
+        for change in changes {
+            let mut changed = spec();
+            change(&mut changed);
+            assert_ne!(planned(&changed).request_id, base.request_id);
+        }
+        let other_source = plan(
+            &spec(),
+            "https://api.example",
+            &"b".repeat(64),
+            &format!("FROM {PINNED}\n"),
+            &json!({}),
+            "source",
+        )
+        .unwrap();
+        assert_ne!(other_source.request_id, base.request_id);
+        assert_ne!(other_source.run_id, base.run_id);
+    }
+    #[test]
+    fn resources_follow_the_gpus_and_stay_within_the_executor() {
+        let mut one = spec();
+        assert_eq!(resources(&one, &json!({})).unwrap(), (8, 32));
+        assert_eq!(
+            resources(&one, &json!({"cpus":4,"memory_gb":8})).unwrap(),
+            (4, 8)
+        );
+        one.gpus = 0;
+        assert_eq!(resources(&one, &json!({})).unwrap(), (2, 4));
+        one.gpus = 2;
+        assert!(resources(&one, &json!({"gpus":1})).is_err());
+        one.gpus = 1;
+        one.cpus = Some(9);
+        assert!(resources(&one, &json!({"cpus":8})).is_err());
+        one.cpus = None;
+        one.memory_gb = Some(9);
+        assert!(resources(&one, &json!({"memory_gb":8})).is_err());
+        one.memory_gb = None;
+        assert!(resources(&one, &json!({"walltime_seconds":599})).is_err());
+    }
+    #[test]
+    fn spend_is_rounded_up_so_the_budget_covers_the_time() {
+        assert_eq!(planned(&spec()).max_gpu_hours, 0.17);
+        let mut zero = spec();
+        zero.gpus = 0;
+        assert_eq!(planned(&zero).max_gpu_hours, 0.0);
+        let mut slug_only = spec();
+        slug_only.run_id = Some("bad name".into());
+        assert!(
+            plan(
+                &slug_only,
+                "https://api.example",
+                &"a".repeat(64),
+                &format!("FROM {PINNED}\n"),
+                &json!({}),
+                "source"
+            )
+            .is_err()
+        );
+        assert_eq!(slug("--My project!"), "Myproject");
+        assert_eq!(slug("..."), "run");
+    }
+    #[test]
+    fn only_failures_that_waiting_cannot_fix_stop_the_wait() {
+        assert!(stopped(&json!({"runtime":{"status":"EXECUTING"}})).is_none());
+        assert!(stopped(&json!({"runtime":{"status":"PREPARED"}})).is_none());
+        assert!(
+            stopped(
+                &json!({"runtime":{"status":"EXECUTING","build_error":{"code":"BUILD_EXECUTING"}}})
+            )
+            .is_none()
+        );
+        for view in [
+            json!({"runtime":{"status":"PREPARED","build_error":{"code":"BAD"}}}),
+            json!({"error_code":"SCRIPT_FAILED"}),
+            json!({"data":{"new_request_allowed":true}}),
+        ] {
+            assert!(stopped(&view).is_some(), "{view}");
+        }
+    }
+    #[test]
+    fn a_job_that_may_exist_is_never_treated_as_unsent() {
+        for status in ["PREPARED", "AUTHORIZED"] {
+            assert!(!dispatched(&json!(status)));
+        }
+        for status in ["EXECUTING", "RECONCILE_REQUIRED", "VERIFIED", "BLOCKED"] {
+            assert!(dispatched(&json!(status)));
+        }
+        assert!(dispatched(&Value::Null));
+    }
+}

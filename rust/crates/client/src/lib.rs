@@ -16,6 +16,7 @@ pub mod session;
 pub mod sources;
 pub mod status;
 pub mod submissions;
+pub mod submit;
 pub mod transport;
 pub mod update;
 pub mod watch;
@@ -69,6 +70,8 @@ pub enum Error {
     RunCreationOutcomeUnknown(Box<Error>),
     #[error("{0}")]
     Observation(&'static str),
+    #[error("{0}")]
+    Submit(String),
 }
 
 pub mod artifacts;

@@ -46,6 +46,50 @@ enum Command {
         #[command(subcommand)]
         command: ml_exp_client::runtime::Command,
     },
+    /// Submit a source directory with its Dockerfile: confirm once, then build and send.
+    #[command(
+        after_help = "Repeating the same command finds the same job and sends nothing new. \
+Change the code, the settings or --seed to run again.\n\n\
+For every field and each separate step, see `ml-exp run start` and `ml-exp run execute`."
+    )]
+    Submit {
+        /// Directory holding the code and its Dockerfile.
+        #[arg(default_value = ".")]
+        directory: PathBuf,
+        #[arg(long)]
+        gpus: u32,
+        /// Longest the job may run, such as 90s, 10m, 2h or 1d.
+        #[arg(long, value_parser = ml_exp_client::submit::parse_time)]
+        time: u64,
+        /// Uses the saved project unless given.
+        #[arg(long)]
+        project: Option<String>,
+        /// Uses the saved executor unless given; `ml-exp backend` lists them.
+        #[arg(long)]
+        executor: Option<String>,
+        /// Sized from --gpus unless given.
+        #[arg(long)]
+        cpus: Option<u32>,
+        /// In GB. Sized from --gpus unless given.
+        #[arg(long)]
+        memory: Option<u32>,
+        /// An uploaded dataset, as NAME=asset.HASH. Training reads it through DATASETS_JSON.
+        #[arg(long, value_parser = ml_exp_client::submit::parse_data)]
+        data: Vec<(String, String)>,
+        #[arg(long, default_value_t = 0)]
+        seed: i64,
+        /// Names the Run. Derived from the directory and the inputs unless given.
+        #[arg(long)]
+        run: Option<String>,
+        #[arg(long, default_value = "Dockerfile")]
+        dockerfile: String,
+        /// Skip the question. Required without a terminal.
+        #[arg(long)]
+        yes: bool,
+        /// The command to run in the image, after `--`.
+        #[arg(last = true, required = true)]
+        command: Vec<String>,
+    },
     /// Install a checksum-verified standalone native release.
     Update {
         /// Exact native version; omitted selects the latest stable native release.
@@ -292,7 +336,13 @@ impl Project {
 enum Config {
     Set {
         #[arg(long)]
-        token_file: PathBuf,
+        token_file: Option<PathBuf>,
+        /// The Project `submit` uses when none is given.
+        #[arg(long)]
+        project: Option<String>,
+        /// The executor `submit` uses when none is given.
+        #[arg(long)]
+        executor: Option<String>,
     },
     Show,
 }
@@ -895,14 +945,34 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             command: Config::Show,
         } => Output::Json(settings.public()),
         Command::Config {
-            command: Config::Set { token_file },
+            command:
+                Config::Set {
+                    token_file,
+                    project,
+                    executor,
+                },
         } => {
-            let url = args
-                .url
-                .as_deref()
-                .or(settings.url.as_deref())
-                .ok_or("set --url")?;
-            let settings = credentials::settings_from_token_file(url, token_file)?;
+            if token_file.is_none() && project.is_none() && executor.is_none() {
+                return Err("set --token-file, --project or --executor".into());
+            }
+            for id in [&project, &executor].into_iter().flatten() {
+                ml_exp_core::identity::validate_id(id)?;
+            }
+            let project = project.or_else(|| settings.project.clone());
+            let executor = executor.or_else(|| settings.executor.clone());
+            let mut settings = match token_file {
+                Some(token_file) => {
+                    let url = args
+                        .url
+                        .as_deref()
+                        .or(settings.url.as_deref())
+                        .ok_or("set --url")?;
+                    credentials::settings_from_token_file(url, token_file)?
+                }
+                None => settings,
+            };
+            settings.project = project;
+            settings.executor = executor;
             credentials::save_settings(&settings, &config)?;
             Output::Json(settings.public())
         }
@@ -933,6 +1003,64 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             let token = credentials::load_token(plan.token_source)?;
             let client = Client::new(&plan.base_url, token)?;
             match command {
+                Command::Submit {
+                    directory,
+                    gpus,
+                    time,
+                    project,
+                    executor,
+                    cpus,
+                    memory,
+                    data,
+                    seed,
+                    run,
+                    dockerfile,
+                    yes,
+                    command,
+                } => {
+                    let project = project.or_else(|| settings.project.clone()).ok_or(
+                        "no Project: pass --project, or save one with `ml-exp config set --project P`",
+                    )?;
+                    let executor = executor.or_else(|| settings.executor.clone()).ok_or(
+                        "no executor: pass --executor, or save one with `ml-exp config set --executor E`; `ml-exp backend` lists them",
+                    )?;
+                    ml_exp_core::identity::validate_id(&project)?;
+                    ml_exp_core::identity::validate_id(&executor)?;
+                    let spec = ml_exp_client::submit::Spec {
+                        project,
+                        executor,
+                        directory,
+                        dockerfile,
+                        command,
+                        gpus,
+                        cpus,
+                        memory_gb: memory,
+                        walltime_seconds: time,
+                        seed,
+                        run_id: run,
+                        data,
+                    };
+                    let states = config
+                        .parent()
+                        .unwrap_or(std::path::Path::new("."))
+                        .join("submissions");
+                    let value = ml_exp_client::submit::run(
+                        &client,
+                        &spec,
+                        &states,
+                        ml_exp_client::submit::Hooks {
+                            confirm: &mut |summary| confirm(summary, yes),
+                            progress: &mut |stage| eprintln!("{stage}..."),
+                            poll: std::time::Duration::from_secs(30),
+                            deadline: std::time::Duration::from_secs(6 * 3600),
+                        },
+                    )?;
+                    if args.json {
+                        Output::Json(value)
+                    } else {
+                        Output::Text(ml_exp_client::submit::report(&value))
+                    }
+                }
                 Command::Backend { executor, refresh } => {
                     client.health()?;
                     Output::Json(if let Some(executor) = executor {
@@ -1261,6 +1389,26 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         Output::Text(text) => println!("{text}"),
     }
     Ok(())
+}
+/// Show what will be spent and ask, once. No terminal means no one can answer.
+fn confirm(summary: &str, yes: bool) -> Result<bool, ml_exp_client::Error> {
+    use std::io::{IsTerminal, Write};
+    eprintln!("{summary}");
+    if yes {
+        return Ok(true);
+    }
+    if !std::io::stdin().is_terminal() {
+        return Err(ml_exp_client::Error::Observation(
+            "not submitted: pass --yes to submit without a terminal",
+        ));
+    }
+    eprint!("Submit? [y/N] ");
+    std::io::stderr().flush().ok();
+    let mut answer = String::new();
+    std::io::stdin()
+        .read_line(&mut answer)
+        .map_err(|_| ml_exp_client::Error::Observation("not submitted: no answer"))?;
+    Ok(matches!(answer.trim(), "y" | "Y" | "yes"))
 }
 fn main() -> std::process::ExitCode {
     match run(Args::parse()) {
