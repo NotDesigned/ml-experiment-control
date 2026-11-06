@@ -79,7 +79,7 @@ automatically replaced. `data show` reads cached evidence without querying the
 provider. Only a complete verified READY receipt allows later training to reuse
 the cache without another download.
 
-## Read-only diagnostics (native 0.1.27+)
+## Read-only diagnostics
 
 For an existing terminal PAI copy, retain its asset and publication request:
 

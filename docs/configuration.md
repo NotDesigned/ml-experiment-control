@@ -38,8 +38,8 @@ not retry requests automatically.
 `ml-exp update --check` looks for a newer stable native release. `ml-exp update`
 installs the highest one after checking hash, platform and version, and refuses an
 automatic downgrade. `ml-exp update --version X.Y.Z` selects an exact version. An
-update never changes connection defaults or a server installation. Clients through
-0.1.15 need the new installer once; see the
+update never changes connection defaults or a server installation. A client from an
+earlier release cannot update itself to this one, so use the installer once; see the
 [native usage guide](../rust/README.md#client-configuration).
 
 `ml-exp check` validates the authenticated connection and returns the

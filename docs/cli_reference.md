@@ -19,7 +19,7 @@ commands do not require SSH, Docker or cloud credentials.
 | `update` | Discover and install the latest stable native client |
 | `get` | Read a supported exact API resource |
 
-Examples for recovery introduced in 0.1.24:
+Recovery examples:
 
 ```bash
 # Discover the retained preparation even before a Run/Submission exists.

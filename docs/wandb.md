@@ -77,7 +77,7 @@ write [metric records](metrics.md#record-and-query) to `OUTPUT_DIR/metrics.jsonl
 - `summary:true` declares the result selected by experiment code. It does not add a curve point or select the best checkpoint.
 
 Each Attempt has a stable W&B run grouped by ML-Expd project/Run.
-For new publications (native 0.1.25+), **the client owns metric names**:
+**The client owns metric names**:
 
 | W&B field | Content |
 |---|---|
@@ -154,7 +154,7 @@ publication cannot recreate observations that were never saved. Publication curs
 live in the registry's `tracking/` directory; keep it with service state.
 
 
-## Reserved history gaps (native 0.1.21+)
+## Reserved history gaps
 
 Normal publication stops at an unacknowledged send and flushes SDK sessions on
 orderly API shutdown. An uncertain send is never automatically replayed.
@@ -179,7 +179,7 @@ A saved repair adds `history_repair` to publication state. After a repair use a
 forward fix rather than a program downgrade or a database restore. This operation does not restart training or recover
 records that are missing from the canonical journal.
 
-Remote SDK pages may repeat the same physical row. Native 0.1.22 compares the
+Remote SDK pages may repeat the same physical row. The service compares the
 complete row (including values and axes) before collapsing such page repeats;
 conflicting content or the same sequence at different physical rows is rejected.
 This does not resubmit history or relax the exact-prefix acknowledgement.

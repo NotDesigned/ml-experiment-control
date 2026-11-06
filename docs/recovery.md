@@ -228,7 +228,7 @@ actual mounted path, inode/file-count and quota; freeing API archives is not
 proof that NAS or CPFS writes work.
 
 
-## Read-only collector diagnostics (native 0.1.27+)
+## Read-only collector diagnostics
 
 For an existing terminal PAI synchronization job:
 
