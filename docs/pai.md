@@ -147,7 +147,9 @@ happens inside the allocated job and consumes its time/GPU budget, unless you
 publish the asset first with a CPU job; subsequent jobs can reuse verified cache
 bytes. An alternative is an experiment-authored
 download script writing to persistent `DATA_DIR` before training. Successful
-image pulls do not prove general Internet connectivity for that script.
+image pulls do not prove general Internet connectivity for that script. On a backend
+with no dataset yet, that script blocks later dataset delivery; see
+[paths in the job](data.md#paths-in-the-job).
 
 Native OSS filesystem mounts remain **blocked and disabled** because provider
 mount authorization fails before user code starts. Neither the backend profile nor

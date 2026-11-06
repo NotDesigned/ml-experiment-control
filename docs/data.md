@@ -86,6 +86,15 @@ Two variables point at data, with the same meaning on Slurm, SenseCore and PAI:
   the verified tree that script wrote. The platform does not create the Project
   directory for you, so it may not exist until something has been stored there.
 
+On SenseCore and PAI `DATA_DIR` sits inside that backend's dataset store, and the store
+must create its own root. Do not create `DATA_DIR` there until a dataset has been
+delivered to that backend. A `mkdir -p "$DATA_DIR"` before then creates the root without
+the store's marker. Every later dataset delivery on that backend then fails, for all
+Projects, until an operator moves that directory away; a Run that imports its dataset
+reports `DATA_CACHE_UNAVAILABLE`. A `data_preparation` script's cache is created at the
+same place and has the same effect, so deliver a dataset first if the backend will ever
+take one. Once a dataset has been delivered, creating `DATA_DIR` is safe.
+
 Read declared inputs from `DATASETS_JSON` rather than building paths below
 `DATA_DIR`: the layout under it belongs to the platform. There is no `INPUT_DIR`, and
 no `/inputs` or `/outputs` path. On Slurm each declared dataset is also bound read-only
