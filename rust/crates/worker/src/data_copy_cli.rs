@@ -11,7 +11,6 @@ use std::{
     path::PathBuf,
     process::ExitCode,
     sync::{Arc, atomic::AtomicBool},
-    time::Duration,
 };
 const MAX_CONFIG_BYTES: usize = 8 * 1024 * 1024;
 #[derive(Parser)]
@@ -53,15 +52,6 @@ fn termination_flag() -> std::io::Result<Arc<AtomicBool>> {
     }
     Ok(flag)
 }
-/// The copy is complete by now, so a busy server must not fail it. Sending the same
-/// receipt again is harmless: the server keeps the first and accepts an identical one.
-const READY_ATTEMPTS: u32 = 10;
-fn ready_delay(attempt: u32) -> Duration {
-    Duration::from_secs((1u64 << attempt.min(6)).min(60))
-}
-fn ready_status_may_pass(status: u16) -> bool {
-    matches!(status, 408 | 429 | 500 | 502 | 503 | 504)
-}
 enum ReadyFailure {
     Again(String),
     Final(String),
@@ -83,7 +73,7 @@ fn post_ready(
     let status = response.status().as_u16();
     if status != 200 {
         let text = format!("DATA_READY_CALLBACK_HTTP_{status}");
-        return Err(if ready_status_may_pass(status) {
+        return Err(if ml_exp_worker::retry::may_pass(status) {
             ReadyFailure::Again(text)
         } else {
             ReadyFailure::Final(text)
@@ -101,6 +91,7 @@ fn post_ready(
     }
     Ok(())
 }
+/// The copy is complete by now, and the server accepts an identical receipt again.
 fn confirm_ready(
     http: &reqwest::blocking::Client,
     channel: &DataChannel,
@@ -112,13 +103,15 @@ fn confirm_ready(
         match post_ready(http, channel, receipt) {
             Ok(()) => return Ok(()),
             Err(ReadyFailure::Final(text)) => return Err(text),
-            Err(ReadyFailure::Again(text)) if attempt >= READY_ATTEMPTS => return Err(text),
+            Err(ReadyFailure::Again(text)) if attempt >= ml_exp_worker::retry::ATTEMPTS => {
+                return Err(text);
+            }
             Err(ReadyFailure::Again(text)) => {
                 eprintln!(
                     "data ready callback attempt {attempt} failed: {}; trying again",
                     experiment_redact::redact_line(&text)
                 );
-                std::thread::sleep(ready_delay(attempt));
+                std::thread::sleep(ml_exp_worker::retry::delay(attempt));
             }
         }
     }
@@ -236,24 +229,5 @@ mod tests {
     fn exactly_one_config_source_is_required() {
         assert!(parse(&[]).is_err());
         assert!(parse(&["--config", "/x", "--config-json", "{}"]).is_err());
-    }
-    #[test]
-    fn only_a_passing_failure_is_tried_again() {
-        for status in [408, 429, 500, 502, 503, 504] {
-            assert!(ready_status_may_pass(status), "{status}");
-        }
-        for status in [400, 401, 403, 404, 409, 410, 422] {
-            assert!(!ready_status_may_pass(status), "{status}");
-        }
-    }
-    #[test]
-    fn the_wait_grows_and_stays_bounded() {
-        let waits: Vec<u64> = (1..READY_ATTEMPTS)
-            .map(|n| ready_delay(n).as_secs())
-            .collect();
-        assert_eq!(waits[0], 2);
-        assert!(waits.windows(2).all(|pair| pair[0] <= pair[1]));
-        assert!(waits.iter().all(|wait| *wait <= 60));
-        assert!(waits.iter().sum::<u64>() >= 300, "covers a long-held lock");
     }
 }

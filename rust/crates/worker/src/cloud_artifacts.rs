@@ -30,6 +30,42 @@ fn client() -> Result<reqwest::blocking::Client> {
         .build()
         .map_err(|_| Error::Configuration)
 }
+/// Repeats `attempt` while it fails with something that may pass. On the server Prepare
+/// and Complete answer again from the saved record, and a Ticket can be issued again.
+fn repeated<T>(
+    what: &str,
+    mut attempt: impl FnMut() -> std::result::Result<T, Option<String>>,
+) -> Result<T> {
+    let mut count = 0;
+    loop {
+        count += 1;
+        match attempt() {
+            Ok(value) => return Ok(value),
+            Err(None) => return Err(Error::Uncertain),
+            Err(Some(failure)) => {
+                let failure = experiment_redact::redact_line(&failure);
+                if count >= crate::retry::ATTEMPTS {
+                    eprintln!("result upload gave up on {what}: {failure}");
+                    return Err(Error::Uncertain);
+                }
+                eprintln!(
+                    "result upload attempt {count} of {what} failed: {failure}; trying again"
+                );
+                std::thread::sleep(crate::retry::delay(count));
+            }
+        }
+    }
+}
+/// `None` means trying again cannot help.
+fn status_failure(status: u16) -> Option<String> {
+    let text = format!("HTTP {status}");
+    if crate::retry::may_pass(status) {
+        Some(text)
+    } else {
+        eprintln!("result upload refused: {text}");
+        None
+    }
+}
 fn send(
     http: &reqwest::blocking::Client,
     package: &Package,
@@ -44,21 +80,25 @@ fn send(
     if body.len() > 8 * 1024 * 1024 {
         return Err(Error::Binding);
     }
-    let response = http
-        .post(format!("{}/artifacts", channel.url))
-        .bearer_auth(&channel.token)
-        .header("content-type", "application/json")
-        .body(body)
-        .send()
-        .map_err(|_| Error::Uncertain)?;
-    if response.status() != 200 {
-        return Err(Error::Uncertain);
-    }
-    let mut bytes = Vec::new();
-    response
-        .take(65537)
-        .read_to_end(&mut bytes)
-        .map_err(|_| Error::Uncertain)?;
+    let bytes = repeated("a request", || {
+        let response = http
+            .post(format!("{}/artifacts", channel.url))
+            .bearer_auth(&channel.token)
+            .header("content-type", "application/json")
+            .body(body.clone())
+            .send()
+            .map_err(|error| Some(error.without_url().to_string()))?;
+        let status = response.status().as_u16();
+        if status != 200 {
+            return Err(status_failure(status));
+        }
+        let mut bytes = Vec::new();
+        response
+            .take(65537)
+            .read_to_end(&mut bytes)
+            .map_err(|error| Some(error.to_string()))?;
+        Ok(bytes)
+    })?;
     if bytes.len() > 65536 {
         return Err(Error::Binding);
     }
@@ -243,17 +283,22 @@ pub fn publish(package: &Package) -> Result<()> {
                 .map_err(crate::managed::storage_failure!())?;
             file.read_exact(&mut buffer[..bytes as usize])
                 .map_err(crate::managed::storage_failure!())?;
-            let response = http
-                .put(uri)
-                .header("x-oss-forbid-overwrite", "true")
-                .body(buffer[..bytes as usize].to_vec())
-                .send()
-                .map_err(|_| Error::Uncertain)?;
             // A duplicate immutable part is verified in the full server-side
             // read before publication; it is never overwritten on retry.
-            if !matches!(response.status().as_u16(), 200 | 409) {
-                return Err(Error::Uncertain);
-            }
+            repeated("a part", || {
+                let response = http
+                    .put(uri.clone())
+                    .header("x-oss-forbid-overwrite", "true")
+                    .body(buffer[..bytes as usize].to_vec())
+                    .send()
+                    .map_err(|error| Some(error.without_url().to_string()))?;
+                let status = response.status().as_u16();
+                if matches!(status, 200 | 409) {
+                    Ok(())
+                } else {
+                    Err(status_failure(status))
+                }
+            })?;
         }
         let complete = send(&http, package, ArtifactOperation::Complete)?;
         if complete["published"] != true
