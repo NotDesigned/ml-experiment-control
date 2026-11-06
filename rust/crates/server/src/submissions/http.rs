@@ -366,6 +366,26 @@ enum Operation {
     Collect,
     Acknowledge(Acknowledge),
 }
+/// `NoEffect` tells the caller no provider action was sent. Cloud collect submits a
+/// synchronization job and acknowledge-with-release deletes the generated archive,
+/// so neither may say that once its deadline has passed.
+fn on_timeout(operation: &Operation) -> OnTimeout {
+    match operation {
+        Operation::History
+        | Operation::Refresh
+        | Operation::Checkpoint
+        | Operation::DownloadTicket(_) => OnTimeout::NoEffect,
+        Operation::Sync(_)
+        | Operation::Authorize(_)
+        | Operation::Renew(_)
+        | Operation::Execute(_)
+        | Operation::Cancel(_)
+        | Operation::Retry(_)
+        | Operation::Reconcile
+        | Operation::Collect
+        | Operation::Acknowledge(_) => OnTimeout::Submission,
+    }
+}
 async fn change(
     State(state): State<Arc<AppState>>,
     path: Result<Path<(String, String)>, PathRejection>,
@@ -431,22 +451,9 @@ async fn change(
         Ok(value) => value,
         Err(error) => return http_effect::failure(error),
     };
-    let on_timeout = if matches!(
-        &operation,
-        Operation::History
-            | Operation::DownloadTicket(_)
-            | Operation::Refresh
-            | Operation::Checkpoint
-            | Operation::Collect
-            | Operation::Acknowledge(_)
-    ) {
-        OnTimeout::NoEffect
-    } else {
-        OnTimeout::Submission
-    };
     http_effect::execute_timeout(
         state,
-        on_timeout,
+        on_timeout(&operation),
         std::time::Duration::from_secs(120),
         move |api, now| {
             let now = clock(now)?;
@@ -536,6 +543,55 @@ async fn artifact_metadata(
 mod tests {
     use super::*;
     use ml_exp_core::first_submission::native;
+    #[tokio::test]
+    async fn a_timed_out_collect_or_acknowledge_is_uncertain_and_a_local_refresh_is_not() {
+        let acknowledge = Acknowledge {
+            proof: ml_exp_core::artifacts::DownloadProof {
+                archive_sha256: String::new(),
+                archive_bytes: 0,
+                files: Default::default(),
+            },
+            release: true,
+        };
+        for (operation, status, code) in [
+            (Operation::Collect, 500, "SUBMISSION_OPERATION_UNCERTAIN"),
+            (
+                Operation::Acknowledge(acknowledge),
+                500,
+                "SUBMISSION_OPERATION_UNCERTAIN",
+            ),
+            (Operation::Reconcile, 500, "SUBMISSION_OPERATION_UNCERTAIN"),
+            (Operation::History, 504, "READ_TIMEOUT"),
+            (Operation::Refresh, 504, "READ_TIMEOUT"),
+            (Operation::Checkpoint, 504, "READ_TIMEOUT"),
+            (Operation::DownloadTicket(0), 504, "READ_TIMEOUT"),
+        ] {
+            let (_temp, state) = crate::http_effect::tests::state();
+            let (release, wait) = std::sync::mpsc::channel::<()>();
+            let response = http_effect::execute_timeout(
+                state,
+                on_timeout(&operation),
+                std::time::Duration::from_millis(10),
+                move |_, _| {
+                    let _ = wait.recv();
+                    Ok(Value::Null)
+                },
+            )
+            .await;
+            assert_eq!(response.status().as_u16(), status);
+            let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+                .await
+                .unwrap();
+            let body: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["code"], code);
+            if status == 500 {
+                let detail = body["detail"].as_str().unwrap();
+                assert!(detail.contains("do not repeat execution"));
+                assert!(!detail.contains("no provider action"));
+            }
+            drop(release);
+        }
+    }
     #[test]
     fn dataset_manifests_over_their_budget_keep_their_code_through_run_creation() {
         let too_large = || {

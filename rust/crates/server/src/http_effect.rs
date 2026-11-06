@@ -163,7 +163,7 @@ async fn execute_with_timeout(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use axum::body::to_bytes;
     use std::sync::{
@@ -171,7 +171,7 @@ mod tests {
         mpsc,
     };
     const TOKEN: &str = "synthetic-http-boundary-secret-0000000000000000";
-    fn state() -> (tempfile::TempDir, Arc<AppState>) {
+    pub(crate) fn state() -> (tempfile::TempDir, Arc<AppState>) {
         let temp = tempfile::tempdir().unwrap();
         let registry = temp.path().join("registry");
         crate::read_config::initialize(&registry).unwrap();
