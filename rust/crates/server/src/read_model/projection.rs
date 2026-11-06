@@ -105,9 +105,7 @@ fn finish(value: Value) -> Result<Value> {
     bounded(sanitize(&value))
 }
 fn finish_projection(value: Value) -> Result<Value> {
-    bounded(experiment_redact::redact_json(without_producer_class(
-        value,
-    )))
+    bounded(sanitize(&value))
 }
 fn clean_record_metadata(record: &mut Value) {
     for key in ["source", "sources", "error", "invalid_value"] {
