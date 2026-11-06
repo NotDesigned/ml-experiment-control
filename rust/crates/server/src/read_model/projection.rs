@@ -104,9 +104,6 @@ fn sanitize(value: &Value) -> Value {
 fn finish(value: Value) -> Result<Value> {
     bounded(sanitize(&value))
 }
-fn finish_projection(value: Value) -> Result<Value> {
-    bounded(sanitize(&value))
-}
 fn clean_record_metadata(record: &mut Value) {
     for key in ["source", "sources", "error", "invalid_value"] {
         if let Some(value) = record.get_mut(key) {
@@ -272,7 +269,7 @@ fn run_attempts(snapshot: &Snapshot) -> Result<Value> {
             "current":snapshot.current_attempt_id.as_deref()==Some(&attempt.attempt_id),
             "backend":view["backend"],"backend_job_id":view["backend_job_id"],"state":view["state"]})
     }).collect::<Vec<_>>();
-    finish_projection(
+    finish(
         json!({"project":snapshot.project,"run_id":snapshot.run_id,"current_attempt_id":snapshot.current_attempt_id,
         "current_selection_source":snapshot.current_selection_source,"count":attempts.len(),"attempts":attempts,
         "diagnostics":snapshot.diagnostics}),

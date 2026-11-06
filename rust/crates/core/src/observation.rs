@@ -1,5 +1,5 @@
 //! Backend-neutral observational projections. Never refresh a provider or grant retries.
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 /// JSON equality where numbers and bools compare by numeric value, so step 1 and
 /// 1.0 are one point. For scientific logic only: own records and identities use
