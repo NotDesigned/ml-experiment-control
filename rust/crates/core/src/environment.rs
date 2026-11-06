@@ -20,7 +20,6 @@ pub fn validate(values: &BTreeMap<String, String>) -> Result<(), Error> {
                     | "RUN_ID"
                     | "ATTEMPT_ID"
                     | "SOURCE_ID"
-                    | "BACKEND_JOB_ID"
                     | "OUTPUT_DIR"
                     | "STATE_DIR"
                     | "DATA_DIR"
@@ -76,8 +75,13 @@ mod tests {
                 "{key}"
             );
         }
-        // The platform no longer sets this name, so it is an ordinary user variable.
-        assert!(validate(&BTreeMap::from([("INPUT_DIR".into(), "/mine".into())])).is_ok());
+        // The platform no longer sets these names, so they are ordinary user variables.
+        for key in ["INPUT_DIR", "BACKEND_JOB_ID"] {
+            assert!(
+                validate(&BTreeMap::from([(key.into(), "/mine".into())])).is_ok(),
+                "{key}"
+            );
+        }
         assert!(from_document(&serde_json::json!({})).unwrap().is_empty());
         for bad in [
             serde_json::json!({"env":null}),
