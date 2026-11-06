@@ -7,10 +7,10 @@ use ml_exp_core::{
     },
     slurm::helper::Target,
 };
-/// What docs/data.md warns of: DATA_DIR made before the store exists leaves a root with no
-/// marker, and the store refuses it. Made inside a store that exists, it does no harm.
+/// DATA_DIR sits inside the store, so training code or a download script can create the
+/// store's root first. That must not stop later deliveries, and they must leave its files.
 #[test]
-fn a_data_dir_made_before_the_store_blocks_it_and_one_made_after_does_not() {
+fn a_data_dir_made_before_or_after_the_store_does_not_stop_delivery() {
     let temp = tempfile::tempdir().unwrap();
     let tree = temp.path().join("source");
     std::fs::create_dir(&tree).unwrap();
@@ -41,14 +41,14 @@ fn a_data_dir_made_before_the_store_blocks_it_and_one_made_after_does_not() {
     };
     let data_dir = root.join("demo");
 
-    std::fs::create_dir_all(&data_dir).unwrap();
-    assert!(cache(&config).is_err());
-    assert!(!root.join(".native-data.json").exists());
-
-    std::fs::remove_dir_all(&root).unwrap();
-    cache(&config).unwrap();
+    // Before any store exists, as training code or a download script might.
     std::fs::create_dir_all(&data_dir).unwrap();
     std::fs::write(data_dir.join("mine.bin"), b"not delivered").unwrap();
+    cache(&config).unwrap();
+    assert!(root.join(".native-data.json").exists());
+    // Repeating finds the same store, and writing there later changes nothing.
+    cache(&config).unwrap();
+    std::fs::write(data_dir.join("more.bin"), b"also mine").unwrap();
     cache(&config).unwrap();
     let receipt =
         data_import::materialize(&config, &AtomicBool::new(false), &mut |_| Ok(())).unwrap();
@@ -60,6 +60,33 @@ fn a_data_dir_made_before_the_store_blocks_it_and_one_made_after_does_not() {
         std::fs::read(data_dir.join("mine.bin")).unwrap(),
         b"not delivered"
     );
+}
+
+#[test]
+fn a_store_for_another_target_is_still_refused() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("datasets");
+    let config = |backend: &str| Config {
+        root: root.to_str().unwrap().into(),
+        target: Target {
+            backend_id: backend.into(),
+            profile_sha256: format!("sha256:{}", "a".repeat(64)),
+            storage_scope: format!("sha256:{}", "b".repeat(64)),
+        },
+        project: "demo".into(),
+        definition: datasets::Definition {
+            sha256: "c".repeat(64),
+            archive_bytes: 1,
+            files: vec![],
+        },
+        source: Source::File {
+            path: "/unused".into(),
+        },
+        timeout_seconds: 30,
+    };
+    cache(&config("pai-h200")).unwrap();
+    assert!(cache(&config("other")).is_err());
+    cache(&config("pai-h200")).unwrap();
 }
 
 #[test]

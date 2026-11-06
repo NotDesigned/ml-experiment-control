@@ -11,7 +11,7 @@ These variables are the same on Slurm, SenseCore and PAI DLC:
 
 | Variable | Purpose |
 |---|---|
-| `DATA_DIR` | This Project's data directory on backend storage, or with `data_preparation` the verified tree that script wrote. Do not create it on a cloud backend with no dataset yet. See [data](data.md#paths-in-the-job) |
+| `DATA_DIR` | This Project's data directory on backend storage, or with `data_preparation` the verified tree that script wrote. See [data](data.md#paths-in-the-job) |
 | `DATASETS_JSON` | Declared `data` inputs: each name maps to its verified directory. Set only when the Run declares `data` |
 | `STATE_DIR` | This Attempt's persistent complete recovery generations |
 | `OUTPUT_DIR` | Results. Everything below it is archived on collection |

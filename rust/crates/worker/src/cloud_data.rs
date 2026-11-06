@@ -31,31 +31,19 @@ pub fn cache(config: &ml_exp_core::datasets::import::Config) -> Result<()> {
     let parent = Directory::open(path.parent().ok_or(Error::Configuration)?, false)
         .map_err(|_| Error::Storage)?;
     let name = path.file_name().ok_or(Error::Configuration)?;
-    let store = || {
-        crate::datasets::Store::open(crate::datasets::Config {
-            root: path.into(),
-            target: config.target.clone(),
-        })
-        .map(|_| ())
-        .map_err(|_| Error::Storage)
-    };
-    if parent.entry_exists(name).map_err(|_| Error::Storage)? {
-        return store();
-    }
-    // Reserve the final name exclusively. Completion is the store marker,
-    // not directory visibility; a crash leaves an unavailable, unadopted root.
-    // This requires no renameat2 support from the shared filesystem.
+    // Whoever gets here first creates the root. The marker, not the directory, is
+    // what makes it a store, and this requires no renameat2 from the shared filesystem.
     match parent.create_new_child(name) {
         Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return store(),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(_) => return Err(Error::Storage),
     }
-    crate::datasets::Store::initialize(crate::datasets::Config {
+    crate::datasets::Store::claim(crate::datasets::Config {
         root: path.into(),
         target: config.target.clone(),
     })
-    .map_err(|_| Error::Storage)?;
-    store()
+    .map(|_| ())
+    .map_err(|_| Error::Storage)
 }
 fn save(root: &Directory, records: &BTreeMap<String, Record>) -> std::io::Result<()> {
     root.replace_regular(
