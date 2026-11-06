@@ -559,7 +559,7 @@ cargo fmt --manifest-path rust/Cargo.toml --all -- --check
 cargo clippy --locked --manifest-path rust/Cargo.toml --workspace --all-targets -- -D warnings
 cargo test --locked --manifest-path rust/Cargo.toml --workspace
 cargo build --locked --manifest-path rust/Cargo.toml --workspace --bins
-bash rust/tests/preview-smoke.sh
+bash rust/tests/smoke.sh
 ```
 
 With the optional builder's Python dependencies installed, check its narrow

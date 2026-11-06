@@ -153,7 +153,7 @@ impl Server {
         });
         server.address = received
             .recv_timeout(Duration::from_secs(10))
-            .expect("native preview startup is bounded")
+            .expect("native server startup is bounded")
             .unwrap()
             .trim()
             .parse()

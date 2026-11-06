@@ -153,7 +153,7 @@ fn execute_environment(
         cancelled,
     })?;
     let mut result = Execution {
-        contract: "rust-local-execution-preview.v1",
+        contract: "native-local-execution.v1",
         exit_code: outcome.exit_code,
         termination_signal: outcome.termination_signal,
         timed_out: outcome.timed_out,

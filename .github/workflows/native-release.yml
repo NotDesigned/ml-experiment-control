@@ -65,7 +65,7 @@ jobs:
       - name: Test exact release executables
         env:
           NATIVE_PROFILE: release
-        run: bash rust/tests/preview-smoke.sh
+        run: bash rust/tests/smoke.sh
       - name: Package executables and deployment examples
         run: |
           mkdir .ops/native-linux

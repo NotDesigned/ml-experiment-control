@@ -85,12 +85,12 @@ fn default_config_is_private_and_leaves_the_python_client_config_alone() {
     assert_eq!(displayed["url"], serde_json::Value::Null);
     assert_eq!(displayed["token_configured"], false);
     let token = temp.path().join("token");
-    write_atomic(&token, b"preview-test-secret\n", true).unwrap();
+    write_atomic(&token, b"cli-test-secret\n", true).unwrap();
     let displayed = json_output(
         command(temp.path())
             .args([
                 "--url",
-                "https://preview.invalid/ml-expd/",
+                "https://api.invalid/ml-expd/",
                 "config",
                 "set",
                 "--token-file",
@@ -99,9 +99,9 @@ fn default_config_is_private_and_leaves_the_python_client_config_alone() {
             .output()
             .unwrap(),
     );
-    assert_eq!(displayed["url"], "https://preview.invalid/ml-expd");
+    assert_eq!(displayed["url"], "https://api.invalid/ml-expd");
     assert_eq!(displayed["token_configured"], true);
-    assert!(!displayed.to_string().contains("preview-test-secret"));
+    assert!(!displayed.to_string().contains("cli-test-secret"));
     assert!(temp.path().join(".config/ml-exp/client.json").is_file());
     assert_eq!(std::fs::read(&python).unwrap(), original);
 
@@ -245,7 +245,7 @@ fn environment_token_file_and_xdg_config_paths_remain_supported() {
         .env("XDG_CONFIG_HOME", &xdg)
         .args([
             "--url",
-            "https://preview.invalid",
+            "https://api.invalid",
             "config",
             "set",
             "--token-file",
@@ -258,7 +258,7 @@ fn environment_token_file_and_xdg_config_paths_remain_supported() {
     assert!(!temp.path().join(".config/ml-exp/client.json").exists());
 
     let ambiguous = command(temp.path())
-        .env("ML_EXPD_API_URL", "https://preview.invalid")
+        .env("ML_EXPD_API_URL", "https://api.invalid")
         .env("ML_EXPD_API_TOKEN", "inline-test-secret")
         .env("ML_EXPD_API_TOKEN_FILE", &token)
         .arg("check")

@@ -55,7 +55,7 @@ jobs:
       - run: cargo test --locked --manifest-path rust/Cargo.toml --workspace
       - run: cargo build --locked --manifest-path rust/Cargo.toml --workspace --bins
       - name: Exercise native binaries with isolated temporary configuration
-        run: bash rust/tests/preview-smoke.sh
+        run: bash rust/tests/smoke.sh
 
   image-effects:
     needs: plan

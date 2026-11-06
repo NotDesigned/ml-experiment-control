@@ -23,7 +23,7 @@ mod preparation_cli;
 #[command(
     name = "ml-exp-worker-rs",
     version,
-    about = "Native local process preview; not a replacement for frozen managed workers",
+    about = "ML-Expd worker: runs one local process, or a managed, Slurm or cloud subcommand",
     after_help = "Slurm metadata: ml-exp-worker-rs slurm-helper --config /absolute/private.json --stdio\nExplicit bootstrap: replace --stdio with --initialize. See slurm-helper --help.\nSealed local worker: ml-exp-worker-rs managed-launch --config /absolute/private.json [--initialize|--inspect]"
 )]
 struct Args {

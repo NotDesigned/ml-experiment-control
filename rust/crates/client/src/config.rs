@@ -177,7 +177,7 @@ mod tests {
 
     #[test]
     fn planning_token_files_is_pure_and_scope_is_checked_before_io() {
-        let missing = PathBuf::from("/deliberately-missing/native-preview-token");
+        let missing = PathBuf::from("/deliberately-missing/native-token");
         let settings =
             Settings::from_token_reference("https://example.invalid/ml-expd/", missing.clone())
                 .unwrap();

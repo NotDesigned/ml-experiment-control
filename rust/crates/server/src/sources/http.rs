@@ -42,7 +42,7 @@ fn service(api: &read_api::Api) -> Result<Arc<Service>, read_api::Error> {
     api.sources().ok_or(read_api::Error {
         status: 501,
         code: "SOURCE_ARCHIVE_NOT_CONFIGURED",
-        detail: "source archive storage is not enabled in this isolated preview",
+        detail: "source archive storage is not enabled",
     })
 }
 fn query(raw: Option<&str>) -> Result<(String, String), read_api::Error> {
@@ -74,7 +74,7 @@ async fn upload(
             return read_http::failure(read_api::Error {
                 status: 501,
                 code: "SOURCE_ARCHIVE_NOT_CONFIGURED",
-                detail: "source archive storage is not enabled in this isolated preview",
+                detail: "source archive storage is not enabled",
             });
         }
     };

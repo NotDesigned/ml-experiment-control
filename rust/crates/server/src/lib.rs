@@ -164,15 +164,7 @@ fn health_document(
 
 async fn health(State(state): State<Arc<AppState>>) -> Response {
     if state.reads.is_none() {
-        return Json(health_document(
-            0,
-            "rust-isolated-preview",
-            false,
-            false,
-            None,
-            None,
-        ))
-        .into_response();
+        return Json(health_document(0, "unconfigured", false, false, None, None)).into_response();
     }
     read_http::execute(state, read_http::Access::Read, |api, _| {
         let mut document = health_document(
@@ -305,8 +297,8 @@ fn schema_document() -> serde_json::Value {
     ]);
     let mut collection = run();
     collection.push(parameter("attempt"));
-    let mut document = json!({"openapi":"3.1.0", "info":{"title":"ML-Expd Rust isolated preview", "version":env!("CARGO_PKG_VERSION"),
-    "description":"Experiment GETs only observe approved isolated evidence. Explicit project lifecycle POSTs update their dedicated registry ledger. Separately configured native submissions can prepare, authorize, execute once and reconcile the original owned job. The optional artifact path explicitly collects backend results, streams exact archives and accepts verified ACKs; original outputs and checkpoints remain. Collection JSON alone never establishes download availability."},
+    let mut document = json!({"openapi":"3.1.0", "info":{"title":"ML-Expd native API", "version":env!("CARGO_PKG_VERSION"),
+    "description":"Experiment GETs only observe approved evidence. Explicit project lifecycle POSTs update their dedicated registry ledger. Separately configured native submissions can prepare, authorize, execute once and reconcile the original owned job. The optional artifact path explicitly collects backend results, streams exact archives and accepts verified ACKs; original outputs and checkpoints remain. Collection JSON alone never establishes download availability."},
     "components":{"securitySchemes":{"bearer":{"type":"http","scheme":"bearer"}},"parameters":{
         "project":{"in":"path","name":"project","required":true,"schema":{"type":"string"}},
         "run":{"in":"path","name":"run","required":true,"schema":{"type":"string"}},
@@ -315,12 +307,12 @@ fn schema_document() -> serde_json::Value {
         "identity":{"in":"path","name":"identity","required":true,"schema":{"type":"string"},"description":"Exact Run::Attempt identity, e.g. train::attempt-001"}
     }},"security":[{"bearer":[]}],"paths":{
         "/api/health":{"get":{"description":"Authenticated health with active project count","responses":{"200":{"description":"Enabled capabilities and incomplete training readiness"},"401":{"description":"Authentication required"},"409":{"description":"Project lifecycle evidence is unavailable"},"429":{"description":"Local observation concurrency is full"},"504":{"description":"Observation deadline elapsed; underlying I/O can continue"}}}},
-        "/api/readiness":operation("Preview readiness; training remains incomplete",vec![]),
+        "/api/readiness":operation("Readiness; training stays INCOMPLETE until acceptance evidence exists",vec![]),
         "/api/observer":operation("Local background observer progress and sanitized failure; never performs a provider query",vec![]),
         "/api/runs/{project}/{run}/tracking":operation("Frozen W&B destination and local publication cursors; never queries cloud or creates a binding",run()),
-        "/api/v2/openapi.json":operation("This static preview contract",vec![]),
+        "/api/v2/openapi.json":operation("This static contract",vec![]),
         "/api/projects":operation("List only configured projects, without filesystem paths or private configuration",vec![]),
-        "/api/submissions/{identity}":operation("Read one committed Submission from existing isolated Action storage; never repairs or submits",vec![parameter("submission")]),
+        "/api/submissions/{identity}":operation("Read one committed Submission from existing Action storage; never repairs or submits",vec![parameter("submission")]),
         "/api/runs/{project}/{run}":operation("Current explicitly bound Attempt and independent evidence layers; missing scheduler evidence is unknown",run()),
         "/api/runs/{project}/{run}/attempts":operation("Verified Attempt manifests; no latest-attempt guessing",run()),
         "/api/runs/{project}/{run}/attempts/{attempt}/collection":operation("Read process completion separately from unobserved artifact publication; never starts collection",collection),
@@ -585,7 +577,7 @@ async fn schema() -> Json<serde_json::Value> {
 }
 async fn unavailable(request: Request) -> Response {
     if request.uri().path().starts_with("/api/") {
-        (StatusCode::NOT_IMPLEMENTED, Json(json!({"code":"RUST_PORT_NOT_IMPLEMENTED", "detail":"endpoint has not passed Rust migration acceptance"}))).into_response()
+        (StatusCode::NOT_IMPLEMENTED, Json(json!({"code":"ENDPOINT_NOT_IMPLEMENTED", "detail":"this server does not implement the endpoint"}))).into_response()
     } else {
         StatusCode::NOT_FOUND.into_response()
     }

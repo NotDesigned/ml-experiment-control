@@ -43,7 +43,7 @@ fn service(api: &read_api::Api) -> Result<Arc<Service>, read_api::Error> {
     api.lifecycle().ok_or(read_api::Error {
         status: 501,
         code: "PROJECT_LIFECYCLE_NOT_CONFIGURED",
-        detail: "project lifecycle is not enabled in this isolated preview",
+        detail: "project lifecycle is not enabled",
     })
 }
 fn request<T: serde::de::DeserializeOwned>(
