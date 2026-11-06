@@ -1663,6 +1663,187 @@ fn a_sync_job_driven_twice_creates_once() {
     }
 }
 
+fn with_result_job(config: &[u8], limits: Value) -> Vec<u8> {
+    let mut config: Value = serde_json::from_slice(config).unwrap();
+    config["backends"][0]["result_job"] = limits;
+    serde_json::to_vec(&config).unwrap()
+}
+
+#[test]
+fn a_changed_result_job_limit_keeps_each_recorded_job_and_reaches_only_new_ones() {
+    let mut c = CopyFixture::new(Kind::Pai, 1);
+    c.config = with_result_job(&c.config, json!({"max_time_seconds":3600}));
+    let service = c.open();
+    let (action, _) = c.f.authorized(&service, "train");
+    assert_eq!(
+        c.f.execute(&service, &action).unwrap()["status"],
+        "VERIFIED"
+    );
+    assert_eq!(c.provider.creates(), 1);
+    let sync = |service: &Service, request: &str| {
+        service
+            .synchronize(
+                &action,
+                &ml_exp_core::cloud::exchange::Sync {
+                    request_id: request.into(),
+                    confirmation: format!("SYNC {action}"),
+                },
+                T_RECONCILE,
+                &AtomicBool::new(false),
+            )
+            .unwrap()["synchronization"]
+            .clone()
+    };
+    let first = sync(&service, REQUEST_A);
+    assert_eq!(first["max_time_seconds"], 3600);
+    assert_eq!(first["resources"], json!({"gpus":0,"cpus":2,"memory_gb":4}));
+    assert_eq!(c.provider.creates(), 2);
+
+    // A daemon restarted with a higher limit still drives the job it recorded.
+    c.config = with_result_job(
+        &c.config,
+        json!({"cpus":4,"memory_gb":8,"max_time_seconds":7200}),
+    );
+    drop(service);
+    let service = c.open();
+    assert_eq!(sync(&service, REQUEST_A)["max_time_seconds"], 3600);
+    assert_eq!(
+        service
+            .sync_status(&action, REQUEST_A, T_RECONCILE)
+            .unwrap()["synchronization"]["max_time_seconds"],
+        3600
+    );
+    assert_eq!(c.provider.creates(), 2);
+
+    // A new request and an explicit retry are new jobs, so they take the new limit.
+    let second = sync(&service, REQUEST_B);
+    assert_eq!(second["max_time_seconds"], 7200);
+    assert_eq!(
+        second["resources"],
+        json!({"gpus":0,"cpus":4,"memory_gb":8})
+    );
+    assert_eq!(c.provider.creates(), 3);
+    let job_id = |row: usize| c.provider.world().rows[row]["JobId"].clone();
+    let failed = job_id(1).as_str().unwrap().to_owned();
+    for row in [0, 1] {
+        c.provider.world().rows[row]["Status"] = json!("Failed");
+    }
+    let retry = ml_exp_core::cloud::exchange::SyncRetry {
+        expected_failed_job_id: failed.clone(),
+        confirmation: format!("RETRY SYNC {action} {REQUEST_A} {failed}"),
+    };
+    let retried = |service: &Service| {
+        service
+            .retry_sync(
+                &action,
+                REQUEST_A,
+                &retry,
+                T_RECONCILE,
+                &AtomicBool::new(false),
+            )
+            .unwrap()["synchronization"]
+            .clone()
+    };
+    let child = retried(&service);
+    assert_eq!(child["max_time_seconds"], 7200);
+    assert_eq!(c.provider.creates(), 4);
+
+    // Neither the failed original nor the retried child is orphaned by a later change.
+    c.config = with_result_job(&c.config, json!({"max_time_seconds":10800}));
+    drop(service);
+    let service = c.open();
+    assert_eq!(retried(&service)["max_time_seconds"], 7200);
+    assert_eq!(sync(&service, REQUEST_A)["max_time_seconds"], 7200);
+    assert_eq!(c.provider.creates(), 4);
+    let recorded: Vec<u64> = c
+        .sync_entries()
+        .iter()
+        .map(|entry| entry["job"]["max_time_seconds"].as_u64().unwrap())
+        .collect();
+    assert_eq!(
+        recorded
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from([3600, 7200])
+    );
+    assert_eq!(recorded.len(), 3);
+}
+
+#[test]
+fn a_maintenance_job_takes_the_configured_limit_and_keeps_it_once_recorded() {
+    let mut c = CopyFixture::new(Kind::Pai, 1);
+    c.config = with_result_job(&c.config, json!({"max_time_seconds":3600}));
+    let service = c.open();
+    let (action, _) = c.f.authorized(&service, "train");
+    c.f.execute(&service, &action).unwrap();
+    c.provider.world().rows[0]["Status"] = json!("Failed");
+    let plan = service
+        .maintenance_plan(
+            &action,
+            ml_exp_core::maintenance::Selection::Outputs,
+            REQUEST_A.into(),
+            T_RECONCILE,
+        )
+        .unwrap();
+    service.maintenance_execute(&action, &plan).unwrap();
+    assert_eq!(c.provider.creates(), 2);
+    c.config = with_result_job(&c.config, json!({"max_time_seconds":7200}));
+    drop(service);
+    let service = c.open();
+    service.maintenance_execute(&action, &plan).unwrap();
+    assert_eq!(c.provider.creates(), 2);
+    let entries = c.sync_entries();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["job"]["max_time_seconds"], 3600);
+    assert_eq!(entries[0]["job"]["gpus"], 0);
+}
+
+#[test]
+fn result_job_limits_default_and_refuse_what_the_collector_cannot_run() {
+    let c = CopyFixture::new(Kind::Pai, 1);
+    let load = |limits: Value| Settings::from_slice(&with_result_job(&c.config, limits));
+    let default = Settings::from_slice(&c.config).unwrap();
+    let limits = default.backends[0].result_job;
+    assert_eq!(
+        (limits.cpus, limits.memory_gb, limits.max_time_seconds),
+        (2, 4, 21600)
+    );
+    let chosen = load(json!({"max_time_seconds":86400})).ok().unwrap();
+    assert_eq!(chosen.backends[0].result_job.max_time_seconds, 86400);
+    assert_eq!(chosen.backends[0].result_job.cpus, 2);
+    for refused in [
+        json!({"max_time_seconds":0}),
+        json!({"max_time_seconds":86401}),
+        json!({"cpus":0}),
+        json!({"cpus":201}),
+        json!({"memory_gb":1601}),
+        json!({"unknown":1}),
+    ] {
+        assert!(load(refused.clone()).is_err(), "{refused}");
+    }
+    // SenseCore's collector has one fixed shape, and only the time limit can move.
+    let f = Fixture::new(Kind::Sensecore);
+    let Profile::Sensecore(training) = &f.provider.profile else {
+        panic!("expected SenseCore");
+    };
+    let mut collector = training.clone();
+    collector.purpose = sensecore::Purpose::ResultCollection;
+    collector.cluster = "debug-cpu".into();
+    collector.worker_spec = "cpu.2c4g".into();
+    collector.worker_gpus = 0;
+    collector.worker_cpus = 2;
+    collector.worker_memory_gb = 4;
+    collector.quota = sensecore::Quota::Reserved;
+    let mut config: Value = serde_json::from_slice(&f.config).unwrap();
+    config["backends"][0]["collector"] = json!(Profile::Sensecore(collector));
+    let config = serde_json::to_vec(&config).unwrap();
+    let load = |limits: Value| Settings::from_slice(&with_result_job(&config, limits));
+    assert!(load(json!({"max_time_seconds":86400})).is_ok());
+    assert!(load(json!({"cpus":4})).is_err());
+    assert!(load(json!({"memory_gb":8})).is_err());
+}
+
 #[test]
 fn a_started_sync_job_makes_no_create() {
     for kind in KINDS {

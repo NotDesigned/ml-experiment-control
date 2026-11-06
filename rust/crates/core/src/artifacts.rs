@@ -14,6 +14,9 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 pub const MAX_FILES: usize = 20_000;
 pub const MAX_PATH: usize = 4096;
 const MAX_RECEIPT_BYTES: usize = 8 * 1024 * 1024;
+/// Budget for `listed_cost`, below the 8 MiB limit on a saved or sent State and
+/// leaving room for the skip list and the rest of the record.
+pub const MAX_LISTED_BYTES: usize = 6 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -91,15 +94,20 @@ fn sha256(value: &str) -> bool {
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
+/// Any relative path inside OUTPUT_DIR. A hidden name or one called `outputs` is an
+/// ordinary result; an archive member is always `outputs/` plus exactly this path.
 pub fn receipt_path(value: &str) -> bool {
     value.len() <= MAX_PATH
         && !value.is_empty()
-        && value != "outputs"
-        && !value.starts_with("outputs/")
         && !value.contains(['\\', '\0'])
         && value
             .split('/')
-            .all(|part| !part.is_empty() && part != "." && part != ".." && !part.starts_with('.'))
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+}
+/// What one archived file adds to its saved State: a receipt row, and after ACK a
+/// proof row that repeats the path in its `outputs/` key.
+pub fn listed_cost(path: &str) -> usize {
+    240 + 3 * (path.len() + path.matches('"').count())
 }
 fn bounded(value: &Value) -> Result<()> {
     let bytes = serde_json::to_vec(value).map_err(|_| Error::Receipt)?;
@@ -161,11 +169,7 @@ pub fn validate_receipt(value: &ArchiveReceipt) -> Result<()> {
     validate_id(&value.project).map_err(|_| Error::Identity)?;
     validate_id(&value.run_id).map_err(|_| Error::Identity)?;
     validate_attempt(&value.attempt_id).map_err(|_| Error::Identity)?;
-    if value.bytes == 0
-        || !sha256(&value.sha256)
-        || value.files.is_empty()
-        || value.files.len() > MAX_FILES
-    {
+    if value.bytes == 0 || !sha256(&value.sha256) || value.files.len() > MAX_FILES {
         return Err(Error::Receipt);
     }
     let mut paths = BTreeSet::new();
@@ -353,5 +357,29 @@ mod tests {
         receipt.bytes = 1;
         receipt.files[0].bytes = 0;
         assert!(validate_receipt(&receipt).is_ok());
+    }
+
+    #[test]
+    fn an_archive_with_no_members_is_a_valid_receipt() {
+        let mut receipt = receipt();
+        receipt.files.clear();
+        assert!(validate_receipt(&receipt).is_ok());
+    }
+
+    #[test]
+    fn hidden_names_and_outputs_are_paths_while_dot_components_stay_refused() {
+        for path in [
+            ".hydra/config.yaml",
+            "a/.b/c",
+            "..data",
+            "...",
+            "outputs",
+            "outputs/model.pt",
+        ] {
+            assert!(receipt_path(path), "{path}");
+        }
+        for path in ["", ".", "..", "./a", "a/.", "../a", "a/../b", "a//b", "/a"] {
+            assert!(!receipt_path(path), "{path}");
+        }
     }
 }

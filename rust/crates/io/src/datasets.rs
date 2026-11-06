@@ -62,7 +62,7 @@ fn require_file_set(root: &Directory, files: &[FileReceipt], sealed: bool) -> io
         verify_sealed_directories(root, 0, &mut 0)?;
     }
     let mut paths = Vec::new();
-    artifacts::walk(root, "", &mut paths, &mut 0, Kind::Data)?;
+    artifacts::walk(root, "", &mut paths, &mut 0)?;
     paths.sort();
     if paths != files.iter().map(|f| f.path.clone()).collect::<Vec<_>>() {
         return Err(invalid());
@@ -213,7 +213,7 @@ pub fn remove_staging(parent: &Directory, tree: &Directory) -> io::Result<()> {
 /// Record all bounded regular files through retained directory descriptors.
 pub fn inventory(tree: &Directory) -> std::io::Result<Vec<FileReceipt>> {
     let mut paths = Vec::new();
-    artifacts::walk(tree, "", &mut paths, &mut 0, artifacts::Kind::Data)?;
+    artifacts::walk(tree, "", &mut paths, &mut 0)?;
     paths.sort();
     if paths.is_empty() {
         return Err(std::io::Error::other("empty prepared dataset"));

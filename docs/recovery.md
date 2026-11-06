@@ -155,7 +155,7 @@ ml-exp run sync ACTION --request-id ORIGINAL_32_HEX_REQUEST \
 This POST targets `/api/submissions/ACTION/sync/REQUEST/retry`. It refreshes the
 exact parent/failed job evidence, then persists one deterministic CPU child
 before effects. The child keeps the original frozen image, worker, full `--sync`
-command and output directory, with 0 GPUs, 2 CPUs, 4 GiB and a 600-second limit.
+command and output directory, with 0 GPUs and the backend's `result_job` limits.
 It does not replay training. The failed CPU job and its outbox remain intact.
 Repeating the same request after a lost reply or restart observes the same
 child. Unknown creates are reconciled, never blindly repeated. A second failed
@@ -178,6 +178,40 @@ use `run sync` above when you need to retain that identity explicitly. Collectio
 does not rerun training or require a replacement training Run. Missing backend
 files cannot be reconstructed by collecting, and original FAILED scheduler
 history stays FAILED. Delayed offline logs remain pending, not proof of success.
+
+The CPU job takes the backend's `result_job` limits, by default 2 CPUs, 4 GiB and
+6 hours. Set it in the backend's entry in `cloud_config`, for example
+`"result_job": {"max_time_seconds": 43200}`, with any of `cpus`, `memory_gb` and
+`max_time_seconds`. PAI allows up to its `collector` capacity and 24 hours. A
+SenseCore collector has one fixed 2 CPU, 4 GiB shape, so there only the time limit
+moves. Storage maintenance jobs use the same limits. An interrupted archive restarts
+from nothing, so the time limit must cover packing, hashing and uploading the whole
+result. A job keeps the limits it was first recorded with: to give more time after a
+limit was hit, raise it and start a new `run sync --request-id`, or retry a failed one.
+
+### What an archive can leave out
+
+A finished job's results leave even if some paths cannot. These are skipped and
+recorded, and the archive holds everything else:
+
+| `reason` | Skipped entry |
+| --- | --- |
+| `symbolic_link` | A link. It is never followed, so its target is not archived |
+| `special_file` | A FIFO, socket or device |
+| `unsupported_path` | A name that is not UTF-8 or holds a control character or backslash, a path over 4096 bytes, or a directory nested over 128 levels |
+| `file_limit` | Anything past the 20,000 entries a receipt can list, in sort order. Long paths can reach the limit sooner, because the saved record has a fixed size |
+
+`run files` reports the list as `skipped`, `run download` as `skipped` and `run file`
+as `archive_skipped`. **This list is the only record of what is missing.** Nothing else
+compares the archive with the original directory, and the file hashes prove only
+the files that are listed. Read it before releasing an archive or removing `outputs`.
+A row naming a directory covers what lies beneath it, and `.` is `OUTPUT_DIR` itself.
+It holds up to 1024 rows; `unlisted` counts the entries beyond those. Files listed in
+`artifacts.required_files` are archived whatever the limit, and a required file that
+is absent, or is a link, is the one thing that fails the result. Paths there are
+relative to `OUTPUT_DIR`, so one starting with `outputs/` is refused when the Run is
+created. An empty directory is not recorded. A failed read, or a file that changes
+while it is packed, fails the archive so that it can be collected again.
 
 ## Download confirmation and server storage
 

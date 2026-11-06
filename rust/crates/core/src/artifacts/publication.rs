@@ -4,6 +4,8 @@ use super::*;
 use crate::slurm::helper::{FrozenIntent, valid_digest};
 
 pub const CONTRACT: &str = "backend-artifacts.v1";
+pub const MAX_SKIPPED_ROWS: usize = 1024;
+const MAX_SKIPPED_PATH: usize = 512;
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Policy {
@@ -13,11 +15,12 @@ pub struct Policy {
 impl Policy {
     pub fn validate(&self) -> Result<()> {
         let mut names = BTreeSet::new();
+        // Required paths are relative to OUTPUT_DIR. A leading `outputs` is almost
+        // certainly that mistake, and accepting it would only surface after training.
         if self.required_files.len() > MAX_FILES
-            || self
-                .required_files
-                .iter()
-                .any(|p| !export_path(p) || !names.insert(p))
+            || self.required_files.iter().any(|p| {
+                !export_path(p) || p == "outputs" || p.starts_with("outputs/") || !names.insert(p)
+            })
         {
             return Err(Error::Receipt);
         }
@@ -38,6 +41,71 @@ impl Policy {
 pub fn export_path(path: &str) -> bool {
     receipt_path(path) && !path.chars().any(char::is_control)
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkipReason {
+    SymbolicLink,
+    SpecialFile,
+    /// The name is not UTF-8, or holds a control character or backslash, or the path
+    /// is too long or too deep.
+    UnsupportedPath,
+    /// The archive holds as many files as a receipt can list.
+    FileLimit,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkippedPath {
+    pub path: String,
+    pub reason: SkipReason,
+}
+/// What the archive leaves out. This list is the only record of what is missing:
+/// nothing else compares the archive with the original directory. A row naming a
+/// directory covers what lies beneath it, though a required file there is still
+/// archived. `.` is OUTPUT_DIR itself. A path is for reading, not for opening: control
+/// characters are escaped and a very long path is cut short. `unlisted` counts entries
+/// skipped after the rows ran out or past a directory's listing limit.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Skipped {
+    pub paths: Vec<SkippedPath>,
+    pub unlisted: u64,
+}
+impl Skipped {
+    pub fn add(&mut self, path: &str, reason: SkipReason) {
+        if self.paths.len() >= MAX_SKIPPED_ROWS {
+            self.unlisted = self.unlisted.saturating_add(1);
+            return;
+        }
+        let mut shown = String::new();
+        for c in path.chars() {
+            if shown.len() >= MAX_SKIPPED_PATH {
+                shown.push_str("...");
+                break;
+            }
+            if c.is_control() {
+                shown.extend(c.escape_default());
+            } else {
+                shown.push(c);
+            }
+        }
+        self.paths.push(SkippedPath {
+            path: shown,
+            reason,
+        });
+    }
+    fn validate(&self) -> Result<()> {
+        if self.paths.len() > MAX_SKIPPED_ROWS
+            || self.paths.iter().any(|row| {
+                row.path.is_empty()
+                    || row.path.len() > MAX_SKIPPED_PATH + 16
+                    || row.path.chars().any(char::is_control)
+            })
+        {
+            return Err(Error::Receipt);
+        }
+        Ok(())
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Bundle {
@@ -45,10 +113,12 @@ pub struct Bundle {
     pub intent_sha256: String,
     pub config_sha256: String,
     pub archive: ArchiveReceipt,
+    pub skipped: Skipped,
 }
 impl Bundle {
     pub fn validate(&self) -> Result<()> {
         validate_receipt(&self.archive)?;
+        self.skipped.validate()?;
         if self.contract != CONTRACT
             || !valid_digest(&self.intent_sha256)
             || !valid_digest(&self.config_sha256)
@@ -225,6 +295,7 @@ mod tests {
                 }],
                 object_key: format!("demo/train/attempt-001/{}.tar", "3".repeat(64)),
             },
+            skipped: Skipped::default(),
         }
     }
     fn proof(state: &State) -> DownloadProof {
@@ -317,5 +388,50 @@ mod tests {
         let mut invalid = bundle();
         invalid.archive.files[0].path = "checkpoints/state.pt".into();
         assert!(invalid.validate().is_ok());
+    }
+    #[test]
+    fn a_required_path_may_be_hidden_but_is_never_written_from_above_output_dir() {
+        for path in [".hydra/config.yaml", "models/outputs/final.pt"] {
+            let policy = Policy {
+                required_files: vec![path.into()],
+            };
+            assert!(policy.validate().is_ok(), "{path}");
+        }
+        for path in ["outputs", "outputs/final.pt", ".", "../final.pt"] {
+            let policy = Policy {
+                required_files: vec![path.into()],
+            };
+            assert!(policy.validate().is_err(), "{path}");
+        }
+        // What the walk archives is wider: such a file still leaves and can be named.
+        assert!(export_path("outputs/final.pt"));
+        let mut hidden = bundle();
+        hidden.archive.files[0].path = "outputs/.hydra/config.yaml".into();
+        assert!(hidden.validate().is_ok());
+    }
+    #[test]
+    fn the_skip_list_is_bounded_readable_and_counts_what_it_cannot_list() {
+        let mut skipped = Skipped::default();
+        skipped.add("run\nlog\u{7}", SkipReason::UnsupportedPath);
+        assert_eq!(skipped.paths[0].path, "run\\nlog\\u{7}");
+        skipped.add(&"long/".repeat(1000), SkipReason::SymbolicLink);
+        assert!(skipped.paths[1].path.len() <= MAX_SKIPPED_PATH + 3);
+        for _ in 2..MAX_SKIPPED_ROWS + 5 {
+            skipped.add("link", SkipReason::SymbolicLink);
+        }
+        assert_eq!(skipped.paths.len(), MAX_SKIPPED_ROWS);
+        assert_eq!(skipped.unlisted, 5);
+        let mut bundle = bundle();
+        bundle.skipped = skipped;
+        assert!(bundle.validate().is_ok());
+        let encoded = serde_json::to_string(&bundle.skipped.paths[0]).unwrap();
+        assert!(
+            encoded.contains(r#""reason":"unsupported_path""#),
+            "{encoded}"
+        );
+        bundle.skipped.paths[0].path = "raw\ncontrol".into();
+        assert!(bundle.validate().is_err());
+        bundle.skipped.paths[0].path = String::new();
+        assert!(bundle.validate().is_err());
     }
 }

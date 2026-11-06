@@ -21,6 +21,9 @@ pub struct Definition {
     #[serde(default)]
     pub imports: Vec<ml_exp_core::datasets::import::Config>,
     pub collector: Option<Profile>,
+    /// Limits of a new CPU job on `collector`, for result sync and storage maintenance.
+    #[serde(default)]
+    pub result_job: domain::exchange::ResultJobLimits,
     pub data_copier: Option<Profile>,
     /// Opt-in highest-SPOT selection among approved same-zone/VPC pools.
     /// The selected profile is frozen per Run and never reselected on retry.
@@ -110,6 +113,26 @@ impl Definition {
                         && training.mount_path == copy.mount_path => {}
                 _ => return Err(cloud::Error::configuration()),
             }
+        }
+        let limits = &self.result_job;
+        if limits.cpus == 0
+            || limits.memory_gb == 0
+            || limits.max_time_seconds == 0
+            || limits.max_time_seconds > 1000 * 3600
+            || match &self.collector {
+                Some(Profile::Pai(p)) => {
+                    limits.cpus > p.max_cpus
+                        || limits.memory_gb > p.max_memory_gb
+                        || limits.max_time_seconds > domain::pai::MAX_JOB_SECONDS
+                }
+                // A SenseCore job takes its shape from the fixed collector spec.
+                Some(Profile::Sensecore(p)) => {
+                    limits.cpus != p.worker_cpus || limits.memory_gb != p.worker_memory_gb
+                }
+                None => false,
+            }
+        {
+            return Err(cloud::Error::configuration());
         }
         if let Some(collector) = &self.collector {
             collector.validate()?;

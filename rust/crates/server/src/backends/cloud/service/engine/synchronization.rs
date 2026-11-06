@@ -1,7 +1,7 @@
 //! Explicit one-child CPU recovery retains both the failed job and its outbox.
 //! Local GET is read-only; only a confirmed retry POST can create the child.
 use super::*;
-use ml_exp_core::cloud::exchange::{Sync, SyncRetry};
+use ml_exp_core::cloud::exchange::{ResultJobLimits, Sync, SyncRetry};
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -51,12 +51,21 @@ impl Service {
         if let Some(saved) = self.sync_retry_saved(prepared, action, request_id)? {
             return Ok(saved.job);
         }
-        Sync {
+        self.original_sync_job(prepared, action, request_id)
+    }
+    fn original_sync_job(
+        &self,
+        prepared: &Prepared,
+        action: &str,
+        request_id: &str,
+    ) -> cloud::Result<ml_exp_core::cloud::Job> {
+        let job = Sync {
             request_id: request_id.into(),
             confirmation: format!("SYNC {action}"),
         }
         .job(&prepared.execution.job)
-        .map_err(why!(cloud::Error::evidence()))
+        .map_err(why!(cloud::Error::evidence()))?;
+        self.with_result_limits(&prepared.execution.backend_id, job)
     }
     pub(super) fn sync_recovery_request(
         &self,
@@ -79,10 +88,11 @@ impl Service {
         }
         let saved: Retry = serde_json::from_value(read(&self.slots, &name)?)
             .map_err(why!(cloud::Error::evidence()))?;
-        let job = saved
+        let mut job = saved
             .request
             .job(action, request_id, &prepared.execution.job)
             .map_err(why!(cloud::Error::evidence()))?;
+        ResultJobLimits::of(&saved.job).apply(&mut job);
         if saved.action != action
             || saved.request_id != request_id
             || saved.job != job
@@ -104,9 +114,7 @@ impl Service {
         request
             .validate(action)
             .map_err(why!(cloud::Error::configuration()))?;
-        let original = request
-            .job(&prepared.execution.job)
-            .map_err(why!(cloud::Error::evidence()))?;
+        let original = self.original_sync_job(&prepared, action, request_id)?;
         let original_status = self
             .sync_outbox
             .optional_status(&original)?
@@ -117,8 +125,9 @@ impl Service {
             .map(|r| self.sync_outbox.optional_status(&r.job))
             .transpose()?
             .flatten();
+        let current = retry.as_ref().map_or(&original, |r| &r.job);
         let mut value = self.get(action, now)?;
-        value["synchronization"] = json!({"request_id":request_id,"resources":{"gpus":0,"cpus":2,"memory_gb":4},"max_time_seconds":600,"training_replayed":false,
+        value["synchronization"] = json!({"request_id":request_id,"resources":{"gpus":current.gpus,"cpus":current.cpus,"memory_gb":current.memory_gb},"max_time_seconds":current.max_time_seconds,"training_replayed":false,
             "original_job":original_status,"job":retry_status.as_ref().unwrap_or(&original_status),"retry_limit":1,
             "retry":retry.as_ref().map(|r|json!({"expected_failed_job_id":r.request.expected_failed_job_id,"created_at":r.created_at,"job":retry_status,"attempt":1})),
             "source":"retained-sync-evidence","remote_refresh_performed":false});
@@ -162,14 +171,16 @@ impl Service {
             )
         };
         let allocation = ml_exp_core::cloud::pai::Allocation::Guaranteed;
-        let job = request
-            .job(action, request_id, &prepared.execution.job)
-            .map_err(why!(cloud::Error::configuration()))?;
-        if let Some(saved) = self.sync_retry_saved(&prepared, action, request_id)? {
+        let job = if let Some(saved) = self.sync_retry_saved(&prepared, action, request_id)? {
             if saved.request != *request {
                 return Err(failed());
             }
+            saved.job
         } else {
+            let job = request
+                .job(action, request_id, &prepared.execution.job)
+                .map_err(why!(cloud::Error::configuration()))?;
+            let job = self.with_result_limits(&prepared.execution.backend_id, job)?;
             let adapter = self.execution_adapter(&prepared.execution)?;
             let training = observation(&self.outbox.reconcile(
                 &adapter,
@@ -181,12 +192,7 @@ impl Service {
             if !training.state.is_terminal() {
                 return Err(failed());
             }
-            let original = Sync {
-                request_id: request_id.into(),
-                confirmation: format!("SYNC {action}"),
-            }
-            .job(&prepared.execution.job)
-            .map_err(why!(cloud::Error::configuration()))?;
+            let original = self.original_sync_job(&prepared, action, request_id)?;
             if self.sync_outbox.optional_status(&original)?.is_none() {
                 return Err(missing());
             }
@@ -207,11 +213,12 @@ impl Service {
                 original,
                 training,
                 created_at: now.into(),
-                job: job.clone(),
+                job,
             };
             check()?;
             write(&self.slots, &slot(action, request_id)?, &saved)?;
-        }
+            saved.job
+        };
         self.submit_once_or_reconcile(collector, &job, allocation, &check, cancelled)?;
         drop(lock);
         self.sync_status(action, request_id, now)

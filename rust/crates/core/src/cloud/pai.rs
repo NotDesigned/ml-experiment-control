@@ -2,6 +2,9 @@
 use super::*;
 use crate::state::RunState;
 
+/// The longest job this adapter asks DLC to run.
+pub const MAX_JOB_SECONDS: u64 = 86400;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Allocation {
@@ -227,7 +230,7 @@ impl Profile {
     pub fn create(&self, job: &Job, allocation: Allocation) -> Result<Request> {
         self.validate()?;
         job.validate()?;
-        if job.max_time_seconds > 86400
+        if job.max_time_seconds > MAX_JOB_SECONDS
             || job.gpus > self.max_gpus
             || job.cpus > self.max_cpus
             || job.memory_gb > self.max_memory_gb

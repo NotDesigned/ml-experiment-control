@@ -23,7 +23,7 @@ CRATES = Path("rust/crates")
 SERVER = CRATES / "server/src"
 
 PINS = {
-    "rust/crates/server/src/backends/cloud/outbox.rs": "ff7c6a30b9d04c530da27e63fe9d81f0fdb52b07ed9469a5ef01aab729653f73",
+    "rust/crates/server/src/backends/cloud/outbox.rs": "2f5313a8fd332e73e6c4ee00fe2ba67767c0dffd43d9cde6943da2f05399b811",
     "rust/crates/server/src/backends/cloud/outbox/tests.rs": "b32c6152feb9d3950fe73200448bc64076904f77f43a2c0839e6e583a1be9bab",
     "rust/crates/server/src/backends/cloud/action.rs": "a09c4a78734245d578dbbbaa75c62a86e0ee2a49f81737c100e4cc5e2d7123dc",
     "rust/crates/server/src/backends/slurm/action.rs": "15ad4038d8525dde13d1439c97faa1475bc371e078603f3c8eb1ab0444b609ba",
@@ -35,9 +35,9 @@ PINS = {
     "rust/crates/core/src/operations.rs": "f956e2c25597de20d76b42b04cebbb11b52083e6ca85275ab751fbb279cc3ec2",
     "rust/crates/core/src/slurm/action.rs": "61d6fb7e14248434b39f5a73208412d232d9134c784512e114c12892b8de9548",
     "rust/crates/core/src/cloud/action.rs": "5829a8a03252f9100341b46217e37e9f40f202630f251377d3777f6faba3d13f",
-    "rust/crates/core/src/cloud/exchange.rs": "0d8257ef48ca52d3bb560d4bab582d6df28af98988cc45c100df60f74e4b664a",
+    "rust/crates/core/src/cloud/exchange.rs": "6fb94d93efc28d95019297bdef532d82e7e116c32bf10c6dd1ca54d70df28a65",
     "rust/crates/worker/src/slurm/ledger.rs": "0ec0b45b7a7001c69fa29a13e8f8abbcc26c9db29b787c2650b09ba8b13afa75",
-    "rust/crates/worker/src/slurm/ledger/artifacts.rs": "0ef666d31c8a89f19c595ad19e75974eb67d220cb9f5c50efdf8efe6cee53995",
+    "rust/crates/worker/src/slurm/ledger/artifacts.rs": "bf3d78251276a34e3c764b5898f9952e800d60f136e6b4d6499c8a97426a6056",
     "rust/crates/worker/src/slurm/ledger/checkpoints.rs": "f54f98d9a36bf7d47ad75e79202e69c7b56035af2ec62048b08b3a774a6e082c",
     "rust/crates/worker/src/slurm/ledger/history.rs": "41f7b30c0b7e779e57eb55a29691f3c862b13352ad5cff7803dbfecfc9440655",
     "rust/crates/worker/src/slurm/ledger/jobs.rs": "695018e2b31111048c48eac6581140aa6f8f14b8c98561bd6f4f4efa2a0909f0",

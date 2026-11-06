@@ -8,6 +8,7 @@
 
 use rustix::fs::{self as rfs, AtFlags, FileType, Mode, OFlags};
 use std::{
+    collections::BTreeSet,
     ffi::{OsStr, OsString},
     fmt::Write as FmtWrite,
     fs::File,
@@ -37,6 +38,16 @@ pub struct RegularIdentity {
     pub inode: u64,
     pub mode: u32,
     pub owner: u32,
+}
+
+/// What a directory entry is, read without following a link or opening it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntryType {
+    Directory,
+    Regular,
+    SymbolicLink,
+    /// A FIFO, socket or device.
+    Special,
 }
 
 /// Advisory capacity of the filesystem containing this retained directory.
@@ -286,6 +297,42 @@ impl Directory {
         Ok(names)
     }
 
+    /// The first `maximum` names in sort order and how many more there are. Memory
+    /// stays bounded however large the directory is, and the same names come back
+    /// whatever order the filesystem lists them in.
+    pub fn first_entry_names(&self, maximum: usize) -> io::Result<(Vec<OsString>, u64)> {
+        let mut names = BTreeSet::new();
+        let mut more = 0u64;
+        for entry in rfs::Dir::read_from(&self.inner.file)? {
+            let entry = entry?;
+            let name = entry.file_name().to_bytes();
+            if !matches!(name, b"." | b"..") {
+                names.insert(OsString::from_vec(name.to_vec()));
+                if names.len() > maximum {
+                    names.pop_last();
+                    more += 1;
+                }
+            }
+        }
+        Ok((names.into_iter().collect(), more))
+    }
+
+    /// None when the entry is absent. Every other failure stays an error, so a read
+    /// that fails cannot be mistaken for a type or for a missing file.
+    pub fn entry_type(&self, name: &OsStr) -> io::Result<Option<EntryType>> {
+        leaf(name)?;
+        match rfs::statat(&self.inner.file, name, AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(stat) => Ok(Some(match FileType::from_raw_mode(stat.st_mode) {
+                FileType::Directory => EntryType::Directory,
+                FileType::RegularFile => EntryType::Regular,
+                FileType::Symlink => EntryType::SymbolicLink,
+                _ => EntryType::Special,
+            })),
+            Err(rustix::io::Errno::NOENT) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     /// A created directory is private from its first instant, and its parent
     /// directory entry is synced before returning its fixed child descriptor.
     pub fn child(&self, name: &OsStr, create: bool) -> io::Result<Self> {
@@ -396,6 +443,15 @@ impl Directory {
     /// deletion primitive.
     pub fn remove_staged_regular(&self, name: &OsStr) -> io::Result<()> {
         self.regular_identity(name)?;
+        rfs::unlinkat(&self.inner.file, name, AtFlags::empty())?;
+        rfs::fsync(&self.inner.file)?;
+        Ok(())
+    }
+
+    /// Remove any entry but a directory: a link goes and its target stays. Only for
+    /// a reviewed removal of a whole tree, under the caller's domain lock.
+    pub fn remove_non_directory(&self, name: &OsStr) -> io::Result<()> {
+        leaf(name)?;
         rfs::unlinkat(&self.inner.file, name, AtFlags::empty())?;
         rfs::fsync(&self.inner.file)?;
         Ok(())

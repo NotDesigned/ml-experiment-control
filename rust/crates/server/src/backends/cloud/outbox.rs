@@ -258,6 +258,20 @@ impl Outbox {
         }
         self.view(&entry).map(Some)
     }
+    /// The job as first recorded in this job's slot. Read-only, and never a reason
+    /// to create: `prepare` still refuses any job that differs from this record.
+    pub fn recorded_job(&self, job: &Job) -> Result<Option<Job>> {
+        let _lock = self.lock()?;
+        let name = Self::slot(job)?;
+        if !self
+            .directory
+            .entry_exists(OsStr::new(&name))
+            .map_err(why!(Error::evidence()))?
+        {
+            return Ok(None);
+        }
+        Ok(Some(self.load(&name)?.job))
+    }
     fn view(&self, entry: &Entry) -> Result<Value> {
         let slot = Self::slot(&entry.job)?;
         Ok(

@@ -28,7 +28,8 @@ workspace. New Attempts do not overwrite the restore source. A profile change
 does not move a Run's frozen paths or image.
 
 A result archive holds everything below `OUTPUT_DIR`, including a directory you
-happen to call `checkpoints`, and nothing below `STATE_DIR`.
+happen to call `checkpoints` or `outputs` and any hidden file, and nothing below
+`STATE_DIR`. See [what an archive can leave out](recovery.md#what-an-archive-can-leave-out).
 
 Write all recovery files below `STATE_DIR/checkpoints/UNIQUE_GENERATION/`.
 Finish/flush the files, then atomically replace `STATE_DIR/checkpoint.ready.json`:

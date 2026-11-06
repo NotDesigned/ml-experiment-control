@@ -110,7 +110,7 @@ impl Helper {
                 }
                 let mut file = directory.create_new_regular(OsStr::new(ARCHIVE))?;
                 let packed = ml_exp_io::artifacts::pack(&outputs, &mut file, &policy);
-                let (sha256, bytes, files) = match packed {
+                let (sha256, bytes, files, skipped) = match packed {
                     Ok(v) => v,
                     Err(e) => {
                         let _ = directory.remove_staged_regular(OsStr::new(ARCHIVE));
@@ -135,6 +135,7 @@ impl Helper {
                         bytes,
                         files,
                     },
+                    skipped,
                 };
                 bundle.validate().map_err(|_| Error::Metadata)?;
                 directory.publish_new(OsStr::new(BUNDLE), &json(&bundle)?)?;

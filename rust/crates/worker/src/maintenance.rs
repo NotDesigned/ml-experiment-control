@@ -1,8 +1,9 @@
 //! Descriptor-confined, resumable removal after explicit administration. The
 //! active managed-worker lock is held and each target is deleted through its
-//! retained inode. Receipts survive alongside process metadata.
+//! retained inode. Receipts survive alongside process metadata. A link or special
+//! file in a target is removed itself and never followed or opened.
 use ml_exp_core::maintenance::Plan;
-use ml_exp_io::directory::{Directory, LockOptions};
+use ml_exp_io::directory::{Directory, EntryType, LockOptions};
 use serde::{Deserialize, Serialize};
 use std::{ffi::OsStr, io};
 fn invalid() -> io::Error {
@@ -37,10 +38,8 @@ fn inspect(root: &Directory, depth: usize, budget: &mut usize) -> io::Result<()>
     }
     for name in root.entry_names_limited(1000000)? {
         *budget += 1;
-        if let Ok(directory) = root.child(&name, false) {
-            inspect(&directory, depth + 1, budget)?;
-        } else {
-            root.open_regular_read(&name)?;
+        if root.entry_type(&name)? == Some(EntryType::Directory) {
+            inspect(&root.child(&name, false)?, depth + 1, budget)?;
         }
     }
     Ok(())
@@ -52,11 +51,12 @@ fn remove(root: &Directory, depth: usize, budget: &mut usize) -> io::Result<()> 
     root.source_mode(false)?;
     for name in root.entry_names_limited(1000000)? {
         *budget += 1;
-        if let Ok(directory) = root.child(&name, false) {
+        if root.entry_type(&name)? == Some(EntryType::Directory) {
+            let directory = root.child(&name, false)?;
             remove(&directory, depth + 1, budget)?;
             root.remove_staged_empty_child(&directory)?;
         } else {
-            root.remove_staged_regular(&name)?;
+            root.remove_non_directory(&name)?;
         }
     }
     Ok(())
@@ -178,7 +178,7 @@ mod tests {
     use std::{
         collections::BTreeMap,
         fs,
-        os::unix::fs::{MetadataExt, PermissionsExt},
+        os::unix::fs::{MetadataExt, PermissionsExt, symlink},
         path::Path,
     };
 
@@ -309,6 +309,58 @@ mod tests {
             json!(["state/checkpoints/step-4"])
         );
         assert!(!generation.exists());
+    }
+
+    #[test]
+    fn links_and_special_files_are_removed_and_what_they_point_at_stays() {
+        let temp = tempfile::tempdir().unwrap();
+        let outside = temp.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("kept"), b"not ours").unwrap();
+        let attempt = temp.path().join("runs/demo/train/attempts/attempt-001");
+        let config = config(&attempt);
+        let outputs = attempt.join("outputs");
+        fs::create_dir_all(outputs.join("nested")).unwrap();
+        fs::write(outputs.join("nested/result.bin"), b"x").unwrap();
+        symlink(&outside, outputs.join("to-directory")).unwrap();
+        symlink(outside.join("kept"), outputs.join("nested/to-file")).unwrap();
+        symlink("/absent", outputs.join("dangling")).unwrap();
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(outputs.join("nested/pipe"))
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert_eq!(
+            run(&plan(&config, Selection::Outputs, 'a')).unwrap()["paths"],
+            json!(["outputs"])
+        );
+        assert!(fs::symlink_metadata(&outputs).is_err());
+        assert_eq!(fs::read(outside.join("kept")).unwrap(), b"not ours");
+    }
+
+    #[test]
+    fn a_failed_read_refuses_the_plan_instead_of_passing_a_directory_as_a_file() {
+        if ml_exp_io::directory::effective_uid() == 0 {
+            // Root opens a mode 000 directory, so there is no failed read to observe.
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let attempt = temp.path().join("runs/demo/train/attempts/attempt-001");
+        let config = config(&attempt);
+        let locked = attempt.join("outputs/locked");
+        fs::create_dir_all(&locked).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        let plan = plan(&config, Selection::Outputs, 'a');
+        assert_eq!(
+            run(&plan).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert!(locked.exists());
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
+        run(&plan).unwrap();
+        assert!(!attempt.join("outputs").exists());
     }
 
     #[test]

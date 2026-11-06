@@ -1,9 +1,11 @@
 //! Result archive effects on backend storage. Constant-size payload buffers;
-//! everything in OUTPUT_DIR is a result; no symlinks or unstable files.
-use crate::directory::Directory;
+//! everything in OUTPUT_DIR is a result. What cannot be archived is recorded and
+//! skipped, so one odd path cannot strand the rest. A failed read or a file that
+//! changes while being packed still fails the archive.
+use crate::directory::{Directory, EntryType};
 use ml_exp_core::artifacts::{
     self, FileReceipt,
-    publication::{Policy, export_path},
+    publication::{Policy, SkipReason, Skipped, export_path},
 };
 use sha2::{Digest, Sha256};
 #[cfg(unix)]
@@ -15,6 +17,7 @@ use std::{
     io::{self, Read, Seek, SeekFrom, Write},
 };
 
+const MAX_DEPTH: usize = 128;
 fn invalid() -> io::Error {
     io::Error::other("result archive files are invalid or changed")
 }
@@ -29,22 +32,108 @@ fn allowed(kind: Kind, path: &str) -> bool {
         Kind::Data => ml_exp_core::datasets::path(path),
     }
 }
-fn selected_paths(root: &Directory, kind: Kind) -> io::Result<Vec<String>> {
-    let mut paths = Vec::new();
-    walk(root, "", &mut paths, &mut 0, kind)?;
-    if kind == Kind::Data {
-        paths.sort();
-    }
-    Ok(paths)
+/// One pass over a result tree. Nothing it meets can fail the walk except an I/O error.
+struct ResultWalk<'a> {
+    policy: &'a Policy,
+    found: BTreeSet<String>,
+    skipped: Skipped,
+    entries: usize,
+    limit: usize,
+    listed: usize,
 }
+impl ResultWalk<'_> {
+    fn visit(&mut self, directory: &Directory, prefix: &str, depth: usize) -> io::Result<()> {
+        let (names, more) = directory.first_entry_names(artifacts::MAX_FILES)?;
+        if more > 0 {
+            let shown = if prefix.is_empty() { "." } else { prefix };
+            self.skipped.add(shown, SkipReason::FileLimit);
+            self.skipped.unlisted = self.skipped.unlisted.saturating_add(more);
+        }
+        for name in names {
+            let shown = name.to_string_lossy();
+            let path = if prefix.is_empty() {
+                shown.into_owned()
+            } else {
+                format!("{prefix}/{shown}")
+            };
+            let required = self.policy.required_files.contains(&path);
+            let cost = artifacts::listed_cost(&path);
+            self.entries += 1;
+            if self.entries > self.limit || self.listed + cost > artifacts::MAX_LISTED_BYTES {
+                // A required file has its room reserved and is added after the walk.
+                if !required {
+                    self.skipped.add(&path, SkipReason::FileLimit);
+                }
+                continue;
+            }
+            if name.to_str().is_none() || !export_path(&path) {
+                self.skipped.add(&path, SkipReason::UnsupportedPath);
+                continue;
+            }
+            match directory.entry_type(&name)?.ok_or_else(invalid)? {
+                EntryType::SymbolicLink => self.skipped.add(&path, SkipReason::SymbolicLink),
+                EntryType::Special => self.skipped.add(&path, SkipReason::SpecialFile),
+                EntryType::Directory if depth >= MAX_DEPTH => {
+                    self.skipped.add(&path, SkipReason::UnsupportedPath);
+                }
+                EntryType::Directory => {
+                    self.visit(&directory.child(&name, false)?, &path, depth + 1)?;
+                }
+                EntryType::Regular => {
+                    if !required {
+                        self.listed += cost;
+                    }
+                    self.found.insert(path);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+fn selected_results(root: &Directory, policy: &Policy) -> io::Result<(Vec<String>, Skipped)> {
+    let required = &policy.required_files;
+    let mut walk = ResultWalk {
+        policy,
+        found: BTreeSet::new(),
+        skipped: Skipped::default(),
+        entries: 0,
+        limit: artifacts::MAX_FILES.saturating_sub(required.len()),
+        listed: required.iter().map(|p| artifacts::listed_cost(p)).sum(),
+    };
+    walk.visit(root, "", 0)?;
+    // A required file past the limit still leaves. One that cannot be opened stays
+    // absent here, and `Policy::check` then fails the archive.
+    for path in required {
+        if !walk.found.contains(path) && open(root, path, Kind::Results).is_ok() {
+            walk.found.insert(path.clone());
+        }
+    }
+    Ok((walk.found.into_iter().collect(), walk.skipped))
+}
+fn selected_paths(
+    root: &Directory,
+    kind: Kind,
+    policy: &Policy,
+) -> io::Result<(Vec<String>, Skipped)> {
+    if kind == Kind::Results {
+        return selected_results(root, policy);
+    }
+    let mut paths = Vec::new();
+    walk(root, "", &mut paths, &mut 0)?;
+    if paths.is_empty() {
+        return Err(invalid());
+    }
+    paths.sort();
+    Ok((paths, Skipped::default()))
+}
+/// A dataset tree is all or nothing: its identity is every file it holds.
 pub(crate) fn walk(
     directory: &Directory,
     prefix: &str,
     found: &mut Vec<String>,
     budget: &mut usize,
-    kind: Kind,
 ) -> io::Result<()> {
-    if prefix.len() > artifacts::MAX_PATH || prefix.split('/').count() > 128 {
+    if prefix.len() > artifacts::MAX_PATH || prefix.split('/').count() > MAX_DEPTH {
         return Err(invalid());
     }
     let mut names = directory.entry_names_limited(artifacts::MAX_FILES)?;
@@ -60,11 +149,11 @@ pub(crate) fn walk(
         } else {
             format!("{prefix}/{name}")
         };
-        if !allowed(kind, &path) {
+        if !allowed(Kind::Data, &path) {
             return Err(invalid());
         }
         if let Ok(child) = directory.child(OsStr::new(name), false) {
-            walk(&child, &path, found, budget, kind)?;
+            walk(&child, &path, found, budget)?;
         } else {
             directory.open_regular_read(OsStr::new(name))?;
             found.push(path);
@@ -114,31 +203,32 @@ impl<R: Read> Read for HashReader<R> {
     }
 }
 /// Stream a deterministic regular-file tar. The caller owns an unpublished
-/// destination and removes it on failure; no API-host archive is necessary.
+/// destination and removes it on failure; no API-host archive is necessary. Only a
+/// missing required file refuses the selection. The returned skip list says what the
+/// archive leaves out, and may leave it with no members at all.
 pub fn pack(
     root: &Directory,
     output: &mut File,
     policy: &Policy,
-) -> io::Result<(String, u64, Vec<FileReceipt>)> {
+) -> io::Result<(String, u64, Vec<FileReceipt>, Skipped)> {
     pack_kind(root, output, policy, Kind::Results)
 }
 pub fn pack_data(
     root: &Directory,
     output: &mut File,
 ) -> io::Result<(String, u64, Vec<FileReceipt>)> {
-    pack_kind(root, output, &Policy::default(), Kind::Data)
+    let (sha256, bytes, files, _) = pack_kind(root, output, &Policy::default(), Kind::Data)?;
+    Ok((sha256, bytes, files))
 }
 fn pack_kind(
     root: &Directory,
     output: &mut File,
     policy: &Policy,
     kind: Kind,
-) -> io::Result<(String, u64, Vec<FileReceipt>)> {
+) -> io::Result<(String, u64, Vec<FileReceipt>, Skipped)> {
     policy.validate().map_err(|_| invalid())?;
-    let paths = selected_paths(root, kind)?;
-    if paths.is_empty() {
-        return Err(invalid());
-    }
+    let selected = selected_paths(root, kind, policy)?;
+    let paths = &selected.0;
     policy
         .check(
             &paths
@@ -158,7 +248,7 @@ fn pack_kind(
     };
     let mut archive = tar::Builder::new(writer);
     let mut files = Vec::new();
-    for path in &paths {
+    for path in paths {
         let mut file = open(root, path, kind)?;
         let before = file.metadata()?;
         let mut header = tar::Header::new_gnu();
@@ -205,8 +295,7 @@ fn pack_kind(
     archive.finish()?;
     let writer = archive.into_inner()?;
     writer.inner.sync_all()?;
-    let after = selected_paths(root, kind)?;
-    if paths != after {
+    if selected != selected_paths(root, kind, policy)? {
         return Err(invalid());
     }
     // A second hash pass also catches a file changed after its own first read.
@@ -217,7 +306,12 @@ fn pack_kind(
             return Err(invalid());
         }
     }
-    Ok((format!("{:x}", writer.hash.finalize()), writer.bytes, files))
+    Ok((
+        format!("{:x}", writer.hash.finalize()),
+        writer.bytes,
+        files,
+        selected.1,
+    ))
 }
 pub fn hash(reader: &mut impl Read) -> io::Result<(String, u64)> {
     let mut h = Sha256::new();
@@ -400,7 +494,7 @@ pub fn copy_result_file(
 
 pub fn estimate(root: &Directory, policy: &Policy) -> io::Result<u64> {
     policy.validate().map_err(|_| invalid())?;
-    let paths = selected_paths(root, Kind::Results)?;
+    let (paths, _) = selected_results(root, policy)?;
     let mut bytes = 16u64 * 1024 * 1024;
     for path in paths {
         let file = open(root, &path, Kind::Results)?;
@@ -499,6 +593,23 @@ mod tests {
         assert!(pack_data(&directory, &mut tempfile::tempfile().unwrap()).is_err());
     }
     #[test]
+    fn dataset_trees_stay_all_or_nothing_for_every_path_results_would_skip() {
+        for odd_name in [true, false] {
+            let root = tempfile::tempdir().unwrap();
+            std::fs::write(root.path().join("kept"), b"x").unwrap();
+            if odd_name {
+                std::fs::write(root.path().join("line\nbreak"), b"x").unwrap();
+            } else {
+                symlink("kept", root.path().join("link")).unwrap();
+            }
+            let directory = Directory::open(root.path(), false).unwrap();
+            assert!(pack_data(&directory, &mut tempfile::tempfile().unwrap()).is_err());
+        }
+        let empty = tempfile::tempdir().unwrap();
+        let directory = Directory::open(empty.path(), false).unwrap();
+        assert!(pack_data(&directory, &mut tempfile::tempfile().unwrap()).is_err());
+    }
+    #[test]
     fn imported_data_discovers_files_and_rejects_wrong_or_truncated_bytes() {
         let root = tempfile::tempdir().unwrap();
         let directory = Directory::open(root.path(), false).unwrap();
@@ -538,7 +649,7 @@ mod tests {
         std::fs::write(root.path().join("nested/weights.bin"), [0, 1, 2, 255]).unwrap();
         std::fs::write(root.path().join("empty.log"), []).unwrap();
         let mut file = tempfile::tempfile().unwrap();
-        let (sha, bytes, files) = pack(
+        let (sha, bytes, files, skipped) = pack(
             &directory,
             &mut file,
             &Policy {
@@ -547,6 +658,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(files.len(), 2);
+        assert_eq!(skipped, Skipped::default());
         let receipt = receipt(sha, bytes, files);
         let proof = verify(&mut file, &receipt).unwrap();
         artifacts::proof_matches(&receipt, &proof).unwrap();
@@ -562,7 +674,7 @@ mod tests {
         std::fs::write(root.path().join("checkpoints/state.pt"), b"kept").unwrap();
         std::fs::write(root.path().join("checkpoint.ready.json"), b"{}").unwrap();
         let mut file = tempfile::tempfile().unwrap();
-        let (sha, bytes, files) = pack(&directory, &mut file, &Policy::default()).unwrap();
+        let (sha, bytes, files, _) = pack(&directory, &mut file, &Policy::default()).unwrap();
         let paths: Vec<_> = files.iter().map(|f| f.path.as_str()).collect();
         assert_eq!(paths, ["checkpoint.ready.json", "checkpoints/state.pt"]);
         let receipt = receipt(sha, bytes, files);
@@ -579,19 +691,264 @@ mod tests {
             required_files: vec!["checkpoints/absent.pt".into()],
         };
         assert!(pack(&directory, &mut tempfile::tempfile().unwrap(), &absent).is_err());
-        // Its contents follow the same rules as any other result.
-        symlink("/outside", root.path().join("checkpoints/private")).unwrap();
+    }
+    fn rows(skipped: &Skipped) -> Vec<(&str, SkipReason)> {
+        skipped
+            .paths
+            .iter()
+            .map(|row| (row.path.as_str(), row.reason))
+            .collect()
+    }
+    #[test]
+    fn hidden_names_and_an_outputs_entry_leave_with_the_rest_and_verify() {
+        let root = tempfile::tempdir().unwrap();
+        for dir in [".hydra", "outputs/nested"] {
+            std::fs::create_dir_all(root.path().join(dir)).unwrap();
+        }
+        for file in [
+            ".hydra/config.yaml",
+            ".env",
+            "outputs/nested/final.pt",
+            "metrics.jsonl",
+        ] {
+            std::fs::write(root.path().join(file), file.as_bytes()).unwrap();
+        }
+        let directory = Directory::open(root.path(), false).unwrap();
+        let mut file = tempfile::tempfile().unwrap();
+        let (sha, bytes, files, skipped) = pack(
+            &directory,
+            &mut file,
+            &Policy {
+                required_files: vec![".hydra/config.yaml".into()],
+            },
+        )
+        .unwrap();
+        assert_eq!(skipped, Skipped::default());
+        let paths: Vec<_> = files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            [
+                ".env",
+                ".hydra/config.yaml",
+                "metrics.jsonl",
+                "outputs/nested/final.pt"
+            ]
+        );
+        let receipt = receipt(sha, bytes, files);
+        let proof = verify(&mut file, &receipt).unwrap();
+        assert!(proof.files.contains_key("outputs/outputs/nested/final.pt"));
+        file.rewind().unwrap();
+        let mut copied = Vec::new();
+        copy_result_file(&mut file, &receipt, "outputs/nested/final.pt", &mut copied).unwrap();
+        assert_eq!(copied, b"outputs/nested/final.pt");
+    }
+    #[test]
+    fn links_special_files_and_unsupported_names_are_recorded_and_never_followed() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret"), b"never archived").unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("data")).unwrap();
+        std::fs::write(root.path().join("data/kept.bin"), b"kept").unwrap();
+        symlink(outside.path(), root.path().join("data/to-directory")).unwrap();
+        symlink(outside.path().join("secret"), root.path().join("to-file")).unwrap();
+        symlink("/absent", root.path().join("dangling")).unwrap();
         assert!(
-            pack(
-                &directory,
-                &mut tempfile::tempfile().unwrap(),
-                &Policy::default()
-            )
-            .is_err()
+            std::process::Command::new("mkfifo")
+                .arg(root.path().join("pipe"))
+                .status()
+                .unwrap()
+                .success()
+        );
+        std::fs::write(root.path().join("line\nbreak"), b"x").unwrap();
+        std::fs::write(root.path().join("back\\slash"), b"x").unwrap();
+        let directory = Directory::open(root.path(), false).unwrap();
+        let mut file = tempfile::tempfile().unwrap();
+        let (sha, size, files, skipped) = pack(&directory, &mut file, &Policy::default()).unwrap();
+        let paths: Vec<_> = files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, ["data/kept.bin"]);
+        assert_eq!(
+            rows(&skipped),
+            [
+                ("back\\slash", SkipReason::UnsupportedPath),
+                ("dangling", SkipReason::SymbolicLink),
+                ("data/to-directory", SkipReason::SymbolicLink),
+                ("line\\nbreak", SkipReason::UnsupportedPath),
+                ("pipe", SkipReason::SpecialFile),
+                ("to-file", SkipReason::SymbolicLink),
+            ]
+        );
+        assert_eq!(skipped.unlisted, 0);
+        verify(&mut file, &receipt(sha, size, files)).unwrap();
+        // The size check covers only what is actually packed.
+        assert_eq!(
+            estimate(&directory, &Policy::default()).unwrap(),
+            16 * 1024 * 1024 + 4 + 8192
+        );
+        // The same tree yields the same archive and the same list.
+        let again = pack(
+            &directory,
+            &mut tempfile::tempfile().unwrap(),
+            &Policy::default(),
+        )
+        .unwrap();
+        assert_eq!(again.3, skipped);
+    }
+    #[test]
+    fn a_name_that_is_not_utf8_is_recorded_when_the_filesystem_holds_one() {
+        use std::os::unix::ffi::OsStrExt;
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("kept"), b"x").unwrap();
+        // Some filesystems refuse this name; then there is nothing to walk past.
+        if std::fs::write(root.path().join(OsStr::from_bytes(b"odd-\xff")), b"x").is_err() {
+            return;
+        }
+        let directory = Directory::open(root.path(), false).unwrap();
+        let (_, _, files, skipped) = pack(
+            &directory,
+            &mut tempfile::tempfile().unwrap(),
+            &Policy::default(),
+        )
+        .unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            rows(&skipped),
+            [("odd-\u{fffd}", SkipReason::UnsupportedPath)]
         );
     }
     #[test]
-    fn missing_required_files_symlinks_and_duplicate_members_fail() {
+    fn a_required_link_or_special_file_is_a_missing_file_and_fails() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("real"), b"x").unwrap();
+        symlink("real", root.path().join("weights.bin")).unwrap();
+        let directory = Directory::open(root.path(), false).unwrap();
+        let policy = Policy {
+            required_files: vec!["weights.bin".into()],
+        };
+        assert!(pack(&directory, &mut tempfile::tempfile().unwrap(), &policy).is_err());
+        assert!(estimate(&directory, &Policy::default()).is_ok());
+    }
+    #[test]
+    fn an_output_directory_with_nothing_to_archive_still_leaves_its_skip_list() {
+        let root = tempfile::tempdir().unwrap();
+        symlink("/absent", root.path().join("link")).unwrap();
+        let directory = Directory::open(root.path(), false).unwrap();
+        let mut file = tempfile::tempfile().unwrap();
+        let (sha, bytes, files, skipped) = pack(&directory, &mut file, &Policy::default()).unwrap();
+        assert!(files.is_empty());
+        assert_eq!(rows(&skipped), [("link", SkipReason::SymbolicLink)]);
+        let receipt = receipt(sha, bytes, files);
+        let proof = verify(&mut file, &receipt).unwrap();
+        artifacts::proof_matches(&receipt, &proof).unwrap();
+        file.rewind().unwrap();
+        verify_stream(&mut file, &receipt).unwrap();
+    }
+    #[test]
+    fn a_failed_read_fails_the_archive_instead_of_losing_the_directory_silently() {
+        use std::os::unix::fs::PermissionsExt;
+        if crate::directory::effective_uid() == 0 {
+            // Root opens a mode 000 directory, so there is no failed read to observe.
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("kept"), b"x").unwrap();
+        let locked = root.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::write(locked.join("weights.bin"), b"x").unwrap();
+        let mode = |bits| std::fs::Permissions::from_mode(bits);
+        std::fs::set_permissions(&locked, mode(0o000)).unwrap();
+        let directory = Directory::open(root.path(), false).unwrap();
+        let error = pack(
+            &directory,
+            &mut tempfile::tempfile().unwrap(),
+            &Policy::default(),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(estimate(&directory, &Policy::default()).is_err());
+        std::fs::set_permissions(&locked, mode(0o700)).unwrap();
+    }
+    #[test]
+    fn past_the_file_limit_the_skip_list_names_what_is_missing_and_a_required_file_still_leaves() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("a")).unwrap();
+        for n in 0..artifacts::MAX_FILES {
+            std::fs::write(root.path().join(format!("a/{n:05}")), []).unwrap();
+        }
+        std::fs::write(root.path().join("b-not-required"), b"x").unwrap();
+        std::fs::create_dir(root.path().join("c")).unwrap();
+        std::fs::write(root.path().join("c/under-a-skipped-directory"), b"x").unwrap();
+        std::fs::write(root.path().join("weights.bin"), b"weights").unwrap();
+        let directory = Directory::open(root.path(), false).unwrap();
+        let policy = Policy {
+            required_files: vec!["weights.bin".into(), "c/under-a-skipped-directory".into()],
+        };
+        let (sha, bytes, files, skipped) =
+            pack(&directory, &mut tempfile::tempfile().unwrap(), &policy).unwrap();
+        // The directory `a` itself takes one of the entries the two required files left.
+        assert_eq!(files.len(), artifacts::MAX_FILES - 1);
+        for path in ["weights.bin", "c/under-a-skipped-directory"] {
+            assert!(files.iter().any(|f| f.path == path), "{path}");
+        }
+        assert!(!files.iter().any(|f| f.path == "b-not-required"));
+        assert_eq!(
+            rows(&skipped),
+            [
+                ("a/19997", SkipReason::FileLimit),
+                ("a/19998", SkipReason::FileLimit),
+                ("a/19999", SkipReason::FileLimit),
+                ("b-not-required", SkipReason::FileLimit),
+                ("c", SkipReason::FileLimit),
+            ]
+        );
+        artifacts::validate_receipt(&receipt(sha, bytes, files)).unwrap();
+    }
+    #[test]
+    fn one_directory_past_the_limit_is_read_in_sort_order_and_counted() {
+        let root = tempfile::tempdir().unwrap();
+        for n in 0..artifacts::MAX_FILES + 3 {
+            std::fs::write(root.path().join(format!("{n:05}")), []).unwrap();
+        }
+        let directory = Directory::open(root.path(), false).unwrap();
+        let (files, skipped) = selected_results(&directory, &Policy::default()).unwrap();
+        assert_eq!(files.len(), artifacts::MAX_FILES);
+        assert_eq!(files.last().unwrap(), "19999");
+        assert_eq!(rows(&skipped), [(".", SkipReason::FileLimit)]);
+        assert_eq!(skipped.unlisted, 3);
+    }
+    #[test]
+    fn long_paths_stop_at_what_a_saved_state_can_hold() {
+        let root = tempfile::tempdir().unwrap();
+        let name = "n".repeat(240);
+        let count = 8000;
+        for n in 0..count {
+            std::fs::write(root.path().join(format!("{name}{n:05}")), []).unwrap();
+        }
+        let directory = Directory::open(root.path(), false).unwrap();
+        let (files, skipped) = selected_results(&directory, &Policy::default()).unwrap();
+        assert!(files.len() < count && !skipped.paths.is_empty());
+        assert_eq!(
+            files.len() + skipped.paths.len() + skipped.unlisted as usize,
+            count
+        );
+        // A receipt and a proof of these files fit the 8 MiB read limit on a saved State.
+        let rows: Vec<_> = files
+            .into_iter()
+            .map(|path| FileReceipt {
+                path,
+                bytes: u64::MAX,
+                sha256: "0".repeat(64),
+            })
+            .collect();
+        let saved = serde_json::to_vec(&serde_json::json!({
+            "receipt": rows,
+            "proof": rows.iter().map(|f| (format!("outputs/{}", f.path), f)).collect::<Vec<_>>(),
+            "skipped": skipped,
+        }))
+        .unwrap();
+        assert!(saved.len() < 8 * 1024 * 1024, "{}", saved.len());
+    }
+    #[test]
+    fn missing_required_files_and_changed_hashes_fail() {
         let root = tempfile::tempdir().unwrap();
         let directory = Directory::open(root.path(), false).unwrap();
         std::fs::write(root.path().join("metrics.jsonl"), b"{}\n").unwrap();
@@ -606,11 +963,8 @@ mod tests {
             )
             .is_err()
         );
-        symlink("metrics.jsonl", root.path().join("link")).unwrap();
-        assert!(pack(&directory, &mut file, &Policy::default()).is_err());
-        std::fs::remove_file(root.path().join("link")).unwrap();
         let mut file = tempfile::tempfile().unwrap();
-        let (sha, bytes, files) = pack(&directory, &mut file, &Policy::default()).unwrap();
+        let (sha, bytes, files, _) = pack(&directory, &mut file, &Policy::default()).unwrap();
         let mut wrong = receipt(sha, bytes, files);
         wrong.files[0].sha256 = "0".repeat(64);
         assert!(verify(&mut file, &wrong).is_err());

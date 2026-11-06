@@ -156,7 +156,7 @@ pub fn publish(package: &Package) -> Result<()> {
         let mut file = dir
             .create_new_regular(OsStr::new("archive.tar"))
             .map_err(|_| Error::Storage)?;
-        let (sha256, bytes, files) =
+        let (sha256, bytes, files, skipped) =
             ml_exp_io::artifacts::pack(&outputs, &mut file, &policy).map_err(|_| Error::Storage)?;
         file.sync_all().map_err(|_| Error::Storage)?;
         ml_exp_io::directory::seal_regular(&file, false).map_err(|_| Error::Storage)?;
@@ -179,6 +179,7 @@ pub fn publish(package: &Package) -> Result<()> {
                 bytes,
                 files,
             },
+            skipped,
         };
         bundle.validate().map_err(|_| Error::Binding)?;
         dir.publish_new(
