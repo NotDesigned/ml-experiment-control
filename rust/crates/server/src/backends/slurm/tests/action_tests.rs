@@ -2,10 +2,7 @@
 use super::super::action::{Execute, Runner};
 use super::*;
 use crate::operations::{ClaimContext, Store};
-use ml_exp_core::{
-    operations::{FrozenFiles, Policy},
-    slurm::action as decision,
-};
+use ml_exp_core::{operations::FrozenFiles, slurm::action as decision};
 use serde_json::{Value, json};
 const NOW: &str = "2026-10-28T00:00:00Z";
 fn id(n: u64) -> String {
@@ -61,25 +58,12 @@ fn files(request: &Request) -> FrozenFiles {
     FrozenFiles {
         execution_campaign_sha256: Some(helper::sha256_bytes(b"campaign")),
         execution_manifest_sha256: Some(request.intent().manifest_sha256.clone()),
-        ..Default::default()
     }
 }
-fn policy() -> Policy {
-    Policy {
-        allow_scheduler_mutations: true,
-        ..Default::default()
-    }
-}
-fn command<'a>(
-    action_id: &'a str,
-    confirmation: &'a str,
-    policy: &'a Policy,
-    files: &'a FrozenFiles,
-) -> Execute<'a> {
+fn command<'a>(action_id: &'a str, confirmation: &'a str, files: &'a FrozenFiles) -> Execute<'a> {
     Execute {
         action_id,
         confirmation,
-        policy,
         files,
         claim: ClaimContext {
             now: NOW,
@@ -98,12 +82,11 @@ fn claimed_action_runs_through_helper_and_verifies_owned_submission_once() {
     let cancelled = AtomicBool::new(false);
     let action = plan["action_id"].as_str().unwrap();
     let confirmation = format!("EXECUTE {action}");
-    let policy = policy();
     let files = files(&prepare);
     let result = runner
         .execute(
             &prepare,
-            command(action, &confirmation, &policy, &files),
+            command(action, &confirmation, &files),
             &|| Ok(()),
             &cancelled,
         )
@@ -119,7 +102,7 @@ fn claimed_action_runs_through_helper_and_verifies_owned_submission_once() {
         runner
             .execute(
                 &prepare,
-                command(action, &confirmation, &policy, &files),
+                command(action, &confirmation, &files),
                 &|| Ok(()),
                 &cancelled
             )
@@ -142,7 +125,6 @@ fn lost_submit_reply_and_process_restart_inspect_original_receipt_without_replay
     let (root, ssh, store, prepare, plan) = fixture("ledger-lost-submit");
     let action = plan["action_id"].as_str().unwrap();
     let confirmation = format!("EXECUTE {action}");
-    let policy = policy();
     let files = files(&prepare);
     let cancelled = AtomicBool::new(false);
     let result = Runner {
@@ -151,7 +133,7 @@ fn lost_submit_reply_and_process_restart_inspect_original_receipt_without_replay
     }
     .execute(
         &prepare,
-        command(action, &confirmation, &policy, &files),
+        command(action, &confirmation, &files),
         &|| Ok(()),
         &cancelled,
     )
@@ -165,7 +147,7 @@ fn lost_submit_reply_and_process_restart_inspect_original_receipt_without_replay
         }
         .execute(
             &prepare,
-            command(action, &confirmation, &policy, &files),
+            command(action, &confirmation, &files),
             &|| Ok(()),
             &cancelled
         )
@@ -196,18 +178,11 @@ fn restart_before_submit_does_not_treat_prepared_ledger_as_absence() {
     let (root, ssh, store, prepare, plan) = fixture("ledger");
     let action = plan["action_id"].as_str().unwrap();
     let confirmation = format!("EXECUTE {action}");
-    let policy = policy();
     let files = files(&prepare);
-    let command = command(action, &confirmation, &policy, &files);
+    let command = command(action, &confirmation, &files);
     store.bind_slurm_request(action, &prepare).unwrap();
     store
-        .claim(
-            action,
-            command.confirmation,
-            command.policy,
-            command.files,
-            command.claim,
-        )
+        .claim(action, command.confirmation, command.files, command.claim)
         .unwrap();
     let helper = ml_exp_worker::slurm::Helper::open(ledger_config(root.path())).unwrap();
     helper.handle(&prepare, &AtomicBool::new(false)).unwrap();
@@ -241,7 +216,7 @@ fn restart_before_submit_does_not_treat_prepared_ledger_as_absence() {
     );
 }
 #[test]
-fn frozen_mismatch_disabled_policy_or_lost_guard_cannot_dispatch() {
+fn frozen_mismatch_or_lost_guard_cannot_dispatch() {
     let (root, ssh, store, prepare, plan) = fixture("ledger");
     let action = plan["action_id"].as_str().unwrap();
     let confirmation = format!("EXECUTE {action}");
@@ -250,7 +225,6 @@ fn frozen_mismatch_disabled_policy_or_lost_guard_cannot_dispatch() {
         ssh: &ssh,
     };
     let cancelled = AtomicBool::new(false);
-    let policy = policy();
     let mut wrong = files(&prepare);
     wrong.execution_manifest_sha256 = Some(helper::sha256_bytes(b"foreign"));
     let path = store.directory(action).unwrap().join("plan.json");
@@ -262,7 +236,7 @@ fn frozen_mismatch_disabled_policy_or_lost_guard_cannot_dispatch() {
         runner
             .execute(
                 &prepare,
-                command(action, &confirmation, &policy, &files(&prepare)),
+                command(action, &confirmation, &files(&prepare)),
                 &|| Ok(()),
                 &cancelled
             )
@@ -277,17 +251,7 @@ fn frozen_mismatch_disabled_policy_or_lost_guard_cannot_dispatch() {
         runner
             .execute(
                 &prepare,
-                command(action, &confirmation, &policy, &wrong),
-                &|| Ok(()),
-                &cancelled
-            )
-            .is_err()
-    );
-    assert!(
-        runner
-            .execute(
-                &prepare,
-                command(action, &confirmation, &Policy::default(), &files(&prepare)),
+                command(action, &confirmation, &wrong),
                 &|| Ok(()),
                 &cancelled
             )
@@ -303,7 +267,7 @@ fn frozen_mismatch_disabled_policy_or_lost_guard_cannot_dispatch() {
     let result = runner
         .execute(
             &prepare,
-            command(action, &confirmation, &policy, &files(&prepare)),
+            command(action, &confirmation, &files(&prepare)),
             &guard,
             &cancelled,
         )
@@ -317,7 +281,6 @@ fn cancellation_before_claim_and_timeout_after_claim_have_distinct_durable_state
     let (root, mut ssh, store, prepare, plan) = fixture("hang");
     let action = plan["action_id"].as_str().unwrap();
     let confirmation = format!("EXECUTE {action}");
-    let policy = policy();
     let files = files(&prepare);
     assert!(
         Runner {
@@ -326,7 +289,7 @@ fn cancellation_before_claim_and_timeout_after_claim_have_distinct_durable_state
         }
         .execute(
             &prepare,
-            command(action, &confirmation, &policy, &files),
+            command(action, &confirmation, &files),
             &|| Ok(()),
             &AtomicBool::new(true)
         )
@@ -345,7 +308,7 @@ fn cancellation_before_claim_and_timeout_after_claim_have_distinct_durable_state
     }
     .execute(
         &prepare,
-        command(action, &confirmation, &policy, &files),
+        command(action, &confirmation, &files),
         &|| Ok(()),
         &AtomicBool::new(false),
     )
@@ -372,7 +335,7 @@ fn a_durable_job_receipt_with_foreign_scheduler_state_is_not_verified() {
     let result = runner
         .execute(
             &prepare,
-            command(action, &confirmation, &policy(), &files(&prepare)),
+            command(action, &confirmation, &files(&prepare)),
             &|| Ok(()),
             &AtomicBool::new(false),
         )
@@ -406,7 +369,7 @@ fn missing_corrupt_or_unsafe_private_frame_cannot_be_repaired_after_claim() {
         runner
             .execute(
                 &prepare,
-                command(action, &confirmation, &policy(), &files(&prepare)),
+                command(action, &confirmation, &files(&prepare)),
                 &|| Ok(()),
                 &AtomicBool::new(false),
             )

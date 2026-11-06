@@ -7,7 +7,7 @@ use crate::{
 };
 use ml_exp_core::{
     first_submission::native::{self, Approval, Prepared, Profile, Runtime},
-    operations::{FrozenFiles, Policy},
+    operations::FrozenFiles,
     slurm::{ExecutionConfig, JobSpec, Resources, SlurmConfig, Storage},
 };
 use serde_json::{Value, json};
@@ -867,14 +867,9 @@ fn interrupted_claim_recovery_is_explicit_and_never_submits_before_reconcile() {
         .claim(
             id,
             &format!("EXECUTE {id}"),
-            &Policy {
-                allow_scheduler_mutations: true,
-                ..Default::default()
-            },
             &FrozenFiles {
                 execution_campaign_sha256: Some(private.binding.run_sha256.clone()),
                 execution_manifest_sha256: Some(private.request.intent().manifest_sha256.clone()),
-                ..Default::default()
             },
             crate::operations::ClaimContext {
                 now: NOW,
@@ -1168,14 +1163,9 @@ fn explicit_reconcile_recovers_a_dead_claim_without_replaying_submit() {
         .claim(
             id,
             &format!("EXECUTE {id}"),
-            &Policy {
-                allow_scheduler_mutations: true,
-                ..Default::default()
-            },
             &FrozenFiles {
                 execution_campaign_sha256: Some(saved.binding.run_sha256.clone()),
                 execution_manifest_sha256: Some(saved.request.intent().manifest_sha256.clone()),
-                ..Default::default()
             },
             crate::operations::ClaimContext {
                 now: NOW,

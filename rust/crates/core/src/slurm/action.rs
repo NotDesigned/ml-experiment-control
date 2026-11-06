@@ -51,11 +51,6 @@ fn scope(plan: &Value, request: &Request) -> Result<Scope> {
             return Err(Error);
         }
     }
-    if !plan["authored_campaign_sha256"].is_null()
-        && !helper::valid_digest(text(plan, "authored_campaign_sha256")?)
-    {
-        return Err(Error);
-    }
     let created = OffsetDateTime::parse(text(plan, "created_at")?, &Rfc3339).map_err(|_| Error)?;
     let expires =
         OffsetDateTime::parse(text(plan, "gate_expires_at")?, &Rfc3339).map_err(|_| Error)?;

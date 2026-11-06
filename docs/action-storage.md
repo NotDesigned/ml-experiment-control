@@ -2,8 +2,8 @@
 
 `ACTION_ROOT/actions.sqlite3` is authoritative for Action execution state and
 audit events, committed in one transaction. In a native deployment `ACTION_ROOT` is
-`actions/` under the registry root. Plans, reviewed artifacts and private command
-inputs keep their immutable directory layout. SQLite uses WAL, `synchronous=FULL`,
+`actions/` under the registry root. Each Action directory holds its immutable plan
+and frozen provider request. Every Action is a Submission. SQLite uses WAL, `synchronous=FULL`,
 a 30-second busy timeout and owner-private files; keep it on local storage.
 
 Revision checks and execution claims run inside `BEGIN IMMEDIATE`. Two callers

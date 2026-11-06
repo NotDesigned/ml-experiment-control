@@ -276,7 +276,7 @@ fn cloud_runner_uses_existing_action_authorization_private_request_and_restart_r
     use ml_exp_core::{
         cloud::action,
         first_submission::native::{Approval, Binding},
-        operations::{FrozenFiles, Policy},
+        operations::FrozenFiles,
     };
     let temp = tempfile::tempdir().unwrap();
     let effects = temp.path().join("effects");
@@ -352,14 +352,9 @@ fn cloud_runner_uses_existing_action_authorization_private_request_and_restart_r
     )
     .unwrap();
     let flag = AtomicBool::new(false);
-    let policy = Policy {
-        allow_scheduler_mutations: true,
-        ..Default::default()
-    };
     let files = FrozenFiles {
         execution_campaign_sha256: Some(digest.clone()),
         execution_manifest_sha256: Some(digest),
-        ..Default::default()
     };
     let confirmation = format!("EXECUTE {id}");
     let guard = || Ok(());
@@ -369,7 +364,6 @@ fn cloud_runner_uses_existing_action_authorization_private_request_and_restart_r
             Execute {
                 action_id: id,
                 confirmation: &confirmation,
-                policy: &policy,
                 files: &files,
                 claim: ClaimContext {
                     now,

@@ -166,14 +166,9 @@ impl Service {
             .map_err(why!(cloud::Error::evidence()))?;
         self.check(&prepared)?;
         let check = || self.still_live(&guard, &execution.job.project, &execution.job.run_id);
-        let policy = Policy {
-            allow_scheduler_mutations: true,
-            ..Default::default()
-        };
         let files = FrozenFiles {
             execution_campaign_sha256: Some(execution.binding.run_sha256.clone()),
             execution_manifest_sha256: Some(execution.binding.attempt_sha256.clone()),
-            ..Default::default()
         };
         let snapshot = Runner {
             actions: &self.actions,
@@ -185,7 +180,6 @@ impl Service {
             Execute {
                 action_id: action,
                 confirmation,
-                policy: &policy,
                 files: &files,
                 claim: ClaimContext {
                     now,

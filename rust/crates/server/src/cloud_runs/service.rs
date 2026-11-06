@@ -15,7 +15,7 @@ use ml_exp_core::{
         run,
     },
     first_submission::native::{self, Approval, Binding, creation},
-    operations::{FrozenFiles, Policy},
+    operations::FrozenFiles,
     slurm::helper,
 };
 use ml_exp_io::directory::{Directory, FileLock, LockOptions};

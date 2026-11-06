@@ -32,8 +32,6 @@ pub enum Error {
     NotFound,
     #[error("idempotency key is already bound to a different operation intent")]
     IdempotencyConflict,
-    #[error("Action command is already recorded with a different payload")]
-    CommandConflict,
     #[error("invalid Action storage record: {0}")]
     Invalid(&'static str),
 }
@@ -247,38 +245,6 @@ impl Database {
             connection.execute("INSERT INTO executions VALUES (?,?,?) ON CONFLICT(action_id) DO UPDATE SET revision=excluded.revision,payload=excluded.payload",params![action_id,revision,serde_json::to_string(&execution)?])?;
             connection.execute("INSERT INTO events(action_id,event_key,revision,payload) VALUES (?,?,?,?)",params![action_id,format!("transition:{transition_id}"),revision,serde_json::to_string(&event)?])?;
             Ok(execution)
-        })
-    }
-
-    pub fn append_event(&self, action_id: &str, event: &Value, event_id: &str) -> Result<()> {
-        operations::validate_action_id(action_id)?;
-        if event_id.is_empty() || event_id.len() > 4096 || event_id.chars().any(char::is_control) {
-            return Err(Error::Invalid("event_id"));
-        }
-        self.transaction(|connection| {
-            let current = Self::read_transaction(connection, action_id)?;
-            let mut record = event
-                .as_object()
-                .cloned()
-                .ok_or(Error::Invalid("journal event"))?;
-            record.insert("journal_event_id".into(), json!(event_id));
-            record.insert(
-                "state_revision".into(),
-                json!(operations::revision(&current)?),
-            );
-            connection.execute(
-                "INSERT OR IGNORE INTO executions VALUES (?,0,'{}')",
-                [action_id],
-            )?;
-            connection.execute(
-                "INSERT OR IGNORE INTO events(action_id,event_key,payload) VALUES (?,?,?)",
-                params![
-                    action_id,
-                    format!("event:{event_id}"),
-                    serde_json::to_string(&record)?
-                ],
-            )?;
-            Ok(())
         })
     }
 

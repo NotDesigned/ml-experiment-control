@@ -11,7 +11,7 @@ use crate::{
 use ml_exp_core::{
     canonical,
     first_submission::native::{self, Approval, Binding, Prepared, Profile, Runtime},
-    operations::{FrozenFiles, Policy},
+    operations::FrozenFiles,
     slurm::helper,
 };
 use ml_exp_io::directory::{Directory, FileLock, LockOptions, effective_uid};
@@ -384,14 +384,9 @@ impl Service {
             .values()
             .find(|b| b.profile.target == prepared.request.intent().target)
             .ok_or(Error::Authority)?;
-        let policy = Policy {
-            allow_scheduler_mutations: true,
-            ..Default::default()
-        };
         let files = FrozenFiles {
             execution_campaign_sha256: Some(prepared.binding.run_sha256.clone()),
             execution_manifest_sha256: Some(prepared.request.intent().manifest_sha256.clone()),
-            ..Default::default()
         };
         self.check(&prepared)?;
         let check = || {
@@ -407,7 +402,6 @@ impl Service {
             Execute {
                 action_id: action,
                 confirmation,
-                policy: &policy,
                 files: &files,
                 claim: ClaimContext {
                     now: context.now,

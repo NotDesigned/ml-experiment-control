@@ -2,7 +2,7 @@
 mod database;
 mod store;
 pub use database::{Database, Error, Result};
-pub use store::{ClaimContext, Claimed, CommandPhase, Store};
+pub use store::{ClaimContext, Claimed, Store};
 
 #[cfg(test)]
 mod tests;
@@ -12,7 +12,6 @@ mod tests;
 pub struct Execute<'a> {
     pub action_id: &'a str,
     pub confirmation: &'a str,
-    pub policy: &'a ml_exp_core::operations::Policy,
     pub files: &'a ml_exp_core::operations::FrozenFiles,
     pub claim: ClaimContext<'a>,
 }
