@@ -10,9 +10,8 @@ Platform metrics are accepted and queried independently of W&B. Without the
 optional SDK, publication reports `WANDB_SDK_NOT_INSTALLED`; it does not rewrite
 the frozen Run route or discard accepted records.
 
-Health also returns `supported_capabilities`
-(implemented protocols) and `deployment` (the readiness document). Mutation
-permissions and executor capabilities remain separate checks; these lists do not
+Health also returns `deployment` (the readiness document). Mutation permissions
+and executor capabilities remain separate checks; the capability list does not
 grant authorization. Authenticated `GET /api/readiness` returns the same document
 and sends no provider request. `training=INCOMPLETE` is always reported today with
 `training_status_scope=acceptance_evidence`: it describes recorded acceptance, not

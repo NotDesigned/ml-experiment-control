@@ -370,12 +370,6 @@ fn native_clients_pin_exact_attempt_and_keep_scientific_metric_dimensions() {
     let health = client.negotiate().unwrap();
     assert_eq!(health["workspace_id"], fixture.workspace);
     assert_eq!(health["scheduler_mutations"], false);
-    assert!(
-        !health["capabilities"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("result-collection.v1"))
-    );
     assert_eq!(client.get("/api/projects").unwrap()[0]["project"], "demo");
     let initial = status::observe(&client, &health, None, selected(None), true).unwrap();
     assert_eq!(initial["attempt_id"], "attempt-001");

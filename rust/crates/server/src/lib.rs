@@ -156,9 +156,6 @@ fn health_document(
     submissions: Option<&submissions::Service>,
 ) -> serde_json::Value {
     let mut capabilities = vec!["bearer-auth.v1", "deployment-readiness.v1"];
-    if reads {
-        capabilities.extend(["metric-records.v1", "result-collection-read.v1"]);
-    }
     if lifecycle {
         capabilities.push("project-lifecycle.v1");
     }
@@ -167,7 +164,6 @@ fn health_document(
     }
     if submissions.is_some() {
         capabilities.push("native-submissions.v1");
-        capabilities.push("native-slurm-submissions.v1");
         capabilities.push("native-worker-observation.v1");
         capabilities.push("execution-progress.v1");
         capabilities.push("native-checkpoints.v1");
@@ -190,7 +186,6 @@ fn health_document(
         "status":"ok", "server_version":env!("CARGO_PKG_VERSION"),
         "api_protocol_version":API_PROTOCOL_VERSION, "min_client_protocol_version":2,
         "openapi_path":"/api/v2/openapi.json", "capabilities":capabilities,
-        "supported_capabilities":capabilities,
         "authentication":"bearer", "transport_security":"http", "projects":projects,
         "workspace_id":workspace_id, "local_reads_configured":reads, "collector_enabled":false,
         "collector_requested":false, "collector_error":null, "storage_maintenance_error":null,
@@ -223,132 +218,74 @@ async fn health(State(state): State<Arc<AppState>>) -> Response {
             api.submissions().as_deref(),
         );
         document["deployment"] = readiness::observe(Some(api));
-        for field in ["capabilities", "supported_capabilities"] {
-            document[field]
-                .as_array_mut()
-                .expect("capabilities")
-                .push(json!("backend-catalogue.v1"));
-            if api.submissions().is_some() || api.cloud().is_some() {
-                document[field]
-                    .as_array_mut()
-                    .expect("capabilities")
-                    .push(json!("backend-capacity.v1"));
-            }
+        let mut enabled = vec!["backend-catalogue.v1"];
+        if api.submissions().is_some() || api.cloud().is_some() {
+            enabled.push("backend-capacity.v1");
         }
         if api.administration().is_some() {
-            for field in ["capabilities", "supported_capabilities"] {
-                document[field]
-                    .as_array_mut()
-                    .expect("capabilities")
-                    .push(json!("native-administration.v1"));
-            }
+            enabled.push("native-administration.v1");
         }
         if let Some(cloud) = api.cloud() {
-            for field in ["capabilities", "supported_capabilities"] {
-                document[field]
-                    .as_array_mut()
-                    .expect("capabilities")
-                    .push(json!("native-experiment-preparations.v1"));
-            }
-            for field in ["capabilities", "supported_capabilities"] {
-                let values = document[field].as_array_mut().expect("capabilities array");
-                for capability in [
-                    "native-cloud-submissions.v1",
-                    "native-submissions.v1",
-                    "native-cancellation.v1",
-                    "native-scheduler-observation.v1",
-                    "checkpoint-record-read.v1",
-                ] {
-                    if !values.iter().any(|v| v == capability) {
-                        values.push(json!(capability));
-                    }
-                }
-                if cloud.can_create_runs() && !values.iter().any(|v| v == "native-run-creation.v1")
-                {
-                    values.push(json!("native-run-creation.v1"));
-                }
+            enabled.extend([
+                "native-experiment-preparations.v1",
+                "native-cloud-submissions.v1",
+                "native-submissions.v1",
+                "native-cancellation.v1",
+                "native-scheduler-observation.v1",
+                "checkpoint-record-read.v1",
+            ]);
+            if cloud.can_create_runs() {
+                enabled.extend(["native-run-creation.v1", "native-attempt-retry.v1"]);
             }
             if cloud.has_debug() {
-                for field in ["capabilities", "supported_capabilities"] {
-                    document[field]
-                        .as_array_mut()
-                        .expect("capabilities")
-                        .push(json!("native-debug-machines.v1"));
-                }
+                enabled.push("native-debug-machines.v1");
             }
             if cloud.has_builds() {
-                for field in ["capabilities", "supported_capabilities"] {
-                    document[field]
-                        .as_array_mut()
-                        .expect("capabilities")
-                        .push(json!("native-runtime-builds.v1"));
-                }
+                enabled.push("native-runtime-builds.v1");
             }
             if cloud.has_datasets() {
-                for field in ["capabilities", "supported_capabilities"] {
-                    let values = document[field].as_array_mut().expect("capabilities");
-                    if !values.iter().any(|v| v == "native-datasets.v1") {
-                        values.push(json!("native-datasets.v1"));
-                    }
-                    values.push(json!("native-object-datasets.v1"));
-                    values.push(json!("native-oss-dataset-import.v1"));
-                }
+                enabled.extend([
+                    "native-datasets.v1",
+                    "native-object-datasets.v1",
+                    "native-oss-dataset-import.v1",
+                ]);
+            }
+            if cloud.has_exchange() {
+                enabled.extend([
+                    "native-worker-observation.v1",
+                    "native-metric-history.v1",
+                    "native-checkpoints.v1",
+                    "native-tracking-status.v1",
+                ]);
+            }
+            if cloud.has_collectors() {
+                enabled.push("native-cloud-sync.v1");
+            }
+            if cloud.has_artifacts() {
+                enabled.push("native-artifacts.v1");
             }
             document["cloud_scheduler_mutations"] = json!(cloud.enabled());
             document["cloud_run_creation"] = json!(cloud.can_create_runs());
-            if cloud.has_exchange() {
-                for field in ["capabilities", "supported_capabilities"] {
-                    for capability in [
-                        "native-worker-observation.v1",
-                        "native-metric-history.v1",
-                        "native-checkpoints.v1",
-                        "native-tracking-status.v1",
-                    ] {
-                        let values = document[field].as_array_mut().expect("capabilities");
-                        if !values.iter().any(|v| v == capability) {
-                            values.push(json!(capability));
-                        }
-                    }
-                }
-            }
-            if cloud.has_collectors() {
-                for field in ["capabilities", "supported_capabilities"] {
-                    document[field]
-                        .as_array_mut()
-                        .expect("capabilities")
-                        .push(json!("native-cloud-sync.v1"));
-                }
-            }
-            for field in ["capabilities", "supported_capabilities"] {
-                let values = document[field].as_array_mut().expect("capabilities");
-                for (supported, capability) in [
-                    (cloud.can_create_runs(), "native-attempt-retry.v1"),
-                    (cloud.has_artifacts(), "native-artifacts.v1"),
-                ] {
-                    if supported && !values.iter().any(|v| v == capability) {
-                        values.push(json!(capability));
-                    }
-                }
-            }
             document["scheduler_mutations"] =
                 json!(cloud.enabled() || document["scheduler_mutations"] == true);
             document["run_writes"] =
                 json!(cloud.can_create_runs() || document["run_writes"] == true);
         }
         if api.local_enabled() {
-            for field in ["capabilities", "supported_capabilities"] {
-                let values = document[field].as_array_mut().expect("capabilities");
-                for capability in [
-                    "native-local-metrics.v1",
-                    "native-metric-history.v1",
-                    "native-tracking-status.v1",
-                ] {
-                    if !values.iter().any(|value| value == capability) {
-                        values.push(json!(capability));
-                    }
-                }
-            }
+            enabled.extend([
+                "native-local-metrics.v1",
+                "native-metric-history.v1",
+                "native-tracking-status.v1",
+            ]);
             document["local_run_creation"] = json!(true);
+        }
+        let capabilities = document["capabilities"]
+            .as_array_mut()
+            .expect("capabilities");
+        for capability in enabled {
+            if !capabilities.iter().any(|value| value == capability) {
+                capabilities.push(json!(capability));
+            }
         }
         Ok(document)
     })
@@ -1008,20 +945,6 @@ mod schema_tests {
             2
         );
         let health = super::health_document(1, "isolated", true, false, None, None);
-        assert!(
-            health["capabilities"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|v| v == "result-collection-read.v1")
-        );
-        assert!(
-            !health["capabilities"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|v| v == "result-collection.v1")
-        );
         assert!(
             !health["capabilities"]
                 .as_array()

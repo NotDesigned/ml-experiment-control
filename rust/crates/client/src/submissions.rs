@@ -783,11 +783,8 @@ pub fn execute(client: &Client, plan: &Plan, health: &Value) -> Result<Value, Er
     } else if plan.refreshes {
         "native-worker-observation.v1"
     } else {
-        "native-slurm-submissions.v1"
+        "native-submissions.v1"
     };
-    let neutral = health["capabilities"]
-        .as_array()
-        .is_some_and(|caps| caps.iter().any(|v| v == "native-submissions.v1"));
     let scheduler_refresh = plan.path.ends_with("/refresh")
         && health["capabilities"]
             .as_array()
@@ -799,7 +796,6 @@ pub fn execute(client: &Client, plan: &Plan, health: &Value) -> Result<Value, Er
     if !(health["capabilities"]
         .as_array()
         .is_some_and(|caps| caps.iter().any(|v| v == capability))
-        || capability == "native-slurm-submissions.v1" && neutral
         || scheduler_refresh
         || checkpoint_read)
         || plan.executes && health["scheduler_mutations"] != true

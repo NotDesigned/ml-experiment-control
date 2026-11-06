@@ -97,7 +97,7 @@ fn checkpoint_free_retry_requires_exact_parent() {
     assert!(submissions::response(&plan, wrong).is_err());
 }
 fn health() -> Value {
-    json!({"api_protocol_version":2,"min_client_protocol_version":2,"capabilities":["native-slurm-submissions.v1"],"scheduler_mutations":true})
+    json!({"api_protocol_version":2,"min_client_protocol_version":2,"capabilities":["native-submissions.v1"],"scheduler_mutations":true})
 }
 fn response() -> Value {
     json!({"submission_id":ID,"project":"demo","run_id":"train","attempt_id":"attempt-001","operation":"SUBMIT_RUN","status":"PREPARED","confirmation":format!("EXECUTE {ID}"),"execution":{"status":"PREPARED","revision":0}})
@@ -367,7 +367,7 @@ fn one_post_is_sent_and_lost_or_foreign_response_never_replays_it() {
         })
         .unwrap();
         let mut h = health();
-        h["capabilities"] = json!(["native-run-creation.v1", "native-slurm-submissions.v1"]);
+        h["capabilities"] = json!(["native-run-creation.v1", "native-submissions.v1"]);
         let result = submissions::execute(&client, &plan, &h);
         if mode == "success" {
             let value = result.unwrap();
@@ -395,7 +395,7 @@ fn a_reads_only_daemon_refuses_checkpoint_reads_before_connecting() {
     })
     .unwrap();
     let mut reads_only = health();
-    reads_only["capabilities"] = json!(["metric-records.v1", "result-collection-read.v1"]);
+    reads_only["capabilities"] = json!([]);
     assert!(matches!(
         submissions::execute(&client, &plan, &reads_only),
         Err(Error::Observation(

@@ -944,7 +944,7 @@ async fn native_http_preparation_restart_execute_and_reconcile_keep_one_submissi
         health["capabilities"]
             .as_array()
             .unwrap()
-            .contains(&json!("native-slurm-submissions.v1"))
+            .contains(&json!("native-submissions.v1"))
     );
     assert_eq!(
         http_request(app.clone(), "GET", "/api/runs/demo/train/submission", "")
