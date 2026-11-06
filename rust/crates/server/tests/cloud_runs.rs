@@ -968,7 +968,7 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         401
     );
     assert_eq!(
-        get_status(&channel.token, &format!("{status_path}?refresh=true"), "2")
+        get_status(&channel.token, &format!("{status_path}?refresh=true"))
             .status()
             .as_u16(),
         422
