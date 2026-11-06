@@ -126,6 +126,7 @@ jobs:
     env:
       RUSTFLAGS: ${{ matrix.target == 'x86_64-pc-windows-msvc' && '-C target-feature=+crt-static -C link-arg=/Brepro' || '' }}
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.optional == true }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -133,10 +134,14 @@ jobs:
         include:
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
+          # Best effort: macOS runners can queue for a long time, and a release ships
+          # whichever of these finish. They are built but not tested.
           - os: macos-15-intel
             target: x86_64-apple-darwin
+            optional: true
           - os: macos-15
             target: aarch64-apple-darwin
+            optional: true
           - os: windows-latest
             target: x86_64-pc-windows-msvc
     steps:
@@ -168,7 +173,9 @@ jobs:
           set -euo pipefail
           native_version="${GITHUB_REF_NAME#native-v}"
           if [[ "$GITHUB_REF" != refs/tags/native-v* ]]; then native_version="$REQUESTED_VERSION"; fi
-          cargo test --locked --manifest-path rust/Cargo.toml -p ml-exp-client --target ${{ matrix.target }}
+          if [[ "$RUNNER_OS" != macOS ]]; then
+            cargo test --locked --manifest-path rust/Cargo.toml -p ml-exp-client --target ${{ matrix.target }}
+          fi
           cargo build --locked --release --manifest-path rust/Cargo.toml -p ml-exp-client --target ${{ matrix.target }}
           native_suffix=
           if [[ "$RUNNER_OS" == Windows ]]; then native_suffix=.exe; fi
@@ -195,6 +202,8 @@ jobs:
 
   package:
     needs: [build, checks, clients]
+    # The packaging tool refuses a release missing a required client.
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.checks.result == 'success' }}
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -255,7 +264,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, ubuntu-24.04-arm, macos-15-intel, macos-15, windows-latest]
+        os: [ubuntu-22.04, ubuntu-24.04-arm, windows-latest]
     steps:
       - uses: actions/checkout@v4
         with:

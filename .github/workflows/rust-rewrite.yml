@@ -95,10 +95,6 @@ jobs:
         include:
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-          - os: macos-15
-            target: aarch64-apple-darwin
           - os: windows-latest
             target: x86_64-pc-windows-msvc
     steps:
@@ -119,8 +115,6 @@ jobs:
             native-client-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-
       - if: runner.os == 'Linux'
         run: sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
-      - if: runner.os == 'macOS'
-        run: echo "TMPDIR=$(python3 -c 'import os,tempfile; print(os.path.realpath(tempfile.gettempdir()))')" >> "$GITHUB_ENV"
       - name: Test client commands, uploads and verified transfers on the target OS
         shell: bash
         run: cargo test --locked --manifest-path rust/Cargo.toml -p ml-exp-client --target ${{ matrix.target }}

@@ -44,15 +44,15 @@ builder rollout, verify a real daemon build and receipt. See the native guide.
 tests, executable smoke and the optional image bridge. A problem specific to another
 platform therefore shows up after merging, or at release.
 
-On `main`, client tests on Linux ARM64, macOS Intel/Apple Silicon and Windows x86_64
-always run, because a PR's evidence does not cover them. The Linux checks reuse a
+On `main`, client tests on Linux ARM64 and Windows x86_64 always run, because a PR's evidence does not cover them. The Linux checks reuse a
 successful PR run only after verifying its exact Git tree and matching run-attempt
 evidence; missing evidence or an API failure causes full checks, and direct changes to
 `main` receive full checks. The final `test` job fails if a required job is skipped or
 unsuccessful without verified reuse evidence.
 
 `native-release` builds and tests the exact release executables, including a
-static musl worker. A manual run packages candidates without publication. After
+static musl worker. macOS clients are built but not tested, and are best effort: their
+runners can queue for a long time, so a release ships whichever finished. A manual run packages candidates without publication. After
 acceptance, an immutable `native-vX.Y.Z` tag publishes the binaries, manifest,
 installer, deployment bundle and SHA256SUMS. Never replace an existing tag or
 asset. Version changes update the workspace and its six owned lockfile entries;

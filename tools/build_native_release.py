@@ -15,8 +15,9 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 TARGET = "x86_64-unknown-linux-gnu"
 BINARIES = ("ml-exp", "ml-expd-rs", "ml-exp-worker-rs")
-CLIENT_TARGETS = ("aarch64-unknown-linux-musl", "x86_64-apple-darwin",
-                  "aarch64-apple-darwin", "x86_64-pc-windows-msvc")
+REQUIRED_CLIENT_TARGETS = ("aarch64-unknown-linux-musl", "x86_64-pc-windows-msvc")
+# macOS runners can queue for a long time, so a release ships whichever finished.
+OPTIONAL_CLIENT_TARGETS = ("x86_64-apple-darwin", "aarch64-apple-darwin")
 # The image bridge the server's builder imports; not a Python service install.
 BRIDGE = {"experiment_control": "src/experiment_control",
           "ml_exp_server": "server/src/ml_exp_server",
@@ -88,6 +89,36 @@ def build(binary_dir, output, version, client_dir=None):
         raise ValueError("workspace version differs from requested release")
     for name in BINARIES:
         path = binary_dir / name
+        if path.is_symlink() or not path.is_file() or not 0 < path.stat().st_size <= 128 * 1024**2:
+            raise ValueError("native executable is missing or outside its size limit")
+        result = subprocess.run([str(path.resolve()), "--version"], check=True,
+                                capture_output=True, timeout=5, env={"LANG": "C"})
+        if result.stdout.decode().strip() != f"{name} {version}":
+            raise ValueError("native executable version differs")
+    if not static_worker(binary_dir / "ml-exp-worker-rs"):
+        raise ValueError("release worker must be a static Linux x86_64 ELF executable")
+    output.mkdir(mode=0o700, parents=False, exist_ok=False)
+    assets = []
+    for name in BINARIES:
+        filename = f"{name}-{TARGET}"
+        path = output / filename
+        shutil.copyfile(binary_dir / name, path)
+        path.chmod(0o755)
+        assets.append({"name": filename, "target": TARGET, "executable": name,
+                       "bytes": path.stat().st_size, "sha256": digest(path)})
+    if client_dir is None:
+        raise ValueError("all native client platform artifacts are required")
+    def client_name(target):
+        return f"ml-exp-{target}" + (".exe" if "windows" in target else "")
+    present = {p.name for p in client_dir.iterdir()}
+    if not ({client_name(t) for t in REQUIRED_CLIENT_TARGETS} <= present
+            <= {client_name(t) for t in REQUIRED_CLIENT_TARGETS + OPTIONAL_CLIENT_TARGETS}):
+        raise ValueError("client platform artifacts are incomplete or unexpected")
+    for target in REQUIRED_CLIENT_TARGETS + OPTIONAL_CLIENT_TARGETS:
+        name = client_name(target)
+        if name not in present:
+            continue
+        path = client_dir / name
         if path.is_symlink() or not path.is_file() or not 0 < path.stat().st_size <= 128 * 1024**2:
             raise ValueError("native executable is missing or outside its size limit")
         result = subprocess.run([str(path.resolve()), "--version"], check=True,
