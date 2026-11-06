@@ -108,9 +108,6 @@ impl Service {
         native::retry::number(selected)?;
         if !attempt.provenance.compared_fields_complete
             || matches!(attempt.status, EvidenceDocument::Unavailable { .. })
-            || matches!(attempt.submission, EvidenceDocument::Unavailable { .. })
-            || matches!(attempt.backend, EvidenceDocument::Unavailable { .. })
-            || matches!(attempt.collection, EvidenceDocument::Unavailable { .. })
         {
             return Err(Error::Authority);
         }
@@ -162,17 +159,12 @@ impl Service {
             attempt: Value::Object(attempt.manifest.metadata.clone()),
             binding,
             scheduler_state,
-            submitted: !matches!(attempt.submission, EvidenceDocument::Missing)
-                || !matches!(attempt.backend, EvidenceDocument::Missing)
-                || !matches!(attempt.collection, EvidenceDocument::Missing)
-                || snapshot.current_attempt_id.as_deref() == Some(selected)
-                    && !matches!(snapshot.current_collection, EvidenceDocument::Missing)
-                || attempt
-                    .status
-                    .metadata()
-                    .and_then(|v| v.get("state"))
-                    .and_then(Value::as_str)
-                    != Some("NOT_SUBMITTED"),
+            submitted: attempt
+                .status
+                .metadata()
+                .and_then(|v| v.get("state"))
+                .and_then(Value::as_str)
+                != Some("NOT_SUBMITTED"),
             backend,
             runtime,
         };

@@ -23,38 +23,13 @@ pub fn numeric_tolerant_equal(left: &Value, right: &Value) -> bool {
     }
 }
 
-pub fn operational_decision(value: &Value) -> Value {
-    let mut result = Map::new();
-    for key in [
-        "action",
-        "reason",
-        "resume_checkpoint",
-        "retries_allowed",
-        "retries_used",
-    ] {
-        if let Some(value) = value.get(key).filter(|v| !v.is_null()) {
-            result.insert(key.into(), value.clone());
-        }
-    }
-    Value::Object(result)
-}
-
 /// Remove producer failure classifications before attaching daemon assessments.
 pub fn sanitized_outward(value: &Value) -> Value {
     match value {
         Value::Object(map) => Value::Object(
             map.iter()
                 .filter(|(key, _)| key.as_str() != "failure_class")
-                .map(|(key, value)| {
-                    (
-                        key.clone(),
-                        if key == "decision" {
-                            operational_decision(value)
-                        } else {
-                            sanitized_outward(value)
-                        },
-                    )
-                })
+                .map(|(key, value)| (key.clone(), sanitized_outward(value)))
                 .collect(),
         ),
         Value::Array(values) => Value::Array(values.iter().map(sanitized_outward).collect()),

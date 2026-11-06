@@ -85,10 +85,8 @@ pub struct AttemptSnapshot {
     pub manifest: Document,
     pub provenance: Provenance,
     pub status: EvidenceDocument,
-    pub backend: EvidenceDocument,
+    /// Set from a worker observation; never read from a file.
     pub collection: EvidenceDocument,
-    pub decision: EvidenceDocument,
-    pub submission: EvidenceDocument,
     pub stdout: LogTail,
     pub stderr: LogTail,
     pub metrics: MetricTail,
@@ -99,8 +97,6 @@ pub struct Snapshot {
     pub run_id: String,
     pub run: Document,
     pub current_status: EvidenceDocument,
-    pub current_collection: EvidenceDocument,
-    pub current_decision: EvidenceDocument,
     pub current_attempt_id: Option<String>,
     pub current_selection_source: Option<String>,
     pub attempts: Vec<AttemptSnapshot>,
@@ -205,36 +201,45 @@ pub(super) fn evidence(
 }
 
 pub(super) fn current(
-    mirrors: &[&EvidenceDocument],
+    status: &EvidenceDocument,
     attempts: &[String],
 ) -> (Option<String>, Option<String>, Vec<Diagnostic>) {
-    for mirror in mirrors {
-        match mirror {
-            EvidenceDocument::Missing => continue,
-            EvidenceDocument::Unavailable { source, code } => {
-                return (None, None, vec![diagnostic(source, *code, 1)]);
-            }
-            EvidenceDocument::Present {
-                source, metadata, ..
-            } => {
-                let Some(value) = metadata.get("attempt_id").filter(|value| !value.is_null())
-                else {
-                    continue;
-                };
-                let Some(attempt) = value
-                    .as_str()
-                    .filter(|id| ml_exp_core::identity::validate_id(id).is_ok())
-                else {
-                    return (
-                        None,
-                        None,
-                        vec![diagnostic(source, EvidenceProblem::IdentityConflict, 1)],
-                    );
-                };
-                if attempts.iter().filter(|id| id.as_str() == attempt).count() == 1 {
-                    return (Some(attempt.into()), Some(source.clone()), Vec::new());
-                }
+    let not_named = || {
+        (
+            None,
+            None,
+            vec![diagnostic(
+                "status.json",
+                EvidenceProblem::NoExplicitCurrent,
+                1,
+            )],
+        )
+    };
+    match status {
+        EvidenceDocument::Missing => not_named(),
+        EvidenceDocument::Unavailable { source, code } => {
+            (None, None, vec![diagnostic(source, *code, 1)])
+        }
+        EvidenceDocument::Present {
+            source, metadata, ..
+        } => {
+            let Some(value) = metadata.get("attempt_id").filter(|value| !value.is_null()) else {
+                return not_named();
+            };
+            let Some(attempt) = value
+                .as_str()
+                .filter(|id| ml_exp_core::identity::validate_id(id).is_ok())
+            else {
                 return (
+                    None,
+                    None,
+                    vec![diagnostic(source, EvidenceProblem::IdentityConflict, 1)],
+                );
+            };
+            if attempts.iter().filter(|id| id.as_str() == attempt).count() == 1 {
+                (Some(attempt.into()), Some(source.clone()), Vec::new())
+            } else {
+                (
                     None,
                     None,
                     vec![diagnostic(
@@ -242,19 +247,10 @@ pub(super) fn current(
                         EvidenceProblem::CurrentAttemptUnavailable,
                         1,
                     )],
-                );
+                )
             }
         }
     }
-    (
-        None,
-        None,
-        vec![diagnostic(
-            "run_mirrors",
-            EvidenceProblem::NoExplicitCurrent,
-            1,
-        )],
-    )
 }
 struct TailBytes {
     bytes: Vec<u8>,
@@ -453,81 +449,72 @@ fn metrics(
     prefix: &str,
 ) -> Result<MetricTail, Error> {
     let roots = sources(directory)?;
-    for filenames in [
-        &["train_metrics.jsonl", "metrics.jsonl"][..],
-        &["observed_train_metrics.jsonl"][..],
-    ] {
-        for (root, name) in &roots {
-            for filename in filenames {
-                if !root.entry_exists(OsStr::new(filename))? {
-                    continue;
+    for (root, name) in &roots {
+        for filename in ["train_metrics.jsonl", "metrics.jsonl"] {
+            if !root.entry_exists(OsStr::new(filename))? {
+                continue;
+            }
+            let source = relative(prefix, name, filename);
+            let mut result = MetricTail {
+                source: Some(source.clone()),
+                records: Vec::new(),
+                source_attempt_id: Some(attempt.into()),
+                truncated: false,
+                diagnostics: Vec::new(),
+            };
+            let tail = match tail_bytes(root, filename, false) {
+                Ok(tail) => tail,
+                Err(code) => {
+                    result.diagnostics.push(diagnostic(&source, code, 1));
+                    return Ok(result);
                 }
-                let source = relative(prefix, name, filename);
-                let mut result = MetricTail {
-                    source: Some(source.clone()),
-                    records: Vec::new(),
-                    source_attempt_id: Some(attempt.into()),
-                    truncated: false,
-                    diagnostics: Vec::new(),
-                };
-                let tail = match tail_bytes(root, filename, false) {
-                    Ok(tail) => tail,
-                    Err(code) => {
-                        result.diagnostics.push(diagnostic(&source, code, 1));
-                        return Ok(result);
-                    }
-                };
-                result.truncated = tail.truncated;
-                if tail.truncated {
-                    result
-                        .diagnostics
-                        .push(diagnostic(&source, EvidenceProblem::Truncated, 1));
-                }
-                let mut lines = tail.bytes.split(|b| *b == b'\n').collect::<Vec<_>>();
-                if tail.bytes.ends_with(b"\n") {
-                    // split includes a terminal empty slice, not another
-                    // record. Do not charge it against the history budget.
-                    lines.pop();
-                } else if !tail.bytes.is_empty() {
-                    lines.pop();
-                    result.diagnostics.push(diagnostic(
-                        &source,
-                        EvidenceProblem::PartialFinalLine,
-                        1,
-                    ));
-                }
-                if lines.len() > MAX_TAIL_LINES {
-                    let drop = lines.len() - MAX_TAIL_LINES;
-                    lines.drain(..drop);
-                    result.truncated = true;
-                }
-                for line in lines
-                    .into_iter()
-                    .filter(|line| !line.iter().all(u8::is_ascii_whitespace))
-                {
-                    let map = match ml_exp_core::json::mapping(line) {
-                        Ok(map) => map,
-                        Err(_) => {
-                            result.diagnostics.push(diagnostic(
-                                &source,
-                                EvidenceProblem::MalformedRecord,
-                                1,
-                            ));
-                            continue;
-                        }
-                    };
-                    if identity_conflict(&map, project, run, Some(attempt)) {
+            };
+            result.truncated = tail.truncated;
+            if tail.truncated {
+                result
+                    .diagnostics
+                    .push(diagnostic(&source, EvidenceProblem::Truncated, 1));
+            }
+            let mut lines = tail.bytes.split(|b| *b == b'\n').collect::<Vec<_>>();
+            if tail.bytes.ends_with(b"\n") {
+                // split includes a terminal empty slice, not another
+                // record. Do not charge it against the history budget.
+                lines.pop();
+            } else if !tail.bytes.is_empty() {
+                lines.pop();
+                result
+                    .diagnostics
+                    .push(diagnostic(&source, EvidenceProblem::PartialFinalLine, 1));
+            }
+            if lines.len() > MAX_TAIL_LINES {
+                let drop = lines.len() - MAX_TAIL_LINES;
+                lines.drain(..drop);
+                result.truncated = true;
+            }
+            for line in lines
+                .into_iter()
+                .filter(|line| !line.iter().all(u8::is_ascii_whitespace))
+            {
+                let map = match ml_exp_core::json::mapping(line) {
+                    Ok(map) => map,
+                    Err(_) => {
                         result.diagnostics.push(diagnostic(
                             &source,
-                            EvidenceProblem::ForeignRecord,
+                            EvidenceProblem::MalformedRecord,
                             1,
                         ));
                         continue;
                     }
-                    result.records.push(Value::Object(map));
+                };
+                if identity_conflict(&map, project, run, Some(attempt)) {
+                    result
+                        .diagnostics
+                        .push(diagnostic(&source, EvidenceProblem::ForeignRecord, 1));
+                    continue;
                 }
-                return Ok(result);
+                result.records.push(Value::Object(map));
             }
+            return Ok(result);
         }
     }
     Ok(MetricTail {

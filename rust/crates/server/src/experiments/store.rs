@@ -259,7 +259,7 @@ impl Store {
         exact: Option<&str>,
         load_heavy: bool,
     ) -> Result<super::Snapshot> {
-        use super::snapshot::{self, AttemptSnapshot, Snapshot};
+        use super::snapshot::{self, AttemptSnapshot, EvidenceDocument, Snapshot};
         let _guard = self
             .fence
             .existing_observation_guard(&reference.project, &reference.run_id)?;
@@ -271,22 +271,6 @@ impl Store {
             &directory,
             "status.json",
             "status.json",
-            &reference.project,
-            &reference.run_id,
-            None,
-        );
-        let current_collection = snapshot::evidence(
-            &directory,
-            "collection.json",
-            "collection.json",
-            &reference.project,
-            &reference.run_id,
-            None,
-        );
-        let current_decision = snapshot::evidence(
-            &directory,
-            "decision.json",
-            "decision.json",
             &reference.project,
             &reference.run_id,
             None,
@@ -315,10 +299,8 @@ impl Store {
                 })
                 .collect(),
         };
-        let (current_attempt_id, current_selection_source, diagnostics) = snapshot::current(
-            &[&current_status, &current_collection, &current_decision],
-            &names,
-        );
+        let (current_attempt_id, current_selection_source, diagnostics) =
+            snapshot::current(&current_status, &names);
         let mut attempts = Vec::new();
         for attempt_id in names {
             let root = attempts_directory.as_ref().ok_or(Error::Missing)?;
@@ -343,10 +325,6 @@ impl Store {
                 )
             };
             let status = evidence("status.json");
-            let backend = evidence("backend.json");
-            let collection = evidence("collection.json");
-            let decision = evidence("decision.json");
-            let submission = evidence("submission.json");
             let (stdout, stderr, metrics) = if load_heavy
                 && (exact.is_some() || current_attempt_id.as_deref() == Some(&attempt_id))
             {
@@ -364,10 +342,7 @@ impl Store {
                 manifest,
                 provenance,
                 status,
-                backend,
-                collection,
-                decision,
-                submission,
+                collection: EvidenceDocument::Missing,
                 stdout,
                 stderr,
                 metrics,
@@ -378,8 +353,6 @@ impl Store {
             run_id: reference.run_id.clone(),
             run,
             current_status,
-            current_collection,
-            current_decision,
             current_attempt_id,
             current_selection_source,
             attempts,

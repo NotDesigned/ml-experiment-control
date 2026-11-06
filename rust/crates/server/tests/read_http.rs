@@ -65,14 +65,6 @@ impl Fixture {
                 &json!({"project":"demo","run_id":"train","attempt_id":attempt,"state":state,
                 "updated_at":"2026-10-27T00:03:00Z"}),
             );
-            write_json(
-                &directory.join("collection.json"),
-                &json!({"project":"demo","run_id":"train","attempt_id":attempt,
-                "status":"AVAILABLE","verification":"SHA256_VERIFIED","download_available":true,
-                "worker_state":"COMPLETED","process_state":if attempt=="attempt-001"{"COMPLETED"}else{"RUNNING"},
-                "failure_class":"RESOURCE_EXHAUSTED",
-                "observed_at":"2026-10-27T00:03:00Z","process_evidence":{"exit_code":if attempt=="attempt-001"{json!(0)}else{Value::Null}}}),
-            );
             fs::write(
                 directory.join("stdout.log"),
                 format!("{attempt} exact output\n"),
@@ -365,7 +357,7 @@ fn native_clients_pin_exact_attempt_and_keep_scientific_metric_dimensions() {
     assert_eq!(client.get("/api/projects").unwrap()[0]["project"], "demo");
     let initial = status::observe(&client, &health, None, selected(None), true).unwrap();
     assert_eq!(initial["attempt_id"], "attempt-001");
-    assert_eq!(initial["training"]["status"], "COMPLETED");
+    assert_eq!(initial["training"]["status"], "UNKNOWN");
     assert_eq!(
         initial["model"]["metric_record"]["source"],
         "canonical_record_journal"
@@ -377,22 +369,16 @@ fn native_clients_pin_exact_attempt_and_keep_scientific_metric_dimensions() {
         "ARTIFACT_PUBLICATION_NOT_OBSERVED"
     );
     assert_eq!(initial["publication"]["status"], "NOT_OBSERVED");
-    // A producer's coarse failure_class is not an assessed failure fact.
-    assert!(
-        initial["evidence"]["collection"]
-            .get("failure_class")
-            .is_none()
-    );
     fixture.current("attempt-002");
     let historical =
         status::observe(&client, &health, None, selected(Some("attempt-001")), true).unwrap();
     assert_eq!(historical["attempt_id"], "attempt-001");
     assert_eq!(historical["scheduler"]["state"], "SUCCEEDED");
-    assert_eq!(historical["training"]["status"], "COMPLETED");
+    assert_eq!(historical["training"]["status"], "UNKNOWN");
     let compact_historical =
         status::observe(&client, &health, None, selected(Some("attempt-001")), false).unwrap();
     assert_eq!(compact_historical["scheduler"]["state"], "SUCCEEDED");
-    assert_eq!(compact_historical["training"]["status"], "COMPLETED");
+    assert_eq!(compact_historical["training"]["status"], "UNKNOWN");
     assert!(compact_historical.get("evidence").is_none());
     assert_eq!(
         historical["evidence"]["run"]["current_attempt_id"],

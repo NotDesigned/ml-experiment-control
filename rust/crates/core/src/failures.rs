@@ -30,9 +30,6 @@ pub struct AssessmentContext {
     pub domain_observed_at: Map<String, Value>,
     pub domain_attempt_ids: Map<String, Value>,
     pub domain_evidence_sources: Map<String, Value>,
-    pub decision_observed_at: Value,
-    pub decision_source_binding: String,
-    pub decision_evidence_source: Option<String>,
     /// Required to interpret a supported timezone-less ISO date/time. Without
     /// this explicit choice its freshness is unknown, not implicitly local.
     pub naive_utc_offset_seconds: Option<i32>,
@@ -47,9 +44,6 @@ impl Default for AssessmentContext {
             domain_observed_at: Map::new(),
             domain_attempt_ids: Map::new(),
             domain_evidence_sources: Map::new(),
-            decision_observed_at: Value::Null,
-            decision_source_binding: "EXACT_ATTEMPT".into(),
-            decision_evidence_source: None,
             naive_utc_offset_seconds: None,
         }
     }
@@ -383,7 +377,6 @@ fn assess(
 /// remain explicit provenance, not permission to refresh providers or retry.
 pub fn attempt_failure_evidence_assessment(
     collection: &Value,
-    decision: Option<&Value>,
     context: &AssessmentContext,
 ) -> Result<Value, FailureError> {
     if !collection.is_object() {
@@ -484,13 +477,6 @@ pub fn attempt_failure_evidence_assessment(
             value[key] = item;
         }
         diagnostics.push(value);
-    }
-    if let Some(class) = decision
-        .filter(|value| value.is_object())
-        .and_then(|value| normalized_class(get(value, "failure_class")))
-        .filter(|_| summary.is_null())
-    {
-        diagnostics.push(json!({"kind":"preliminary_failure_classification","failure_class":class,"source":"decision.failure_class","attempt_id":context.attempt_id,"attempt_state":state,"observed_at":evidence_timestamp(&context.decision_observed_at,context.naive_utc_offset_seconds),"applicability":"NON_APPLICABLE","source_binding":context.decision_source_binding,"evidence_source":context.decision_evidence_source,"reason":"decision metadata is contextual only and is not exact, fresh, terminal failure evidence"}));
     }
     Ok(
         json!({"failure_summary":summary,"diagnostic_evidence":compact_evidence(&Value::Array(diagnostics))}),

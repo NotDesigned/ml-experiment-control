@@ -122,7 +122,7 @@ fn run_attempts_mark_the_current_attempt_and_keep_backend_identity() {
             r#"{"operation":"run_attempts","input":{"attempts":[],"current_attempt_id":null},"expected":{"project":"demo","run_id":"trial","current_attempt_id":null,"count":0,"attempts":[]}}"#,
         ),
         literal(
-            r#"{"operation":"run_attempts","input":{"attempts":[{"attempt_id":"attempt-001","state":"RUNNING","backend":"slurm","backend_job_id":null,"decision":{},"has_submission":false},{"attempt_id":"attempt-002","state":"SUCCEEDED","backend":"sensecore","backend_job_id":"1","decision":{},"has_submission":true}],"current_attempt_id":"attempt-001"},"expected":{"project":"demo","run_id":"trial","current_attempt_id":"attempt-001","count":2,"attempts":[{"identity":"trial::attempt-001","attempt_id":"attempt-001","current":true,"backend":"slurm","backend_job_id":null,"state":"RUNNING","decision":null,"has_submission":false},{"identity":"trial::attempt-002","attempt_id":"attempt-002","current":false,"backend":"sensecore","backend_job_id":"1","state":"SUCCEEDED","decision":null,"has_submission":true}]}}"#,
+            r#"{"operation":"run_attempts","input":{"attempts":[{"attempt_id":"attempt-001","state":"RUNNING","backend":"slurm","backend_job_id":null},{"attempt_id":"attempt-002","state":"SUCCEEDED","backend":"sensecore","backend_job_id":"1"}],"current_attempt_id":"attempt-001"},"expected":{"project":"demo","run_id":"trial","current_attempt_id":"attempt-001","count":2,"attempts":[{"identity":"trial::attempt-001","attempt_id":"attempt-001","current":true,"backend":"slurm","backend_job_id":null,"state":"RUNNING"},{"identity":"trial::attempt-002","attempt_id":"attempt-002","current":false,"backend":"sensecore","backend_job_id":"1","state":"SUCCEEDED"}]}}"#,
         ),
     ] {
         let input = &case["input"];
@@ -132,16 +132,11 @@ fn run_attempts_mark_the_current_attempt_and_keep_backend_identity() {
         for row in input["attempts"].as_array().unwrap() {
             let id = row["attempt_id"].as_str().unwrap();
             let mut attempt = attempt(id);
-            attempt.status = evidence(id, "status", json!({"state":row["state"]}));
-            attempt.backend = evidence(
+            attempt.status = evidence(
                 id,
-                "backend",
-                json!({"backend":row["backend"],"backend_job_id":row["backend_job_id"]}),
+                "status",
+                json!({"state":row["state"],"backend":row["backend"],"backend_job_id":row["backend_job_id"]}),
             );
-            attempt.decision = evidence(id, "decision", row["decision"].clone());
-            if row["has_submission"] == true {
-                attempt.submission = evidence(id, "submission", json!({}));
-            }
             snapshot.attempts.push(attempt);
         }
         if let Some(id) = snapshot.current_attempt_id.as_deref() {

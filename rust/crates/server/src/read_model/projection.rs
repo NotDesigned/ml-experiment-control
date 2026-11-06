@@ -97,27 +97,9 @@ fn field(document: &EvidenceDocument, name: &str) -> Value {
         .cloned()
         .unwrap_or(Value::Null)
 }
-fn without_producer_class(value: Value) -> Value {
-    match value {
-        Value::Object(fields) => Value::Object(
-            fields
-                .into_iter()
-                .filter(|(key, _)| key != "failure_class")
-                .map(|(key, value)| (key, without_producer_class(value)))
-                .collect(),
-        ),
-        Value::Array(values) => {
-            Value::Array(values.into_iter().map(without_producer_class).collect())
-        }
-        value => value,
-    }
-}
 fn sanitize(value: &Value) -> Value {
-    // Keep the shared outward contract and credential policy. The second walk
-    // also strips a class smuggled inside an operational-decision allowed value.
-    experiment_redact::redact_json(without_producer_class(observation::sanitized_outward(
-        value,
-    )))
+    // Keep the shared outward contract and credential policy.
+    experiment_redact::redact_json(observation::sanitized_outward(value))
 }
 fn finish(value: Value) -> Result<Value> {
     bounded(sanitize(&value))
@@ -158,13 +140,7 @@ fn checked(snapshot: &Snapshot) -> Result<()> {
             &attempt.attempt_id,
         )
         .map_err(why!(Error::Identity))?;
-        for document in [
-            &attempt.status,
-            &attempt.backend,
-            &attempt.collection,
-            &attempt.decision,
-            &attempt.submission,
-        ] {
+        for document in [&attempt.status, &attempt.collection] {
             if let Some(metadata) = document.metadata() {
                 for (key, expected) in [
                     ("project", snapshot.project.as_str()),
@@ -188,34 +164,21 @@ fn checked(snapshot: &Snapshot) -> Result<()> {
     {
         return Err(Error::Identity);
     }
-    for document in [
-        &snapshot.current_status,
-        &snapshot.current_collection,
-        &snapshot.current_decision,
-    ] {
-        if let Some(metadata) = document.metadata() {
-            for (key, expected) in [
-                ("project", snapshot.project.as_str()),
-                ("run_id", snapshot.run_id.as_str()),
-            ] {
-                if metadata
-                    .get(key)
-                    .is_some_and(|v| !v.is_null() && v.as_str() != Some(expected))
-                {
-                    return Err(Error::Identity);
-                }
+    if let Some(metadata) = snapshot.current_status.metadata() {
+        for (key, expected) in [
+            ("project", snapshot.project.as_str()),
+            ("run_id", snapshot.run_id.as_str()),
+        ] {
+            if metadata
+                .get(key)
+                .is_some_and(|v| !v.is_null() && v.as_str() != Some(expected))
+            {
+                return Err(Error::Identity);
             }
         }
     }
     if let Some(id) = snapshot.current_attempt_id.as_deref() {
-        if ![
-            &snapshot.current_status,
-            &snapshot.current_collection,
-            &snapshot.current_decision,
-        ]
-        .iter()
-        .any(|doc| field(doc, "attempt_id").as_str() == Some(id))
-        {
+        if field(&snapshot.current_status, "attempt_id").as_str() != Some(id) {
             return Err(Error::Identity);
         }
     }
@@ -285,30 +248,6 @@ fn state(attempt: &AttemptSnapshot) -> Value {
             .unwrap_or(Value::Null)
     }
 }
-fn decision<'a>(snapshot: &'a Snapshot, attempt: &'a AttemptSnapshot) -> &'a EvidenceDocument {
-    if !matches!(attempt.decision, EvidenceDocument::Missing) {
-        return &attempt.decision;
-    }
-    if snapshot.current_attempt_id.as_deref() == Some(&attempt.attempt_id)
-        && field(&snapshot.current_decision, "attempt_id").as_str() == Some(&attempt.attempt_id)
-    {
-        &snapshot.current_decision
-    } else {
-        &attempt.decision
-    }
-}
-fn collection<'a>(snapshot: &'a Snapshot, attempt: &'a AttemptSnapshot) -> &'a EvidenceDocument {
-    if !matches!(attempt.collection, EvidenceDocument::Missing) {
-        return &attempt.collection;
-    }
-    if snapshot.current_attempt_id.as_deref() == Some(&attempt.attempt_id)
-        && field(&snapshot.current_collection, "attempt_id").as_str() == Some(&attempt.attempt_id)
-    {
-        &snapshot.current_collection
-    } else {
-        &attempt.collection
-    }
-}
 fn scheduler<'a>(snapshot: &'a Snapshot, attempt: &'a AttemptSnapshot) -> &'a EvidenceDocument {
     if !matches!(attempt.status, EvidenceDocument::Missing) {
         return &attempt.status;
@@ -324,34 +263,16 @@ fn scheduler<'a>(snapshot: &'a Snapshot, attempt: &'a AttemptSnapshot) -> &'a Ev
 fn summary(snapshot: &Snapshot, attempt: &AttemptSnapshot) -> Value {
     let status = scheduler(snapshot, attempt);
     let state = first(&[state(attempt), field(status, "state")]);
-    let backend = first(&[
-        field(&attempt.backend, "backend"),
-        field(status, "backend"),
-        if attempt
-            .submission
-            .metadata()
-            .is_some_and(|m| m.get("gpu").is_some_and(|v| !v.is_null()))
-        {
-            json!("local-cuda")
-        } else {
-            Value::Null
-        },
-    ]);
-    json!({"attempt_id":attempt.attempt_id,"state":state,"backend":backend,
-        "backend_job_id":first(&[field(&attempt.backend,"backend_job_id"),field(status,"backend_job_id")]),
-        "decision":observation::operational_decision(&map(decision(snapshot,attempt))),
-        "has_submission":match attempt.submission {EvidenceDocument::Present{..}=>json!(true),EvidenceDocument::Missing=>json!(false),EvidenceDocument::Unavailable{..}=>Value::Null},
-        "submission_evidence":evidence_view(&attempt.submission)})
+    json!({"attempt_id":attempt.attempt_id,"state":state,"backend":field(status,"backend"),
+        "backend_job_id":field(status,"backend_job_id")})
 }
-
-pub fn run_attempts(snapshot: &Snapshot) -> Result<Value> {
+fn run_attempts(snapshot: &Snapshot) -> Result<Value> {
     checked(snapshot)?;
     let attempts = snapshot.attempts.iter().map(|attempt| {
         let view = summary(snapshot, attempt);
         json!({"identity":format!("{}::{}",snapshot.run_id,attempt.attempt_id),"attempt_id":attempt.attempt_id,
             "current":snapshot.current_attempt_id.as_deref()==Some(&attempt.attempt_id),
-            "backend":view["backend"],"backend_job_id":view["backend_job_id"],"state":view["state"],
-            "decision":view["decision"]["action"],"has_submission":view["has_submission"]})
+            "backend":view["backend"],"backend_job_id":view["backend_job_id"],"state":view["state"]})
     }).collect::<Vec<_>>();
     finish_projection(
         json!({"project":snapshot.project,"run_id":snapshot.run_id,"current_attempt_id":snapshot.current_attempt_id,
@@ -527,12 +448,6 @@ fn layers(
     if status["detail"]["queue"].is_object() {
         detail["queue"] = status["detail"]["queue"].clone();
     }
-    for key in ["backend", "backend_job_id"] {
-        if detail[key].is_null() {
-            detail[key] = field(&attempt.backend, key);
-        }
-    }
-    detail["backend_evidence"] = evidence_view(&attempt.backend);
     let mut scheduler_layer = layer(
         scheduler_state.clone(),
         observed(status_doc, &["observed_at", "updated_at", "finished_at"]),
@@ -541,8 +456,8 @@ fn layers(
         "scheduler",
         &scope,
     );
-    let collection_doc = collection(snapshot, attempt);
-    let collected = map(collection(snapshot, attempt));
+    let collection_doc = &attempt.collection;
+    let collected = map(&attempt.collection);
     let collection_time = first_present(&[
         collected["observed_at"].clone(),
         collected["collected_at"].clone(),
@@ -556,12 +471,12 @@ fn layers(
             collected["worker_observed_at"].clone(),
             collection_time.clone(),
         ]),
-        evidence_view(collection(snapshot, attempt))["source"].clone(),
+        evidence_view(&attempt.collection)["source"].clone(),
         json!({}),
         "worker",
         &scope,
     );
-    worker["evidence_availability"] = evidence_view(collection(snapshot, attempt));
+    worker["evidence_availability"] = evidence_view(&attempt.collection);
     let mut process = layer(
         process_state,
         first_present(&[
@@ -569,7 +484,7 @@ fn layers(
             collected["process_observed_at"].clone(),
             collection_time,
         ]),
-        evidence_view(collection(snapshot, attempt))["source"].clone(),
+        evidence_view(&attempt.collection)["source"].clone(),
         take(
             collected["process_evidence"]
                 .as_object()
@@ -585,7 +500,7 @@ fn layers(
         "process",
         &scope,
     );
-    process["evidence_availability"] = evidence_view(collection(snapshot, attempt));
+    process["evidence_availability"] = evidence_view(&attempt.collection);
     let model = if let Some((record, source, normalized)) = metric_last(attempt, live)? {
         let detail = model_detail(
             &record,
@@ -628,9 +543,7 @@ fn layers(
     )
 }
 fn assessment(snapshot: &Snapshot, attempt: &AttemptSnapshot) -> Result<Value> {
-    let collected = map(collection(snapshot, attempt));
-    let decision_doc = decision(snapshot, attempt);
-    let decision = map(decision_doc);
+    let collected = map(&attempt.collection);
     let status_doc = scheduler(snapshot, attempt);
     let mut context = AssessmentContext::new(&attempt.attempt_id);
     context.attempt_state = first(&[state(attempt), field(status_doc, "state")])
@@ -668,7 +581,7 @@ fn assessment(snapshot: &Snapshot, attempt: &AttemptSnapshot) -> Result<Value> {
             .insert(domain.into(), collected["attempt_id"].clone());
         context.domain_evidence_sources.insert(
             domain.into(),
-            evidence_view(collection(snapshot, attempt))["source"].clone(),
+            evidence_view(&attempt.collection)["source"].clone(),
         );
     }
     if field(status_doc, "attempt_id").as_str() == Some(&attempt.attempt_id) {
@@ -683,22 +596,10 @@ fn assessment(snapshot: &Snapshot, attempt: &AttemptSnapshot) -> Result<Value> {
             .domain_evidence_sources
             .insert("scheduler".into(), source(status_doc));
     }
-    context.decision_observed_at = observed(decision_doc, &["observed_at", "created_at"]);
-    context.decision_source_binding = if decision["attempt_id"] == attempt.attempt_id {
-        "EXACT_ATTEMPT"
-    } else if decision["attempt_id"].is_null() {
-        "EXACT_ATTEMPT_PATH_UNSCOPED"
-    } else {
-        "ATTEMPT_MISMATCH"
-    }
-    .into();
-    context.decision_evidence_source = source(decision_doc).as_str().map(str::to_owned);
     // Classification is computed before outward removal, never copied from a
     // producer field into the authoritative response.
     Ok(failures::attempt_failure_evidence_assessment(
-        &collected,
-        Some(&decision),
-        &context,
+        &collected, &context,
     )?)
 }
 
@@ -731,7 +632,6 @@ pub fn run_detail(
         "current_selection_source":snapshot.current_selection_source,"scheduler_state":state,
         "is_terminal":matches!(state.as_str().map(str::to_uppercase).as_deref(),Some("SUCCEEDED"|"FAILED"|"CANCELLED"|"PREEMPTED")),
         "evidence":evidence,"attempts":listing["attempts"],"manifest":snapshot.run,
-        "decision":current.map(|a|observation::operational_decision(&map(decision(snapshot,a)))).unwrap_or_else(||json!({})),
         "provenance":{"manifest_raw_sha256":snapshot.run.raw_sha256,"manifest_source":snapshot.run.source},
         "latest_metrics":{},"eval_metrics":{},"diagnostics":snapshot.diagnostics,"scanned_at":now_unix});
     for key in ["campaign", "role"] {
@@ -761,10 +661,10 @@ pub fn attempt_show(snapshot: &Snapshot, attempt_id: &str, now_unix: f64) -> Res
         &json!({"scope":{"project":snapshot.project,"scope_type":"attempt","object_id":format!("{}::{attempt_id}",snapshot.run_id)},
         "run_id":snapshot.run_id,"attempt":summary(snapshot,attempt),"run_dir":".","attempt_dir":format!("attempts/{attempt_id}"),
         "manifest":attempt.manifest,"provenance":attempt.provenance,
-        "collection":failures::compact_evidence(&map(collection(snapshot, attempt))),
+        "collection":failures::compact_evidence(&map(&attempt.collection)),
         "evidence":evidence,"diagnostics":snapshot.diagnostics,
-        "evidence_availability":{"status":evidence_view(&attempt.status),"backend":evidence_view(&attempt.backend),
-            "collection":evidence_view(collection(snapshot,attempt)),"decision":evidence_view(decision(snapshot,attempt)),"submission":evidence_view(&attempt.submission)}}),
+        "evidence_availability":{"status":evidence_view(&attempt.status),
+            "collection":evidence_view(&attempt.collection)}}),
     );
     value["evidence"]["model"]["detail"] = detail;
     value["manifest"]["metadata_redacted"] = json!(true);
@@ -824,7 +724,7 @@ fn stream_view(tail: &LogTail, process: &Value, name: &str, lines: usize) -> Res
 pub fn attempt_logs(snapshot: &Snapshot, attempt_id: &str, query: &LogQuery) -> Result<Value> {
     query.validate()?;
     let attempt = exact(snapshot, attempt_id)?;
-    let collected = map(collection(snapshot, attempt));
+    let collected = map(&attempt.collection);
     let mut streams = Map::new();
     for (name, tail) in [("stdout", &attempt.stdout), ("stderr", &attempt.stderr)] {
         if query.stream == LogStream::Both
@@ -929,8 +829,8 @@ pub fn attempt_metrics(
 pub fn attempt_collection(snapshot: &Snapshot, attempt_id: &str, now_unix: f64) -> Result<Value> {
     clock(now_unix)?;
     let attempt = exact(snapshot, attempt_id)?;
-    let collected_doc = collection(snapshot, attempt);
-    let collected = map(collection(snapshot, attempt));
+    let collected_doc = &attempt.collection;
+    let collected = map(&attempt.collection);
     let process = object(&collected["process_evidence"]);
     let process_state = collected["process_state"].clone();
     let exit_code = first_present(&[
@@ -998,11 +898,11 @@ pub fn attempt_collection(snapshot: &Snapshot, attempt_id: &str, now_unix: f64) 
             "evidence":if collected_doc.metadata().is_some(){json!("exact_attempt_process_evidence")}else{Value::Null}},
         "verification":"PENDING","download_available":false,"publication":null,
         "diagnostic":"ARTIFACT_PUBLICATION_NOT_OBSERVED",
-        "evidence_availability":evidence_view(collection(snapshot, attempt)),"evidence":evidence,
+        "evidence_availability":evidence_view(&attempt.collection),"evidence":evidence,
         "process":process,"diagnostics":snapshot.diagnostics}),
     );
     value["evidence"]["model"]["detail"] = detail;
-    if let Some(native) = map(collection(snapshot, attempt)).get("native_artifacts") {
+    if let Some(native) = map(&attempt.collection).get("native_artifacts") {
         let state: ml_exp_core::artifacts::publication::State =
             serde_json::from_value(native.clone()).map_err(why!(Error::Evidence))?;
         state.validate().map_err(why!(Error::Identity))?;

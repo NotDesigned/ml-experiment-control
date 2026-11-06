@@ -25,11 +25,6 @@ fn exact_current_and_live_receive_order_never_choose_the_largest_scientific_step
     other.status = evidence("attempt-002", "status", json!({"state":"SUCCEEDED"}));
     other.metrics.records = vec![metric("loss", json!(999), 99999)];
     snapshot.attempts.push(other);
-    snapshot.attempts[0].submission = evidence(
-        "attempt-001",
-        "submission",
-        json!({"backend":"slurm","backend_job_id":"123"}),
-    );
     let records = live(&[metric("loss", json!(4), 1000), metric("loss", json!(0), 0)]);
     let result = read_model::run_detail(
         &snapshot,
@@ -54,8 +49,6 @@ fn exact_current_and_live_receive_order_never_choose_the_largest_scientific_step
     assert_eq!(result["evidence"]["model"]["not_a_heartbeat"], true);
     let listing = read_model::run_attempts(&snapshot).unwrap();
     assert_eq!(listing["attempts"][0]["current"], true);
-    assert_eq!(listing["attempts"][0]["has_submission"], true);
-    assert_eq!(listing["attempts"][1]["has_submission"], false);
     assert!(matches!(
         read_model::run_detail(
             &snapshot,
@@ -177,18 +170,9 @@ fn raw_metadata_uses_shared_redaction_and_only_daemon_assessments_may_publish_cl
         .run
         .metadata
         .insert("failure_class".into(), json!("producer-claim"));
-    snapshot.attempts[0].decision = evidence(
-        "attempt-001",
-        "decision",
-        json!({"action":"REVIEW_RETRY","failure_class":"producer-only",
-        "resume_checkpoint":{"failure_class":"nested-producer-claim","password":"hidden"}}),
-    );
-    let result = read_model::attempt_show(&snapshot, "attempt-001", 0.0).unwrap();
-    assert!(result["attempt"]["decision"]["failure_class"].is_null());
-    assert!(result["attempt"]["decision"]["resume_checkpoint"]["failure_class"].is_null());
-    assert_eq!(
-        result["attempt"]["decision"]["resume_checkpoint"]["password"],
-        "<redacted>"
+    snapshot.run.metadata.insert(
+        "resume_checkpoint".into(),
+        json!({"failure_class":"nested-producer-claim","password":"hidden"}),
     );
     let mut detail = read_model::run_detail(&snapshot, 0.0, None).unwrap();
     assert!(detail["failure_assessment"]["failure_summary"].is_null());
@@ -202,8 +186,8 @@ fn raw_metadata_uses_shared_redaction_and_only_daemon_assessments_may_publish_cl
         "user:pass",
         "abcdef",
         "producer-claim",
-        "producer-only",
         "nested-producer-claim",
+        "hidden",
     ] {
         assert!(!text.contains(secret), "{secret}");
     }
@@ -238,13 +222,6 @@ fn unavailable_and_foreign_evidence_cannot_turn_into_a_successful_snapshot() {
     assert_eq!(
         result["evidence"]["scheduler"]["evidence_availability"]["availability"],
         "UNAVAILABLE"
-    );
-    snapshot.attempts[0].submission = EvidenceDocument::Unavailable {
-        source: "attempts/attempt-001/submission.json".into(),
-        code: EvidenceProblem::Io,
-    };
-    assert!(
-        read_model::run_attempts(&snapshot).unwrap()["attempts"][0]["has_submission"].is_null()
     );
     snapshot.attempts[0].collection = evidence(
         "attempt-002",

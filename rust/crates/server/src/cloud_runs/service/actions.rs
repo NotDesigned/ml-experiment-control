@@ -153,11 +153,6 @@ impl Service {
                 {
                     return Err(cloud::Error::evidence());
                 }
-                for name in ["submission.json", "backend.json", "collection.json"] {
-                    if directory.entry_exists(OsStr::new(name)).map_err(io)? {
-                        return Err(cloud::Error::evidence());
-                    }
-                }
             }
         }
         let guard = self

@@ -368,19 +368,11 @@ fn snapshots_read_exact_current_evidence_and_only_one_attempt_payload() {
     let path = run_path(f.root.path());
     extra_attempt(f.root.path(), "attempt-002");
     set_current(f.root.path(), "attempt-001");
-    for file in [
-        "status.json",
-        "backend.json",
-        "collection.json",
-        "decision.json",
-        "submission.json",
-    ] {
-        evidence_file(
-            f.root.path(),
-            &format!("attempts/attempt-001/{file}"),
-            json!({"project":"demo","run_id":"train","attempt_id":"attempt-001","state":"RUNNING","backend_job_id":"12345"}),
-        );
-    }
+    evidence_file(
+        f.root.path(),
+        "attempts/attempt-001/status.json",
+        json!({"project":"demo","run_id":"train","attempt_id":"attempt-001","state":"RUNNING","backend_job_id":"12345"}),
+    );
     fs::write(
         path.join("attempts/attempt-001/stdout.log"),
         "first\nsecond\n",
@@ -415,7 +407,7 @@ fn snapshots_read_exact_current_evidence_and_only_one_attempt_payload() {
         Some("attempt-001")
     );
     assert!(
-        matches!(&current.submission, EvidenceDocument::Present { metadata, .. } if metadata["backend_job_id"] == "12345")
+        matches!(&current.status, EvidenceDocument::Present { metadata, .. } if metadata["backend_job_id"] == "12345")
     );
     assert!(snapshot.attempts[1].stdout.source.is_none());
     assert!(
@@ -459,19 +451,6 @@ fn explicit_mirrors_select_current_but_corruption_or_foreign_binding_never_selec
             .diagnostics
             .iter()
             .any(|d| d.code == EvidenceProblem::NoExplicitCurrent)
-    );
-    evidence_file(
-        f.root.path(),
-        "collection.json",
-        json!({"attempt_id":"attempt-002"}),
-    );
-    assert_eq!(
-        f.store
-            .snapshot(&f.reference)
-            .unwrap()
-            .current_attempt_id
-            .as_deref(),
-        Some("attempt-002")
     );
     fs::write(path.join("status.json"), "malformed").unwrap();
     let bad = f.store.snapshot(&f.reference).unwrap();
@@ -594,9 +573,20 @@ fn exact_snapshots_do_not_read_or_hide_bad_sibling_manifests_and_evidence_errors
     fs::write(path.join("attempts/attempt-002/attempt.json"), "broken: [").unwrap();
     evidence_file(
         f.root.path(),
-        "attempts/attempt-001/backend.json",
+        "attempts/attempt-001/status.json",
         json!({"attempt_id":"attempt-999"}),
     );
+    assert!(matches!(
+        f.store
+            .snapshot_attempt(&f.reference, "attempt-001")
+            .unwrap()
+            .attempts[0]
+            .status,
+        EvidenceDocument::Unavailable {
+            code: EvidenceProblem::IdentityConflict,
+            ..
+        }
+    ));
     fs::write(
         path.join("attempts/attempt-001/status.json"),
         "invalid json",
@@ -607,29 +597,18 @@ fn exact_snapshots_do_not_read_or_hide_bad_sibling_manifests_and_evidence_errors
         .snapshot_attempt(&f.reference, "attempt-001")
         .unwrap();
     assert!(matches!(
-        exact.attempts[0].backend,
-        EvidenceDocument::Unavailable {
-            code: EvidenceProblem::IdentityConflict,
-            ..
-        }
-    ));
-    assert!(matches!(
         exact.attempts[0].status,
         EvidenceDocument::Unavailable {
             code: EvidenceProblem::InvalidJson,
             ..
         }
     ));
-    assert!(matches!(
-        exact.attempts[0].decision,
-        EvidenceDocument::Missing
-    ));
     assert!(f.store.snapshot(&f.reference).is_err());
     // The actual payload source is always an approved fixed name. A producer
     // path cannot redirect the reader into a dataset, credential or checkpoint.
     evidence_file(
         f.root.path(),
-        "attempts/attempt-001/collection.json",
+        "attempts/attempt-001/status.json",
         json!({"metrics_path":"/must-not-read","stdout_path":"../../forbidden"}),
     );
     assert!(
