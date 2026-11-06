@@ -73,35 +73,84 @@ class NativeBridge(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             builder = SimpleNamespace(root=root, config={'repository': 'docker.io/team/runtime'})
-            for suffix in ('.dsw.json', '.acr.json'):
-                key = 'a' * 64 if suffix == '.dsw.json' else 'b' * 64
-                path = root / (key + suffix)
-                path.write_text(json.dumps({'repository': 'old.example/team/build', 'phase': 'OBSERVING'}))
-                before = path.read_bytes()
-                self.assertEqual(publication_builder(builder, key).config['repository'], 'old.example/team/build')
-                self.assertEqual(path.read_bytes(), before)
+            key = 'a' * 64
+            path = root / (key + '.dsw.json')
+            path.write_text(json.dumps({'repository': 'old.example/team/build', 'phase': 'CREATED'}))
+            before = path.read_bytes()
+            self.assertEqual(publication_builder(builder, key).config['repository'], 'old.example/team/build')
+            self.assertEqual(path.read_bytes(), before)
             self.assertIs(publication_builder(builder, 'c' * 64), builder)
             self.assertEqual(builder.config['repository'], 'docker.io/team/runtime')
 
-    def test_preferred_acr_skips_dsw_but_never_overlaps_an_unknown_primary(self):
-        from ml_exp_server.builds import acr_fallback
-        from ml_exp_server.builds.builder_client import BuildTransportError
+    def test_an_old_acr_journal_is_never_read(self):
+        from ml_exp_server.builds.build_recovery import publication_absence, publication_builder
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            receipt = {'bundle_id': 'a' * 64}
-            builder = SimpleNamespace(root=root, config={'acr_fallback': {'prefer': True}})
-            with patch.object(acr_fallback, 'publish', return_value='image') as publish, \
-                    patch('ml_exp_server.builds.pai_dsw.DswPublisher') as dsw, \
-                    patch('ml_exp_server.builds.pai_build_recovery.observe_dsw_absence', return_value=None):
-                self.assertEqual(acr_fallback.publish_runtime(builder, 'tag', root, receipt), 'image')
-                dsw.assert_not_called()
-                publish.assert_called_once()
-                publish.reset_mock()
-                (root / ('a' * 64 + '.dsw.json')).write_text('{"phase":"CREATED"}')
-                dsw.return_value.publish.side_effect = BuildTransportError('PRIMARY_UNRESOLVED', {})
-                with self.assertRaises(BuildTransportError):
-                    acr_fallback.publish_runtime(builder, 'tag', root, receipt)
-                publish.assert_not_called()
+            key = 'a' * 64
+            (root / (key + '.acr.json')).write_text('not json, and never opened')
+            builder = SimpleNamespace(root=root, config={'repository': 'docker.io/team/runtime', 'publisher': 'pai-dsw'})
+            self.assertIs(publication_builder(builder, key), builder)
+            proof = {'source': 'pai-dsw-reconcile.v1', 'bundle_id': key}
+            with patch('ml_exp_server.builds.pai_build_recovery.observe_dsw_absence', return_value=proof):
+                self.assertEqual(publication_absence(builder, key), proof)
+
+    def test_acr_registry_publishes_through_the_normal_dsw_path(self):
+        repository = 'registry.ap-northeast-1.aliyuncs.com/team/build'
+        key = '1' * 64
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tree = root / 'sources/demo/pending/tree'
+            tree.mkdir(parents=True)
+            base = 'docker.io/library/python@sha256:' + '2' * 64
+            (tree / 'Dockerfile').write_text('FROM ' + base + '\n')
+            sha = _tree_digest(tree)
+            source_id = 'source.' + sha[7:]
+            source = tree.parent.with_name(source_id)
+            tree.parent.rename(source)
+            (source / 'source.json').write_text(json.dumps({'project': 'demo', 'tree_digest': sha}))
+            for path in source.rglob('*'):
+                path.chmod(0o555 if path.is_dir() else 0o444)
+            source.chmod(0o555)
+            worker = root / 'worker'
+            worker.write_bytes(b'owned fixture; never execute')
+            (root / (key + '.acr.json')).write_text('not json, and never opened')
+            builder = SimpleNamespace(root=root, config={
+                'native_worker_bin': str(worker), 'native_source_root': str(root / 'sources'),
+                'allow_dockerfile_builds': True, 'publisher': 'pai-dsw', 'repository': repository})
+            value = {'operation': 'native-build', 'runtime_id': 'runtime.' + key, 'project': 'demo',
+                     'source_id': source_id, 'base_image': base, 'dockerfile': 'Dockerfile',
+                     'worker_sha256': 'sha256:' + hashlib.sha256(worker.read_bytes()).hexdigest(), 'mirror': False}
+            image = repository + '@sha256:' + '4' * 64
+            with patch('ml_exp_server.builds.pai_dsw.DswPublisher') as dsw, \
+                    patch.object(subprocess, 'run', side_effect=AssertionError('no Git or provider command')):
+                dsw.return_value.publish.return_value = image
+                result = native_image.request(builder, value)
+            dsw.assert_called_once_with(builder)
+            dsw.return_value.publish.assert_called_once()
+            self.assertEqual(dsw.return_value.publish.call_args.args[0], repository + ':bundle-' + key)
+            self.assertEqual(result['runtime']['image'], image)
+
+    def test_registry_on_separate_auth_host_needs_only_the_allowlist(self):
+        from ml_exp_server.data.registry_transport import Registry
+        host = 'registry.ap-northeast-1.aliyuncs.com'
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'auth.json'
+            login = {'auth': base64.b64encode(b'fixture-user:fixture-secret').decode()}
+            path.write_text(json.dumps({'auths': {host: login}}))
+            config = {'repository': host + '/team/build', 'registry_auth_file': str(path)}
+            def exchange(method, path, headers, body, maximum, **kwargs):
+                if kwargs.get('host') == 'dockerauth.example':
+                    return 200, {}, b'{"token":"fixture-token"}'
+                if headers['Authorization'] == 'Bearer fixture-token':
+                    return 200, {}, b'manifest'
+                return 401, {'www-authenticate': 'Bearer realm="https://dockerauth.example/auth",service="registry"'}, b''
+            refused = Registry.from_config(config)
+            with patch.object(refused, '_exchange', side_effect=exchange), \
+                    self.assertRaisesRegex(ValueError, 'realm is not trusted'):
+                refused.request('GET', refused.prefix + '/manifests/bundle-x')
+            trusted = Registry.from_config({**config, 'registry_auth_hosts': ['dockerauth.example']})
+            with patch.object(trusted, '_exchange', side_effect=exchange):
+                self.assertEqual(trusted.request('GET', trusted.prefix + '/manifests/bundle-x')[2], b'manifest')
 
     def test_dsw_empty_poll_and_lost_start_ack_do_not_restart_or_clean_the_builder(self):
         from ml_exp_server.builds.pai_dsw import DswPublisher
@@ -166,8 +215,9 @@ class NativeBridge(unittest.TestCase):
                 patch.object(subprocess, "run", side_effect=AssertionError("must not start a builder")):
             root = Path(directory) / "state"
             valid = {"state_root": str(root), "native_worker_bin": "/worker", "native_source_root": "/sources"}
-            with self.assertRaisesRegex(ValueError, "unknown builder configuration: unknown_key"):
-                ImageBuilder({**valid, "unknown_key": "x"})
+            for key in ("unknown_key", "acr_fallback"):
+                with self.assertRaisesRegex(ValueError, "unknown builder configuration: " + key):
+                    ImageBuilder({**valid, key: "x"})
             for key in ("native_worker_bin", "native_source_root"):
                 with self.assertRaisesRegex(ValueError, "lacks " + key):
                     ImageBuilder({k: v for k, v in valid.items() if k != key})
@@ -329,7 +379,7 @@ class NativeBridge(unittest.TestCase):
             link.symlink_to(lock)
             self.assertFalse(native_image._active(link))
 
-    def test_late_primary_or_fallback_publication_reconciles_without_starting_builder(self):
+    def test_late_publication_reconciles_without_starting_builder(self):
         for labels_changed in [False, True]:
             with self.subTest(labels_changed=labels_changed), tempfile.TemporaryDirectory() as directory:
                 builder = SimpleNamespace(root=Path(directory), config={"repository": "registry.example/team/build"})

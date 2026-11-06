@@ -33,7 +33,7 @@ CONFIG_KEYS = frozenset({
     "registry_auth_file", "registry_auth_hosts", "registry_blob_hosts", "docker", "skopeo",
     "ephemeral_buildkit", "buildkit_image", "buildkit_http_proxy", "buildkit_network",
     "build_storage_path", "build_expansion_factor", "build_reserve_bytes", "build_min_free_inodes",
-    "pai_dsw", "acr_fallback", "sensecore_mirror"})
+    "pai_dsw", "sensecore_mirror"})
 
 
 class ImageBuilder:

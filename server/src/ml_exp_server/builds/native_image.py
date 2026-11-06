@@ -109,8 +109,8 @@ def request(builder, value):
         return result
     from .build_recovery import publication_builder
     builder = publication_builder(builder, identifier)
-    # Either publisher can finish after a lost response. Observe the original
-    # tag and recipe, without starting a DSW or sending another Git trigger.
+    # A publisher can finish after a lost response. Observe the original tag
+    # and recipe, without starting another build.
     if value["operation"] in {"native-get", "native-reconcile"}:
         if definition.exists():
             image = published_image(builder, "bundle-" + identifier, recipe_labels(value))
@@ -176,8 +176,8 @@ def request(builder, value):
             try:
                 tag = builder.config["repository"] + ":bundle-" + identifier
                 if builder.config.get("publisher") == "pai-dsw":
-                    from .acr_fallback import publish_runtime
-                    image = publish_runtime(builder, tag, context, {"bundle_id": identifier, "project": value["project"], "source_id": value["source_id"], "base_image": value["base_image"], "recipe": RECIPE, "worker_sha256": value["worker_sha256"]})
+                    from .pai_dsw import DswPublisher
+                    image = DswPublisher(builder).publish(tag, context)
                 elif builder.config.get("publisher") == "buildkit":
                     image = builder._publish_buildkit(tag, context)
                 else:

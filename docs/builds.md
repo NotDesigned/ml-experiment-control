@@ -1,8 +1,7 @@
 # Runtime image builds
 
 The default publisher builds on a CPU PAI DSW instance and pushes to the
-configured registry, such as Docker Hub. An optional ACR Git build provides
-fallback when publishing to ACR. A local Docker/BuildKit publisher
+configured registry, such as Docker Hub. A local Docker/BuildKit publisher
 is also supported. Building and training are separate: compatible authenticated images
 can be used by any configured training backend.
 
@@ -72,9 +71,9 @@ SIF and removing the converter's private temporary OCI cache.
 ## Diagnose and resume a failed build
 
 Query the original Runtime's progress, logs and reconciliation endpoint.
-DSW reconciliation checks the owned instance and published registry image;
-ACR reconciliation can accept a late completed image without triggering a
-second build. Missing receipts alone do not establish a failed publication.
+Reconciliation checks the owned DSW instance and the published registry image,
+and can accept a late completed image without triggering a second build.
+Missing receipts alone do not establish a failed publication.
 An empty or failed MCP status sample retries observation of the same CPU
 build within its configured budget. The start command is sent once; a lost
 start acknowledgement does not send it again. A confirmed worker failure or
@@ -83,15 +82,15 @@ class retained in the build diagnostic.
 
 If the original CPU instance was deleted and no image was published, use
 `ml-exp env reconcile RUNTIME_ID --project PROJECT`. Reconciliation checks the
-original instance, instance name, registry and bundle lock without building.
+original instance, instance name, registry and bundle lock without building: a retry
+needs the owned cleanup lease, exact absence from native Get/List and a registry 404.
 Confirmed absence changes that same Runtime to PREPARED with `retry_safe=true`;
 `ml-exp env execute RUNTIME_ID --project PROJECT --confirmation "BUILD RUNTIME_ID"`
 can then rebuild it, using the exact confirmation returned by the API. An active
-builder, uncertain create, failed observation, or pending ACR publication stays
-RECONCILE_REQUIRED. Missing receipts do not overwrite the original build error.
+builder, uncertain create or failed observation stays RECONCILE_REQUIRED. Missing receipts do not overwrite the original build error.
 Once the Runtime is READY, continue its original Preparation.
 
-## PAI DSW and ACR fallback
+## PAI DSW publisher
 
 Use a fixed approved CPU quota and Docker-enabled image with Python 3.11+.
 Configure the private image builder, not a DLC training executor:
@@ -140,7 +139,10 @@ Log into the target registry on the builder host using the configured auth file.
 Docker Hub accepts both Skopeo's `docker.io` login and Docker's
 `https://index.docker.io/v1/` login entry. Registry requests use Docker Hub's
 distribution endpoint; published image references retain `docker.io/...`.
-Changing `repository` applies to new builds. Existing DSW/ACR publication
+Any other registry uses the same path. One that issues tokens or redirects blobs
+from another host, such as ACR, needs those exact hosts in `registry_auth_hosts`
+and `registry_blob_hosts`.
+Changing `repository` applies to new builds. Existing DSW publication
 intents retain their recorded repository; READY images retain their digest.
 
 Each build requests 4 CPU, 8 GiB and no GPU. Configure 20 minutes explicitly as
@@ -162,50 +164,6 @@ Keep native OSS mounts unset: they remain provider-blocked. With a configured VP
 `pai_dsw.default_route` selects shared `eth0` or approved private `eth1`; the actual
 instance must match before credentials are uploaded. The builder does not
 create a NAT, EIP, security group or quota.
-
-For an ACR Personal repository bound to a private build GitHub repository, add:
-
-```json
-{
-  "acr_fallback": {
-    "git_repository": "https://github.com/YOUR_ACCOUNT/YOUR_PRIVATE_BUILD_REPO",
-    "wait_seconds": 2700,
-    "prefer": false
-  }
-}
-```
-
-ACR must have the built-in rule `release-v$version` → `$version`, context `/`,
-file `Dockerfile`. The builder host needs authenticated `git`/`gh`. Configure
-exact registry authentication/blob host allowlists as required. ACR Personal
-cannot use third-party private-base credentials through this Git build path;
-choose a compatible pinned base.
-
-The main `repository` must be the ACR repository the Git build publishes to. A saved
-ACR intent is still observed at the repository it recorded if that setting changes.
-
-Set `prefer: true` to build new runtime images directly through ACR while the
-DSW Docker engine is unavailable. Existing DSW leases still require confirmed
-absence before switching that bundle; an in-flight or unknown primary cannot be
-overlapped. Existing ACR publication intents are observed without sending a new
-tag. This affects runtime source builds only; data-image delivery keeps its CPU
-DSW path and never sends datasets or weights to Git. Omit `prefer` or set it to
-false to restore the DSW-first order. The frozen source, worker and Runtime
-identity do not change with this operator choice.
-
-Fallback is allowed only after confirmed primary-instance absence and an
-authenticated registry absence check. It records one publication intent and
-pushes the exact `release-vbundle-BUNDLE_SHA256` tag. It never updates `main` or
-overwrites a tag. Git contexts reject empty directories, symlinks/special files,
-files above 95 MiB and total contexts above 300 MiB. Put data/weights elsewhere.
-
-`wait_seconds` accepts 0–2700 seconds: 45 minutes is publication observation,
-not another DSW build timeout. `WAITING_ACR_BUILD` observes the registry;
-`ACR_NATIVE_BUILD_PENDING` requires reconciliation after the wait. Detailed
-provider build logs remain in the ACR console. A late exact image can be
-accepted without another build. Expiry or an absent receipt alone grants no
-retry. A DSW retry additionally requires its owned cleanup lease, exact absence
-from native Get/List and registry 404, all rechecked under the bundle lock.
 
 The daemon asks for a same-digest CCR copy of every Runtime built for a SenseCore
 executor, so configure `sensecore_mirror` on the builder. Its fields are

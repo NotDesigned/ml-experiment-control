@@ -166,13 +166,12 @@ work; a missing result upload does not silently launch a CPU recovery job.
 
 The optional builder starts a private 4-CPU/8-GiB/zero-GPU DSW, builds a sealed
 source context and publishes to the configured OCI registry. It does not call
-PAI's enterprise-ACR image-build API. See [DSW and ACR builder setup](builds.md#pai-dsw-and-acr-fallback)
+PAI's enterprise-ACR image-build API. See [DSW builder setup](builds.md#pai-dsw-publisher)
 for configuration, registry authentication, timeouts and reconciliation.
 
 DSW's hard cap is **4 hours**. Debug leases can be shorter; the recommended build
 configuration explicitly sets **20 minutes**, with a verified cloud shutdown
-budget of build timeout plus 20 minutes, capped at four hours. ACR fallback
-publication observation is separately bounded at **45 minutes**. These values
+budget of build timeout plus 20 minutes, capped at four hours. These values
 are different from the DLC job duration. DSW is not used for training.
 
 For a CPFS-backed DSW, the personal dataset is registered at
@@ -182,14 +181,13 @@ latter path can create duplicate mounts. Public mounts stay read-only. Registry
 secrets and build controls use the owned temporary directory; a persistent CPFS
 workspace is not a persistent Docker layer cache.
 
-### Shared registry and native build fallback
+### Shared registry
 
 A shared private registry can serve all backends. The default publisher pushes
-from a CPU DSW to the configured registry, such as Docker Hub. An optional ACR
-repository can add Git-triggered construction as fallback. PAI/Slurm pull directly;
+from a CPU DSW to the configured registry, such as Docker Hub. PAI/Slurm pull directly;
 SenseCore uses digest-preserving on-demand CCR delivery. These are operator
 choices, not requirements for an unrelated Slurm installation.
-Follow [build publication and fallback](builds.md#pai-dsw-and-acr-fallback);
+Follow [build publication](builds.md#pai-dsw-publisher);
 existing Runtime/Run image references are never rewritten when defaults change.
 
 ## Private result archival
