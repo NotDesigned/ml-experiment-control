@@ -180,6 +180,7 @@ impl Transport for FakeProvider {
                 http_status: Some(404),
                 uncertain: false,
             }),
+            "GetJobEvents" => Ok(json!({"Events":["scheduled"]})),
             other => panic!("unexpected provider operation {other}"),
         }
     }
@@ -1045,6 +1046,8 @@ struct CopyWorld {
     calls: Vec<String>,
     lose_create_reply: bool,
     reads_down: bool,
+    /// What a pod's log read returns, by pod.
+    pod_logs: BTreeMap<String, Value>,
 }
 struct CopyProvider {
     kind: Kind,
@@ -1078,7 +1081,8 @@ impl CopyProvider {
                 let id = format!("dlc-copy-{number}");
                 (
                     json!({"JobId":id,"WorkspaceId":body["WorkspaceId"],"ResourceId":body["ResourceId"],
-                        "DisplayName":body["DisplayName"],"Settings":{"Tags":body["Settings"]["Tags"]},"Status":"Running"}),
+                        "DisplayName":body["DisplayName"],"Settings":{"Tags":body["Settings"]["Tags"]},"Status":"Running",
+                        "Pods":[{"PodId":"pod-a"},{"PodId":"pod-b"}]}),
                     json!({"JobId":id}),
                 )
             }
@@ -1154,6 +1158,12 @@ impl Transport for CopyProvider {
                     .collect();
                 Ok(json!({"training_jobs":rows,"next_page_token":""}))
             }
+            "GetPodLogs" => {
+                let pod = request.path.rsplit('/').nth(1).unwrap();
+                let logs = world.pod_logs.get(pod).cloned().unwrap_or(json!([]));
+                Ok(json!({"Logs":logs}))
+            }
+            "GetJobEvents" => Ok(json!({"Events":["scheduled"]})),
             other => panic!("unexpected provider operation {other}"),
         }
     }
@@ -1613,6 +1623,114 @@ fn a_superseded_pai_request_stays_readable() {
     };
     assert_eq!(diagnostic(REQUEST_A), "CLOUD_SUBMISSION_NOT_FOUND");
     assert_eq!(diagnostic(REQUEST_C), "DATA_COPY_IDENTITY_CONFLICT");
+}
+
+#[test]
+fn sensecore_data_diagnostics_are_typed_refusals_with_no_provider_call() {
+    let c = CopyFixture::new(Kind::Sensecore, 3);
+    let service = c.open();
+    // Before any copy exists, and again once a copy request is recorded.
+    for published in [false, true] {
+        if published {
+            c.publish(&service, REQUEST_A).unwrap();
+        }
+        let calls = c.provider.world().calls.len();
+        for execute in [false, true] {
+            let refused = service
+                .data_diagnostic(
+                    "demo",
+                    c.f.executor,
+                    &c.asset,
+                    REQUEST_A,
+                    execute,
+                    T_RECONCILE,
+                )
+                .unwrap_err();
+            assert_eq!(refused.code, "READONLY_DIAGNOSTIC_UNSUPPORTED");
+        }
+        let view = service
+            .data_provider_diagnostics("demo", c.f.executor, &c.asset, REQUEST_A, 50)
+            .unwrap();
+        assert_eq!(view["diagnostic"], "PROVIDER_DIAGNOSTICS_UNSUPPORTED");
+        assert_eq!(view["provider_read"], false);
+        assert_eq!(c.provider.world().calls.len(), calls);
+    }
+}
+
+#[test]
+fn a_pai_copy_with_no_recorded_job_says_so_without_reading_the_provider() {
+    let c = CopyFixture::new(Kind::Pai, 3);
+    let service = c.open();
+    c.provider.world().lose_create_reply = true;
+    c.publish(&service, REQUEST_A).unwrap();
+    c.provider.world().lose_create_reply = false;
+    let calls = c.provider.world().calls.len();
+    let view = service
+        .data_provider_diagnostics("demo", c.f.executor, &c.asset, REQUEST_A, 50)
+        .unwrap();
+    assert_eq!(view["copy"]["diagnostic"], "NO_PROVIDER_JOB_RECORDED");
+    assert_eq!(view["provider_read"], true);
+    assert!(view.get("read_only_diagnostic").is_none());
+    assert_eq!(c.provider.world().calls.len(), calls);
+}
+
+#[test]
+fn pai_data_diagnostics_read_each_job_through_the_sync_outbox() {
+    let c = CopyFixture::new(Kind::Pai, 3);
+    let service = c.open();
+    let read = || {
+        service
+            .data_provider_diagnostics("demo", c.f.executor, &c.asset, REQUEST_A, 50)
+            .unwrap()
+    };
+    c.publish(&service, REQUEST_A).unwrap();
+    let copy = read();
+    assert_eq!(copy["copy"]["job_id"], "dlc-copy-0");
+    assert_eq!(copy["provider_read"], true);
+    assert!(copy.get("read_only_diagnostic").is_none());
+    c.provider.set_state("FAILED");
+    service
+        .data_diagnostic("demo", c.f.executor, &c.asset, REQUEST_A, true, T_RECONCILE)
+        .unwrap();
+    let both = read();
+    assert_eq!(both["copy"]["job_id"], "dlc-copy-0");
+    assert_eq!(both["read_only_diagnostic"]["job_id"], "dlc-copy-1");
+    assert_eq!(c.provider.creates(), 2);
+}
+
+#[test]
+fn attempt_diagnostics_read_through_the_run_outbox_and_keep_their_keys() {
+    for kind in KINDS {
+        let f = Fixture::new(kind);
+        let service = f.open();
+        let (action, _) = f.authorized(&service, "train");
+        let unread = service
+            .provider_diagnostics("demo", "train", "attempt-001", 50)
+            .unwrap();
+        assert_eq!(unread["provider_read"], false);
+        assert_eq!(
+            unread["diagnostic"],
+            match kind {
+                Kind::Pai => "NO_PROVIDER_JOB_RECORDED",
+                Kind::Sensecore => "PROVIDER_DIAGNOSTICS_UNSUPPORTED",
+            }
+        );
+        f.execute(&service, &action).unwrap();
+        let read = service
+            .provider_diagnostics("demo", "train", "attempt-001", 50)
+            .unwrap();
+        match kind {
+            Kind::Pai => {
+                assert_eq!(read["provider_read"], true);
+                assert_eq!(read["provider"]["job_id"], PAI_JOB_ID);
+            }
+            Kind::Sensecore => {
+                assert_eq!(read["provider_read"], false);
+                assert_eq!(read["diagnostic"], "PROVIDER_DIAGNOSTICS_UNSUPPORTED");
+            }
+        }
+        assert_eq!(f.provider.creates(), 1);
+    }
 }
 
 #[test]

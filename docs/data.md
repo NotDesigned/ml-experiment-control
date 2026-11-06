@@ -123,6 +123,10 @@ original image, 0 GPUs, 2 CPUs and 4 GiB, and a 300-second running limit. CPFS i
 mounted read-only. It does not run data-copy, unpack files, publish READY, remove
 parts or retry the original copy.
 
+SenseCore has no read-only diagnostic and no provider read for a copy. There,
+`data diagnose` returns 422 `READONLY_DIAGNOSTIC_UNSUPPORTED` and the provider read
+says `PROVIDER_DIAGNOSTICS_UNSUPPORTED`, with no provider call.
+
 The report contains current available bytes/inodes, marker/state identity and
 metadata hashes, modes/ownership, recorded part counts, part sizes, and an
 existing-lock nonblocking check. Part contents are not read. Up to 128 part

@@ -68,6 +68,29 @@ fn compiled(parent: &Job, lineage: &Value, config: &Value, script: &str) -> clou
     job.validate().map_err(why!(cloud::Error::evidence()))?;
     Ok(job)
 }
+/// The provider's account of one job, read through the adapter and outbox that own
+/// it. `None` says no provider job is recorded, so there is nothing to ask about.
+fn provider_read(
+    adapter: &Adapter<Shared>,
+    outbox: &Outbox,
+    job: &Job,
+    lines: u32,
+) -> cloud::Result<Option<Value>> {
+    let handle = outbox
+        .optional_status(job)?
+        .map(|status| status["handle"].clone())
+        .filter(Value::is_object);
+    let Some(handle) = handle else {
+        return Ok(None);
+    };
+    let handle = serde_json::from_value(handle).map_err(why!(cloud::Error::evidence()))?;
+    adapter
+        .pai_provider_diagnostics(job, &handle, lines, &AtomicBool::new(false))
+        .map(Some)
+}
+fn job_view(read: Option<Value>) -> Value {
+    read.unwrap_or_else(|| json!({"diagnostic":"NO_PROVIDER_JOB_RECORDED"}))
+}
 fn report(value: &Value, config: &Value) -> Option<Value> {
     match value {
         Value::String(text) => text
@@ -201,23 +224,6 @@ impl Service {
             "remote_refresh_performed":execute}),
         )
     }
-    fn provider_read(
-        &self,
-        collector: &Adapter<Shared>,
-        job: &Job,
-        lines: u32,
-    ) -> cloud::Result<Value> {
-        let handle = self
-            .sync_outbox
-            .optional_status(job)?
-            .map(|status| status["handle"].clone())
-            .filter(Value::is_object);
-        let Some(handle) = handle else {
-            return Ok(json!({"diagnostic":"NO_PROVIDER_JOB_RECORDED"}));
-        };
-        let handle = serde_json::from_value(handle).map_err(why!(cloud::Error::evidence()))?;
-        collector.pai_provider_diagnostics(job, &handle, lines, &AtomicBool::new(false))
-    }
     /// The provider's account of a data copy and its read-only diagnostic. These
     /// jobs are not Attempts, so `provider_diagnostics` cannot reach their logs.
     pub fn data_provider_diagnostics(
@@ -233,21 +239,23 @@ impl Service {
         let saved = self
             .data_saved(project, executor, asset)?
             .ok_or_else(missing)?;
-        let copy = self.copy_job_of_request(saved, project, executor, asset, request)?;
-        let collector = self
+        let backend = self
             .backends
             .get(executor)
-            .ok_or_else(cloud::Error::configuration)?
-            .collector
-            .as_ref()
             .ok_or_else(cloud::Error::configuration)?;
         let mut result = json!({"project":project,"executor":executor,"asset_id":asset,
             "request_id":request,"provider_read":false});
-        if !matches!(collector.profile, cloud::adapter::Profile::Pai(_)) {
+        // SenseCore keeps no copy intent and has no collector, so this comes first.
+        if !matches!(backend.adapter.profile, cloud::adapter::Profile::Pai(_)) {
             result["diagnostic"] = json!("PROVIDER_DIAGNOSTICS_UNSUPPORTED");
             return Ok(result);
         }
-        result["copy"] = self.provider_read(collector, &copy, lines)?;
+        let copy = self.copy_job_of_request(saved, project, executor, asset, request)?;
+        let collector = backend
+            .collector
+            .as_ref()
+            .ok_or_else(cloud::Error::configuration)?;
+        result["copy"] = job_view(provider_read(collector, &self.sync_outbox, &copy, lines)?);
         let lineage =
             json!({"project":project,"executor":executor,"asset_id":asset,"request_id":request});
         let name = name(&lineage)?;
@@ -257,8 +265,12 @@ impl Service {
             if diagnostic.lineage != lineage {
                 return Err(cloud::Error::evidence());
             }
-            result["read_only_diagnostic"] =
-                self.provider_read(collector, &diagnostic.job, lines)?;
+            result["read_only_diagnostic"] = job_view(provider_read(
+                collector,
+                &self.sync_outbox,
+                &diagnostic.job,
+                lines,
+            )?);
         }
         result["provider_read"] = json!(true);
         Ok(result)
@@ -286,22 +298,16 @@ impl Service {
             result["diagnostic"] = json!("PROVIDER_DIAGNOSTICS_UNSUPPORTED");
             return Ok(result);
         }
-        let handle = self
-            .outbox
-            .optional_status(&prepared.execution.job)?
-            .map(|status| status["handle"].clone())
-            .filter(Value::is_object);
-        let Some(handle) = handle else {
+        let read = provider_read(
+            &backend.adapter,
+            &self.outbox,
+            &prepared.execution.job,
+            lines,
+        )?;
+        let Some(provider) = read else {
             result["diagnostic"] = json!("NO_PROVIDER_JOB_RECORDED");
             return Ok(result);
         };
-        let handle = serde_json::from_value(handle).map_err(why!(cloud::Error::evidence()))?;
-        let provider = backend.adapter.pai_provider_diagnostics(
-            &prepared.execution.job,
-            &handle,
-            lines,
-            &AtomicBool::new(false),
-        )?;
         result["provider_read"] = json!(true);
         result["provider"] = provider;
         Ok(result)
@@ -357,6 +363,14 @@ impl Service {
         let saved = self
             .data_saved(project, executor, asset)?
             .ok_or_else(missing)?;
+        let backend = self
+            .backends
+            .get(executor)
+            .ok_or_else(cloud::Error::configuration)?;
+        // SenseCore keeps no copy intent and has no collector, so this comes first.
+        if !matches!(backend.adapter.profile, cloud::adapter::Profile::Pai(_)) {
+            return Err(unavailable("READONLY_DIAGNOSTIC_UNSUPPORTED"));
+        }
         let parent = self.copy_job_of_request(saved, project, executor, asset, request)?;
         let (import, _) = ml_exp_core::cloud::data::materialization_inputs(&parent)
             .map_err(why!(cloud::Error::evidence()))?;
@@ -364,7 +378,7 @@ impl Service {
             json!({"project":project,"executor":executor,"asset_id":asset,"request_id":request});
         let config = json!({"contract":"data-diagnostic.v1","project":project,"asset_id":asset,"request_id":request,
             "root":import.root,"target":import.target,"definition":import.definition});
-        let collector = self.backends[executor]
+        let collector = backend
             .collector
             .as_ref()
             .ok_or_else(cloud::Error::configuration)?;
