@@ -83,7 +83,9 @@ jobs:
     env:
       RUSTFLAGS: ${{ matrix.target == 'x86_64-pc-windows-msvc' && '-C target-feature=+crt-static -C link-arg=/Brepro' || '' }}
     needs: plan
-    if: ${{ !cancelled() && (github.event_name != 'push' || needs.plan.outputs.full == 'true') }}
+    # Pull requests are Linux only, to save minutes. A PR's evidence therefore cannot
+    # cover the other platforms, so this always runs on main rather than reusing it.
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
@@ -136,10 +138,13 @@ jobs:
           NATIVE_RESULT: ${{ needs.native.result }}
           IMAGE_RESULT: ${{ needs.image-effects.result }}
           PLATFORMS_RESULT: ${{ needs.client-platforms.result }}
+          EVENT: ${{ github.event_name }}
         run: |
           if [[ "$REUSED" != true ]]; then
             test "$NATIVE_RESULT" = success
             test "$IMAGE_RESULT" = success
+          fi
+          if [[ "$EVENT" != pull_request ]]; then
             test "$PLATFORMS_RESULT" = success
           fi
       - uses: actions/checkout@v4
