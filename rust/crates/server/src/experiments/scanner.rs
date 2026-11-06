@@ -74,6 +74,60 @@ fn read_manifest(directory: &Directory) -> Result<Option<Document>, DiscoveryErr
     Ok(Some(Document::decode(&bytes, source)?))
 }
 
+/// The Run in the directory named `run` directly below one root, read without
+/// walking anything else, so a bad sibling cannot make it unreadable. `None` leaves the
+/// answer to `scan`: nothing is there, it names another Run, a root is itself a Run
+/// (which would make this directory part of it), or two roots hold one.
+pub(super) fn locate_direct(
+    project: &str,
+    run: &str,
+    roots: &[Directory],
+) -> Result<Option<RunRef>, DiscoveryError> {
+    if identity::validate_observation_id(run).is_err() {
+        return Ok(None);
+    }
+    let mut found = None;
+    for (root_index, root) in roots.iter().enumerate() {
+        if root.entry_exists(OsStr::new(ManifestSource::RunJson.filename()))? {
+            return Ok(None);
+        }
+        let directory = match root.child(OsStr::new(run), false) {
+            Ok(directory) => directory,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                ) =>
+            {
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let Some(manifest) = read_manifest(&directory)? else {
+            continue;
+        };
+        if manifest
+            .metadata
+            .get("run_id")
+            .and_then(serde_json::Value::as_str)
+            != Some(run)
+        {
+            return Ok(None);
+        }
+        domain::validate_run(&manifest.metadata, project, run)?;
+        if found.is_some() {
+            return Ok(None);
+        }
+        found = Some(RunRef {
+            project: project.into(),
+            run_id: run.into(),
+            root_index,
+            relative_components: vec![run.into()],
+        });
+    }
+    Ok(found)
+}
+
 pub(super) fn scan(
     project: &str,
     parent: &Directory,

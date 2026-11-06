@@ -16,10 +16,15 @@ use std::{
 
 const REDISCOVER_SECONDS: u64 = 30;
 
-/// How a sample should move the schedule. `busy` retries the same phase soon.
-pub struct Sample {
-    pub ok: bool,
-    pub busy: bool,
+/// How a sample should move the schedule.
+pub enum Sample {
+    Done,
+    Failed,
+    /// Retry the same phase soon.
+    Busy,
+    /// This backend has no work in this phase. It says nothing about the job, so the
+    /// failure count stays as the last real sample left it.
+    Skipped,
 }
 
 /// What one backend's observer does. Errors stop at the adapter, which decides
@@ -144,13 +149,14 @@ impl Cycle {
         self.schedule = next;
         if let Some((action, phase)) = selected {
             let sample = polled.sample(&action, phase, stop);
-            self.schedule = std::mem::take(&mut self.schedule).outcome(
-                &action,
-                clock(),
-                &self.policy,
-                sample.ok,
-                sample.busy,
-            );
+            let (now, policy) = (clock(), &self.policy);
+            let schedule = std::mem::take(&mut self.schedule);
+            self.schedule = match sample {
+                Sample::Done => schedule.outcome(&action, now, policy, true, false),
+                Sample::Failed => schedule.outcome(&action, now, policy, false, false),
+                Sample::Busy => schedule.outcome(&action, now, policy, false, true),
+                Sample::Skipped => schedule.skipped(&action, now, policy),
+            };
         }
     }
 }
@@ -201,7 +207,7 @@ mod tests {
                 thread::sleep(Duration::from_millis(5));
             }
             self.script().saw_stop = stop.load(Ordering::Relaxed);
-            Sample { ok: !busy, busy }
+            if busy { Sample::Busy } else { Sample::Done }
         }
         fn started(&self) {
             self.script().started = true;

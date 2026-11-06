@@ -12,12 +12,10 @@ struct Saved {
     started: bool,
     submission: Option<Value>,
 }
-/// What this service needs to know about executors it does not run. Refusing here,
-/// before a build or a copy, is the only reason it asks.
-pub trait ExternalExecutors {
-    fn accepts(&self, executor: &str) -> bool;
-    fn supports_script_preparation(&self, executor: &str) -> bool;
-}
+/// The executors this service does not run, each with whether it can run a
+/// data-preparation script. The caller supplies them; refusing here, before a build or
+/// a copy, is the only reason this service looks.
+pub type ExternalExecutors = std::collections::BTreeMap<String, bool>;
 /// How far a continue got. Nothing here submits a Run on another backend: the
 /// caller does that with no lock held, then records it with `experiment_finish`.
 pub enum Continue {
@@ -47,7 +45,7 @@ impl Service {
         project: &str,
         request: &Request,
         worker: &str,
-        external: Option<&dyn ExternalExecutors>,
+        external: Option<&ExternalExecutors>,
     ) -> cloud::Result<()> {
         let run = request
             .resolve(project, worker)
@@ -135,12 +133,14 @@ impl Service {
                 http_status: Some(422),
                 uncertain: false,
             })?;
-        } else if !external.is_some_and(|e| e.accepts(&run.executor)) || run.scheduling.is_some() {
+        } else if !external.is_some_and(|e| e.contains_key(&run.executor))
+            || run.scheduling.is_some()
+        {
             return Err(cloud::Error::configuration());
         }
         if !self.backends.contains_key(&run.executor)
             && run.data_preparation.is_some()
-            && !external.is_some_and(|e| e.supports_script_preparation(&run.executor))
+            && external.and_then(|e| e.get(&run.executor)) != Some(&true)
         {
             return Err(cloud::Error {
                 code: "SCRIPT_PREPARATION_NOT_CONFIGURED".into(),
@@ -207,7 +207,7 @@ impl Service {
         &self,
         project: &str,
         request: Request,
-        external: Option<&dyn ExternalExecutors>,
+        external: Option<&ExternalExecutors>,
     ) -> cloud::Result<Value> {
         request
             .validate(project)
@@ -297,7 +297,7 @@ impl Service {
         project: &str,
         id: &str,
         confirmation: &str,
-        external: Option<&dyn ExternalExecutors>,
+        external: Option<&ExternalExecutors>,
         context: crate::runs::Context<'_>,
     ) -> cloud::Result<Continue> {
         let crate::runs::Context {

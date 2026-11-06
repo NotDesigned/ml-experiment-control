@@ -25,16 +25,16 @@ impl Polled for Polling {
         // Worker evidence and history arrive through the exchange. Only the
         // scheduler phase has a provider read, so an Action costs one per cycle.
         if phase != Phase::Scheduler {
-            return Sample {
-                ok: true,
-                busy: false,
-            };
+            return Sample::Skipped;
         }
-        let ok = crate::projects::transition_context()
+        let refreshed = crate::projects::transition_context()
             .map_err(why!(()))
-            .and_then(|(now, _)| self.0.refresh(action, &now, stop).map_err(why!(())))
-            .is_ok();
-        Sample { ok, busy: false }
+            .and_then(|(now, _)| self.0.refresh(action, &now, stop).map_err(why!(())));
+        if refreshed.is_ok() {
+            Sample::Done
+        } else {
+            Sample::Failed
+        }
     }
 }
 impl Service {

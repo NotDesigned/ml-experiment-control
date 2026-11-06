@@ -24,8 +24,8 @@ fn invalid() -> read_api::Error {
         detail: "invalid experiment configuration or exact preparation identity",
     }
 }
-fn external(slurm: &Option<Arc<slurm::Service>>) -> Option<&dyn ExternalExecutors> {
-    slurm.as_deref().map(|s| s as &dyn ExternalExecutors)
+fn external(slurm: &Option<Arc<slurm::Service>>) -> Option<ExternalExecutors> {
+    slurm.as_deref().map(slurm::Service::executors)
 }
 pub(crate) fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -95,7 +95,7 @@ async fn prepare(
     }
     http_effect::execute(state, OnTimeout::Effect, move |api, _| {
         api.cloud_only()?
-            .experiment_prepare(&project, request, external(&api.submissions()))
+            .experiment_prepare(&project, request, external(&api.submissions()).as_ref())
             .map_err(Into::into)
     })
     .await
@@ -145,7 +145,13 @@ async fn advance(
         };
         let cloud = api.cloud_only()?;
         let slurm = api.submissions();
-        match cloud.experiment_continue(&project, &id, &confirmation, external(&slurm), context)? {
+        match cloud.experiment_continue(
+            &project,
+            &id,
+            &confirmation,
+            external(&slurm).as_ref(),
+            context,
+        )? {
             Continue::View(view) => Ok(view),
             // No lock is held across these calls. A repeat reaches the same Run and
             // the same immutable Slurm slot, and `experiment_finish` refuses any other.

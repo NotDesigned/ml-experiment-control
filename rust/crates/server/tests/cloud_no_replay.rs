@@ -963,6 +963,36 @@ fn a_provider_outage_is_read_at_the_same_rate_and_never_creates() {
     }
 }
 
+/// The outbox refuses this read after the provider call, so each one costs a GET. The
+/// phases with no work must not reset the failure count between them.
+#[test]
+fn a_read_refused_after_the_provider_call_backs_off_to_the_cap() {
+    for kind in KINDS {
+        let f = Fixture::new(kind);
+        let service = Arc::new(f.open());
+        let (action, _) = f.authorized(&service, "train");
+        f.execute(&service, &action).unwrap();
+        service
+            .refresh(&action, T_RECONCILE, &AtomicBool::new(false))
+            .unwrap();
+        // RUNNING does not allow STARTING.
+        match kind {
+            Kind::Pai => f.provider.world().row["Status"] = json!("EnvPreparing"),
+            Kind::Sensecore => f.provider.world().row["state"] = json!("STARTING"),
+        }
+        assert!(
+            service
+                .refresh(&action, T_RECONCILE, &AtomicBool::new(false))
+                .is_err()
+        );
+        let reads = f.provider.reads();
+        // Reads at 0, 22, 64, 146, 308, 610, 912 and 1214, then 300 s apart.
+        observer(service.clone()).walk(0..1300);
+        assert_eq!(f.provider.reads(), reads + 8);
+        assert_eq!(f.provider.creates(), 1);
+    }
+}
+
 #[test]
 fn a_job_that_vanishes_under_the_observer_is_never_created_again() {
     for kind in KINDS {
@@ -1539,6 +1569,17 @@ impl CopyFixture {
         world.rows.clear();
         world.calls.clear();
     }
+    /// The dataset record, exactly as it is on disk.
+    fn saved_dataset(&self) -> Value {
+        let digest = canonical::digest(&json!(["demo", self.f.executor, self.asset])).unwrap();
+        let path = self
+            .f
+            .settings
+            .registry_root
+            .join("cloud-submissions/slots")
+            .join(format!("dataset-{digest}.json"));
+        serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
+    }
     fn superseded_copy(&self, request: &str) -> Option<Value> {
         let digest =
             canonical::digest(&json!(["demo", self.f.executor, self.asset, request])).unwrap();
@@ -1697,6 +1738,75 @@ fn a_running_or_succeeded_copy_refuses_a_new_request() {
         assert_eq!(view["new_request_allowed"], false);
         c.assert_new_request_refused(&service);
         assert_eq!(c.provider.creates(), 1);
+    }
+}
+
+/// A Complete verifies with the lock released. It used to write back the record it
+/// started from, which erased a copy job started meanwhile, and the next request then
+/// reached a create with no proof that the first job had ended.
+#[test]
+fn a_late_archive_verification_keeps_the_copy_that_started_meanwhile() {
+    for kind in KINDS {
+        let c = CopyFixture::new(kind, 3);
+        let service = c.open();
+        let verifying: State = serde_json::from_value(c.saved_dataset()["state"].clone()).unwrap();
+        let first = c.publish(&service, REQUEST_A).unwrap();
+        assert_eq!(c.provider.creates(), 1);
+        let before = c.saved_dataset();
+        assert_eq!(before["copy_request_id"], REQUEST_A);
+
+        let view = service
+            .dataset_archive_verified("demo", c.f.executor, &c.asset, &verifying)
+            .unwrap();
+        assert_eq!(view["archive_verified"], true);
+        assert_eq!(c.saved_dataset(), before);
+        assert_eq!(view["copy_job"]["slot"], first["copy_job"]["slot"]);
+
+        c.assert_new_request_refused(&service);
+        assert_eq!(
+            c.publish(&service, REQUEST_A).unwrap()["copy_job"]["slot"],
+            first["copy_job"]["slot"]
+        );
+        assert_eq!(c.provider.creates(), 1);
+    }
+}
+
+#[test]
+fn a_late_archive_verification_of_another_state_changes_nothing() {
+    for kind in KINDS {
+        let c = CopyFixture::new(kind, 3);
+        let service = c.open();
+        let mut stale = c.saved_dataset()["state"].clone();
+        stale["parts"] = json!({});
+        let stale: State = serde_json::from_value(stale).unwrap();
+        let before = c.saved_dataset();
+        assert!(
+            service
+                .dataset_archive_verified("demo", c.f.executor, &c.asset, &stale)
+                .is_err()
+        );
+        assert_eq!(c.saved_dataset(), before);
+    }
+}
+
+/// SenseCore reports CANCELLED for these too, but neither shows the job is over.
+#[test]
+fn a_sensecore_copy_that_may_still_run_refuses_a_new_request() {
+    for raw in ["DELETING", "SUSPENDED"] {
+        let c = CopyFixture::new(Kind::Sensecore, 3);
+        let service = c.open();
+        c.publish(&service, REQUEST_A).unwrap();
+        c.provider.set_state(raw);
+        let view = c.publish(&service, REQUEST_A).unwrap();
+        assert_eq!(view["new_request_allowed"], false, "{raw}");
+        c.assert_new_request_refused(&service);
+        assert_eq!(c.provider.creates(), 1, "{raw}");
+
+        c.provider.set_state("DELETED");
+        let view = c.publish(&service, REQUEST_A).unwrap();
+        assert_eq!(view["new_request_allowed"], true, "{raw}");
+        c.publish(&service, REQUEST_B).unwrap();
+        assert_eq!(c.provider.creates(), 2, "{raw}");
     }
 }
 
@@ -2097,10 +2207,13 @@ async fn a_configured_cloud_service_can_read_a_slurm_run_in_an_explicit_run_proj
             "/api/runs/demo/train/submission",
             "/api/runs/demo/train/preparation",
             "/api/runs/demo/train/tracking",
+            "/api/experiments/demo/train/submissions",
         ] {
             let (status, body) = routed(&app, "GET", path, "").await;
             assert_eq!(status, 200, "{path}: {body}");
         }
+        let (_, listed) = routed(&app, "GET", "/api/experiments/demo/train/submissions", "").await;
+        assert_eq!(listed["submissions"], json!([]));
         let (_, run) = routed(&app, "GET", "/api/runs/demo/train", "").await;
         assert_eq!(run["native_submission"]["submission_id"], action.as_str());
         let (_, submission) = routed(&app, "GET", "/api/runs/demo/train/submission", "").await;
@@ -2136,6 +2249,18 @@ async fn a_run_or_action_reaches_its_own_backend_through_the_app() {
             assert_eq!(status, 200, "{body}");
             assert_eq!(body["submission_id"], action.as_str());
         }
+        let (status, listed) = routed(
+            &app,
+            "GET",
+            "/api/experiments/demo/cloud-run/submissions",
+            "",
+        )
+        .await;
+        assert_eq!(status, 200, "{listed}");
+        assert_eq!(
+            listed["submissions"][0]["submission_id"],
+            cloud_action.as_str()
+        );
         let ticket = |action: &str| format!("/api/submissions/{action}/download-ticket");
         let (status, body) = routed(&app, "POST", &ticket(&slurm_action), r#"{"part":0}"#).await;
         assert_eq!(
@@ -2182,6 +2307,53 @@ fn an_owner_that_is_not_configured_answers_501_and_the_other_backend_is_never_as
             cloud_only.run_owner("demo", "cloud-run"),
             Ok(Owner::Cloud(_))
         ));
+        assert!(f.provider.calls().is_empty());
+        assert!(!ssh_calls.exists());
+    }
+}
+
+/// Routing reads the Run's own manifest. A scan of the Project would stop at the first
+/// bad entry and refuse every other Run there, W&B publication included.
+#[tokio::test]
+async fn a_bad_sibling_cannot_stop_a_healthy_run_in_its_project() {
+    for kind in KINDS {
+        let f = Fixture::new(kind);
+        let cloud_service = Arc::new(f.open());
+        let (cloud_action, _) = f.authorized(&cloud_service, "cloud-run");
+        let (slurm, slurm_action, ssh_calls) = slurm_side(&f);
+        let api = routing_api(&f, Some(Arc::new(slurm)), Some(cloud_service));
+        let app = routing_app(&f, api.clone());
+        let sibling = f.run_directory("broken-sibling");
+        fs::create_dir_all(&sibling).unwrap();
+        private(&sibling.join("manifest.json"), &json!({}));
+        fs::write(sibling.join("manifest.json"), b"{").unwrap();
+
+        // Finding a Run that is not directly below the root still needs the scan.
+        assert_eq!(
+            refusal(api.run_owner("demo", "absent")),
+            (409, "EXPERIMENT_DISCOVERY_UNAVAILABLE")
+        );
+        assert!(matches!(
+            api.run_owner("demo", "cloud-run"),
+            Ok(Owner::Cloud(_))
+        ));
+        assert!(matches!(
+            api.run_owner("demo", "train"),
+            Ok(Owner::Slurm(_))
+        ));
+        for (run, action) in [("cloud-run", &cloud_action), ("train", &slurm_action)] {
+            let (status, body) =
+                routed(&app, "GET", &format!("/api/runs/demo/{run}/submission"), "").await;
+            assert_eq!(status, 200, "{body}");
+            assert_eq!(body["submission_id"], action.as_str());
+        }
+        let (status, body) = routed(&app, "GET", "/api/runs/demo/cloud-run/preparation", "").await;
+        assert_eq!(status, 200, "{body}");
+        let (status, body) = routed(&app, "GET", "/api/runs/demo/cloud-run/tracking", "").await;
+        assert_eq!(status, 200, "{body}");
+        assert!(
+            ml_exp_server::tracking::Source::tracking_journal(&*api, "demo", "cloud-run").is_ok()
+        );
         assert!(f.provider.calls().is_empty());
         assert!(!ssh_calls.exists());
     }
@@ -2431,14 +2603,14 @@ fn a_slurm_preparation_that_lost_its_finish_reaches_the_same_action() {
     let id = request.id("demo").unwrap();
     let confirmation = format!("PREPARE {id}");
     side.cloud
-        .experiment_prepare("demo", request, Some(&*side.slurm))
+        .experiment_prepare("demo", request, Some(&side.slurm.executors()))
         .unwrap();
     let advance = || {
         side.cloud.experiment_continue(
             "demo",
             &id,
             &confirmation,
-            Some(&*side.slurm),
+            Some(&side.slurm.executors()),
             open_gate(&f.transition()),
         )
     };
@@ -2528,7 +2700,7 @@ fn a_preparation_for_an_executor_nobody_runs_is_refused_before_any_effect() {
 
     // Saved while Slurm was configured, then continued without it.
     side.cloud
-        .experiment_prepare("demo", request, Some(&*side.slurm))
+        .experiment_prepare("demo", request, Some(&side.slurm.executors()))
         .unwrap();
     assert!(
         side.cloud
@@ -2548,7 +2720,11 @@ fn a_preparation_for_an_executor_nobody_runs_is_refused_before_any_effect() {
     scripted["run"]["data_preparation"] = json!({"script":"prepare.py"});
     let refused = side
         .cloud
-        .experiment_prepare("demo", preparation_request(scripted), Some(&*side.slurm))
+        .experiment_prepare(
+            "demo",
+            preparation_request(scripted),
+            Some(&side.slurm.executors()),
+        )
         .unwrap_err();
     assert_eq!(refused.code, "SCRIPT_PREPARATION_NOT_CONFIGURED");
 }

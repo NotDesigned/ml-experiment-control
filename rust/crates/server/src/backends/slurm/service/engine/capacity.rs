@@ -2,15 +2,14 @@
 //! remote command is the pure scheduler observation plan, with bounded output.
 use super::*;
 use ml_exp_core::capacity::{self, Observation};
-impl crate::backends::cloud::service::ExternalExecutors for Service {
-    fn accepts(&self, executor: &str) -> bool {
-        Service::accepts(self, executor)
-    }
-    fn supports_script_preparation(&self, executor: &str) -> bool {
-        Service::supports_script_preparation(self, executor)
-    }
-}
 impl Service {
+    /// Each executor this service runs, with whether it can run a data-preparation script.
+    pub fn executors(&self) -> BTreeMap<String, bool> {
+        self.backends
+            .iter()
+            .map(|(id, backend)| (id.clone(), backend.script_preparation))
+            .collect()
+    }
     pub fn catalogue(&self) -> Vec<Value> {
         self.backends.iter().map(|(id,b)|json!({"executor_id":id,"kind":"slurm","enabled":self.enabled,"run_creation":self.can_create_runs(),"limits":{"gpus":b.profile.max_gpus,"cpus":b.profile.max_cpus,"memory_gb":b.profile.max_memory_gb,"walltime_seconds":b.profile.max_walltime_seconds},"partition":b.profile.partition,
             "capabilities":{"oci_to_sif":true,"persistent_checkpoints":true,"dataset_upload":b.data_helper_config.is_some(),"data_preparation":if b.script_preparation{serde_json::json!("before_job")}else{serde_json::Value::Null},"metrics":true,"backend_result_stream":true,"capacity_query":true},"live_availability_checked":false})).collect()

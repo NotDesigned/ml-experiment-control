@@ -129,11 +129,60 @@ impl Schedule {
         }
         self
     }
+    /// A phase this backend has no work for. The failure count stays, so a failure in
+    /// another phase keeps backing off, and the backoff that failure already waited is
+    /// not waited again. A healthy entry returns to its usual interval.
+    pub fn skipped(mut self, key: &str, now: u64, policy: &Policy) -> Self {
+        if let Some(entry) = self.entries.get_mut(key) {
+            entry.phase = entry.phase.next();
+            let wait = entry.phase == Phase::Scheduler && entry.failures == 0;
+            entry.due = now.saturating_add(if wait { policy.interval_seconds } else { 1 });
+        }
+        self
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Walks an entry whose scheduler phase has the given results and whose other
+    /// phases have nothing to do, and returns the time of each scheduler read.
+    fn scheduler_reads(results: &[bool]) -> Vec<u64> {
+        let policy = Policy {
+            enabled: true,
+            ..Policy::default()
+        };
+        let candidates = BTreeSet::from(["a".to_owned()]);
+        let mut state = Schedule::default();
+        let mut reads = Vec::new();
+        let mut now = 0;
+        while reads.len() < results.len() {
+            let (next, selected) = state.select(&candidates, now, &policy);
+            state = next;
+            state = match selected {
+                Some((key, Phase::Scheduler)) => {
+                    reads.push(now);
+                    state.outcome(&key, now, &policy, results[reads.len() - 1], false)
+                }
+                Some((key, _)) => state.skipped(&key, now, &policy),
+                None => state,
+            };
+            now += 1;
+        }
+        reads
+    }
+    #[test]
+    fn skipped_phases_keep_the_healthy_interval_and_let_a_failure_back_off_to_the_cap() {
+        assert_eq!(scheduler_reads(&[true; 4]), [0, 12, 24, 36]);
+        let reads = scheduler_reads(&[false; 8]);
+        let gaps: Vec<u64> = reads.windows(2).map(|pair| pair[1] - pair[0]).collect();
+        assert_eq!(gaps, [22, 42, 82, 162, 302, 302, 302]);
+    }
+    #[test]
+    fn a_success_after_skipped_phases_clears_the_backoff() {
+        let reads = scheduler_reads(&[false, false, true, true]);
+        assert_eq!(reads, [0, 22, 64, 76]);
+    }
     #[test]
     fn fair_rotation_backoff_and_busy_do_not_discard_pending_phases() {
         let policy = Policy {

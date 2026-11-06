@@ -140,6 +140,20 @@ impl Store {
         )
     }
 
+    /// One Run directly below a root, without scanning the Project. A `None` says only
+    /// that `discover` must decide; it does not say the Run is absent.
+    pub fn locate_direct(
+        &self,
+        project: &str,
+        run: &str,
+    ) -> std::result::Result<Option<RunRef>, super::scanner::DiscoveryError> {
+        let anchor = self
+            .projects
+            .get(project)
+            .ok_or(super::scanner::DiscoveryError::UnknownProject)?;
+        super::scanner::locate_direct(project, run, &anchor.roots)
+    }
+
     /// No directory, lock, manifest, SQLite file or recovery artifact is created.
     /// A missing existing deletion fence fails closed instead of bootstrapping.
     pub fn open(bindings: Vec<ProjectBinding>, fence: RunFence) -> Result<Self> {

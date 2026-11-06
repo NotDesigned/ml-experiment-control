@@ -44,10 +44,7 @@ impl Polled for Polling {
     }
     fn sample(&self, action: &str, phase: Phase, stop: &AtomicBool) -> crate::background::Sample {
         let Ok((now, _)) = crate::projects::transition_context() else {
-            return crate::background::Sample {
-                ok: false,
-                busy: false,
-            };
+            return crate::background::Sample::Failed;
         };
         let outcome = self
             .service
@@ -55,9 +52,10 @@ impl Polled for Polling {
         let _ =
             self.service
                 .background_report(Some(action), Some(phase), outcome.as_ref().map(|_| ()));
-        crate::background::Sample {
-            ok: outcome.is_ok(),
-            busy: matches!(outcome, Err(Error::Busy)),
+        match outcome {
+            Ok(_) => crate::background::Sample::Done,
+            Err(Error::Busy) => crate::background::Sample::Busy,
+            Err(_) => crate::background::Sample::Failed,
         }
     }
     fn started(&self) {

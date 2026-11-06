@@ -41,48 +41,47 @@ pub(crate) enum OnTimeout {
     /// Run metadata creation.
     RunCreate,
 }
-fn uncertain(on_timeout: OnTimeout) -> Response {
-    failure(match on_timeout {
-        OnTimeout::RunCreate => Error {
+impl OnTimeout {
+    /// The answer when no result can be delivered. `None` for `NoEffect`, which is the
+    /// only case allowed to report a plain failure.
+    fn uncertainty(self) -> Option<Error> {
+        let (code, detail) = match self {
+            Self::NoEffect => return None,
+            Self::RunCreate => (
+                "RUN_CREATION_UNCERTAIN",
+                "Run metadata may have been published; query the same Project/Run before retrying; no scheduler job was submitted by creation",
+            ),
+            Self::Submission => (
+                "SUBMISSION_OPERATION_UNCERTAIN",
+                "submission state may have changed; query the same Run or Submission and reconcile; do not repeat execution",
+            ),
+            Self::Project => (
+                "PROJECT_OPERATION_UNCERTAIN",
+                "project state may have changed; inspect the lifecycle ledger before retrying",
+            ),
+            Self::Effect => (
+                "OPERATION_UNCERTAIN",
+                "the operation may have taken effect; query the same resource before retrying",
+            ),
+        };
+        Some(Error {
             status: 500,
-            code: "RUN_CREATION_UNCERTAIN",
-            detail: "Run metadata may have been published; query the same Project/Run before retrying; no scheduler job was submitted by creation",
-        },
-        OnTimeout::Submission => Error {
-            status: 500,
-            code: "SUBMISSION_OPERATION_UNCERTAIN",
-            detail: "submission state may have changed; query the same Run or Submission and reconcile; do not repeat execution",
-        },
-        OnTimeout::Project => Error {
-            status: 500,
-            code: "PROJECT_OPERATION_UNCERTAIN",
-            detail: "project state may have changed; inspect the lifecycle ledger before retrying",
-        },
-        // `NoEffect` never reaches this function; it shares the only wording that
-        // would still be true if it did.
-        OnTimeout::NoEffect | OnTimeout::Effect => Error {
-            status: 500,
-            code: "PROJECT_OPERATION_UNCERTAIN",
-            detail: "the operation may have taken effect; query the same resource before retrying",
-        },
-    })
+            code,
+            detail,
+        })
+    }
+}
+fn undelivered(on_timeout: OnTimeout, plain: Error) -> Response {
+    failure(on_timeout.uncertainty().unwrap_or(plain))
 }
 pub(crate) async fn execute(
     state: Arc<AppState>,
     on_timeout: OnTimeout,
     effect: impl FnOnce(&read_api::Api, f64) -> Result<Value, Error> + Send + 'static,
 ) -> Response {
-    execute_with_timeout(state, on_timeout, Duration::from_secs(30), effect).await
+    execute_timeout(state, on_timeout, Duration::from_secs(30), effect).await
 }
 pub(crate) async fn execute_timeout(
-    state: Arc<AppState>,
-    on_timeout: OnTimeout,
-    timeout: Duration,
-    effect: impl FnOnce(&read_api::Api, f64) -> Result<Value, Error> + Send + 'static,
-) -> Response {
-    execute_with_timeout(state, on_timeout, timeout, effect).await
-}
-async fn execute_with_timeout(
     state: Arc<AppState>,
     on_timeout: OnTimeout,
     timeout: Duration,
@@ -91,17 +90,17 @@ async fn execute_with_timeout(
     let Some(api) = state.reads.clone() else {
         return failure(Error {
             status: 501,
-            code: "READS_NOT_CONFIGURED",
+            code: "LOCAL_SERVICES_NOT_CONFIGURED",
             detail: "local experiment services are not configured",
         });
     };
     let Ok(permit) = state.read_slots.clone().try_acquire_owned() else {
         let mut response = failure(Error {
             status: 429,
-            code: if !matches!(on_timeout, OnTimeout::NoEffect) {
-                "LOCAL_OPERATION_BUSY"
-            } else {
+            code: if matches!(on_timeout, OnTimeout::NoEffect) {
                 "READ_BUSY"
+            } else {
+                "LOCAL_OPERATION_BUSY"
             },
             detail: "local operation concurrency limit reached",
         });
@@ -125,40 +124,44 @@ async fn execute_with_timeout(
     match tokio::time::timeout(timeout, task).await {
         Ok(Ok(Ok(value))) => {
             if crate::read_model::encoded_size(&value).is_err() {
-                if !matches!(on_timeout, OnTimeout::NoEffect) {
-                    return uncertain(on_timeout);
-                }
-                return failure(Error {
-                    status: 413,
-                    code: "READ_RESPONSE_LIMIT",
-                    detail: "local response exceeds the bounded output limit",
-                });
+                return undelivered(
+                    on_timeout,
+                    Error {
+                        status: 413,
+                        code: "READ_RESPONSE_LIMIT",
+                        detail: "local response exceeds the bounded output limit",
+                    },
+                );
             }
             if read_api::contains_secret(&value, &state.auth.token) {
-                if !matches!(on_timeout, OnTimeout::NoEffect) {
-                    return uncertain(on_timeout);
-                }
-                return failure(Error {
-                    status: 409,
-                    code: "OUTWARD_SECRET_DETECTED",
-                    detail: "read evidence could not be exposed safely",
-                });
+                return undelivered(
+                    on_timeout,
+                    Error {
+                        status: 409,
+                        code: "OUTWARD_SECRET_DETECTED",
+                        detail: "read evidence could not be exposed safely",
+                    },
+                );
             }
             Json(value).into_response()
         }
         Ok(Ok(Err(error))) => failure(error),
-        Ok(Err(_)) if !matches!(on_timeout, OnTimeout::NoEffect) => uncertain(on_timeout),
-        Ok(Err(_)) => failure(Error {
-            status: 500,
-            code: "READ_FAILED",
-            detail: "local read failed",
-        }),
-        Err(_) if !matches!(on_timeout, OnTimeout::NoEffect) => uncertain(on_timeout),
-        Err(_) => failure(Error {
-            status: 504,
-            code: "READ_TIMEOUT",
-            detail: "local read observation timed out; no provider action was sent",
-        }),
+        Ok(Err(_)) => undelivered(
+            on_timeout,
+            Error {
+                status: 500,
+                code: "READ_FAILED",
+                detail: "local read failed",
+            },
+        ),
+        Err(_) => undelivered(
+            on_timeout,
+            Error {
+                status: 504,
+                code: "READ_TIMEOUT",
+                detail: "local read observation timed out; no provider action was sent",
+            },
+        ),
     }
 }
 
@@ -206,7 +209,7 @@ pub(crate) mod tests {
             let (started, ready) = mpsc::channel();
             let completed = Arc::new(AtomicUsize::new(0));
             let observed = completed.clone();
-            let response = execute_with_timeout(
+            let response = execute_timeout(
                 state.clone(),
                 on_timeout,
                 Duration::from_millis(10),
@@ -343,7 +346,7 @@ pub(crate) mod tests {
         for response in [timed_out, panicked, secret, oversized] {
             assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
             let response = value(response).await;
-            assert_eq!(response["code"], "PROJECT_OPERATION_UNCERTAIN");
+            assert_eq!(response["code"], "OPERATION_UNCERTAIN");
             let detail = response["detail"].as_str().unwrap();
             assert!(detail.contains("may have taken effect"));
             assert!(!detail.contains("lifecycle"));

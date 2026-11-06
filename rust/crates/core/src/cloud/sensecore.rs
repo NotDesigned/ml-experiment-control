@@ -525,6 +525,15 @@ pub fn normalize(value: &str) -> RunState {
     }
 }
 
+/// True for a raw state that normalizes to CANCELLED without proving the job is over:
+/// a DELETING job may still be running, and nothing shows a SUSPENDED job cannot resume.
+pub fn may_still_run(value: &str) -> bool {
+    matches!(
+        value.to_ascii_uppercase().as_str(),
+        "SUSPENDED" | "DELETING"
+    )
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Cluster {
     pub name: String,

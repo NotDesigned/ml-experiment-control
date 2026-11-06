@@ -353,9 +353,13 @@ impl Api {
         {
             return Err(invalid_query());
         }
+        // Only a cloud Run has anything to list here, and cloud authority refuses the
+        // layouts another backend's Run may use.
         let submissions = match &self.cloud {
-            Some(cloud) => cloud.run_submissions(project, run)?,
-            None => Vec::new(),
+            Some(cloud) if self.run_kind(project, run)? == RunKind::Cloud => {
+                cloud.run_submissions(project, run)?
+            }
+            _ => Vec::new(),
         };
         Ok(serde_json::json!({"project":project,"run_id":run,"submissions":submissions}))
     }
@@ -476,7 +480,18 @@ impl Api {
                 "EXPERIMENT_EVIDENCE_UNAVAILABLE",
                 "Run is unavailable or deleted",
             )))?;
-        Ok(match self.find_run(project, run)? {
+        // Only a Run this cannot see directly costs a scan of its whole Project, whose
+        // first bad entry would refuse every Run there.
+        let direct = if self.discovery_projects.contains(project) {
+            self.store.locate_direct(project, run)?
+        } else {
+            None
+        };
+        let reference = match direct {
+            Some(reference) => Some(reference),
+            None => self.find_run(project, run)?,
+        };
+        Ok(match reference {
             Some(reference) => RunKind::of(&self.store.run(&reference, None)?.metadata),
             None => RunKind::Authored,
         })

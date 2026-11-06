@@ -554,7 +554,16 @@ fn schema_document() -> serde_json::Value {
         );
         operation["post"]["responses"]["403"] =
             json!({"description":"Native scheduler execution is disabled by the operator"});
-        if matches!(name, "refresh" | "checkpoint" | "collect" | "acknowledge") {
+        if matches!(name, "collect" | "acknowledge") {
+            operation["post"]["responses"]["200"]["description"] = json!(
+                "Original Submission and its result state; cloud collection may have submitted a synchronization job, and an acknowledgement with release may have deleted the generated archive"
+            );
+            operation["post"]["responses"]["500"]["description"] = json!(
+                "Outcome is uncertain: a synchronization job or an archive release may have happened; query the original Submission and reconcile; do not repeat execution"
+            );
+            operation["post"]["responses"]["503"] = json!({"description":"Result evidence is unavailable or the response is uncertain; original outputs and checkpoints are retained; query the original Submission before repeating"});
+        }
+        if matches!(name, "refresh" | "checkpoint") {
             operation["post"]["responses"]["200"]["description"] = json!(
                 "Original Submission plus sampled worker phase and receive time; no Action or scheduler mutation"
             );
@@ -738,6 +747,26 @@ mod tests {
 
 #[cfg(test)]
 mod schema_tests {
+    #[test]
+    fn only_observations_promise_that_a_failed_response_had_no_effect() {
+        let schema = super::schema_document();
+        let responses = |name: &str| {
+            schema["paths"][format!("/api/submissions/{{identity}}/{name}")]["post"]["responses"]
+                .clone()
+        };
+        for name in ["collect", "acknowledge"] {
+            let text = responses(name).to_string();
+            assert!(text.contains("do not repeat execution"), "{name}");
+            assert!(!text.contains("no scheduler effect"), "{name}");
+            assert!(!text.contains("no Action or scheduler mutation"), "{name}");
+        }
+        for name in ["refresh", "checkpoint"] {
+            assert_eq!(
+                responses(name)["500"]["description"],
+                "Observation response failed; no scheduler effect was requested"
+            );
+        }
+    }
     #[test]
     fn native_contract_declares_narrow_lifecycle_posts_and_exact_read_identity() {
         let schema = super::schema_document();

@@ -355,17 +355,7 @@ impl Service {
                         .ok_or_else(cloud::Error::configuration)?
                         .verify_data(project, executor, &saved.state.definition)
                         .map_err(io)?;
-                    let _lock = self.lock()?;
-                    let current = self
-                        .data_saved(project, executor, &asset)?
-                        .ok_or_else(missing)?;
-                    if current.state != saved.state {
-                        return Err(cloud::Error::evidence());
-                    }
-                    saved.archive_verified = true;
-                    self.slots
-                        .replace_regular(OsStr::new(&name), &encode(&saved)?)
-                        .map_err(io)?;
+                    return self.dataset_archive_verified(project, executor, &asset, &saved.state);
                 }
                 return Ok(Self::data_view(saved));
             }
@@ -378,6 +368,34 @@ impl Service {
             .replace_regular(OsStr::new(&name), &encode(&saved)?)
             .map_err(io)?;
         Ok(Self::data_view(saved))
+    }
+    /// Record a verification that ran with the lock released. Anything else may have
+    /// happened meanwhile, including a copy job starting, so only the flag is set, on
+    /// the record as it stands now. Writing back the older snapshot would erase that
+    /// job's identity and let a second paid copy start with no proof the first ended.
+    #[doc(hidden)]
+    pub fn dataset_archive_verified(
+        &self,
+        project: &str,
+        executor: &str,
+        asset: &str,
+        verified: &State,
+    ) -> cloud::Result<Value> {
+        let _lock = self.lock()?;
+        let mut current = self
+            .data_saved(project, executor, asset)?
+            .ok_or_else(missing)?;
+        if current.state != *verified {
+            return Err(cloud::Error::evidence());
+        }
+        current.archive_verified = true;
+        self.slots
+            .replace_regular(
+                OsStr::new(&Self::data_name(project, executor, asset)?),
+                &encode(&current)?,
+            )
+            .map_err(io)?;
+        Ok(Self::data_view(current))
     }
     pub(super) fn uploaded_data(
         &self,

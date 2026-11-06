@@ -3,7 +3,7 @@
 //! id can still be read but can never be driven again.
 use super::{sync_jobs::proven_terminal, *};
 use ml_exp_core::{
-    cloud::{Job, pai::Allocation},
+    cloud::{Job, pai::Allocation, sensecore},
     state::RunState,
 };
 
@@ -36,14 +36,16 @@ fn identity_conflict() -> cloud::Error {
     }
 }
 /// `data_copy_cli` exits non-zero unless READY was acknowledged, so SUCCEEDED without
-/// READY is contradictory evidence and never permits a second copy.
+/// READY is contradictory evidence and never permits a second copy. The raw state
+/// matters too: SenseCore also reports CANCELLED for jobs that may still run.
 pub(super) fn allows_new_request(status: &Value) -> bool {
     matches!(
         proven_terminal(status),
-        Ok(Some(observation)) if matches!(
-            observation.state,
-            RunState::Failed | RunState::Cancelled | RunState::Preempted
-        )
+        Ok(Some(observation)) if match observation.state {
+            RunState::Failed | RunState::Preempted => true,
+            RunState::Cancelled => !sensecore::may_still_run(&observation.provider_state),
+            _ => false,
+        }
     )
 }
 impl Service {
@@ -166,6 +168,20 @@ mod tests {
             RunState::Unknown,
         ] {
             assert!(!allows_new_request(&status(state)));
+        }
+    }
+    #[test]
+    fn a_raw_state_that_may_still_run_allows_no_new_request() {
+        let raw = |text: &str| {
+            let mut value = status(ml_exp_core::cloud::sensecore::normalize(text));
+            value["observation"]["provider_state"] = json!(text);
+            value
+        };
+        for text in ["SUSPENDED", "DELETING", "deleting"] {
+            assert!(!allows_new_request(&raw(text)), "{text}");
+        }
+        for text in ["STOPPED", "DELETED", "CANCELLED", "CANCELED", "FAILED"] {
+            assert!(allows_new_request(&raw(text)), "{text}");
         }
     }
     #[test]
