@@ -282,7 +282,15 @@ fn real_http_two_rounds_do_not_follow_a_changed_current_attempt() {
     let base = format!("http://{}/ml-expd", listener.local_addr().unwrap());
     let server = std::thread::spawn(move || {
         for round in 0..2 {
-            for path in ["/api/runs/p/r", "/api/runs/p/r/attempts"] {
+            let mut paths = vec![
+                "/api/runs/p/r",
+                "/api/runs/p/r/attempts",
+                "/api/runs/p/r/attempts/attempt-001/collection",
+            ];
+            if round == 1 {
+                paths.push("/api/attempts/p/r%3A%3Aattempt-001/show");
+            }
+            for path in paths {
                 let deadline = Instant::now() + Duration::from_secs(5);
                 let (mut socket, _) = loop {
                     match listener.accept() {
@@ -316,8 +324,20 @@ fn real_http_two_rounds_do_not_follow_a_changed_current_attempt() {
                 );
                 let body = if path.ends_with("/attempts") {
                     json!({"project":"p","run_id":"r","current_attempt_id":if round==0 {"attempt-001"} else {"attempt-002"},"attempts":[{"attempt_id":"attempt-001","identity":"r::attempt-001","state":if round==0 {"RUNNING"} else {"SUCCEEDED"}},{"attempt_id":"attempt-002","identity":"r::attempt-002","state":"RUNNING"}]})
+                } else if path.ends_with("/collection") {
+                    json!({"project":"p","run_id":"r","attempt_id":"attempt-001","status":"NOT_OBSERVED"})
+                } else if path.ends_with("/show") {
+                    json!({"run_id":"r","attempt":{"attempt_id":"attempt-001"},
+                        "scope":{"project":"p","scope_type":"attempt","object_id":"r::attempt-001"},
+                        "evidence":{"scheduler":{"attempt_id":"attempt-001","state":"SUCCEEDED"}}})
                 } else {
-                    json!({"project":"p","run_id":"r","evidence":{}})
+                    // The Run view describes whichever Attempt is current now.
+                    let current = if round == 0 {
+                        "attempt-001"
+                    } else {
+                        "attempt-002"
+                    };
+                    json!({"project":"p","run_id":"r","evidence":{"scheduler":{"attempt_id":current,"state":"RUNNING"}}})
                 };
                 let body = serde_json::to_vec(&body).unwrap();
                 write!(

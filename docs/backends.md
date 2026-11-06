@@ -47,8 +47,8 @@ The existing adapters declare:
 | Server resource status | Slurm partition allocation | Read-only workspace cluster list | Quota allocation snapshot |
 | Generic adapter offline-export hook | Not implemented | Not implemented | Not implemented |
 
-The server separately advertises `result-collection.v1` for recovering outputs
-from an exact original Attempt. It publishes Slurm shared-directory outputs or
+The server separately collects results to recover outputs from an exact original
+Attempt. It publishes Slurm shared-directory outputs or
 uses a bounded zero-GPU SenseCore CPU job to read NAS and resume the original
 archive transfer. This server operation does not require the generic adapter
 `outputs.offline_export` hook. Query or start it with `ml-exp run collect`; see

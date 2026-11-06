@@ -12,7 +12,7 @@ use std::{
 
 fn health() -> Value {
     json!({"min_client_protocol_version":2,"api_protocol_version":2,
-        "capabilities":["source-archive.v1"],"source_imports":true})
+        "capabilities":["source-archive.v1"]})
 }
 fn result(digest: &str) -> Value {
     json!({"project":"demo","source_id":format!("source.{}","b".repeat(64)),
@@ -344,7 +344,6 @@ fn invalid_health_or_changed_local_archive_never_sends_upload() {
     let client = Client::new(&base, "source-test-secret".into()).unwrap();
     for health in [
         json!({"api_protocol_version":2,"min_client_protocol_version":2,"capabilities":["source-import.v1"]}),
-        json!({"api_protocol_version":2,"min_client_protocol_version":2,"capabilities":["source-archive.v1"],"source_imports":false}),
         json!({"api_protocol_version":1,"min_client_protocol_version":1}),
     ] {
         let archive = payload();

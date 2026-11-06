@@ -313,7 +313,7 @@ enum Config {
 }
 #[derive(clap::Args)]
 struct Target {
-    /// Original private experiment or training-operation JSON state.
+    /// Original private experiment JSON state.
     #[arg(long)]
     state: Option<PathBuf>,
     #[arg(long)]

@@ -69,11 +69,10 @@ pub fn plan_archive(project: &str, digest: &str, bytes: u64) -> Result<ArchivePl
 }
 fn enabled(health: &Value) -> Result<(), Error> {
     session::validate_health(health)?;
-    if health.get("source_imports") == Some(&Value::Bool(false))
-        || !health
-            .get("capabilities")
-            .and_then(Value::as_array)
-            .is_some_and(|items| items.iter().any(|item| item == "source-archive.v1"))
+    if !health
+        .get("capabilities")
+        .and_then(Value::as_array)
+        .is_some_and(|items| items.iter().any(|item| item == "source-archive.v1"))
     {
         return Err(Error::Observation(
             "daemon has not enabled source-archive.v1; no source request was sent",

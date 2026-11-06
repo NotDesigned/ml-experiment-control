@@ -148,8 +148,7 @@ mod tests {
             )
             .is_err()
         );
-        let malformed =
-            json!({"server":"https://trusted.invalid","contract":"training-operation.v1"});
+        let malformed = json!({"server":"https://trusted.invalid"});
         assert!(
             connection(
                 &settings,
