@@ -16,7 +16,6 @@ pub mod failures;
 pub mod first_submission;
 pub mod identity;
 pub mod input_progress;
-pub mod intent;
 pub mod json;
 pub mod launch;
 pub mod local;

@@ -16,7 +16,6 @@ commands do not require SSH, Docker or cloud credentials.
 | `data` | Upload, inspect, publish or download dataset assets |
 | `debug` | Create, inspect and stop a leased SSH debug machine |
 | `admin` | Plan and execute administrative removal or Run retirement |
-| `contract` | Run a pure contract validator without credentials or HTTP |
 | `update` | Discover and install the latest stable native client |
 | `get` | Read a supported exact API resource |
 

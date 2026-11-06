@@ -3,10 +3,7 @@ use ml_exp_client::{
     Client, artifacts, config, credentials, datasets, observation, presentation, projects, read,
     session, sources, status, submissions, watch,
 };
-use std::{
-    io::{self, Read},
-    path::PathBuf,
-};
+use std::{io::Read, path::PathBuf};
 
 #[derive(Parser)]
 #[command(
@@ -85,11 +82,6 @@ enum Command {
     Config {
         #[command(subcommand)]
         command: Config,
-    },
-    /// Run a pure native contract validator without credentials or HTTP.
-    Contract {
-        #[command(subcommand)]
-        command: Contract,
     },
 }
 #[derive(Subcommand)]
@@ -177,13 +169,6 @@ enum Data {
     },
 }
 
-#[derive(Subcommand)]
-enum Contract {
-    /// Validate one JSON OperationIntent read from standard input.
-    IntentValidate,
-    /// Parse one Slurm allocation snapshot from standard input.
-    SlurmAllocationValidate,
-}
 #[derive(Subcommand)]
 enum Source {
     /// Pack local code without running it, then upload once to an approved Project.
@@ -818,46 +803,6 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         })?;
     }
 
-    if let Command::Contract {
-        command: Contract::IntentValidate,
-    } = &args.command
-    {
-        let mut input = String::new();
-        io::stdin()
-            .take(8 * 1024 * 1024 + 1)
-            .read_to_string(&mut input)?;
-        if input.len() > 8 * 1024 * 1024 {
-            return Err("contract input exceeds 8 MiB".into());
-        }
-        let value: serde_json::Value = serde_json::from_str(&input)?;
-        let intent = ml_exp_core::intent::OperationIntent::from_value(&value)
-            .map_err(|error| format!("invalid operation intent: {error}"))?;
-        println!("{}", serde_json::to_string_pretty(&intent)?);
-        return Ok(());
-    }
-    if let Command::Contract {
-        command: Contract::SlurmAllocationValidate,
-    } = &args.command
-    {
-        #[derive(serde::Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Input {
-            output: String,
-            partition: String,
-        }
-        let mut input = String::new();
-        io::stdin()
-            .take(8 * 1024 * 1024 + 1)
-            .read_to_string(&mut input)?;
-        if input.len() > 8 * 1024 * 1024 {
-            return Err("contract input exceeds 8 MiB".into());
-        }
-        let request: Input = serde_json::from_str(&input)?;
-        let snapshot = ml_exp_core::slurm::parse_allocation(&request.output, &request.partition)
-            .map_err(|error| format!("invalid Slurm allocation: {error}"))?;
-        println!("{}", serde_json::to_string_pretty(&snapshot)?);
-        return Ok(());
-    }
     let project_plan = match &args.command {
         Command::Project { command } => Some(command.plan()?),
         _ => None,
