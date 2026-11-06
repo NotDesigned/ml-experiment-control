@@ -679,3 +679,17 @@ fn a_download_of_results_is_not_part_of_the_source() {
     .unwrap();
     assert_eq!(sources::pack_directory(temp.path()).unwrap().sha256, sha256);
 }
+
+#[cfg(unix)]
+#[test]
+fn a_symlink_back_into_the_repository_is_refused_rather_than_walked() {
+    let temp = tempfile::tempdir().unwrap();
+    git(temp.path(), &["init", "-q"]);
+    std::fs::write(temp.path().join("train.py"), "code").unwrap();
+    std::os::unix::fs::symlink(".", temp.path().join("up")).unwrap();
+    let text = sources::pack_directory(temp.path())
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(text.contains("up") && text.contains("symlink"), "{text}");
+}

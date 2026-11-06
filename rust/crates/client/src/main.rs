@@ -864,6 +864,16 @@ fn expand(command: Command, config: &std::path::Path) -> Result<Command, ml_exp_
             stream,
             lines,
         } => {
+            if unnamed(&target)
+                && ml_exp_client::submit::latest(&directory)?
+                    .submission_id
+                    .is_none()
+            {
+                return Err(ml_exp_client::Error::Observation(
+                    "the latest submission has not sent a job, so it has no logs; \
+                     `ml-exp status` shows its preparation",
+                ));
+            }
             fill(&mut target)?;
             Command::Run {
                 command: Run::Logs {

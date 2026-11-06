@@ -590,6 +590,31 @@ pub fn resolve(spec: &Spec, identity: Identity, executor: &Value) -> Result<Plan
             .unwrap_or((f64::from(gpus) * spec.walltime_seconds as f64 / 36.0).ceil() / 100.0),
     })
 }
+/// What a saved preparation will run, whatever today's executors would resolve to. It
+/// is frozen on the server, and it is what the user must be shown.
+fn frozen(identity: Identity, view: &Value) -> Result<Plan, Error> {
+    let frozen = &view["frozen"];
+    let number = |key: &str| {
+        frozen[key]
+            .as_u64()
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or(Error::Response)
+    };
+    Ok(Plan {
+        request_id: identity.request_id,
+        preparation_id: identity.preparation_id,
+        run_id: identity.run_id,
+        base_image: identity.base_image,
+        executor: frozen["executor"]
+            .as_str()
+            .ok_or(Error::Response)?
+            .to_owned(),
+        gpus: number("gpus")?,
+        cpus: number("cpus")?,
+        memory_gb: number("memory_gb")?,
+        max_gpu_hours: frozen["max_gpu_hours"].as_f64().ok_or(Error::Response)?,
+    })
+}
 pub fn plan(
     spec: &Spec,
     content_sha256: &str,
@@ -719,23 +744,22 @@ fn stopped(view: &Value, builder_idle: bool) -> Option<String> {
         let id = runtime["runtime_id"].as_str().unwrap_or("RUNTIME");
         let project = view["project"].as_str().unwrap_or("PROJECT");
         let logs = format!("`ml-exp env logs {id} --project {project}`");
-        let code = error["code"].as_str().unwrap_or("UNKNOWN");
-        let unresolved = matches!(code, "BUILD_RECEIPT_MISSING" | "NATIVE_BUILD_RPC_UNCERTAIN");
-        if unresolved && error["build_failure"].is_null() {
-            return builder_idle.then(|| {
-                format!(
-                    "the image build is not running and left no result ({code}), so its outcome \
-                     is unresolved. See {logs}; running this command again checks once more"
-                )
-            });
-        }
-        // The original failure is kept beside a later "receipt missing".
+        // The original cause is kept beside a later "receipt missing".
         let cause = if error["build_failure"].is_null() {
             error
         } else {
             &error["build_failure"]
         };
         let code = cause["code"].as_str().unwrap_or("UNKNOWN");
+        if matches!(code, "BUILD_RECEIPT_MISSING" | "NATIVE_BUILD_RPC_UNCERTAIN") {
+            return builder_idle.then(|| {
+                format!(
+                    "the image build is not running and left no result ({code}), so its outcome \
+                     is unresolved. See {logs}. Running this command again checks once more; \
+                     changing the code or the Dockerfile starts a new build"
+                )
+            });
+        }
         let reason = cause["details"]["reason"]
             .as_str()
             .map(|reason| format!(" ({reason})"))
@@ -911,7 +935,8 @@ fn send(client: &Client, id: &str, health: &Value) -> Result<Value, Error> {
     };
     if unsent(&current["status"]) {
         return Err(Error::Submit(format!(
-            "no job has been sent: {id} is still {}. Run this command again",
+            "as far as the server shows, no job has been sent: {id} is still {}. \
+             Run this command again",
             current["status"].as_str().unwrap_or("unsent")
         )));
     }
@@ -931,13 +956,15 @@ fn finished(state: &str) -> bool {
         "SUCCEEDED" | "FAILED" | "CANCELLED" | "TIMEOUT" | "PREEMPTED"
     )
 }
+fn provider_state(submission: &Value) -> &str {
+    submission["cloud_observation"]["observation"]["provider_state"]
+        .as_str()
+        .unwrap_or_default()
+}
 /// SenseCore also reports CANCELLED for a job that may still be running.
 fn over(submission: &Value) -> bool {
-    let own = submission["cloud_observation"]["observation"]["provider_state"]
-        .as_str()
-        .unwrap_or_default();
     job_state(submission).is_some_and(finished)
-        && !ml_exp_core::cloud::sensecore::may_still_run(own)
+        && !ml_exp_core::cloud::sensecore::may_still_run(provider_state(submission))
 }
 /// The backend's own words when it gives them, such as PAI's `EnvPreparing`.
 fn describe(submission: &Value) -> Option<String> {
@@ -983,26 +1010,45 @@ fn follow(
     let mut latest = current;
     let mut last = String::new();
     let mut failures = 0;
-    let started = Instant::now();
+    let mut changed = Instant::now();
     loop {
-        match refreshed(client, id, latest.clone(), health) {
+        // A cloud read that failed keeps the old state beside a diagnostic.
+        let read = refreshed(client, id, latest.clone(), health).and_then(|value| {
+            if value["cloud_observation"]["diagnostic"].is_null() {
+                Ok(value)
+            } else {
+                Err(Error::Observation("the provider read failed"))
+            }
+        });
+        match read {
             Ok(value) => {
                 failures = 0;
                 latest = value;
                 if let Some(line) = describe(&latest).filter(|line| *line != last) {
                     (hooks.progress)(&line);
                     last = line;
+                    changed = Instant::now();
                 }
                 if over(&latest) {
                     return latest;
                 }
-                if !reporting(&latest) && started.elapsed() >= hooks.silence {
-                    (hooks.progress)(
-                        "stopped watching: this server is not reporting the job's state, so it \
-                         may have ended. Its background polling may be off",
-                    );
-                    latest["watching_stopped"] = json!(true);
-                    return latest;
+                if changed.elapsed() >= hooks.silence {
+                    let why = if !reporting(&latest) {
+                        Some(
+                            "this server is not reporting the job's state, so it may have \
+                             ended. Its background polling may be off",
+                        )
+                    } else if ml_exp_core::cloud::sensecore::may_still_run(provider_state(&latest))
+                    {
+                        Some("the provider has paused or is deleting the job")
+                    } else {
+                        None
+                    };
+                    if let Some(why) = why {
+                        (hooks.progress)(&format!("stopped watching: {why}"));
+                        latest["watching_stopped"] = json!(true);
+                        return latest;
+                    }
                 }
             }
             Err(_) if failures < READ_FAILURES => failures += 1,
@@ -1126,7 +1172,7 @@ pub fn run(
     if !archive.paths.iter().any(|path| *path == spec.dockerfile) {
         return Err(Error::Submit(format!(
             "{} is not among the files to upload; it must be inside the directory, \
-             and git must not ignore it",
+             and not ignored by .gitignore",
             spec.dockerfile
         )));
     }
@@ -1186,19 +1232,25 @@ pub fn run(
             ));
         }
     }
-    let executors = client.get("/api/executors")?;
-    let rows = executors["executors"]
-        .as_array()
-        .ok_or(Error::Response)?
-        .as_slice();
-    let executor = choose(spec, rows)?;
-    let plan = resolve(spec, identity, executor)?;
-    if executor["enabled"] != true || executor["run_creation"] != true {
-        return Err(Error::Submit(format!(
-            "{} is not accepting new Runs",
-            plan.executor
-        )));
-    }
+    let plan = match &saved {
+        Some(view) => frozen(identity, view)?,
+        None => {
+            let executors = client.get("/api/executors")?;
+            let rows = executors["executors"]
+                .as_array()
+                .ok_or(Error::Response)?
+                .as_slice();
+            let executor = choose(spec, rows)?;
+            let plan = resolve(spec, identity, executor)?;
+            if executor["enabled"] != true || executor["run_creation"] != true {
+                return Err(Error::Submit(format!(
+                    "{} is not accepting new Runs",
+                    plan.executor
+                )));
+            }
+            plan
+        }
+    };
     if health["scheduler_mutations"] != true {
         return Err(Error::Observation(
             "the server does not allow submissions right now; nothing was sent",
@@ -1211,8 +1263,10 @@ pub fn run(
         state_directory,
         &latest_for(spec, &plan.run_id, None, false),
     );
-    // Already prepared means already frozen, whatever today's limits would resolve to.
+    // Already prepared means already frozen. Otherwise the server has none, so a local
+    // record from a request that never arrived must not stop this one.
     if saved.is_none() {
+        let _ = std::fs::remove_file(&state);
         let source_id = publish(client, spec, archive, &health, hooks.progress)?;
         let request = request(spec, &plan, &source_id)?;
         preparations::prepare(client, &spec.project, &request, &state, &health)?;
@@ -1308,7 +1362,7 @@ pub fn retry(
     let existing_attempt = unsent(&current["status"]) || latest.unsettled;
     if checkpoint.is_some() && existing_attempt {
         return Err(Error::Submit(format!(
-            "{attempt} of {} already exists and was prepared without --checkpoint; \
+            "{attempt} of {} already exists and --checkpoint would not apply to it; \
              run `ml-exp retry` to finish it first",
             latest.run_id
         )));
@@ -1922,7 +1976,7 @@ mod tests {
         assert!(stopped_now(&json!({"runtime":{"status":"EXECUTING"}})).is_none());
         assert!(stopped_now(&json!({"runtime":{"status":"PREPARED"}})).is_none());
         assert!(
-            stopped(
+            stopped_now(
                 &json!({"runtime":{"status":"EXECUTING","build_error":{"code":"BUILD_EXECUTING"}}})
             )
             .is_none()
@@ -2056,6 +2110,43 @@ mod tests {
             );
             assert!(text.contains("--project demo"), "{text}");
         }
+    }
+    #[test]
+    fn an_uncertain_cause_waits_too_even_beside_a_later_missing_receipt() {
+        let view = json!({"runtime":{"status":"RECONCILE_REQUIRED","runtime_id":"runtime.x",
+            "build_error":{"code":"BUILD_RECEIPT_MISSING",
+                "build_failure":{"code":"NATIVE_BUILD_RPC_UNCERTAIN"}}}});
+        assert!(
+            stopped(&view, false).is_none(),
+            "the build may still be running"
+        );
+        assert!(stopped(&view, true).unwrap().contains("unresolved"));
+    }
+    #[test]
+    fn a_saved_preparation_shows_what_was_frozen_not_what_today_would_choose() {
+        let identity = identify(
+            &spec(),
+            &"a".repeat(64),
+            &format!("FROM {PINNED}\n"),
+            "source",
+        )
+        .unwrap();
+        let view = json!({"frozen":{"executor":"sc-2gpu","gpus":2,"cpus":28,"memory_gb":396,"max_gpu_hours":0.34}});
+        let plan = frozen(identity, &view).unwrap();
+        assert_eq!(plan.executor, "sc-2gpu");
+        assert_eq!((plan.gpus, plan.cpus, plan.memory_gb), (2, 28, 396));
+        assert_eq!(plan.max_gpu_hours, 0.34);
+        let identity = identify(
+            &spec(),
+            &"a".repeat(64),
+            &format!("FROM {PINNED}\n"),
+            "source",
+        )
+        .unwrap();
+        assert!(
+            frozen(identity, &json!({})).is_err(),
+            "unknown is refused, not guessed"
+        );
     }
     #[test]
     fn a_build_that_failed_stops_the_wait_with_its_original_cause() {

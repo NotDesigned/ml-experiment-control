@@ -43,6 +43,9 @@ struct World {
     cpu_limit: u32,
     /// The first prepared request, which any later one must equal.
     prepared_request: Option<Value>,
+    /// A failed provider read keeps the old state beside this.
+    provider_read_failing: bool,
+    prepare_never_arrives: bool,
     /// The backend's states, oldest first; the last one stays.
     job_states: Vec<(&'static str, &'static str)>,
     reads_down: bool,
@@ -72,6 +75,8 @@ impl World {
             no_executors: false,
             cpu_limit: 8,
             prepared_request: None,
+            provider_read_failing: false,
+            prepare_never_arrives: false,
             job_states: vec![("RUNNING", "Running"), ("SUCCEEDED", "Succeeded")],
             reads_down: false,
             progress_reads: 0,
@@ -93,7 +98,8 @@ impl World {
         if self.status == "VERIFIED" {
             if self.cloud {
                 value["cloud_observation"] = json!({"observation":{"job_id":"job",
-                    "provider_state":own,"state":state,"queue":null}});
+                    "provider_state":own,"state":state,"queue":null},
+                    "diagnostic":if self.provider_read_failing {json!("read failed")} else {Value::Null}});
             } else {
                 let shown = if self.polling { state } else { "QUEUED" };
                 value["execution"]["result"]["observation"] = json!({"status":{"state":shown}});
@@ -135,6 +141,12 @@ impl World {
                 }
                 value
             } else {Value::Null},
+            "frozen":self.prepared_request.as_ref().map(|request| {
+                let resources = &request["run"]["resources"];
+                json!({"executor":request["run"]["executor"],"gpus":resources["gpus"],
+                    "cpus":resources["cpus"],"memory_gb":resources["memory_gb"],
+                    "max_gpu_hours":request["approval"]["max_gpu_hours"]})
+            }),
             "training_authorized":false,"scheduler_submitted":false})
     }
     fn reply(&mut self, method: &str, path: &str, body: &[u8]) -> Option<(u16, Value)> {
@@ -174,6 +186,9 @@ impl World {
                 }
             }
             ("POST", "/api/projects/demo/experiment-preparations") => {
+                if self.prepare_never_arrives {
+                    return None;
+                }
                 self.prepared = true;
                 let request: Value = serde_json::from_slice(body).unwrap();
                 match &self.prepared_request {
@@ -844,7 +859,6 @@ fn declining_a_retry_creates_nothing() {
     let files = Files::new();
     let fake = Fake::start(ended());
     submitted_train(&files, &fake);
-    let mutations = fake.mutations();
     let declined = submit::retry(
         &fake.client(),
         &files.root.path().join("states"),
@@ -860,7 +874,10 @@ fn declining_a_retry_creates_nothing() {
         },
     );
     assert!(declined.is_err());
-    assert_eq!(fake.mutations(), mutations);
+    // Asking the provider for the latest state is allowed; creating anything is not.
+    assert_eq!(fake.count("POST", "/retry"), 0);
+    assert_eq!(fake.count("POST", "/submissions"), 0);
+    assert_eq!(fake.count("POST", "/execute"), 1);
 }
 
 #[test]
@@ -992,7 +1009,7 @@ fn a_job_stays_reachable_when_its_executor_has_gone() {
 }
 
 #[test]
-fn a_changed_limit_does_not_conflict_with_what_was_already_prepared() {
+fn a_changed_limit_shows_and_runs_what_was_already_prepared() {
     let files = Files::new();
     let mut world = World::new();
     world.authorize_never_arrives = true;
@@ -1003,9 +1020,64 @@ fn a_changed_limit_does_not_conflict_with_what_was_already_prepared() {
         world.authorize_never_arrives = false;
         world.cpu_limit = 4;
     }
-    let value = files.run(&fake, true, &mut Vec::new()).unwrap();
+    let mut asked = Vec::new();
+    let value = files.run(&fake, true, &mut asked).unwrap();
     assert_eq!(value["status"], "VERIFIED");
     assert_eq!(fake.count("POST", "/experiment-preparations"), 1);
+    assert!(asked[0].contains("8 CPU"), "the frozen value: {asked:?}");
+}
+
+#[test]
+fn a_prepare_that_never_arrived_does_not_stop_the_next_one() {
+    let files = Files::new();
+    let mut world = World::new();
+    world.prepare_never_arrives = true;
+    let fake = Fake::start(world);
+    assert!(files.run(&fake, true, &mut Vec::new()).is_err());
+    // The local record holds the old request; the server has none, so it cannot matter.
+    {
+        let mut world = fake.world.lock().unwrap();
+        world.prepare_never_arrives = false;
+        world.cpu_limit = 4;
+    }
+    let value = files.run(&fake, true, &mut Vec::new()).unwrap();
+    assert_eq!(value["status"], "VERIFIED");
+}
+
+#[test]
+fn watching_stops_when_the_provider_can_no_longer_be_read() {
+    let files = Files::new();
+    let mut world = World::new();
+    world.job_states = vec![("RUNNING", "Running")];
+    world.provider_read_failing = true;
+    let fake = Fake::start(world);
+    let mut shown = Vec::new();
+    let value = files
+        .drive(&fake, true, &mut Vec::new(), true, &mut shown)
+        .unwrap();
+    assert_eq!(value["watching_stopped"], true);
+    assert!(
+        shown.iter().any(|line| line.contains("cannot be read")),
+        "{shown:?}"
+    );
+}
+
+#[test]
+fn watching_stops_when_the_provider_has_paused_the_job() {
+    let files = Files::new();
+    let mut world = World::new();
+    world.job_states = vec![("CANCELLED", "SUSPENDED")];
+    let fake = Fake::start(world);
+    let mut shown = Vec::new();
+    let value = files
+        .drive(&fake, true, &mut Vec::new(), true, &mut shown)
+        .unwrap();
+    assert_eq!(value["watching_stopped"], true);
+    assert_eq!(value["job_over"], false, "it may still run");
+    assert!(
+        shown.iter().any(|line| line.contains("paused")),
+        "{shown:?}"
+    );
 }
 
 #[test]

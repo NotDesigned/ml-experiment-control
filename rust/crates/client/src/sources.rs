@@ -413,7 +413,9 @@ fn git_selection(directory: &Path) -> Result<Option<Selection>, Error> {
             let path = path.trim_end_matches('/');
             let full = member(&prefix, path);
             let inner = root.join(path);
-            if inner.join(".git").exists() {
+            // lstat: a symlink back into the repository must not be walked as one.
+            let directory = std::fs::symlink_metadata(&inner).is_ok_and(|meta| meta.is_dir());
+            if directory && inner.join(".git").exists() {
                 pending.push((inner, full));
             } else {
                 files.push(full);
