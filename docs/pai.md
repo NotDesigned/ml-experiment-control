@@ -66,8 +66,7 @@ New Runs default to priority **5** and guaranteed quota only. A Run can choose:
 Both job-level permission and policy are set. A node policy alone does not enable
 idle resources. `UseOversoldResource` reports actual allocation, not permission.
 Priority is an integer from 1 to 9, with larger values scheduled at higher
-priority. The catalogue advertises these options; clients check
-`pai-idle-resources.v1` before sending them. Other backends reject these options.
+priority. The catalogue advertises these options. Other backends reject them.
 
 Each Run freezes its choice; create a new Run to change it.
 Idle permission does not bypass role limits, increase the per-job GPU ceiling,

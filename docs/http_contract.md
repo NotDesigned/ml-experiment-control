@@ -36,12 +36,12 @@ The daemon binds loopback only and has no native TLS. A TLS proxy fronts it, and
 remote clients use HTTPS.
 
 Retrieve the schema from `/api/v2/openapi.json` with `ml-exp get /api/v2/openapi.json`
-or an authenticated protocol-aware HTTP client. It may not list every native route.
+or an authenticated HTTP client. It may not list every native route.
 Use the [quickstart](api-quickstart.md) for the workflow.
 
 ## Async state and retries
 
-With `async-actions.v1`, execute durably claims an Action and returns EXECUTING
+Execute durably claims an Action and returns EXECUTING
 while a daemon-owned thread continues. Runtime/data delivery have their own
 durable async resources. Poll the returned ID; disconnecting does not cancel.
 After daemon interruption, in-flight operations require reconciliation, not replay.
@@ -162,8 +162,8 @@ Run, Attempt and Submission IDs, not filesystem paths.
 | `GET …/runtimes/RUNTIME_ID/logs` / `/progress` | Build diagnostics |
 | `POST …/runtimes/RUNTIME_ID/reconcile` / `/materialize` | Observe publication without rebuilding; produce a Slurm SIF |
 
-New builds use Dockerfile only, with pinned external bases. Old READY images
-retain their workers; an obsolete unbuilt recipe requires new preparation.
+Builds use Dockerfile only, with pinned external bases. A READY image keeps its
+worker; an unbuilt recipe that no longer matches the builder requires new preparation.
 Source admission rejects links, unsafe paths and credential-looking filenames;
 it is not proof that file contents contain no secrets. See [builds](builds.md).
 

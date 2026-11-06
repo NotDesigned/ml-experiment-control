@@ -1,6 +1,5 @@
 """Small image effect adapter; native Runtime identities belong to Rust.
 
-Legacy recipes, worker bytes and their published receipts are untouched.
 This adapter requires its own explicitly configured native worker executable
 and source namespace. It never imports a training environment on the API host.
 """

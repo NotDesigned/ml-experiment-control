@@ -31,7 +31,7 @@ calling a provider:
 
 ```sh
 python3 -m venv .ops/image-bridge-venv
-.ops/image-bridge-venv/bin/pip install -r rust/tests/image-bridge-requirements.txt
+.ops/image-bridge-venv/bin/pip install -r rust/deploy/image-bridge-requirements.txt
 PYTHONPATH=server/src:src:worker/src .ops/image-bridge-venv/bin/python rust/tests/test_native_build_bridge.py
 ```
 

@@ -165,10 +165,10 @@ in batches of at most 64. Retry preserves event IDs and cursor without stopping
 training. A final uploaded root `metrics.jsonl` or `train_metrics.jsonl` can fill
 delivery gaps; journal-write failure prevents archive publication until retry.
 Stdout-only observations may be sampled and cannot reconstruct a full
-curve. Use a Runtime with `experiment-records.v1` for live delivery.
+curve; complete records are the live delivery path.
 
 Accepted metrics survive result archive ACK/release. The canonical journal and
-independent publication cursors remain in the historical `tracking/outbox.sqlite`;
+independent publication cursors remain in `tracking/outbox.sqlite`;
 this is not a second copy of weights or datasets. See [W&B](wandb.md) for display,
 publication confirmation and the distinction between curves and final results.
 

@@ -102,14 +102,13 @@ The report contains current available bytes/inodes, marker/state identity and
 metadata hashes, modes/ownership, recorded part counts, part sizes, and an
 existing-lock nonblocking check. Part contents are not read. Up to 128 part
 entries are included with an explicit truncation flag. A missing lock is never
-created. `statvfs` does not prove user-quota availability, and current diagnostics
-cannot reconstruct an errno discarded by a historical worker. Missing offline
+created. `statvfs` does not prove user-quota availability. Missing offline
 logs stay `AWAITING_OFFLINE_LOGS`; a later explicit observation can retrieve them.
 
 To read what the provider recorded for the copy and its diagnostic, add `--provider`
 (with optional `--lines`, up to 2000). This returns each job's reason, pods, events
-and a redacted log tail, creates nothing, and stores nothing. Images built with worker
-0.1.30 or later log `ML_EXPD_DATA_IO_ERROR` with the failing check.
+and a redacted log tail, creates nothing, and stores nothing. The worker logs
+`ML_EXPD_DATA_IO_ERROR` with the failing check.
 
 ## Existing OSS dataset objects
 

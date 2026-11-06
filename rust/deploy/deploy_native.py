@@ -51,6 +51,11 @@ def command(*argv, **kwargs):
                           universal_newlines=True, timeout=300, **kwargs).stdout.strip()
 
 
+def builder_configured(settings):
+    """Builds are optional. A host whose cloud configuration has no `builds` runs no builder."""
+    return bool(json.loads(Path(settings["cloud_config"]).read_text()).get("builds"))
+
+
 def service_account(settings):
     """Root must not own the stores: run the server the way its unit does."""
     if os.geteuid() != 0:
@@ -194,7 +199,8 @@ def publishers_stopped(settings):
         status = command("systemctl", "show", settings["api_unit"], "-p", "ExecMainStatus", "--value")
         if status != "0":
             raise Refused(f"API exited with status {status}; investigate before installing")
-        command("systemctl", "stop", settings["builder_unit"])
+        if builder_configured(settings):
+            command("systemctl", "stop", settings["builder_unit"])
         for path in settings["publisher_locks"]:
             try:
                 descriptor = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
@@ -212,7 +218,8 @@ def publishers_stopped(settings):
 
 
 def start(settings):
-    command("systemctl", "start", settings["builder_unit"])
+    if builder_configured(settings):
+        command("systemctl", "start", settings["builder_unit"])
     command("systemctl", "start", settings["api_unit"])
 
 
@@ -252,7 +259,7 @@ def pin_worker(settings, digest):
     """New builds embed this worker; existing Runtimes keep their frozen hash."""
     path = Path(settings["cloud_config"])
     config = json.loads(path.read_text())
-    if config.get("builds", {}).get("worker_sha256") in (None, digest):
+    if (config.get("builds") or {}).get("worker_sha256") in (None, digest):
         return
     config["builds"]["worker_sha256"] = digest
     temporary = path.with_name(f".{path.name}.deploy")
@@ -328,8 +335,9 @@ def preflight(settings, unpacked, work):
         directory.chmod(0o755)  # The service account runs the unpacked server.
     command(str(unpacked / "bin/ml-expd-rs"), "--config", settings["server_config"], "--check",
             **service_account(settings))
-    command(settings["python"], "-c", "import ml_exp_server.image_builder",
-            cwd=str(work), env={**os.environ, "PYTHONPATH": str(unpacked / "python")})
+    if builder_configured(settings):
+        command(settings["python"], "-c", "import ml_exp_server.image_builder",
+                cwd=str(work), env={**os.environ, "PYTHONPATH": str(unpacked / "python")})
     return "sha256:" + sha256(unpacked / "bin/ml-exp-worker-rs")
 
 
@@ -342,7 +350,6 @@ def first_install(root, settings, args):
         work = Path(temporary)
         unpacked, version, commit = verified(args, work)
         worker = preflight(settings, unpacked, work)
-        json.loads(Path(settings["cloud_config"]).read_text())
         plan = {"current": None, "version": version, "source_commit": commit, "worker_sha256": worker}
         if not args.apply:
             return {**plan, "applied": False}
@@ -362,7 +369,7 @@ def first_install(root, settings, args):
             with contextlib.suppress(subprocess.SubprocessError):
                 command("systemctl", "stop", unit)
         raise Refused(f"{error}; {version} stays installed and its registry initialized, the units "
-                      "are stopped. Correct the cause, start both units, then repeat with --apply "
+                      "are stopped. Correct the cause, start the units, then repeat with --apply "
                       "and without --first-install to record it") from error
     return {**plan, **record(root, version, commit, "first install"), "applied": True}
 

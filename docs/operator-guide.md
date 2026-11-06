@@ -65,7 +65,7 @@ shared output. Distribute it privately. There is no per-user or per-project RBAC
 All native credential files follow the same ownership and mode rule.
 
 The daemon binds loopback only and refuses anything else. Terminate TLS in a
-reverse proxy that preserves `Authorization`, protocol headers and the API prefix,
+reverse proxy that preserves `Authorization` and the API prefix,
 using a certificate the [client trusts](configuration.md#connection-errors).
 
 Run these as the service account that will own the stores:
@@ -90,10 +90,16 @@ startup does not initialize missing stores.
 
 On a new host, `deploy/deploy_native.py --first-install` does the commands above for
 you. Create what it cannot, as above: the service account, its directories, the
-configuration files, the API token, the Run directory and both installed unit files.
+configuration files, the API token, the Run directory and the installed API unit.
 Then write `ROOT/deployment.json` ([example](../rust/deploy/deployment.example.json)).
-`cloud_config` must name an existing file, because the tool pins the worker there;
-an API-only host can use one holding `{}`.
+`cloud_config` must name an existing file, because the tool pins the worker there.
+
+An API-only host can use a `cloud_config` holding `{}`. With no `builds` block the tool
+needs no builder: it neither runs `python` nor touches `builder_unit`, so those two
+settings may name things that do not exist yet. It still copies the bridge sources to
+`python_site_packages`. To add builds later, follow [Image builder](#image-builder).
+With a `builds` block, set up the builder's interpreter and unit first, because the
+tool imports the bridge with `python` and refuses if that fails.
 
 ```sh
 python3 deploy/deploy_native.py --root /opt/ml-exp --version X.Y.Z --first-install          # verify only
@@ -102,15 +108,16 @@ python3 deploy/deploy_native.py --root /opt/ml-exp --version X.Y.Z --first-insta
 
 It refuses unless ROOT has no `bin/ml-expd-rs`, `previous/` or `DEPLOYED.json`. It
 verifies every hash in the bundle, runs `--check`, and with `--apply` runs
-`--initialize`, installs, sets `builds.worker_sha256` to the bundled worker, starts both
-units, waits for `/api/health` to report the version and writes `ROOT/DEPLOYED.json`.
+`--initialize`, installs, sets `builds.worker_sha256` to the bundled worker, starts the
+API unit (and the builder unit when `builds` is configured), waits for `/api/health` to
+report the version and writes `ROOT/DEPLOYED.json`.
 Started as root, it runs the server as the API unit's `User=`, so the stores belong to
 the service account; it refuses if the unit names none.
 
 A refused `--check` or `--initialize` leaves ROOT empty, so correct the cause and
 repeat. There is nothing to roll back to, so a failed health check stops the units and
 leaves the release installed and the registry initialized. Correct the cause and start
-both units by hand, then run the ordinary `--apply` below to record the release.
+the units by hand, then run the ordinary `--apply` below to record the release.
 
 ## Upgrade a release
 
@@ -130,7 +137,8 @@ Always run the copy from the bundle being installed.
 
 Without `--apply` it changes nothing. It verifies every hash in the bundle, runs the
 new `ml-expd-rs --check` against the live configuration, imports the new bridge with
-the builder's interpreter, and refuses a downgrade or an active build (a builder
+the builder's interpreter when `builds` is configured, and refuses a downgrade or an
+active build (a builder
 holds `<identity>.lock` for the whole build). Also confirm that no transfer or
 submission you care about is mid-request; the tool does not inspect those.
 
@@ -190,6 +198,15 @@ part of this deployment that needs them. It is started as
 [unit example](../rust/deploy/ml-expd-builder.service) and the
 [bridge notes](acceptance-status.md#builder-and-worker-contracts).
 
+Create the interpreter that `python` in `deployment.json` names, from the pinned list in
+the bundle. The bridge cannot be imported without it. `python_site_packages` must be
+that interpreter's own directory, so match the version in the path.
+
+```sh
+python3.11 -m venv /opt/ml-exp/image-effects
+/opt/ml-exp/image-effects/bin/pip install -r deploy/image-bridge-requirements.txt
+```
+
 In the cloud configuration, `builds` sets the builder `socket`, its `peer_uid`, and
 the `worker_sha256` of the exact native worker. Configure the publisher itself
 following [builds](builds.md). The default builds on a CPU PAI DSW and pushes to the
@@ -211,7 +228,7 @@ work without it. See [W&B](wandb.md).
 
 Verify as the service account and through the public HTTPS endpoint:
 
-1. `--check`, then `ml-exp check` for health, protocol and authentication.
+1. `--check`, then `ml-exp check` for health and authentication.
 2. `ml-exp backend` for the published catalogue.
 3. A bounded source build through READY and its remote digest.
 4. Only with explicit resource authorization: a small real run, checkpoint restore
@@ -246,7 +263,9 @@ unread. To move to it:
    read. Runs get new W&B IDs, so they start new W&B runs.
 5. **Rebuild Runtime images.** Every image needs the new worker, whose hash
    `--first-install` writes to `builds.worker_sha256`. Pin the same hash wherever you
-   configure a Runtime by hand, such as a Slurm `runtimes` entry.
+   configure a Runtime by hand, such as a cloud backend's `worker_sha256`. A Slurm
+   `runtimes` entry has no such field: it names the rebuilt image and SIF, and
+   `worker.program` is the worker's path inside that image.
 6. **Have users run the installer once.** An earlier client cannot read this release's
    manifest, so `ml-exp update` fails closed. Its configuration file is not read either,
    so they run `ml-exp config set` again, with a token file.

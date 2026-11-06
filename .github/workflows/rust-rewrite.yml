@@ -68,8 +68,8 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-          cache-dependency-path: rust/tests/image-bridge-requirements.txt
-      - run: python -m pip install -r rust/tests/image-bridge-requirements.txt
+          cache-dependency-path: rust/deploy/image-bridge-requirements.txt
+      - run: python -m pip install -r rust/deploy/image-bridge-requirements.txt
       - name: Check optional image bridge without provider requests
         env:
           PYTHONPATH: server/src:src:worker/src

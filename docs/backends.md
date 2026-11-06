@@ -14,7 +14,6 @@ can be supplied when preparing a submission.
 |---|---|---|
 | runtime | platforms, materialization | Supported target platform and OCI/OCI-to-SIF path |
 | resources | allocation_mode, inventory_query | Flexible requests or a fixed worker spec; whether this contract implements live inventory |
-| network | compute_internet, api_transport | Configured compute egress and direct HTTPS/private TCP relay |
 | storage | persistent, storage_id, checkpoint_registration | Configured shared filesystem and metadata registration |
 | data | assets, asset_preparation, download_script, preparation | Asset delivery before/inside a job; optional preparation script before/inside a job |
 | observability | logs, queue_reason, exit_code, preemption_reason | Evidence the adapter can actually retrieve |
@@ -24,8 +23,8 @@ can be supplied when preparing a submission.
 This is a configured contract, not a health probe or a promise of free GPUs.
 `storage_id` fingerprints the configured namespace; it does not independently
 prove two mounts share a filesystem. Checkpoint matching additionally checks the
-registered project's storage scope. Runtime worker features are validated
-separately: old images do not gain new behavior from a server upgrade.
+registered project's storage scope. A Runtime image keeps the worker it was built
+with, so a server upgrade does not change what it does.
 
 PAI DLC is an opt-in single-node adapter; see [PAI configuration and limits](pai.md).
 It supports quota queries, approved persistent Dataset mounts and worker
@@ -41,7 +40,7 @@ The existing adapters declare:
 | Runtime | OCI → Apptainer SIF | OCI | OCI |
 | Allocation | Flexible, bounded by configured capacity | Exact GPU count of fixed worker spec | Flexible within configured quota/capacity; single node, 1–8 GPUs |
 | Uploaded input | Parts over SSH to shared storage | CCR data image → zero-GPU debug ACP → NAS | Approved OSS asset → zero-GPU CPU preparation or inside-job CPFS cache |
-| Script download | Gateway before allocation when relay is configured | Zero-GPU debug ACP before training when CPU preparation is configured | Inside allocated job |
+| Script download | Gateway before allocation when `script_preparation` is on | Zero-GPU debug ACP before training when CPU preparation is configured | Inside allocated job |
 | Queue/exit/preemption reasons | Supported | Not declared as reliable structured fields | Queue blockers when available; exit/preemption not guaranteed |
 | Walltime | Scheduler and worker | Worker | Scheduler and worker; 24-hour cap |
 | Server resource status | Slurm partition allocation | Read-only workspace cluster list | Quota allocation snapshot |
@@ -142,7 +141,7 @@ Low-level source, Runtime, Run and submission APIs remain available.
 
 For a cloud Attempt, `GET /api/submissions/{id}/progress` includes `input_delivery`
 from bounded, exact-Attempt worker logs. When a job failed before any worker report,
-use `ml-exp run diagnose` to read the provider's reason, events and logs. New images with `input-delivery-progress.v1` report
+use `ml-exp run diagnose` to read the provider's reason, events and logs. The worker reports
 waiting for the cache lock, downloading, extracting, verifying, publishing,
 mounting and READY/FAILED. Evidence includes HTTP status, received/expected bytes,
 elapsed time, observed throughput, timestamp, failed phase and a safe error code.
@@ -154,10 +153,8 @@ Examples distinguish timeout, TLS, HTTP/length rejection, truncated download,
 archive/file SHA256 mismatch, archive-manifest mismatch and storage/network errors
 (with errno when available). Training does not start after delivery failure.
 
-A generic failure produces
-`INPUT_DELIVERY_FAILED_DETAILS_UNAVAILABLE`; the server cannot reconstruct an
-exception that was never recorded. Rebuild a Runtime for detailed diagnostics;
-do not resubmit historical GPU jobs automatically.
+The server cannot reconstruct an exception that was never recorded, and it does not
+resubmit a failed GPU job automatically.
 
 ### Slurm shared-data staging
 
@@ -171,43 +168,14 @@ if it disappears. Upload data to a configured backend.
 
 ### Slurm compute nodes without Internet access
 
-Configure `backend.api_relay` on Slurm executors whose workers must use a connected
-private-network gateway. The gateway uses systemd's existing
-`systemd-socket-proxyd` with one fixed API destination; example user units are in
-`server/examples/slurm-api-relay/`. Bind the socket to the gateway's private IP,
-install both units in its `~/.config/systemd/user/`, and enable the socket:
-`systemctl --user enable --now ml-expd-api-relay.socket`. The user manager must
-remain running after SSH disconnect (linger).
+Slurm compute nodes need no route to the API or the Internet, so there is no relay to
+configure. The worker writes metrics, checkpoints and results to shared storage, and
+the server reads them over SSH through the helper on the gateway.
 
-```yaml
-compute_internet: false
-backend:
-  # Existing Slurm settings remain here.
-  api_relay:
-    endpoint: tcp://192.0.2.10:18443
-    origin: https://api.example.org
-```
-
-The origin must match the configured artifact API host and port. The worker
-connects TCP to the gateway while retaining origin TLS certificate verification,
-SNI, Host and exact-Attempt authorization. No general HTTP/SOCKS proxy, TLS
-termination or public listener is needed. Bootstrap, data transfers, checkpoint
-registration and multipart result uploads share this transport. Worker requests
-to other origins fail closed. Network declarations expose configured
-`compute_internet` (null if unknown) and `api_transport`; these are not live
-reachability claims and do not expose the private endpoint.
-
-A relay-enabled executor requires a newly built Runtime declaring
-`api-tcp-relay.v1`; old immutable images and Runs remain unchanged. Stage and
-submission preflight verify the gateway's origin TLS path through the configured
-SSH gateway before scheduler submission. Unreachable relay errors carry the
-fixed `API_RELAY_UNREACHABLE` code; origin mismatch is
-`API_RELAY_TARGET_MISMATCH`. TLS and fixed-destination upstream failures can be
-investigated with the gateway user service journal.
-
-For these executors, download scripts run in the same SIF on the SSH gateway,
-with no GPU allocation, during submission staging. Existing script/parameter
-identity, SHA256 file inventory, cache lock and atomic READY receipt are reused.
+Set `script_preparation` on an executor to run download scripts in the same SIF on the
+SSH gateway, with no GPU allocation, during submission staging. An executor without it
+refuses a Run that has a download script. Script/parameter identity, SHA256 file
+inventory, cache lock and atomic READY receipt are the same as elsewhere.
 The allocated worker only verifies the sealed cache; missing or corrupt data
 fails before training rather than downloading on an offline GPU node. The script
 retains its own timeout; a 60-second launcher allowance covers container startup
@@ -224,8 +192,8 @@ source and script. Already staged inputs are verified and linked at their frozen
 mount paths before the script starts. The script writes into NAS; its hash-based
 cache and READY receipt are reused by the training worker.
 Inputs combined with CPU script preparation must already be staged on NAS
-through the CCR data-delivery path (including historical pre-staged assets). API-hosted inputs without that transport are rejected
-before building or creating the CPU job (`DATA_SCRIPT_INPUT_TRANSPORT_UNSUPPORTED`);
+through the CCR data-delivery path. API-hosted inputs without that transport are rejected
+before building or creating the CPU job;
 the platform does not attempt an unauthenticated download in the helper.
 
 `data.preparation` reports `phase=before_job`, `budget=preparation`,
@@ -244,29 +212,25 @@ independent expiring capability callback. Provider stdout indexing is not requir
 for readiness. A fast callback waits for the original confirmed UID; wrong or
 replacement UIDs are rejected. Verified data may be READY even if callback ACK
 failure makes the CPU job fail; its original job status is preserved. The token
-is removed before the user's script runs. Config changes do not rebind old Runs;
-historical inside-job/stdout receipt modes remain unchanged. See [data](data.md).
+is removed before the user's script runs. Config changes do not rebind an existing
+Run. See [data](data.md).
 
 ## Internal boundary for another backend
 
-Scheduler capabilities, image staging, submission, observation and cancellation
-continue to use the existing core `Backend`/`BackendRegistry`. The server's
-`backends/operations.py` contains the additional preparation and independent
-collection operations: `prepare_asset`, `prepare_script`, `script_progress`,
-`confirm_terminal` and `collect`. Experiment preparation and result recovery
-select an installed adapter through one explicit mapping. Adding an adapter does
-not require new client provider branches, plugin discovery or another journal.
-A third fake adapter exercises this server boundary in tests; it is not a claim
-that a third production scheduler is installed.
+There is no plugin mechanism or backend registry. Slurm lives in the server's
+`backends/slurm` and `submissions/`. PAI and SenseCore share `backends/cloud` and
+`cloud_runs/`: the `Profile` enum in `backends/cloud/adapter.rs` selects the provider,
+and its request compiler lives in `core/src/cloud/`. Data preparation
+(`cloud_runs/service/script_preparation.rs`, `data_delivery.rs`) and independent result
+collection (`synchronization.rs`) are separate operations from training. Another cloud
+provider means a new `Profile` variant and compiler, written against those modules.
 
 SenseCore data copy, download-script preparation and result recovery share the
 CPU profile/specification/document checks and exact name/UID observation helpers
-in `backends/sensecore_cpu.py`. They retain separate durable intents, timeouts,
+in `core/src/cloud/sensecore.rs` and the server's `backends/cloud/adapter.rs`. They retain separate durable intents, timeouts,
 retry rules and receipts. A confirmed UID is persisted even when a data READY
-callback arrives first. An old interrupted operation without a UID may bind only
+callback arrives first. An interrupted operation without a UID may bind only
 the single exact, owned job found under its original name. Subsequent observations
 and timeout cancellation reject another UID. Missing or ambiguous jobs never
 cause create to be replayed. The provider's batch-stop API is still name based;
 checking the UID first does not make it an atomic compare-and-stop operation.
-Historical valid profiles keep their original cluster/quota choices and frozen
-manifests; sharing validation does not move old CPU operations to another pool.

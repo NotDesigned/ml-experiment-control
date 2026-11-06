@@ -16,7 +16,7 @@ The platform hashes files but never interprets or unpickles training state.
 `STATE_DIR` is a sibling of this Attempt's outputs within the configured shared
 mount: Slurm uses shared storage, SenseCore uses NAS, and PAI DLC uses its
 approved personal CPFS/NAS workspace. New Attempts do not overwrite the restore
-source. Old frozen paths/images are not migrated by profile changes.
+source. A profile change does not move a Run's frozen paths or image.
 
 Write all recovery files below `STATE_DIR/checkpoints/UNIQUE_GENERATION/`.
 Finish/flush the files, then atomically replace `STATE_DIR/checkpoint.ready.json`:
@@ -91,7 +91,7 @@ worker package, including input definitions and restore metadata, must fit
 `checkpoint_upload` is a separate optional full-state backup path on supported
 Slurm/SenseCore executors, governed by archive/part/storage limits. With persistence
 it archives the STATE_DIR ready generation; without persistence it uses the
-historical output-ready format. **DLC supports persistent metadata registration
+output-ready format. **DLC supports persistent metadata registration
 and restore, but rejects full `checkpoint_upload`.** Export selected weights as
 normal outputs instead.
 

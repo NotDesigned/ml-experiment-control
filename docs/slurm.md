@@ -53,12 +53,10 @@ shared storage. The remote receiver verifies the complete archive and files
 before admitting a Run. Complete checkpoints stay on shared storage; the API
 registers their exact identity. Result collection reads the frozen output path.
 
-Compute nodes may lack Internet access. Set `compute_internet: false` and configure
-the [fixed-destination API relay](backends.md#slurm-compute-nodes-without-internet-access)
-on a gateway reachable by compute nodes. That gateway needs access to the API
-and image/data sources; it can be any suitable host. A pre-job download script
-uses the connected gateway when the relay path is configured. Do not rely on
-an offline compute node fetching data or posting checkpoints directly.
+Compute nodes [need no Internet access](backends.md#slurm-compute-nodes-without-internet-access).
+The SSH gateway needs access to image and data sources. A pre-job download script
+runs there when `script_preparation` is on. Do not rely on an offline compute node
+fetching data.
 
 The [allocation status endpoint](backends.md#slurm-allocation-status) exposes
 Slurm scheduler allocation/queue evidence. It does not measure GPU utilization

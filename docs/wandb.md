@@ -2,7 +2,7 @@
 
 ML-Expd publishes accepted experiment records to W&B official Cloud from the
 server. The training container needs no W&B SDK/key or W&B network access;
-offline Slurm workers use the platform's configured relay. Metrics remain stored
+Slurm workers write to shared storage and the server reads them. Metrics remain stored
 and queryable in ML-Expd without W&B.
 
 ## Enable the integration
@@ -48,8 +48,7 @@ In an experiment JSON or `POST /api/projects/P/runs` request:
 | Entity omitted | Use configured/resolved default entity |
 
 Training and preparation switches are independent, subject to the same server
-master switch and credentials. The per-experiment option requires
-`wandb-preparation-sync.v1`.
+master switch and credentials.
 
 Without credentials, a usable entity, or an enabled server, the effective route
 is disabled with a reason and training continues. With a configured route but no
@@ -109,7 +108,7 @@ summary value instead of falling back to unrelated history. Unrelated
 client-owned summary keys are not removed. Failed Attempts can retain valid
 measurements; filter `ml_expd/state` when comparing successful runs.
 
-Finished W&B Runs are not reopened. Upgrading does not rename or replay historical
+Finished W&B Runs are not reopened. Publication does not rename or replay accepted
 points, reset confirmation cursors, or resend uncertain events. Publications use
 exact names. Checkpoint changes remain per-point
 provenance. Numerator/denominator are metadata, not extra result metrics.
@@ -123,9 +122,8 @@ weights, datasets, recovery state or raw logs. Private commands, SSH settings,
 transfer credentials, signed URLs and object keys are excluded. The SDK disables
 host/git/code telemetry so API-server hardware is not reported as training usage.
 
-Older immutable workers keep their behavior. Saved JSONL can fill gaps; sampled
-stdout observations remain labelled incomplete. Missing history is not invented
-and historical Runs are not automatically opted in.
+Saved JSONL can fill gaps; sampled stdout observations remain labelled incomplete.
+Missing history is not invented.
 
 ## Inspect and recover publication
 
@@ -151,7 +149,7 @@ latency; error backoff reaches five minutes. W&B's green session indicator track
 the server publisher session and can lag during outages; it is not direct proof
 that GPU training is alive. Use platform state, logs and steps together.
 
-The native API has no backfill route for historical or disabled Runs, and
+The native API has no backfill route for disabled Runs, and
 publication cannot recreate observations that were never saved. Publication cursors
 live in the registry's `tracking/` directory; keep it with service state.
 

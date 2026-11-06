@@ -66,7 +66,7 @@ Training and evaluation use the same mechanism. Experiment code defines metric
 meaning, checkpoint contents, recovery and model selection. The platform handles
 preparation, scheduling requests, evidence, transfer and result verification.
 
-Use `ml-exp check` to read the server version, protocol, capabilities and source
+Use `ml-exp check` to read the server version, capabilities and source
 limits, and `ml-exp backend` to list configured executors. Advertised GPU
 specifications do not guarantee immediate allocation. Image publication,
 scheduler success, training completion and downloadable results are separate

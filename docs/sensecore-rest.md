@@ -58,7 +58,7 @@ See [data delivery](data.md).
 
 ACP pulls the pinned `roles[].image_path` and mounts NAS before executing its
 `startup_script` inside the container. Source is already in `/workspace`.
-New images with `launcher-manifest.v1` use a short entrypoint:
+The `launcher-manifest.v1` contract uses a short entrypoint:
 
 ```bash
 env ML_EXPD_BOOTSTRAP_TOKEN=<exact-attempt-capability> \
@@ -76,12 +76,6 @@ Inside the worker: verify/restore checkpoint → prepare/verify data → start
 training → register complete state generations → archive/return declared outputs.
 Args are passed as an array, without `eval`. The wrapper creates OUTPUT_DIR,
 selects workdir and forwards termination to its owned process group.
-
-Historical images keep a longer startup command with quoted environment layers
-and inline JSON for input/restore/state/output manifests, followed by GNU
-`timeout`, `worker.py` and the frozen training argv. Those layers transport hashes
-and configuration; they do not build the image. Rebuild to obtain the new
-launcher; a server upgrade cannot change an immutable image.
 
 ## Timeouts and failure evidence
 

@@ -240,6 +240,41 @@ class Deploy(unittest.TestCase):
         self.assertEqual((recorded["version"], recorded["action"]), ("1.1.0", "first install"))
         self.assertFalse((self.root / "previous").exists())
 
+    def settings(self, **changes):
+        path = self.root / "deployment.json"
+        path.write_text(json.dumps({**json.loads(path.read_text()), **changes}))
+
+    def test_api_only_host_needs_no_builder_python_or_unit(self):
+        self.empty_host()
+        self.cloud.write_text("{}")
+        self.settings(python=str(self.base / "no-builder/bin/python"))
+        archive = self.bundle("1.1.0")
+        result = self.deploy(archive, "--first-install")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.deploy(archive, "--first-install", "--apply")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.server_calls(), ["--check", "--check", "--initialize"])
+        self.assertEqual(self.calls(), ["start api.service"])
+        self.assertEqual(self.cloud.read_text(), "{}")
+        result = self.deploy(self.bundle("1.2.0"), "--apply")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.version(), "1.2.0")
+        result = self.run_tool("--rollback")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.version(), "1.1.0")
+        self.assertFalse([call for call in self.calls() if "builder.service" in call])
+
+    def test_configured_builds_refuse_a_builder_python_that_cannot_import_the_bridge(self):
+        self.empty_host()
+        archive = self.bundle("1.1.0")
+        self.settings(python=str(self.base / "no-builder/bin/python"))
+        result = self.deploy(archive, "--first-install", "--apply")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("deployment refused", result.stderr)
+        self.assertNotIn("--initialize", self.server_calls())
+        self.assertFalse((self.root / "bin/ml-expd-rs").exists())
+        self.assertEqual(self.calls(), [])
+
     def test_first_install_refuses_any_trace_of_an_earlier_install(self):
         archive = self.bundle("1.1.0")
         self.assertIn("bin/ml-expd-rs exists", self.deploy(archive, "--first-install", "--apply").stderr)
