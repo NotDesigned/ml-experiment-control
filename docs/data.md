@@ -5,6 +5,22 @@ identities and lifecycles. Downloading results does not remove datasets or
 checkpoint state. The API stores transfer metadata and bounded part buffers;
 large dataset payloads live on backend storage or the configured object store.
 
+## Storage model
+
+Every backend has one primary storage: shared storage on Slurm, NAS on SenseCore and
+personal CPFS on PAI. A Run's `STATE_DIR` and `OUTPUT_DIR` and every verified dataset
+tree live there, and it is the only storage training reads and writes.
+
+On cloud backends, objects in OSS carry dataset parts and result archives between the
+client and primary storage. The platform moves those objects through signed part URLs.
+Training code never reads or writes there, and no OSS path is mounted. Slurm uses no
+object store: parts arrive over SSH and its archive stays on shared storage.
+
+A second location, if one is ever added, would map roles (runs, state, datasets) to
+paths on declared mounts in the backend configuration. Clients and training code would
+not change: `STATE_DIR` is still `STATE_DIR`. The storage scope that checks
+`resume_from` would have to cover where state lives. None of this is implemented.
+
 ## Upload and reuse
 
 Select an executor from `ml-exp backend`, then upload regular files:
@@ -29,6 +45,7 @@ Run inputs use the ordinary native `data` field:
 
 The worker supplies `DATASETS_JSON`, mapping each input name to its verified
 shared-storage directory. Training code reads the named directory from this map.
+See [paths in the job](#paths-in-the-job).
 
 `ARCHIVED` means the uploaded archive passed verification. `READY` additionally
 means the selected backend has a verified shared-storage tree. These states are
@@ -37,12 +54,51 @@ not interchangeable.
 | Backend | Delivery before training |
 | --- | --- |
 | Slurm | Client → bounded API buffer → connected SSH gateway → shared storage. Offline compute nodes read the shared cache. |
-| SenseCore | Client → bounded API buffer → CCR data image → debug CPU ACP → NAS. A CPU receipt establishes readiness. |
+| SenseCore | Client → bounded API buffer → OSS objects → CCR data image, built from those objects on a PAI DSW → debug CPU ACP → NAS. A CPU receipt establishes readiness. |
 | PAI | Client → bounded API buffer → personal OSS objects → verified personal CPFS cache. Import runs before training, optionally in a separate CPU job. |
 
 A cache is scoped to its executor/storage identity. An asset's presence on one
 backend does not prove readiness on another. Partial trees and hash mismatches
 are not accepted as ready data. Dataset directories remain outside results.
+
+A job killed during publication can leave a tree with no receipt. The next `Complete`
+verifies it, and if that fails, proves the uploaded parts against the archive hash,
+removes the tree and builds it again. The parts stay until the new tree is READY. A
+tree that has a receipt is never removed or rebuilt: a failed check on one is a
+failure, and the bytes stay as found. See [recovery](recovery.md#interrupted-dataset-publication).
+
+An upload's file list is limited to what one Run can mount: about 248 KiB, roughly
+2,000 files with 30-byte paths. `data upload` refuses a larger dataset after packing
+and before it sends anything; the server's Begin answers 422
+`DATASET_MANIFESTS_TOO_LARGE` for any other caller and for `data import-oss`. Package
+many small files into fewer. The same applies to an import recipe at Run creation,
+because a recipe does not go through Begin.
+
+## Paths in the job
+
+Two variables point at data, with the same meaning on Slurm, SenseCore and PAI:
+
+- `DATASETS_JSON` is the one entry for declared inputs. It is a JSON object from
+  each name in the Run's `data` field to that asset's verified directory, the same
+  path the worker checks before training. It is absent when the Run declares none.
+- `DATA_DIR` is this Project's data directory on backend storage, for data the
+  platform did not deliver. When the Run declares `data_preparation`, it is instead
+  the verified tree that script wrote. The platform does not create the Project
+  directory for you, so it may not exist until something has been stored there.
+
+On SenseCore and PAI `DATA_DIR` sits inside that backend's dataset store, and the store
+must create its own root. Do not create `DATA_DIR` there until a dataset has been
+delivered to that backend. A `mkdir -p "$DATA_DIR"` before then creates the root without
+the store's marker. Every later dataset delivery on that backend then fails, for all
+Projects, until an operator moves that directory away; a Run that imports its dataset
+reports `DATA_CACHE_UNAVAILABLE`. A `data_preparation` script's cache is created at the
+same place and has the same effect, so deliver a dataset first if the backend will ever
+take one. Once a dataset has been delivered, creating `DATA_DIR` is safe.
+
+Read declared inputs from `DATASETS_JSON` rather than building paths below
+`DATA_DIR`: the layout under it belongs to the platform. There is no `INPUT_DIR`, and
+no `/inputs` or `/outputs` path. On Slurm each declared dataset is also bound read-only
+at its own path. Every backend rehashes it before training starts.
 
 ## PAI preparation using an existing image
 
@@ -51,7 +107,8 @@ field even when the API has no READY receipt yet. The worker imports and
 verifies it on CPFS before starting training, or reuses an exact verified cache.
 This inline preparation consumes the allocated job's running time and resources.
 A Run's dataset manifests must fit 256 KiB together, and the full worker package,
-including checkpoint metadata, must fit 8 MiB. A larger set is refused with 422
+including checkpoint metadata, must fit 8 MiB. Each dataset passed the limit at upload,
+so a set that fails here holds several: it is refused with 422
 `DATASET_MANIFESTS_TOO_LARGE` when the Run is created or prepared, before any CPU
 copy job. `ready:null` alone does not prove that a physical cache is absent.
 
@@ -136,7 +193,7 @@ says `PROVIDER_DIAGNOSTICS_UNSUPPORTED`, with no provider call.
 
 The report contains current available bytes/inodes, marker/state identity and
 metadata hashes, modes/ownership, recorded part counts, part sizes, and an
-existing-lock nonblocking check. Part contents are not read. Up to 128 part
+existing-lock nonblocking check on the asset's own lock. Part contents are not read. Up to 128 part
 entries are included with an explicit truncation flag. A missing lock is never
 created. `statvfs` does not prove user-quota availability. The job logs its report
 in numbered, hashed parts, at most 19 lines, so a long report survives provider line
@@ -158,14 +215,21 @@ ml-exp data import-oss --project study --executor pai-h200 \
   --object-key users/USER/datasets/version-1.tar \
   --sha256 ARCHIVE_SHA256 --archive-bytes ARCHIVE_BYTES
 ml-exp data download --project study --executor pai-h200 \
-  --asset asset.ACTUAL_HASH --output ./downloaded-data
+  --asset asset.ACTUAL_HASH --output ./downloaded-data.tar
 ```
 
-Import streams and verifies the archive and member inventory; it is not a claim
-that CPFS is ready. Use separate CPU publication or the PAI inline import above.
-Downloads obtain object-part tickets, verify the archive and every file, and
-publish into a new local directory. Dataset downloads send no result ACK and
-never delete the OSS original. Bucket, endpoint, prefix and credentials are
+Import is a copy. The API reads the object once to verify the archive and list its
+members, then again part by part, storing the bytes as ordinary dataset parts under the
+platform's prefix. The original stays where it is, so the bucket holds both until you
+remove the original yourself. Every part passes through the API host. A large object
+can exceed the 1230-second request limit; repeating the same request reads from the
+first part again and does not store accepted parts twice. The result is `ARCHIVED`, not
+a claim that CPFS is ready. Use separate CPU publication or the PAI inline import above.
+
+Downloads obtain object-part tickets, verify the archive and every file, and publish
+one tar file at `--output`, which must not already exist. They do not unpack it.
+Dataset downloads send no result ACK and never delete the dataset or the original
+object. Bucket, endpoint, prefix and credentials are
 operator configuration; credentials are not sent to clients. Native OSS
 filesystem mounts remain disabled; CPFS supplies the training filesystem.
 

@@ -1,5 +1,5 @@
 use crate::Execution;
-use ml_exp_io::process;
+use ml_exp_io::{directory::Directory, process};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
@@ -82,9 +82,23 @@ impl Log {
 }
 
 // This bounds pipe capture and hashing, not user code's filesystem allocation.
-// A failed output limit is reported through the existing receipt error field;
-// a truncated or independently changed log cannot be a complete success.
+// Past the limit a log keeps its start and its end, and the receipt counts what
+// went between them. That is a marker, not a failure: killed work needs the end
+// of its log, and finished work should not fail for being talkative. A log that
+// changed independently of the pipe still cannot be a complete success.
 const LOG_LIMIT: usize = 8 * 1024 * 1024;
+
+/// The receipt records these logs' hashes, so what it describes must reach
+/// storage first: the logs, their new directory and that directory's name.
+fn sync_logs(stdout: &Log, stderr: &Log, output: &Path) -> io::Result<()> {
+    stdout.file.sync_all()?;
+    stderr.file.sync_all()?;
+    Directory::open(output, false)?.sync()?;
+    let parent = output
+        .parent()
+        .ok_or_else(|| io::Error::other("output directory has no parent"))?;
+    Directory::open(parent, false)?.sync()
+}
 
 pub(super) fn execute(
     workdir: &Path,
@@ -120,7 +134,8 @@ fn execute_environment(
     fs::DirBuilder::new().mode(0o700).create(output)?;
     let mut stdout = Log::create(output.join("stdout.log"))?;
     let mut stderr = Log::create(output.join("stderr.log"))?;
-    let canonical_output = output.canonicalize()?.display().to_string();
+    let canonical = output.canonicalize()?;
+    let canonical_output = canonical.display().to_string();
     let mut environment = explicit.cloned().unwrap_or_default();
     if explicit.is_some() && environment.get("OUTPUT_DIR") != Some(&canonical_output) {
         return Err(io::Error::other(
@@ -164,22 +179,21 @@ fn execute_environment(
         }),
         stdout_sha256: None,
         stderr_sha256: None,
+        stdout_dropped_bytes: outcome.stdout.dropped_bytes,
+        stderr_dropped_bytes: outcome.stderr.dropped_bytes,
     };
-    if outcome.stdout.truncated || outcome.stderr.truncated {
-        result.fail("LOG_CAPTURE", "OUTPUT_LIMIT_EXCEEDED");
-    }
     for (log, field, captured_bytes, captured_sha256) in [
         (
             &mut stdout,
             &mut result.stdout_sha256,
             outcome.stdout.retained_bytes,
-            outcome.stdout.prefix_sha256.as_str(),
+            outcome.stdout.retained_sha256.as_str(),
         ),
         (
             &mut stderr,
             &mut result.stderr_sha256,
             outcome.stderr.retained_bytes,
-            outcome.stderr.prefix_sha256.as_str(),
+            outcome.stderr.retained_sha256.as_str(),
         ),
     ] {
         match log.hash(captured_bytes, captured_sha256) {
@@ -193,6 +207,9 @@ fn execute_environment(
                 }
             }
         }
+    }
+    if sync_logs(&stdout, &stderr, &canonical).is_err() {
+        result.fail("LOG_CAPTURE", "LOG_SYNC_FAILED");
     }
     Ok(result)
 }

@@ -78,11 +78,7 @@ pub(crate) fn main_from(args: impl IntoIterator<Item = OsString>) -> ExitCode {
                 "ML_EXPD_CLOUD_WORKER={}",
                 serde_json::to_string(&receipt).expect("worker receipt")
             );
-            if receipt
-                .receipt
-                .as_ref()
-                .is_some_and(|r| r.training == ml_exp_core::managed::evidence::Training::Completed)
-            {
+            if receipt.succeeded() {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::FAILURE

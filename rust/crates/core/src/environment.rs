@@ -20,14 +20,14 @@ pub fn validate(values: &BTreeMap<String, String>) -> Result<(), Error> {
                     | "RUN_ID"
                     | "ATTEMPT_ID"
                     | "SOURCE_ID"
-                    | "BACKEND_JOB_ID"
                     | "OUTPUT_DIR"
                     | "STATE_DIR"
                     | "DATA_DIR"
-                    | "INPUT_DIR"
-                    | "INPUTS_DIR"
                     | "DATASETS_JSON"
                     | "METRICS_PATH"
+                    | "RESUME_DIR"
+                    | "RESUME_CHECKPOINT_ID"
+                    | "RESUME_STEP"
             )
         {
             return Err(Error);
@@ -62,6 +62,9 @@ mod tests {
             "DATA_DIR",
             "STATE_DIR",
             "METRICS_PATH",
+            "RESUME_DIR",
+            "RESUME_CHECKPOINT_ID",
+            "RESUME_STEP",
             "RUN_ID",
             "ML_EXPD_API_TOKEN",
             "1bad",
@@ -69,6 +72,13 @@ mod tests {
         ] {
             assert!(
                 validate(&BTreeMap::from([(key.into(), "value".into())])).is_err(),
+                "{key}"
+            );
+        }
+        // The platform no longer sets these names, so they are ordinary user variables.
+        for key in ["INPUT_DIR", "BACKEND_JOB_ID"] {
+            assert!(
+                validate(&BTreeMap::from([(key.into(), "/mine".into())])).is_ok(),
                 "{key}"
             );
         }

@@ -79,7 +79,7 @@ impl Helper {
                 self.observe_shared(request.intent(), &snapshot.directory, false)?;
             let package = &plan.managed;
             let worker = crate::managed::sample(&package.config).map_err(|_| Error::Metadata)?;
-            let outputs = directories[5].child(OsStr::new("payload"), false);
+            let outputs = directories[3].child(OsStr::new("outputs"), false);
             let (mut stdout, mut stderr, metrics) = match outputs {
                 Ok(outputs) => (
                     window(&outputs, "stdout.log"),

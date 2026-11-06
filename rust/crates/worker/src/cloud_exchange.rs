@@ -38,8 +38,11 @@ struct State {
     cursor: Option<Cursor>,
     complete: bool,
     pending: Option<Packet>,
+    /// The ready marker this attempt has verified and sealed. The same marker
+    /// is not hashed again; a restore still hashes what it uses.
+    verified_ready_sha256: Option<String>,
 }
-fn packet(package: &Package, state: &State) -> Result<Packet> {
+fn packet(package: &Package, state: &mut State) -> Result<Packet> {
     let config = &package.config;
     let worker = managed::sample(config)?;
     let binding = config.binding()?;
@@ -73,6 +76,8 @@ fn packet(package: &Package, state: &State) -> Result<Packet> {
         Err(error) => return Err(error),
     };
     if let Some(receipt) = &worker.receipt {
+        // The receipt hashes the whole retained log, so only a window that holds
+        // all of it can be compared.
         for (window, expected) in [
             (&mut stdout, &receipt.process.stdout_sha256),
             (&mut stderr, &receipt.process.stderr_sha256),
@@ -105,19 +110,23 @@ fn packet(package: &Package, state: &State) -> Result<Packet> {
                     let ready = serde_json::Value::Object(
                         ml_exp_core::json::mapping(&before).map_err(|_| Error::Binding)?,
                     );
-                    let manifest =
-                        ml_exp_core::checkpoints::manifest(&ready).map_err(|_| Error::Binding)?;
-                    ml_exp_io::checkpoints::verify(&state_root, &manifest, true)
-                        .map_err(|_| Error::Binding)?;
-                    if before
-                        != state_root
-                            .read_regular(
-                                OsStr::new("checkpoint.ready.json"),
-                                ml_exp_core::checkpoints::MANIFEST_LIMIT as u64,
-                            )
-                            .map_err(|_| Error::Storage)?
-                    {
-                        return Err(Error::Uncertain);
+                    let marker_sha256 = ml_exp_core::slurm::helper::sha256_bytes(&before);
+                    if state.verified_ready_sha256.as_ref() != Some(&marker_sha256) {
+                        let manifest = ml_exp_core::checkpoints::manifest(&ready)
+                            .map_err(|_| Error::Binding)?;
+                        ml_exp_io::checkpoints::verify(&state_root, &manifest, true)
+                            .map_err(|_| Error::Binding)?;
+                        if before
+                            != state_root
+                                .read_regular(
+                                    OsStr::new("checkpoint.ready.json"),
+                                    ml_exp_core::checkpoints::MANIFEST_LIMIT as u64,
+                                )
+                                .map_err(|_| Error::Storage)?
+                        {
+                            return Err(Error::Uncertain);
+                        }
+                        state.verified_ready_sha256 = Some(marker_sha256);
                     }
                     Some(
                         ml_exp_core::checkpoints::document(context, &ready)
@@ -265,6 +274,7 @@ pub fn once(package: &Package, transport: &impl Transport) -> Result<bool> {
             cursor: None,
             complete: false,
             pending: None,
+            verified_ready_sha256: None,
         }
     };
     if state.package_sha256 != sha || (state.sequence == 0) != state.packet_sha256.is_none() {
@@ -274,7 +284,13 @@ pub fn once(package: &Package, transport: &impl Transport) -> Result<bool> {
         return Ok(true);
     }
     if state.pending.is_none() {
-        state.pending = Some(packet(package, &state)?);
+        let built = packet(package, &mut state);
+        // Hashing a large checkpoint outlasts a change of the worker's phase, and
+        // that abandons the packet. The verified marker must outlive it.
+        if built.is_err() {
+            save(&root, &state)?;
+        }
+        state.pending = Some(built?);
         save(&root, &state)?;
     }
     let pending = state.pending.as_ref().ok_or(Error::Binding)?;

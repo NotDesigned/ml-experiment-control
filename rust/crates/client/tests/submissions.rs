@@ -55,6 +55,16 @@ fn synchronization_read_and_retry_have_separate_effects_and_exact_failed_identit
     .unwrap();
     assert!(retry.is_mutation());
     assert!(submissions::response(&retry, value.clone()).is_ok());
+    let mut configured = value.clone();
+    configured["synchronization"]["resources"] = json!({"gpus":0,"cpus":16,"memory_gb":64});
+    configured["synchronization"]["max_time_seconds"] = json!(86400);
+    assert!(submissions::response(&read, configured.clone()).is_ok());
+    let mut gpu = configured.clone();
+    gpu["synchronization"]["resources"]["gpus"] = json!(1);
+    assert!(submissions::response(&read, gpu).is_err());
+    let mut no_limit = configured;
+    no_limit["synchronization"]["max_time_seconds"] = json!(0);
+    assert!(submissions::response(&read, no_limit).is_err());
     let mut wrong = value;
     wrong["synchronization"]["retry"]["expected_failed_job_id"] = json!("dlc-other");
     assert!(submissions::response(&retry, wrong).is_err());

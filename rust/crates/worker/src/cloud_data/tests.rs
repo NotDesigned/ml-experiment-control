@@ -7,6 +7,61 @@ use ml_exp_core::{
     },
     slurm::helper::Target,
 };
+/// What docs/data.md warns of: DATA_DIR made before the store exists leaves a root with no
+/// marker, and the store refuses it. Made inside a store that exists, it does no harm.
+#[test]
+fn a_data_dir_made_before_the_store_blocks_it_and_one_made_after_does_not() {
+    let temp = tempfile::tempdir().unwrap();
+    let tree = temp.path().join("source");
+    std::fs::create_dir(&tree).unwrap();
+    std::fs::write(tree.join("data.bin"), b"delivered").unwrap();
+    let archive = temp.path().join("data.tar");
+    let mut file = std::fs::File::create(&archive).unwrap();
+    let (sha256, archive_bytes, files) =
+        ml_exp_io::artifacts::pack_data(&Directory::open(&tree, false).unwrap(), &mut file)
+            .unwrap();
+    let root = temp.path().join("datasets");
+    let config = Config {
+        root: root.to_str().unwrap().into(),
+        target: Target {
+            backend_id: "pai-h200".into(),
+            profile_sha256: format!("sha256:{}", "a".repeat(64)),
+            storage_scope: format!("sha256:{}", "b".repeat(64)),
+        },
+        project: "demo".into(),
+        definition: datasets::Definition {
+            sha256,
+            archive_bytes,
+            files,
+        },
+        source: Source::File {
+            path: archive.to_str().unwrap().into(),
+        },
+        timeout_seconds: 30,
+    };
+    let data_dir = root.join("demo");
+
+    std::fs::create_dir_all(&data_dir).unwrap();
+    assert!(cache(&config).is_err());
+    assert!(!root.join(".native-data.json").exists());
+
+    std::fs::remove_dir_all(&root).unwrap();
+    cache(&config).unwrap();
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::write(data_dir.join("mine.bin"), b"not delivered").unwrap();
+    cache(&config).unwrap();
+    let receipt =
+        data_import::materialize(&config, &AtomicBool::new(false), &mut |_| Ok(())).unwrap();
+    assert_eq!(
+        std::fs::read(std::path::Path::new(&receipt.root).join("data.bin")).unwrap(),
+        b"delivered"
+    );
+    assert_eq!(
+        std::fs::read(data_dir.join("mine.bin")).unwrap(),
+        b"not delivered"
+    );
+}
+
 #[test]
 fn a_cloud_input_is_imported_once_into_shared_storage_and_reused_without_the_source_archive() {
     let temp = tempfile::tempdir().unwrap();

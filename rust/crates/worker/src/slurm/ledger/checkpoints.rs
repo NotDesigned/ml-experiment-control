@@ -25,11 +25,11 @@ impl Helper {
             let (plan, directories) =
                 self.observe_shared(request.intent(), &snapshot.directory, false)?;
             let package = &plan.managed;
-            // The sealed worker ledger proves this output tree belongs to the
+            // The sealed worker ledger proves this state tree belongs to the
             // issued job. It does not claim the training process is alive.
             crate::managed::sample(&package.config).map_err(|_| Error::Metadata)?;
-            let outputs = directories[5].child(OsStr::new("payload"), false)?;
-            let before = outputs.read_regular(
+            let state = directories[3].child(OsStr::new("state"), false)?;
+            let before = state.read_regular(
                 OsStr::new("checkpoint.ready.json"),
                 checkpoints::MANIFEST_LIMIT as u64,
             )?;
@@ -37,9 +37,8 @@ impl Helper {
                 ml_exp_core::json::mapping(&before).map_err(|_| Error::Metadata)?,
             );
             let manifest = checkpoints::manifest(&ready).map_err(|_| Error::Metadata)?;
-            ml_exp_io::checkpoints::verify(&outputs, &manifest, true)
-                .map_err(|_| Error::Metadata)?;
-            if outputs.read_regular(
+            ml_exp_io::checkpoints::verify(&state, &manifest, true).map_err(|_| Error::Metadata)?;
+            if state.read_regular(
                 OsStr::new("checkpoint.ready.json"),
                 checkpoints::MANIFEST_LIMIT as u64,
             )? != before

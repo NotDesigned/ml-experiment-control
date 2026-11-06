@@ -36,8 +36,7 @@ worker, so training
 code can use any language the image provides. The appended layer runs `chmod` through a shell, so the final stage needs
 `/bin/sh` and `chmod`. SenseCore ACP wraps the job in
 `timeout --signal=TERM --kill-after=30s`, so ACP images need a `timeout` accepting
-those options, such as GNU coreutils. Slurm managed I/O binds `/inputs` and
-`/outputs` into the image, and every backend needs access to its configured
+those options, such as GNU coreutils. Every backend needs access to its configured
 mount/workdir.
 
 `python3` must be on the image's `PATH` only for these optional jobs. The native code

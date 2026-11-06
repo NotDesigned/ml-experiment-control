@@ -89,7 +89,7 @@ impl Helper {
                 if directory.entry_exists(OsStr::new(ARCHIVE))? {
                     directory.remove_staged_regular(OsStr::new(ARCHIVE))?;
                 }
-                let payload = directories[5].child(OsStr::new("payload"), false)?;
+                let outputs = directories[3].child(OsStr::new("outputs"), false)?;
                 let attempt = snapshot
                     .directory
                     .read_regular(OsStr::new(MANIFEST), helper::MAX_METADATA_BYTES as u64)?;
@@ -101,7 +101,7 @@ impl Helper {
                 } else {
                     Policy::default()
                 };
-                let required = ml_exp_io::artifacts::estimate(&payload, &policy)?;
+                let required = ml_exp_io::artifacts::estimate(&outputs, &policy)?;
                 let capacity = directory.capacity()?;
                 if capacity.insufficient(required, 2) {
                     return Err(Error::Storage(std::io::Error::other(
@@ -109,8 +109,8 @@ impl Helper {
                     )));
                 }
                 let mut file = directory.create_new_regular(OsStr::new(ARCHIVE))?;
-                let packed = ml_exp_io::artifacts::pack(&payload, &mut file, &policy);
-                let (sha256, bytes, files) = match packed {
+                let packed = ml_exp_io::artifacts::pack(&outputs, &mut file, &policy);
+                let (sha256, bytes, files, skipped) = match packed {
                     Ok(v) => v,
                     Err(e) => {
                         let _ = directory.remove_staged_regular(OsStr::new(ARCHIVE));
@@ -135,6 +135,7 @@ impl Helper {
                         bytes,
                         files,
                     },
+                    skipped,
                 };
                 bundle.validate().map_err(|_| Error::Metadata)?;
                 directory.publish_new(OsStr::new(BUNDLE), &json(&bundle)?)?;

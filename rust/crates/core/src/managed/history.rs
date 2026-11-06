@@ -9,7 +9,6 @@ pub const CONTRACT: &str = "managed-metric-history.v1";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Cursor {
-    pub device: u64,
     pub inode: u64,
     pub offset_bytes: u64,
     pub prefix_sha256: String,
@@ -59,13 +58,11 @@ impl Page {
             || self.missing_after_finish
                 && (!self.process_finished
                     || self.total_bytes != 0
-                    || self.next.device != 0
                     || self.next.inode != 0
                     || start.is_some())
             || self.bytes.len() != ((self.total_bytes - offset).min(PAGE_BYTES as u64) as usize)
             || start.is_some_and(|v| {
-                v.device != self.next.device
-                    || v.inode != self.next.inode
+                v.inode != self.next.inode
                     || self.bytes.is_empty() && v.prefix_sha256 != self.next.prefix_sha256
             })
         {
@@ -93,7 +90,6 @@ mod tests {
             config_sha256: helper::sha256_bytes(b"config"),
             start: None,
             next: Cursor {
-                device: 0,
                 inode: 0,
                 offset_bytes: 0,
                 prefix_sha256: helper::sha256_bytes(&[]),
@@ -124,6 +120,19 @@ mod tests {
         );
     }
     #[test]
+    fn a_cursor_names_a_file_by_inode_and_refuses_a_device_number() {
+        let bare = serde_json::json!({
+            "inode": 2,
+            "offset_bytes": 0,
+            "prefix_sha256": helper::sha256_bytes(&[]),
+        });
+        let cursor: Cursor = serde_json::from_value(bare.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&cursor).unwrap(), bare);
+        let mut extra = bare;
+        extra["device"] = serde_json::json!(1);
+        assert!(serde_json::from_value::<Cursor>(extra).is_err());
+    }
+    #[test]
     fn page_binding_rejects_mutated_content_regression_and_replaced_files() {
         let bytes = b"{\"step\":1}\n".to_vec();
         let page = Page {
@@ -131,7 +140,6 @@ mod tests {
             config_sha256: helper::sha256_bytes(b"config"),
             start: None,
             next: Cursor {
-                device: 1,
                 inode: 2,
                 offset_bytes: bytes.len() as u64,
                 prefix_sha256: helper::sha256_bytes(&bytes),

@@ -33,6 +33,18 @@ explicitly. Before an Attempt is bound, only status can inspect preparation.
 | AVAILABLE + SHA256_VERIFIED | Result archive is ready for verified client download |
 | Download ACK accepted | Exact verified local receipt and retention choice were recorded |
 
+A worker's captured log is one file of at most 8 MiB. Past that it keeps its first
+4 MiB, the line `[ml-expd: output dropped here; this log keeps its start and its
+end]`, and the last 2 to 4 MiB of output. Script preparation logs work the same
+way; the Slurm gateway's copy of them has a 1 MiB limit. The end is written to the
+file as the job runs, so an OOM or a preemption leaves it there; a node lost
+outright can lose the last few seconds. This is a marker, not a failure.
+`stdout_dropped_bytes` and `stderr_dropped_bytes` in the process evidence count
+what went, and the log hashes describe the file as kept. A worker killed before
+its receipt leaves the seam line and no count. A log changed other than through
+its pipe still fails with `LOG_IDENTITY_OR_CONTENT_CHANGED`, and the launch command
+then exits non-zero, on Slurm and cloud alike.
+
 `ml-exp run diagnose --state experiment.state.json` is the explicit exception for
 PAI: it asks the provider for the job's `ReasonCode`, `ReasonMessage`, pods, events
 and a bounded log tail (`--lines`, up to 2000). Use it when status and `run logs` are
@@ -93,6 +105,41 @@ preserve bounded status/code/body/retry hints without credentials.
 Multipart transport is separately idempotent: GET the same session, resend missing
 identical parts and complete the same archive identity. Never discard a complete
 upload merely because publication returned 507; resolve storage capacity first.
+
+### Interrupted dataset publication
+
+Repeat the same `data upload`, or let the next Run's import reach `Complete`. Nothing
+needs clearing first.
+
+| What was left | What the next `Complete` does |
+| --- | --- |
+| A tree with no receipt that passes verification | Publishes it. Only the receipt was lost. |
+| A tree with no receipt that fails verification | Proves the parts against the archive hash, removes the tree and rebuilds. If the parts do not prove the archive, it fails and the tree stays. The parts stay until READY is saved. |
+| A tree with a receipt that fails verification | Fails, every time, and changes nothing. A published tree is never removed or rebuilt, and its parts are gone. Clearing it is an operator decision. |
+
+Script [data preparation](data.md) caches do not get this. A script is arbitrary code
+and may have had effects outside its tree, so running it again would replay an
+uncertain execution. Change its arguments or environment to get a new plan.
+
+On Slurm a `Complete` has 1200 seconds over SSH. Past that the API call fails, and the
+helper keeps going: it ignores the hangup from the lost session and holds the asset's
+lock until it finishes. A repeat `data upload` during that time fails after 10 seconds
+of waiting on the lock, and succeeds once the helper has saved READY. If the helper
+really died, the repeat finds what it left and rebuilds. A dataset that needs longer
+than 1200 seconds therefore takes more than one repeat, not a bigger limit. TERM or INT
+still cancels the helper, and it removes its own tree.
+
+Each asset has its own lock, `PROJECT/ASSET.lock` beside its directory, so a long import
+does not hold up another asset. Runs of the same asset wait on each other only while
+its tree is being built; hashing a tree that already has a receipt holds no lock. Two
+assets publishing at once can both pass the capacity check and then run out of room,
+which fails the job and removes the tree it was building.
+
+This relies on flock excluding across nodes on CPFS and NAS, which has not been tested.
+If it does not, the result is a failed job and not bad data: a tree reaches READY only
+after its bytes are hashed against the definition and it is confirmed complete at its
+final name, and every Run hashes it again at job start. The one state an operator has
+to clear is READY with a damaged or missing tree.
 
 ## Cancel or retry an exact Attempt
 
@@ -155,7 +202,7 @@ ml-exp run sync ACTION --request-id ORIGINAL_32_HEX_REQUEST \
 This POST targets `/api/submissions/ACTION/sync/REQUEST/retry`. It refreshes the
 exact parent/failed job evidence, then persists one deterministic CPU child
 before effects. The child keeps the original frozen image, worker, full `--sync`
-command and output directory, with 0 GPUs, 2 CPUs, 4 GiB and a 600-second limit.
+command and output directory, with 0 GPUs and the backend's `result_job` limits.
 It does not replay training. The failed CPU job and its outbox remain intact.
 Repeating the same request after a lost reply or restart observes the same
 child. Unknown creates are reconciled, never blindly repeated. A second failed
@@ -179,6 +226,40 @@ does not rerun training or require a replacement training Run. Missing backend
 files cannot be reconstructed by collecting, and original FAILED scheduler
 history stays FAILED. Delayed offline logs remain pending, not proof of success.
 
+The CPU job takes the backend's `result_job` limits, by default 2 CPUs, 4 GiB and
+6 hours. Set it in the backend's entry in `cloud_config`, for example
+`"result_job": {"max_time_seconds": 43200}`, with any of `cpus`, `memory_gb` and
+`max_time_seconds`. PAI allows up to its `collector` capacity and 24 hours. A
+SenseCore collector has one fixed 2 CPU, 4 GiB shape, so there only the time limit
+moves. Storage maintenance jobs use the same limits. An interrupted archive restarts
+from nothing, so the time limit must cover packing, hashing and uploading the whole
+result. A job keeps the limits it was first recorded with: to give more time after a
+limit was hit, raise it and start a new `run sync --request-id`, or retry a failed one.
+
+### What an archive can leave out
+
+A finished job's results leave even if some paths cannot. These are skipped and
+recorded, and the archive holds everything else:
+
+| `reason` | Skipped entry |
+| --- | --- |
+| `symbolic_link` | A link. It is never followed, so its target is not archived |
+| `special_file` | A FIFO, socket or device |
+| `unsupported_path` | A name that is not UTF-8 or holds a control character or backslash, a path over 4096 bytes, or a directory nested over 128 levels |
+| `file_limit` | Anything past the 20,000 entries a receipt can list, in sort order. Long paths can reach the limit sooner, because the saved record has a fixed size |
+
+`run files` reports the list as `skipped`, `run download` as `skipped` and `run file`
+as `archive_skipped`. **This list is the only record of what is missing.** Nothing else
+compares the archive with the original directory, and the file hashes prove only
+the files that are listed. Read it before releasing an archive or removing `outputs`.
+A row naming a directory covers what lies beneath it, and `.` is `OUTPUT_DIR` itself.
+It holds up to 1024 rows; `unlisted` counts the entries beyond those. Files listed in
+`artifacts.required_files` are archived whatever the limit, and a required file that
+is absent, or is a link, is the one thing that fails the result. Paths there are
+relative to `OUTPUT_DIR`, so one starting with `outputs/` is refused when the Run is
+created. An empty directory is not recorded. A failed read, or a file that changes
+while it is packed, fails the archive so that it can be collected again.
+
 ## Download confirmation and server storage
 
 ```bash
@@ -198,9 +279,10 @@ GET, partial download or a failed checksum never authorizes release.
 
 Release-enabled ACK permits immediate removal of the generated transfer
 archive; there is no 24-hour delay. It does not remove backend checkpoints,
-original outputs or dataset assets. Physical object-store cleanup can lag, and
-configured payload expiry is independent of ACK; `--keep` is not a permanent
-backup guarantee. Released archives return `410 ARTIFACT_RELEASED`. Redownload
+original outputs or dataset assets. Physical object-store cleanup can lag. The
+platform has no timer that expires an archive, but `--keep` is not a permanent
+backup guarantee: a lifecycle rule on the bucket would act outside the platform.
+Released archives return `410 ARTIFACT_RELEASED`. Redownload
 requires an explicit new export from retained backend outputs, not training.
 See [administrative deletion](resource-deletion.md) for separate state removal.
 

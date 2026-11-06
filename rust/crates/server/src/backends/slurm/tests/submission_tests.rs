@@ -124,7 +124,6 @@ impl Fixture {
             storage: Storage {
                 run_dir: format!("{mount}/runs/demo/train"),
                 project_data_root: format!("{mount}/data/demo"),
-                additional_roots: BTreeMap::new(),
             },
             resources: Resources {
                 gpus: 1,
@@ -1530,7 +1529,7 @@ fn backend_checkpoint_registration_and_explicit_new_run_restore_are_scoped_and_i
             "/bin/sh",
             "-c",
             format!(
-                "mkdir -p \"$OUTPUT_DIR/checkpoints/step-4\"; printf weights > \"$OUTPUT_DIR/checkpoints/step-4/state.bin\"; printf %s {} > \"$OUTPUT_DIR/checkpoint.ready.json\"",
+                "mkdir -p \"$STATE_DIR/checkpoints/step-4\"; printf weights > \"$STATE_DIR/checkpoints/step-4/state.bin\"; printf %s {} > \"$STATE_DIR/checkpoint.ready.json\"",
                 ml_exp_core::slurm::shell_quote(&ready.to_string()).unwrap()
             )
         ]);

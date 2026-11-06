@@ -642,11 +642,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -672,7 +668,7 @@
         }
       },
       "token": null,
-      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-dry-run\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nexport BACKEND_JOB_ID=\"$SLURM_JOB_ID\"\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\nmkdir -p /shared/project/runs/native-reference/attempts/attempt-001/inputs /shared/project/runs/native-reference/attempts/attempt-001/outputs\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/inputs:/inputs \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/outputs:/outputs \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
+      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-dry-run\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
     },
     {
       "id": "basic-intent",
@@ -685,11 +681,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -715,7 +707,7 @@
         }
       },
       "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nexport BACKEND_JOB_ID=\"$SLURM_JOB_ID\"\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\nmkdir -p /shared/project/runs/native-reference/attempts/attempt-001/inputs /shared/project/runs/native-reference/attempts/attempt-001/outputs\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/inputs:/inputs \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/outputs:/outputs \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
+      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
     },
     {
       "id": "memory-dry",
@@ -729,11 +721,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -759,7 +747,7 @@
         }
       },
       "token": null,
-      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --mem=128G\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-dry-run\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nexport BACKEND_JOB_ID=\"$SLURM_JOB_ID\"\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\nmkdir -p /shared/project/runs/native-reference/attempts/attempt-001/inputs /shared/project/runs/native-reference/attempts/attempt-001/outputs\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/inputs:/inputs \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/outputs:/outputs \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
+      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --mem=128G\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-dry-run\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
     },
     {
       "id": "memory-intent",
@@ -773,11 +761,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -803,7 +787,7 @@
         }
       },
       "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --mem=128G\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nexport BACKEND_JOB_ID=\"$SLURM_JOB_ID\"\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\nmkdir -p /shared/project/runs/native-reference/attempts/attempt-001/inputs /shared/project/runs/native-reference/attempts/attempt-001/outputs\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/inputs:/inputs \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/outputs:/outputs \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
+      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --mem=128G\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
     },
     {
       "id": "managed-dry",
@@ -816,11 +800,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -846,7 +826,7 @@
         }
       },
       "token": null,
-      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-dry-run\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nexport BACKEND_JOB_ID=\"$SLURM_JOB_ID\"\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\nmkdir -p /shared/project/runs/native-reference/attempts/attempt-001/inputs /shared/project/runs/native-reference/attempts/attempt-001/outputs\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/inputs:/inputs \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/outputs:/outputs \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
+      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-dry-run\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
     },
     {
       "id": "managed-intent",
@@ -859,11 +839,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -889,7 +865,7 @@
         }
       },
       "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nexport BACKEND_JOB_ID=\"$SLURM_JOB_ID\"\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\nmkdir -p /shared/project/runs/native-reference/attempts/attempt-001/inputs /shared/project/runs/native-reference/attempts/attempt-001/outputs\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/inputs:/inputs \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/outputs:/outputs \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
+      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
     },
     {
       "id": "oci-dry",
@@ -902,11 +878,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -933,7 +905,7 @@
         }
       },
       "token": null,
-      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-dry-run\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nexport BACKEND_JOB_ID=\"$SLURM_JOB_ID\"\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\nmkdir -p /shared/project/runs/native-reference/attempts/attempt-001/inputs /shared/project/runs/native-reference/attempts/attempt-001/outputs\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/inputs:/inputs \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/outputs:/outputs \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
+      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-dry-run\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
     },
     {
       "id": "oci-intent",
@@ -946,11 +918,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -977,7 +945,7 @@
         }
       },
       "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nexport BACKEND_JOB_ID=\"$SLURM_JOB_ID\"\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\nmkdir -p /shared/project/runs/native-reference/attempts/attempt-001/inputs /shared/project/runs/native-reference/attempts/attempt-001/outputs\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/inputs:/inputs \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/outputs:/outputs \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
+      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
     },
     {
       "id": "unsquash-dry",
@@ -990,11 +958,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -1023,7 +987,7 @@
         }
       },
       "token": null,
-      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-dry-run\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/cache\nexport APPTAINER_TMPDIR=/tmp/native-reference\nexport BACKEND_JOB_ID=\"$SLURM_JOB_ID\"\nmkdir -p /shared/project/runs/native-reference /shared/cache /tmp/native-reference\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\nmkdir -p /shared/project/runs/native-reference/attempts/attempt-001/inputs /shared/project/runs/native-reference/attempts/attempt-001/outputs\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv --unsquash \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/inputs:/inputs \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/outputs:/outputs \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
+      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-dry-run\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/cache\nexport APPTAINER_TMPDIR=/tmp/native-reference\nmkdir -p /shared/project/runs/native-reference /shared/cache /tmp/native-reference\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv --unsquash \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
     },
     {
       "id": "unsquash-intent",
@@ -1036,11 +1000,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -1069,7 +1029,7 @@
         }
       },
       "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/cache\nexport APPTAINER_TMPDIR=/tmp/native-reference\nexport BACKEND_JOB_ID=\"$SLURM_JOB_ID\"\nmkdir -p /shared/project/runs/native-reference /shared/cache /tmp/native-reference\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\nmkdir -p /shared/project/runs/native-reference/attempts/attempt-001/inputs /shared/project/runs/native-reference/attempts/attempt-001/outputs\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv --unsquash \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/inputs:/inputs \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/outputs:/outputs \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
+      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/cache\nexport APPTAINER_TMPDIR=/tmp/native-reference\nmkdir -p /shared/project/runs/native-reference /shared/cache /tmp/native-reference\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv --unsquash \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
     },
     {
       "id": "spaces-dry",
@@ -1082,11 +1042,7 @@
         },
         "storage": {
           "run_dir": "/shared/project space/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -1112,7 +1068,7 @@
         }
       },
       "token": null,
-      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-dry-run\n#SBATCH --output='/shared/project space/runs/native-reference/attempts/attempt-001/slurm-%j.out'\n#SBATCH --error='/shared/project space/runs/native-reference/attempts/attempt-001/slurm-%j.err'\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nexport BACKEND_JOB_ID=\"$SLURM_JOB_ID\"\nmkdir -p '/shared/project space/runs/native-reference' /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir='/shared/project space/runs/native-reference/attempts/attempt-001'\nmkdir -p \"$attempt_log_dir\"\nmkdir -p '/shared/project space/runs/native-reference/attempts/attempt-001/inputs' '/shared/project space/runs/native-reference/attempts/attempt-001/outputs'\ntest -d '/shared/project space/sources/source-fixed'\ntest -s '/shared/project space/images/test.sif'\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind '/shared/project space/sources/source-fixed':/app \\\n  --bind '/shared/project space/runs/native-reference/attempts/attempt-001/inputs':/inputs \\\n  --bind '/shared/project space/runs/native-reference/attempts/attempt-001/outputs':/outputs \\\n  --pwd /app \\\n  '/shared/project space/images/test.sif' \\\n  python train.py\n"
+      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-dry-run\n#SBATCH --output='/shared/project space/runs/native-reference/attempts/attempt-001/slurm-%j.out'\n#SBATCH --error='/shared/project space/runs/native-reference/attempts/attempt-001/slurm-%j.err'\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nmkdir -p '/shared/project space/runs/native-reference' /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir='/shared/project space/runs/native-reference/attempts/attempt-001'\nmkdir -p \"$attempt_log_dir\"\ntest -d '/shared/project space/sources/source-fixed'\ntest -s '/shared/project space/images/test.sif'\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind '/shared/project space/sources/source-fixed':/app \\\n  --pwd /app \\\n  '/shared/project space/images/test.sif' \\\n  python train.py\n"
     },
     {
       "id": "spaces-intent",
@@ -1125,11 +1081,7 @@
         },
         "storage": {
           "run_dir": "/shared/project space/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -1155,7 +1107,7 @@
         }
       },
       "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n#SBATCH --output='/shared/project space/runs/native-reference/attempts/attempt-001/slurm-%j.out'\n#SBATCH --error='/shared/project space/runs/native-reference/attempts/attempt-001/slurm-%j.err'\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nexport BACKEND_JOB_ID=\"$SLURM_JOB_ID\"\nmkdir -p '/shared/project space/runs/native-reference' /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir='/shared/project space/runs/native-reference/attempts/attempt-001'\nmkdir -p \"$attempt_log_dir\"\nmkdir -p '/shared/project space/runs/native-reference/attempts/attempt-001/inputs' '/shared/project space/runs/native-reference/attempts/attempt-001/outputs'\ntest -d '/shared/project space/sources/source-fixed'\ntest -s '/shared/project space/images/test.sif'\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind '/shared/project space/sources/source-fixed':/app \\\n  --bind '/shared/project space/runs/native-reference/attempts/attempt-001/inputs':/inputs \\\n  --bind '/shared/project space/runs/native-reference/attempts/attempt-001/outputs':/outputs \\\n  --pwd /app \\\n  '/shared/project space/images/test.sif' \\\n  python train.py\n"
+      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n#SBATCH --output='/shared/project space/runs/native-reference/attempts/attempt-001/slurm-%j.out'\n#SBATCH --error='/shared/project space/runs/native-reference/attempts/attempt-001/slurm-%j.err'\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nmkdir -p '/shared/project space/runs/native-reference' /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir='/shared/project space/runs/native-reference/attempts/attempt-001'\nmkdir -p \"$attempt_log_dir\"\ntest -d '/shared/project space/sources/source-fixed'\ntest -s '/shared/project space/images/test.sif'\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind '/shared/project space/sources/source-fixed':/app \\\n  --pwd /app \\\n  '/shared/project space/images/test.sif' \\\n  python train.py\n"
     },
     {
       "id": "quoting-dry",
@@ -1168,11 +1120,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -1202,7 +1150,7 @@
         }
       },
       "token": null,
-      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-dry-run\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nexport BACKEND_JOB_ID=\"$SLURM_JOB_ID\"\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\nmkdir -p /shared/project/runs/native-reference/attempts/attempt-001/inputs /shared/project/runs/native-reference/attempts/attempt-001/outputs\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/inputs:/inputs \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/outputs:/outputs \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python 'script with space.py' 'a'\"'\"'b' '$(not-executed)' '中文' 'line\nbreak'\n"
+      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-dry-run\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python 'script with space.py' 'a'\"'\"'b' '$(not-executed)' '中文' 'line\nbreak'\n"
     },
     {
       "id": "quoting-intent",
@@ -1215,11 +1163,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -1249,7 +1193,7 @@
         }
       },
       "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nexport BACKEND_JOB_ID=\"$SLURM_JOB_ID\"\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\nmkdir -p /shared/project/runs/native-reference/attempts/attempt-001/inputs /shared/project/runs/native-reference/attempts/attempt-001/outputs\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/inputs:/inputs \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/outputs:/outputs \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python 'script with space.py' 'a'\"'\"'b' '$(not-executed)' '中文' 'line\nbreak'\n"
+      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=native-reference--attempt-001\n#SBATCH --comment=ml-exp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python 'script with space.py' 'a'\"'\"'b' '$(not-executed)' '中文' 'line\nbreak'\n"
     },
     {
       "id": "long_name-dry",
@@ -1262,11 +1206,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -1292,7 +1232,7 @@
         }
       },
       "token": null,
-      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr--7aade965de39\n#SBATCH --comment=ml-exp-dry-run\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nexport BACKEND_JOB_ID=\"$SLURM_JOB_ID\"\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\nmkdir -p /shared/project/runs/native-reference/attempts/attempt-001/inputs /shared/project/runs/native-reference/attempts/attempt-001/outputs\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/inputs:/inputs \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/outputs:/outputs \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
+      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr--7aade965de39\n#SBATCH --comment=ml-exp-dry-run\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
     },
     {
       "id": "long_name-intent",
@@ -1305,11 +1245,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -1335,7 +1271,7 @@
         }
       },
       "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr--7aade965de39\n#SBATCH --comment=ml-exp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nexport BACKEND_JOB_ID=\"$SLURM_JOB_ID\"\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\nmkdir -p /shared/project/runs/native-reference/attempts/attempt-001/inputs /shared/project/runs/native-reference/attempts/attempt-001/outputs\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/inputs:/inputs \\\n  --bind /shared/project/runs/native-reference/attempts/attempt-001/outputs:/outputs \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
+      "expected": "#!/usr/bin/env bash\n#SBATCH --partition=accelerator\n#SBATCH --account=lab\n#SBATCH --qos=normal\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=8\n#SBATCH --gres=gpu:accelerator:1\n#SBATCH --time=00:10:00\n#SBATCH --job-name=rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr--7aade965de39\n#SBATCH --comment=ml-exp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n#SBATCH --output=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.out\n#SBATCH --error=/shared/project/runs/native-reference/attempts/attempt-001/slurm-%j.err\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR=/shared/project/apptainer/cache\nexport APPTAINER_TMPDIR=/shared/project/apptainer/tmp\nmkdir -p /shared/project/runs/native-reference /shared/project/apptainer/cache /shared/project/apptainer/tmp\nattempt_log_dir=/shared/project/runs/native-reference/attempts/attempt-001\nmkdir -p \"$attempt_log_dir\"\ntest -d /shared/project/sources/source-fixed\ntest -s /shared/project/images/test.sif\nsrun apptainer exec --nv \\\n  --bind /shared:/shared \\\n  --bind /shared/project/sources/source-fixed:/app \\\n  --pwd /app \\\n  /shared/project/images/test.sif \\\n  python train.py\n"
     }
   ],
   "config_cases": [
@@ -1350,11 +1286,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -1392,11 +1324,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -1434,11 +1362,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -1476,11 +1400,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -1519,11 +1439,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -1562,11 +1478,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -1604,11 +1516,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -1646,11 +1554,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -1688,11 +1592,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -1730,11 +1630,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -1772,11 +1668,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -1814,11 +1706,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -1856,11 +1744,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -1898,11 +1782,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -1940,11 +1820,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -1982,11 +1858,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -2024,11 +1896,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -2066,11 +1934,7 @@
         },
         "storage": {
           "run_dir": "/another/run",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -2108,11 +1972,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -2151,11 +2011,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -2194,11 +2050,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -2237,11 +2089,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -2280,11 +2128,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",
@@ -2323,11 +2167,7 @@
         },
         "storage": {
           "run_dir": "/shared/project/runs/native-reference",
-          "project_data_root": "/shared/project",
-          "additional_roots": {
-            "data_root": "/shared",
-            "hf_home": "/shared/project/cache/huggingface"
-          }
+          "project_data_root": "/shared/project"
         },
         "backend": {
           "kind": "slurm",

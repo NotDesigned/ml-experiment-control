@@ -16,9 +16,10 @@ scientific admission rules.
   does not require a particular failure code, a new CPU sync or a specific
   worker feature. An unknown submission still requires reconciliation.
 - Filename guesses about secrets, keys and certificates in source/data assets.
-- Extra environment variable count/size limits and blanket bans on library,
-  GPU-visibility and `RESUME_*` variables. Launcher-owned variables remain
-  reserved to avoid changing its paths and identities accidentally.
+- Extra environment variable count/size limits and blanket bans on library and
+  GPU-visibility variables. Launcher-owned variables, including the three `RESUME_`
+  names the platform sets, remain reserved to avoid changing its paths and
+  identities accidentally.
 - The download-script interpreter list and argument-count limit. The executable
   must exist in the chosen image. Arguments cannot contain NUL.
 - Mandatory HTTPS host lists, port 443 and public dotted DNS names. An optional
@@ -63,8 +64,7 @@ old callback URL; restoring its callbacks is a separate operation.
 
 The current image parser lacks custom frontends/escape directives, heredocs,
 ARG-based FROM and external-image COPY --from. Training image publication targets
-linux/amd64. The 1 GiB transient transfer buffer and PAI duration maxima were
-explicitly requested. Cache verification still reads and hashes full files;
+linux/amd64. The PAI duration maxima were explicitly requested. Cache verification still reads and hashes full files;
 its cost scales with dataset size.
 
 Readiness gaps are reported separately from configured submission capabilities. No

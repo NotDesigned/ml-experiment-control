@@ -845,7 +845,7 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
             "stdout":{"text":"native worker fixture\n","offset_bytes":0,"total_bytes":22,"problem":null},
             "stderr":{"text":"","offset_bytes":0,"total_bytes":0,"problem":null},
             "metrics":{"text":String::from_utf8(bytes.clone()).unwrap(),"offset_bytes":0,"total_bytes":bytes.len(),"problem":null}},
-        "history":{"contract":ml_exp_core::managed::history::CONTRACT,"config_sha256":config_sha256,"start":null,"next":{"device":1,"inode":2,"offset_bytes":bytes.len(),"prefix_sha256":sha(&bytes)},"bytes":bytes,"total_bytes":bytes.len(),"process_finished":false},"checkpoint":null})).unwrap();
+        "history":{"contract":ml_exp_core::managed::history::CONTRACT,"config_sha256":config_sha256,"start":null,"next":{"inode":2,"offset_bytes":bytes.len(),"prefix_sha256":sha(&bytes)},"bytes":bytes,"total_bytes":bytes.len(),"process_finished":false},"checkpoint":null})).unwrap();
     let payload = serde_json::to_vec(&packet).unwrap();
     let http = reqwest::blocking::Client::new();
     let channel = &package.channel;

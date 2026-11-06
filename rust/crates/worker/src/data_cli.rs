@@ -33,6 +33,13 @@ fn run(args: Args) -> io::Result<()> {
     for signal in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGINT] {
         signal_hook::flag::register(signal, Arc::clone(&flag))?;
     }
+    // A Complete can outlive its SSH limit. Its outcome is durable and the next
+    // Complete reads it, so a lost session must not kill the work, or a dataset that
+    // needs longer than the limit would restart from nothing every time.
+    signal_hook::flag::register(
+        signal_hook::consts::SIGHUP,
+        Arc::new(AtomicBool::new(false)),
+    )?;
     let deadline = Instant::now() + Duration::from_secs(90);
     let input = io::stdin();
     let frame = framing::read_prefix(&input, datasets::MAX_METADATA, deadline, &flag)?;

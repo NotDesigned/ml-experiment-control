@@ -87,7 +87,14 @@ fn open_file(root: &Directory, path: &str) -> Result<File> {
     Ok(directory.open_regular_read(OsStr::new(name))?)
 }
 
+#[cfg(test)]
+thread_local! {
+    static FILES_HASHED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn verify_file(root: &Directory, record: &FileRecord) -> Result<()> {
+    #[cfg(test)]
+    FILES_HASHED.with(|count| count.set(count.get() + 1));
     let mut file = open_file(root, &record.path)?;
     let before = file.metadata()?;
     if !before.is_file() {
@@ -186,8 +193,12 @@ pub fn verify(root: &Directory, manifest: &Manifest, seal: bool) -> Result<Verif
     if after != expected {
         return Err(Error::FileSet);
     }
-    for record in &manifest.files {
-        verify_file(root, record)?;
+    // Sealing is the only reason to read the bytes again: it proves they did not
+    // change while they became read-only. A restore has already hashed them.
+    if seal {
+        for record in &manifest.files {
+            verify_file(root, record)?;
+        }
     }
     Ok(Verified {
         manifest: manifest.clone(),
@@ -241,6 +252,30 @@ mod tests {
                 & 0o777,
             0o400
         );
+    }
+
+    #[test]
+    fn a_file_is_hashed_once_unless_it_is_being_sealed() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Directory::open(temp.path(), false).unwrap();
+        root.child(OsStr::new("checkpoints"), true)
+            .unwrap()
+            .child(OsStr::new("step-0004"), true)
+            .unwrap();
+        fs::write(
+            temp.path().join("checkpoints/step-0004/model.bin"),
+            b"weights",
+        )
+        .unwrap();
+        let manifest = checkpoints::manifest(&ready()).unwrap();
+        let hashed_by = |action: &dyn Fn() -> Result<Verified>| {
+            FILES_HASHED.with(|count| count.set(0));
+            action().unwrap();
+            FILES_HASHED.with(|count| count.get())
+        };
+        assert_eq!(hashed_by(&|| verify(&root, &manifest, false)), 1);
+        assert_eq!(hashed_by(&|| verify(&root, &manifest, true)), 2);
+        assert_eq!(hashed_by(&|| verify_sealed(&root, &manifest)), 1);
     }
 
     #[test]

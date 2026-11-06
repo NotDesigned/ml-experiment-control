@@ -114,6 +114,11 @@ impl Service {
         payload: &[u8],
         cancelled: &AtomicBool,
     ) -> Result<State> {
+        if let Command::Begin { definition } = &command {
+            definition
+                .manifest_budget()
+                .map_err(|_| Error::Admission(native::Error(datasets::ManifestsTooLarge::CAUSE)))?;
+        }
         let backend = self.dataset_backend(project, executor)?;
         let fingerprint = backend.fingerprint()?;
         let request = Request {

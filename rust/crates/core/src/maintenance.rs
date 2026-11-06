@@ -45,7 +45,7 @@ impl Plan {
             .is_some_and(|p| p.ends_with(&suffix))
             || self.config.output_directory.is_some()
                 && (self.config.attempt_root != self.storage_root().join("worker")
-                    || self.config.output_path() != self.storage_root().join("outputs/payload"))
+                    || self.config.output_path() != self.storage_root().join("outputs"))
         {
             return Err("maintenance storage layout");
         }
@@ -79,11 +79,7 @@ impl Plan {
         }
     }
     pub fn state_root(&self) -> std::path::PathBuf {
-        if self.config.output_directory.is_some() {
-            self.config.output_path()
-        } else {
-            self.config.attempt_root.join("state")
-        }
+        self.storage_root().join("state")
     }
     pub fn paths(&self) -> Result<Vec<String>, &'static str> {
         self.validate()?;
@@ -97,23 +93,11 @@ impl Plan {
                     .ok_or("output encoding")?
                     .into(),
             ],
-            Selection::State => vec![if self.config.output_directory.is_some() {
-                "outputs/payload/checkpoints".into()
-            } else {
-                "state".into()
-            }],
+            Selection::State => vec!["state".into()],
             Selection::Checkpoint { checkpoint } => {
                 let plan = checkpoints::restore_plan(checkpoint, None)
                     .map_err(|_| "maintenance checkpoint")?;
-                vec![format!(
-                    "{}/checkpoints/{}",
-                    self.state_root()
-                        .strip_prefix(self.storage_root())
-                        .map_err(|_| "state scope")?
-                        .to_str()
-                        .ok_or("state encoding")?,
-                    plan.generation
-                )]
+                vec![format!("state/checkpoints/{}", plan.generation)]
             }
         })
     }

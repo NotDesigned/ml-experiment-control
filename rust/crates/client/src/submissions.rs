@@ -470,6 +470,15 @@ pub fn plan(command: Command<'_>) -> Result<Plan, Error> {
         checkpoint,
     })
 }
+/// The server configures a CPU job's size and limit, so only their shape is checked.
+/// That the job holds no GPU is the part a client can rely on.
+fn cpu_only_job(sync: &Value) -> bool {
+    let positive = |value: &Value| value.as_u64().is_some_and(|n| n > 0);
+    sync["resources"]["gpus"] == 0
+        && positive(&sync["resources"]["cpus"])
+        && positive(&sync["resources"]["memory_gb"])
+        && positive(&sync["max_time_seconds"])
+}
 pub fn diagnostic_response(value: Value, lineage: &Value) -> Result<Value, Error> {
     if value["contract"] != "readonly-diagnostic.v1"
         || value["lineage"] != *lineage
@@ -514,8 +523,7 @@ pub fn response(plan: &Plan, value: Value) -> Result<Value, Error> {
         let sync = &value["synchronization"];
         if value["submission_id"] != *submission
             || sync["request_id"] != *request_id
-            || sync["resources"] != json!({"gpus":0,"cpus":2,"memory_gb":4})
-            || sync["max_time_seconds"] != 600
+            || !cpu_only_job(sync)
             || sync["training_replayed"] != false
             || sync["retry_limit"] != 1
             || failed_job
@@ -751,8 +759,7 @@ pub fn response(plan: &Plan, value: Value) -> Result<Value, Error> {
             serde_json::from_slice(plan.body.as_deref().ok_or(Error::Response)?)
                 .map_err(|_| Error::Response)?;
         if value["synchronization"]["request_id"] != request.request_id
-            || value["synchronization"]["resources"] != json!({"gpus":0,"cpus":2,"memory_gb":4})
-            || value["synchronization"]["max_time_seconds"] != 600
+            || !cpu_only_job(&value["synchronization"])
             || value["synchronization"]["training_replayed"] != false
         {
             return Err(Error::Response);

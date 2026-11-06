@@ -78,7 +78,7 @@ fn preserves_exact_output_exit_and_explicit_environment() {
     assert_eq!(result.stdout.received_bytes, 3);
     assert_eq!(result.stdout.retained_bytes, 3);
     assert_eq!(
-        result.stdout.prefix_sha256,
+        result.stdout.retained_sha256,
         format!("{:x}", Sha256::digest(b"out"))
     );
     assert!(result.stdout.complete && result.stderr.complete);
@@ -130,7 +130,7 @@ fn drains_both_output_floods_after_their_distinct_limits() {
         assert_eq!(capture.bytes, vec![0; limit]);
         assert_eq!(capture.retained_bytes, limit as u64);
         assert_eq!(
-            capture.prefix_sha256,
+            capture.retained_sha256,
             format!("{:x}", Sha256::digest(vec![0; limit]))
         );
         assert!(capture.truncated && capture.complete);
@@ -239,36 +239,85 @@ fn early_closed_stdin_reports_incomplete_delivery_without_sigpipe() {
     );
 }
 
-#[test]
-fn file_capture_is_bounded_and_keeps_no_second_memory_copy() {
+fn capture_input(input: &[u8], limit: usize) -> (io::Result<Outcome>, Vec<u8>) {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("stdout");
     let mut file = File::create(&path).unwrap();
     let result = execute(Request {
-        argv: &shell("head -c 1048576 /dev/zero"),
+        argv: &shell("cat"),
         cwd: root.path(),
         environment: Environment::Inherit(&BTreeMap::new()),
-        stdin: Input::Null,
+        stdin: Input::Bytes(input),
         stdout: Capture::File {
             file: &mut file,
-            limit: 4096,
+            limit,
         },
         stderr: Capture::Memory { limit: 10 },
         deadline: Instant::now() + Duration::from_secs(3),
         termination_grace: Duration::from_millis(50),
-        drain_grace: Duration::from_millis(50),
+        drain_grace: Duration::from_secs(1),
         cancelled: &AtomicBool::new(false),
-    })
-    .unwrap();
+    });
+    (result, fs::read(&path).unwrap())
+}
+
+#[test]
+fn file_capture_keeps_its_start_and_its_end_within_its_limit() {
+    let sent: Vec<u8> = (0..5000)
+        .flat_map(|line| format!("line-{line}\n").into_bytes())
+        .collect();
+    let (result, kept) = capture_input(&sent, 4096);
+    let result = result.unwrap();
     assert_eq!(result.exit_code, Some(0));
-    assert!(result.stdout.bytes.is_empty() && result.stdout.truncated);
-    assert_eq!(result.stdout.received_bytes, 1048576);
-    assert_eq!(result.stdout.retained_bytes, 4096);
-    assert_eq!(fs::metadata(&path).unwrap().len(), 4096);
+    assert!(result.failure.is_none());
+    let captured = &result.stdout;
+    assert!(captured.bytes.is_empty() && captured.truncated);
+    assert_eq!(captured.received_bytes, sent.len() as u64);
+    assert!(kept.len() <= 4096);
+    assert_eq!(captured.retained_bytes, kept.len() as u64);
     assert_eq!(
-        result.stdout.prefix_sha256,
-        format!("{:x}", Sha256::digest(vec![0; 4096]))
+        captured.retained_sha256,
+        format!("{:x}", Sha256::digest(&kept))
     );
+    assert_eq!(
+        captured.dropped_bytes,
+        (sent.len() - (kept.len() - SEAM.len())) as u64
+    );
+    assert_eq!(kept[..2048], sent[..2048]);
+    assert_eq!(&kept[2048..2048 + SEAM.len()], SEAM);
+    let end = &kept[2048 + SEAM.len()..];
+    assert!(sent.ends_with(end));
+    assert!(end.len() >= (4096 - 2048 - SEAM.len()) / 2);
+}
+
+#[test]
+fn file_capture_marks_a_log_only_when_output_passes_its_limit() {
+    let (result, kept) = capture_input(&[b'x'; 4096], 4096);
+    let captured = result.unwrap().stdout;
+    assert!(!captured.truncated);
+    assert_eq!(captured.dropped_bytes, 0);
+    assert_eq!(kept, [b'x'; 4096]);
+
+    let (result, kept) = capture_input(&[b'x'; 4097], 4096);
+    let captured = result.unwrap().stdout;
+    assert!(captured.truncated);
+    assert_eq!(captured.received_bytes, 4097);
+    assert_eq!(captured.retained_bytes, kept.len() as u64);
+    assert_eq!(
+        captured.dropped_bytes,
+        (4097 - (kept.len() - SEAM.len())) as u64
+    );
+    assert_eq!(
+        captured.retained_sha256,
+        format!("{:x}", Sha256::digest(&kept))
+    );
+}
+
+#[test]
+fn file_capture_refuses_a_limit_that_cannot_hold_its_seam() {
+    let (result, kept) = capture_input(b"", 4 * SEAM.len() - 1);
+    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidInput);
+    assert!(kept.is_empty());
 }
 
 #[test]
@@ -319,10 +368,10 @@ fn expired_and_cancelled_requests_do_not_spawn() {
         .unwrap();
         assert!(!result.spawned);
         assert_eq!(
-            result.stdout.prefix_sha256,
+            result.stdout.retained_sha256,
             format!("{:x}", Sha256::digest([]))
         );
-        assert_eq!(result.stderr.prefix_sha256, result.stdout.prefix_sha256);
+        assert_eq!(result.stderr.retained_sha256, result.stdout.retained_sha256);
         assert_eq!(result.cancelled, cancelled);
         assert_eq!(result.timed_out, !cancelled);
     }
@@ -347,7 +396,7 @@ fn spawn_failure_exposes_only_safe_stage_and_kind() {
     .unwrap();
     assert!(!result.spawned);
     assert_eq!(
-        result.stdout.prefix_sha256,
+        result.stdout.retained_sha256,
         format!("{:x}", Sha256::digest([]))
     );
     assert_eq!(
@@ -395,7 +444,7 @@ fn output_sink_failure_still_stops_the_child_and_returns_bounded_evidence() {
         stdin: Input::Null,
         stdout: Capture::File {
             file: &mut file,
-            limit: 10,
+            limit: 4096,
         },
         stderr: Capture::Memory { limit: 10 },
         deadline: Instant::now() + Duration::from_secs(2),
@@ -640,7 +689,7 @@ fn file_short_writes_hash_only_the_successfully_retained_prefix() {
         stdin: Input::Null,
         stdout: Capture::File {
             file: &mut file,
-            limit: 100,
+            limit: 4096,
         },
         stderr: Capture::Memory { limit: 100 },
         deadline: Instant::now() + Duration::from_secs(2),
@@ -653,7 +702,7 @@ fn file_short_writes_hash_only_the_successfully_retained_prefix() {
     assert_eq!(result.stdout.received_bytes, 20);
     assert_eq!(result.stdout.retained_bytes, 7);
     assert_eq!(
-        result.stdout.prefix_sha256,
+        result.stdout.retained_sha256,
         format!("{:x}", Sha256::digest(b"1234567"))
     );
     assert_eq!(fs::read(&path).unwrap(), b"1234567");

@@ -24,32 +24,7 @@ class PaiStorage:
                         for path, mount, access in (("users/" + user + "/", "/mnt/ml-expd-personal", "RW"),
                                                     ("public/models/", "/mnt/models", "RO"),
                                                     ("public/datasets/", "/mnt/datasets", "RO"))]
-        uri = self.config.get("oss_uri")
-        mount = self.config.get("oss_mount_path", "/mnt/ml-expd-oss")
-        if "oss_uri" not in self.config and "oss_mount_path" not in self.config:
-            return datasets
-        if not isinstance(uri, str) or not isinstance(mount, str):
-            raise ValueError("DSW OSS mount requires a URI and a canonical mount path")
-        host = r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]\.oss-" + re.escape(self.api.config["region"]) + r"(?:-internal)?\.aliyuncs\.com"
-        match = re.fullmatch(r"oss://" + host + r"(/[A-Za-z0-9._/-]+/)", uri)
-        if (not match or any(p in {"", ".", ".."} for p in match[1].split("/")[1:-1])
-                or not re.fullmatch(r"/(?:mnt|data)/[A-Za-z0-9][A-Za-z0-9._/-]*", mount)
-                or any(p in {"", ".", ".."} for p in mount.split("/")[1:])
-                or datasets and (mount == "/mnt/workspace" or mount.startswith("/mnt/workspace/"))
-                or any(mount == d["MountPath"] or mount.startswith(d["MountPath"] + "/")
-                       or d["MountPath"].startswith(mount + "/") for d in datasets)):
-            raise ValueError("DSW OSS mount must bind an explicit same-region prefix to /mnt or /data")
-        role = self.role()
-        if role is None:
-            return datasets + [{"Uri": uri, "MountPath": mount, "MountAccess": "RW"}]
-        user = self.config["workspace_user"]
-        if match[1] != "/users/" + user + "/" or mount != "/mnt/oss":
-            raise ValueError("personal OSS mount must use the approved user's prefix at /mnt/oss")
-        root = uri[:-len(match[1])] + "/"
-        return datasets + [{"Uri": root + path, "MountPath": target, "MountAccess": access, "RoleArn": role[0]}
-                           for path, target, access in (("users/" + user + "/", "/mnt/oss", "RW"),
-                                                       ("public/models/", "/mnt/oss-models", "RO"),
-                                                       ("public/datasets/", "/mnt/oss-datasets", "RO"))]
+        return datasets
 
     def role(self):
         arn = self.config.get("data_role_arn")

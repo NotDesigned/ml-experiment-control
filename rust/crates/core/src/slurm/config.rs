@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use serde::{Deserialize, Serialize};
 
 use super::{Error, component, printable};
@@ -78,9 +76,6 @@ impl Resources {
 pub struct Storage {
     pub run_dir: String,
     pub project_data_root: String,
-    /// Other explicitly frozen roots, e.g. data_root/hf_home/hf_datasets_cache.
-    #[serde(default)]
-    pub additional_roots: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -220,11 +215,6 @@ impl SlurmConfig {
         ] {
             if !path_within(path, &self.mount_root) {
                 return Err(Error::Configuration(name));
-            }
-        }
-        for path in storage.additional_roots.values() {
-            if !path_within(path, &self.mount_root) {
-                return Err(Error::Configuration("additional_roots"));
             }
         }
         for (name, path) in [

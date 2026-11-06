@@ -68,21 +68,13 @@ impl Package {
         }
         crate::datasets::mounts(&datasets).map_err(|_| Error("cloud input receipts"))?;
         let project = &self.manifest.identity.project;
-        let input_root = format!("{data_root}/{project}");
         self.manifest
             .environment
-            .insert("DATA_DIR".into(), input_root.clone());
-        self.manifest
-            .environment
-            .insert("INPUT_DIR".into(), input_root);
+            .insert("DATA_DIR".into(), format!("{data_root}/{project}"));
         if !datasets.is_empty() {
-            let mapping: BTreeMap<_, _> = datasets
-                .iter()
-                .map(|m| (m.name.clone(), m.receipt.root.clone()))
-                .collect();
             self.manifest.environment.insert(
                 "DATASETS_JSON".into(),
-                serde_json::to_string(&mapping).map_err(|_| Error("dataset mapping"))?,
+                crate::datasets::paths_json(&datasets).map_err(|_| Error("dataset mapping"))?,
             );
         }
         if let Some(value) = &checkpoint {

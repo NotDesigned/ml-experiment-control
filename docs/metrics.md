@@ -9,9 +9,10 @@ For existing local training, see [local attachment](#attach-metrics-from-local-t
 
 ## Record and query
 
-Write one JSON record per line to the file named by `METRICS_PATH`, which is
-separate from `STATE_DIR`. Any language works; this example uses only the Python
-standard library:
+Write one JSON record per line to the file named by `METRICS_PATH`. On every backend
+this is `OUTPUT_DIR/metrics.jsonl`, separate from `STATE_DIR`, so it is also part of
+the result archive. Any language works; this example uses only the Python standard
+library:
 
 ```python
 import json, os

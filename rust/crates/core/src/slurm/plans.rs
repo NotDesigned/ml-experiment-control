@@ -104,24 +104,14 @@ pub fn render_job_with_datasets(
 ) -> Result<String, Error> {
     spec.validate()?;
     crate::datasets::mounts(datasets).map_err(|_| Error::Configuration("dataset bindings"))?;
+    // Two names may select one asset, so each receipt root is bound once.
     let mut dataset_binds = String::new();
-    let mut roots = std::collections::BTreeSet::new();
-    for mount in datasets {
-        let source = &mount.receipt.root;
-        let inputs = format!(
-            "{}/attempts/{}/inputs/{}",
-            spec.storage.run_dir, spec.attempt_id, mount.name
-        );
-        let mut destinations = vec![inputs, format!("/inputs/{}", mount.name)];
-        if roots.insert(source) {
-            destinations.push(source.clone());
-        }
-        for destination in destinations {
-            dataset_binds.push_str(&format!(
-                "  --bind {} \\\n",
-                shell_quote(&format!("{source}:{destination}:ro"))?
-            ));
-        }
+    let roots: std::collections::BTreeSet<_> = datasets.iter().map(|m| &m.receipt.root).collect();
+    for root in roots {
+        dataset_binds.push_str(&format!(
+            "  --bind {} \\\n",
+            shell_quote(&format!("{root}:{root}:ro"))?
+        ));
     }
     let backend = &spec.backend;
     let run_dir = &spec.storage.run_dir;
@@ -133,14 +123,7 @@ pub fn render_job_with_datasets(
         .apptainer_tmp_dir
         .clone()
         .unwrap_or_else(|| format!("{}/apptainer/tmp", spec.storage.project_data_root));
-    let command = if spec.execution.env.is_empty() {
-        shell_join(&spec.command)?
-    } else {
-        let mut argv = vec!["env".to_owned()];
-        argv.extend(spec.execution.env.iter().map(|(k, v)| format!("{k}={v}")));
-        argv.extend(spec.command.clone());
-        shell_join(&argv)?
-    };
+    let command = shell_join(&spec.command)?;
     let source_check = if backend.oci_image.is_some() {
         String::new()
     } else {
@@ -160,11 +143,6 @@ pub fn render_job_with_datasets(
     } else {
         ""
     };
-    let attempt_root = format!("{run_dir}/attempts/{}", spec.attempt_id);
-    let inputs = shell_quote(&format!("{attempt_root}/inputs"))?;
-    let outputs = shell_quote(&format!("{attempt_root}/outputs"))?;
-    let managed_dirs = format!("mkdir -p {inputs} {outputs}\n");
-    let managed_binds = format!("  --bind {inputs}:/inputs \\\n  --bind {outputs}:/outputs \\\n");
     let marker = token
         .map(submission_marker)
         .transpose()
@@ -185,7 +163,7 @@ pub fn render_job_with_datasets(
         spec.attempt_id
     ))?;
     Ok(format!(
-        "#!/usr/bin/env bash\n#SBATCH --partition={}\n#SBATCH --account={}\n#SBATCH --qos={}\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task={}\n{memory}#SBATCH --gres={}\n#SBATCH --time={}\n#SBATCH --job-name={name}\n#SBATCH --comment={}\n#SBATCH --output={out}\n#SBATCH --error={err}\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR={}\nexport APPTAINER_TMPDIR={}\nexport BACKEND_JOB_ID=\"$SLURM_JOB_ID\"\nmkdir -p {} {} {}\nattempt_log_dir={}\nmkdir -p \"$attempt_log_dir\"\n{managed_dirs}{source_check}test -s {}\nsrun apptainer exec --nv{unsquash} \\\n  --bind {}:{} \\\n{source_bind}{managed_binds}{dataset_binds}  --pwd {} \\\n  {} \\\n  {command}\n",
+        "#!/usr/bin/env bash\n#SBATCH --partition={}\n#SBATCH --account={}\n#SBATCH --qos={}\n#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task={}\n{memory}#SBATCH --gres={}\n#SBATCH --time={}\n#SBATCH --job-name={name}\n#SBATCH --comment={}\n#SBATCH --output={out}\n#SBATCH --error={err}\n\nset -euo pipefail\nexport APPTAINER_CACHEDIR={}\nexport APPTAINER_TMPDIR={}\nmkdir -p {} {} {}\nattempt_log_dir={}\nmkdir -p \"$attempt_log_dir\"\n{source_check}test -s {}\nsrun apptainer exec --nv{unsquash} \\\n  --bind {}:{} \\\n{source_bind}{dataset_binds}  --pwd {} \\\n  {} \\\n  {command}\n",
         backend.partition,
         backend.account,
         backend.qos,

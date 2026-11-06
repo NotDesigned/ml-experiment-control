@@ -188,7 +188,6 @@ pub fn plan(
         storage: slurm::Storage {
             run_dir: format!("{}/{}/{}", profile.run_root, project, request.run_id),
             project_data_root: format!("{}/{}", profile.data_root, project),
-            additional_roots: BTreeMap::new(),
         },
         resources: request.resources.clone(),
         execution: slurm::ExecutionConfig {

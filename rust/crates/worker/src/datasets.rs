@@ -14,7 +14,6 @@ use std::{
     time::{Duration, Instant},
 };
 const MARKER: &str = ".native-data.json";
-const LOCK: &str = ".native-data.lock";
 const STATE: &str = "state.json";
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -67,7 +66,6 @@ impl Store {
         if !store.root.entry_names_limited(1)?.is_empty() {
             return Err(invalid());
         }
-        store.root.create_lock_file(OsStr::new(LOCK))?;
         store
             .root
             .publish_new(OsStr::new(MARKER), &json(&store.marker()?)?)?;
@@ -134,7 +132,7 @@ impl Store {
             definition.clone(),
         )
         .map_err(|_| invalid())?;
-        // The root lock excludes another uploader. Allocate the final slot
+        // The asset lock excludes another uploader. Allocate the final slot
         // with mkdir(EXCL), then publish its control receipt last. Readers
         // reject incomplete reservations instead of repairing/adopting them.
         let slot = project.create_new_child(OsStr::new(&state.asset_id))?;
@@ -198,100 +196,224 @@ impl Store {
         }
         Ok(())
     }
-    fn complete(
-        &self,
-        directory: &Directory,
-        state: &State,
-        cancelled: &AtomicBool,
-    ) -> io::Result<State> {
+    fn receipt(&self, state: &State) -> io::Result<Receipt> {
         let root = self.config.root.to_str().ok_or_else(invalid)?;
-        let receipt = Receipt {
+        Ok(Receipt {
             contract: datasets::CONTRACT.into(),
             project: state.project.clone(),
             target: state.target.clone(),
             asset_id: state.asset_id.clone(),
             definition: state.definition.clone(),
             root: format!("{root}/{}/{}/tree", state.project, state.asset_id),
-        };
+        })
+    }
+    /// Publish a state with no receipt yet. Any tree here came from a job that did
+    /// not finish, so no Run has accepted it, and its bytes can be made again.
+    fn complete(
+        &self,
+        request: &Request,
+        directory: &Directory,
+        state: &State,
+        cancelled: &AtomicBool,
+    ) -> io::Result<State> {
         // Pure completeness admission precedes any concatenation or extraction.
-        let next = state.publish(receipt).map_err(|_| invalid())?;
-        if directory.entry_exists(OsStr::new("tree"))? {
-            let tree = directory.child(OsStr::new("tree"), false)?;
-            tree::verify(&tree, &state.definition, true)?;
-        } else {
-            if state.ready.is_some() {
-                return Err(invalid());
+        let next = state.publish(self.receipt(state)?).map_err(|_| invalid())?;
+        let stale = directory.entry_exists(OsStr::new("tree"))?;
+        let sealed = stale
+            && tree::verify(
+                &directory.child(OsStr::new("tree"), false)?,
+                &state.definition,
+                true,
+            )
+            .is_ok();
+        if !sealed {
+            if stale {
+                eprintln!("ML_EXPD_DATA_TREE_REBUILD no receipt and verification failed");
             }
-            if directory.entry_exists(OsStr::new("unpacked"))? {
-                let old = directory.child(OsStr::new("unpacked"), false)?;
-                tree::remove_staging(directory, &old)?;
-            }
-            if directory.entry_exists(OsStr::new("archive.tar"))? {
-                directory.remove_staged_regular(OsStr::new("archive.tar"))?;
-            }
-            let required = state
-                .definition
-                .archive_bytes
-                .checked_add(state.definition.expanded_bytes().map_err(|_| invalid())?)
-                .and_then(|v| v.checked_add(ml_exp_core::multipart::PART_BYTES))
-                .ok_or_else(invalid)?;
-            let capacity = directory.capacity()?;
-            if capacity.insufficient(required, (state.definition.files.len() as u64) * 2 + 4) {
-                return Err(io::Error::other(
-                    "dataset publication capacity is insufficient",
-                ));
-            }
-            let mut archive = directory.create_new_regular(OsStr::new("archive.tar"))?;
-            let parts = directory.child(OsStr::new("parts"), false)?;
-            let mut buffer = [0u8; 65536];
-            for (number, part) in &state.parts {
-                let mut file = parts.open_regular_read(OsStr::new(&number.to_string()))?;
-                let (sha, bytes) = ml_exp_io::artifacts::hash(&mut file)?;
-                if sha != part.sha256 || bytes != part.bytes {
-                    return Err(invalid());
-                }
-                file.seek(SeekFrom::Start(0))?;
-                loop {
-                    if cancelled.load(Ordering::Relaxed) {
-                        return Err(invalid());
-                    }
-                    let count = file.read(&mut buffer)?;
-                    if count == 0 {
-                        break;
-                    }
-                    archive.write_all(&buffer[..count])?;
-                }
-            }
-            archive.sync_all()?;
-            archive.seek(SeekFrom::Start(0))?;
-            let (sha, bytes) = ml_exp_io::artifacts::hash(&mut archive)?;
-            if sha != state.definition.sha256 || bytes != state.definition.archive_bytes {
-                return Err(invalid());
-            }
-            if cancelled.load(Ordering::Relaxed) {
-                return Err(invalid());
-            }
-            // Only a complete verified tree plus the READY state is usable.
-            // Exclusive final-name allocation works on CPFS without a
-            // check-then-rename fallback or an additional payload copy.
-            let tree = directory.create_new_child(OsStr::new("tree"))?;
-            let prepared = (|| {
-                tree::extract(&mut archive, &tree, &state.definition)?;
-                tree::seal(&tree)?;
-                if cancelled.load(Ordering::Relaxed) {
-                    return Err(invalid());
-                }
-                Ok(())
-            })();
-            if let Err(error) = prepared {
-                // Only this invocation's exclusively allocated, unready tree.
-                tree::remove_staging(directory, &tree)?;
-                return Err(error);
-            }
+            self.rebuild(request, directory, state, stale, cancelled)?;
         }
         Self::save(directory, &next)?;
         Self::cleanup(directory)?;
         Ok(next)
+    }
+    /// Make the tree from the parts, which stay until READY is saved. A stale tree
+    /// goes only once the parts have proved the whole archive.
+    fn rebuild(
+        &self,
+        request: &Request,
+        directory: &Directory,
+        state: &State,
+        stale: bool,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        if directory.entry_exists(OsStr::new("archive.tar"))? {
+            directory.remove_staged_regular(OsStr::new("archive.tar"))?;
+        }
+        let definition = &state.definition;
+        let expanded = definition
+            .expanded_bytes()
+            .map_err(|_| invalid())?
+            .checked_add(ml_exp_core::multipart::PART_BYTES)
+            .ok_or_else(invalid)?;
+        let room = |bytes: u64| -> io::Result<()> {
+            if directory
+                .capacity()?
+                .insufficient(bytes, (definition.files.len() as u64) * 2 + 4)
+            {
+                return Err(io::Error::other(
+                    "dataset publication capacity is insufficient",
+                ));
+            }
+            Ok(())
+        };
+        // A stale tree's space comes back before extraction starts.
+        room(if stale {
+            definition.archive_bytes
+        } else {
+            definition
+                .archive_bytes
+                .checked_add(expanded)
+                .ok_or_else(invalid)?
+        })?;
+        let mut archive = directory.create_new_regular(OsStr::new("archive.tar"))?;
+        let parts = directory.child(OsStr::new("parts"), false)?;
+        let mut buffer = [0u8; 65536];
+        for (number, part) in &state.parts {
+            let mut file = parts.open_regular_read(OsStr::new(&number.to_string()))?;
+            let (sha, bytes) = ml_exp_io::artifacts::hash(&mut file)?;
+            if sha != part.sha256 || bytes != part.bytes {
+                return Err(invalid());
+            }
+            file.seek(SeekFrom::Start(0))?;
+            loop {
+                if cancelled.load(Ordering::Relaxed) {
+                    return Err(invalid());
+                }
+                let count = file.read(&mut buffer)?;
+                if count == 0 {
+                    break;
+                }
+                archive.write_all(&buffer[..count])?;
+            }
+        }
+        archive.sync_all()?;
+        archive.seek(SeekFrom::Start(0))?;
+        let (sha, bytes) = ml_exp_io::artifacts::hash(&mut archive)?;
+        if sha != definition.sha256 || bytes != definition.archive_bytes {
+            return Err(invalid());
+        }
+        if cancelled.load(Ordering::Relaxed) {
+            return Err(invalid());
+        }
+        if stale {
+            self.discard_unpublished(request, directory)?;
+            room(expanded)?;
+        }
+        // Only a complete verified tree plus the READY state is usable.
+        // Exclusive final-name allocation works on CPFS without a
+        // check-then-rename fallback or an additional payload copy.
+        let tree = directory.create_new_child(OsStr::new("tree"))?;
+        let prepared = (|| {
+            tree::extract(&mut archive, &tree, definition)?;
+            tree::seal(&tree)?;
+            if cancelled.load(Ordering::Relaxed) {
+                return Err(invalid());
+            }
+            Ok(())
+        })();
+        if let Err(error) = prepared {
+            // Only this invocation's exclusively allocated, unready tree.
+            tree::remove_staging(directory, &tree)?;
+            return Err(error);
+        }
+        Self::still_published(directory, &tree, definition)
+    }
+    /// The one place that deletes a tree at the final name. With the lock working
+    /// nothing can have published since this request read the state, and this check
+    /// is what stands in the way if flock does not exclude across nodes.
+    fn discard_unpublished(&self, request: &Request, directory: &Directory) -> io::Result<()> {
+        if self.read(request)?.1.ready.is_some() {
+            return Err(invalid());
+        }
+        let stale = directory.child(OsStr::new("tree"), false)?;
+        tree::remove_staging(directory, &stale)
+    }
+    /// Extraction hashed this directory. READY also needs it still at the final name,
+    /// complete, in case another node removed or replaced it with no lock between
+    /// them. A failure here leaves no rollback to do: the next Complete verifies
+    /// whatever is there. A Run's own hash at job start still decides what it reads.
+    fn still_published(
+        directory: &Directory,
+        tree: &Directory,
+        definition: &datasets::Definition,
+    ) -> io::Result<()> {
+        let current = directory.child(OsStr::new("tree"), false)?;
+        if current.identity()? != tree.identity()? {
+            return Err(invalid());
+        }
+        tree::verify_file_sizes(&current, definition)
+    }
+    /// The part of a request that needs this asset to itself. Each asset has its own
+    /// lock, beside its slot, so that a long import cannot time out another asset's
+    /// Run. A Complete of a published tree returns it to be hashed after the lock is
+    /// released: published bytes do not change, and hashing under the lock would time
+    /// out every other Run of this asset.
+    fn exclusive(
+        &self,
+        request: &Request,
+        payload: &[u8],
+        cancelled: &AtomicBool,
+    ) -> io::Result<(State, Option<Directory>)> {
+        let begin = matches!(request.command, Command::Begin { .. });
+        let project = self.root.child(OsStr::new(&request.project), begin)?;
+        let asset = request.asset_id();
+        // Only Begin allocates, so a query for an unknown asset leaves no lock file.
+        if !begin && !project.entry_exists(OsStr::new(&asset))? {
+            return Err(invalid());
+        }
+        let _lock = project
+            .lock(
+                OsStr::new(&format!("{asset}.lock")),
+                LockOptions {
+                    create: true,
+                    wait: Wait::Until {
+                        deadline: Instant::now() + Duration::from_secs(10),
+                        cancelled: Some(cancelled),
+                    },
+                    ..Default::default()
+                },
+            )
+            .map_err(|e| {
+                if e.kind() == io::ErrorKind::WouldBlock {
+                    invalid()
+                } else {
+                    e
+                }
+            })?;
+        self.verify()?;
+        if cancelled.load(Ordering::Relaxed) {
+            return Err(invalid());
+        }
+        self.begin(request)?;
+        let (directory, state) = self.read(request)?;
+        Ok(match &request.command {
+            Command::Part { number, sha256, .. } => (
+                self.part(&directory, &state, *number, sha256, payload)?,
+                None,
+            ),
+            Command::Complete { .. } if state.ready.is_some() => {
+                state
+                    .publish(self.receipt(&state)?)
+                    .map_err(|_| invalid())?;
+                // Finish a cleanup that a kill cut short after READY was saved.
+                Self::cleanup(&directory)?;
+                (state, Some(directory))
+            }
+            Command::Complete { .. } => {
+                (self.complete(request, &directory, &state, cancelled)?, None)
+            }
+            _ => (state, None),
+        })
     }
     pub fn handle(
         &self,
@@ -319,38 +441,15 @@ impl Store {
                 }
             }
         }
-        let _lock = self
-            .root
-            .lock(
-                OsStr::new(LOCK),
-                LockOptions {
-                    wait: Wait::Until {
-                        deadline: Instant::now() + Duration::from_secs(10),
-                        cancelled: Some(cancelled),
-                    },
-                    ..Default::default()
-                },
-            )
-            .map_err(|e| {
-                if e.kind() == io::ErrorKind::WouldBlock {
-                    invalid()
-                } else {
-                    e
-                }
-            })?;
-        self.verify()?;
         if cancelled.load(Ordering::Relaxed) {
             return Err(invalid());
         }
-        self.begin(request)?;
-        let (directory, state) = self.read(request)?;
-        let state = match &request.command {
-            Command::Part { number, sha256, .. } => {
-                self.part(&directory, &state, *number, sha256, payload)?
-            }
-            Command::Complete { .. } => self.complete(&directory, &state, cancelled)?,
-            _ => state,
-        };
+        let (state, published) = self.exclusive(request, payload, cancelled)?;
+        if let Some(directory) = published {
+            // Sealed READY content is only ever read: a failure here changes nothing.
+            let tree = directory.child(OsStr::new("tree"), false)?;
+            tree::verify(&tree, &state.definition, true)?;
+        }
         self.verify()?;
         let reply = Reply {
             version: 1,

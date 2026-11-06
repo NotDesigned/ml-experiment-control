@@ -88,8 +88,7 @@ class ReadonlyDiagnostic(unittest.TestCase):
 
     def sync_config(self, root, required):
         package = {
-            "config": {"attempt_root": root, "output_directory": root + "/output",
-                       "local_binding": {"sha256": "0" * 64}},
+            "config": {"attempt_root": root, "local_binding": {"sha256": "0" * 64}},
             "manifest": {}, "artifacts": {"required_files": required},
         }
         return {"contract": diagnostic.CONTRACT, "action": "action-0123456789abcdef",
@@ -104,8 +103,8 @@ class ReadonlyDiagnostic(unittest.TestCase):
             self.assertGreater(len(lines_of(stdout)), 1)
             report = reassembled(stdout)
             paths = [row["path"] for row in report["checks"]]
-            self.assertIn("output/outputs/file 00000.bin", paths)
-            self.assertIn("output/outputs/file 00199.bin", paths)
+            self.assertIn("outputs/outputs/file 00000.bin", paths)
+            self.assertIn("outputs/outputs/file 00199.bin", paths)
             self.assertNotIn(tmp, stdout)
 
     def test_too_many_required_files_report_their_size_on_one_line(self):
@@ -152,7 +151,9 @@ class ReadonlyDiagnostic(unittest.TestCase):
             with patch.object(diagnostic, "inspect", wraps=diagnostic.inspect) as reads:
                 report = diagnostic.diagnose(config)
             self.assertEqual(before, snapshot())
-            self.assertFalse((root / ".native-data.lock").exists())
+            lock = "demo/" + asset + ".lock"
+            self.assertFalse((root / lock).exists())
+            self.assertIn(lock, [row["path"] for row in report["checks"]])
             self.assertEqual(report["recorded_parts"], 1)
             self.assertFalse(report["ready_recorded"])
             self.assertEqual([part["size"] for part in report["parts"]], [5, 11])
@@ -203,15 +204,15 @@ class ReadonlyDiagnostic(unittest.TestCase):
     def test_reads_metadata_and_payload_sizes_without_mutating_or_creating_locks(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "output").mkdir()
-            (root / "output/final.pt").write_bytes(b"weights-not-metadata")
+            (root / "outputs").mkdir()
+            (root / "outputs/final.pt").write_bytes(b"weights-not-metadata")
             (root / ".managed-launch.lock").write_text('{"binding_sha256":"binding"}\n')
             (root / ".cloud-artifacts").mkdir()
             (root / ".cloud-artifacts/owner").write_text("sha256:package")
             manifest = b'{"identity":{"run_id":"retained"}}'
             (root / "launch-manifest.json").write_bytes(manifest)
             package = {
-                "config": {"attempt_root": str(root), "output_directory": str(root / "output"),
+                "config": {"attempt_root": str(root),
                            "local_binding": {"sha256": hashlib.sha256(manifest).hexdigest()}},
                 "manifest": json.loads(manifest), "artifacts": {"required_files": ["final.pt", "absent.json"]},
             }
@@ -233,9 +234,9 @@ class ReadonlyDiagnostic(unittest.TestCase):
             self.assertEqual(checks[".managed-launch.lock"]["lock"], "HELD")
             self.assertEqual(checks["launch-manifest.json"]["identity"], "MATCH")
             self.assertEqual(checks[".cloud-artifacts/owner"]["identity"], "MATCH")
-            self.assertEqual(checks["output/absent.json"]["status"], "MISSING")
-            self.assertEqual(checks["output/final.pt"]["size"], 20)
-            self.assertNotIn("sha256", checks["output/final.pt"])
+            self.assertEqual(checks["outputs/absent.json"]["status"], "MISSING")
+            self.assertEqual(checks["outputs/final.pt"]["size"], 20)
+            self.assertNotIn("sha256", checks["outputs/final.pt"])
             self.assertNotIn(str(root), json.dumps(report))
 
     def test_symlinks_are_not_followed_and_malformed_configuration_is_not_logged(self):

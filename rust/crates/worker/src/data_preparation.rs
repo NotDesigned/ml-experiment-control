@@ -188,7 +188,7 @@ pub fn prepare(plan: &Plan, allow_download: bool, cancelled: &AtomicBool) -> Res
     } else {
         "SCRIPT_COMPLETED"
     };
-    slot.publish_new(OsStr::new("execution.json"),&serde_json::to_vec(&serde_json::json!({"code":code,"exit_code":result.exit_code,"timed_out":result.timed_out,"cancelled":result.cancelled,"stdout_bytes":result.stdout.received_bytes,"stderr_bytes":result.stderr.received_bytes})).map_err(|_|Error::Configuration)?).map_err(|e|failure("SCRIPT_RECEIPT",e))?;
+    slot.publish_new(OsStr::new("execution.json"),&serde_json::to_vec(&serde_json::json!({"code":code,"exit_code":result.exit_code,"timed_out":result.timed_out,"cancelled":result.cancelled,"stdout_bytes":result.stdout.received_bytes,"stderr_bytes":result.stderr.received_bytes,"stdout_dropped_bytes":result.stdout.dropped_bytes,"stderr_dropped_bytes":result.stderr.dropped_bytes})).map_err(|_|Error::Configuration)?).map_err(|e|failure("SCRIPT_RECEIPT",e))?;
     if code != "SCRIPT_COMPLETED" {
         return Err(Error::DataPreparation {
             code,
@@ -284,5 +284,36 @@ mod tests {
         assert!(slot.join("execution.json").is_file());
         assert!(!slot.join("receipt.json").exists());
         assert_eq!(std::fs::read(slot.join("stderr.log")).unwrap(), b"failed");
+    }
+    #[test]
+    fn a_failed_script_keeps_the_end_of_a_flooded_log_and_counts_what_it_dropped() {
+        let temp = tempfile::tempdir().unwrap();
+        let plan = plan(
+            temp.path(),
+            "head -c 9437184 /dev/zero >&2\nprintf last >&2\nexit 17\n",
+        );
+        assert!(matches!(
+            prepare(&plan, true, &AtomicBool::new(false)),
+            Err(Error::DataPreparation {
+                code: "SCRIPT_FAILED",
+                exit_code: Some(17),
+                ..
+            })
+        ));
+        let slot = Path::new(&plan.cache_root)
+            .join("script-preparations")
+            .join(plan.id().unwrap());
+        let log = std::fs::read(slot.join("stderr.log")).unwrap();
+        assert!(log.len() <= 8 * 1024 * 1024 && log.ends_with(b"last"));
+        let seam = process::SEAM;
+        assert_eq!(log[4 * 1024 * 1024..][..seam.len()], *seam);
+        let execution: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(slot.join("execution.json")).unwrap()).unwrap();
+        assert_eq!(execution["stderr_bytes"], 9437188);
+        assert_eq!(
+            execution["stderr_dropped_bytes"],
+            9437188 - (log.len() - seam.len()) as u64
+        );
+        assert_eq!(execution["stdout_dropped_bytes"], 0);
     }
 }

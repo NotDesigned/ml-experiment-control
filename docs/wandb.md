@@ -71,7 +71,7 @@ does not change command arguments or define scientific success.
 ## Curves and chosen results
 
 Enabling W&B does not extract loss automatically. Training/evaluation code must
-write [metric records](metrics.md#record-and-query) to `OUTPUT_DIR/metrics.jsonl`:
+write [metric records](metrics.md#record-and-query) to `METRICS_PATH`:
 
 - Records without `summary` are history points. Multiple measured steps/epochs form a curve.
 - `summary:true` declares the result selected by experiment code. It does not add a curve point or select the best checkpoint.

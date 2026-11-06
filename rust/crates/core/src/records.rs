@@ -70,14 +70,6 @@ pub fn wandb_id(workspace: &str, scope: &str, frozen_route: &Value) -> Result<St
     Ok(digest(&json!([workspace, scope, frozen_route]))?[..32].to_owned())
 }
 
-pub fn run_identities(run: &str) -> [String; 3] {
-    [
-        run.to_owned(),
-        format!("{run}--preparation"),
-        format!("{run}--backfill"),
-    ]
-}
-
 /// A suffix alone never proves that a Run is a publication companion.
 /// The I/O caller must supply its immutable stored configuration (or the exact
 /// configuration being atomically bound for a new Run).

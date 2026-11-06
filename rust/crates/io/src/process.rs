@@ -34,13 +34,24 @@ pub enum Input<'a> {
     File { file: &'a File, length: u64 },
 }
 
-/// Retain a prefix in memory or in an already-open empty regular file. File
-/// capture writes from offset zero without changing its caller's cursor. Excess
-/// bytes are counted and drained, never used to grow memory or the capture file.
+/// Memory capture keeps a prefix. File capture writes to an already-open empty
+/// regular file from offset zero, without changing its caller's cursor, and keeps
+/// both ends: the first half of the limit, then `SEAM`, then between a quarter and
+/// a half of the limit from the end, less the seam. The end is written as it
+/// arrives, so it is there if this process is killed. Excess bytes are counted and
+/// drained, never used to grow memory or the capture file past its limit.
 pub enum Capture<'a> {
     Memory { limit: usize },
     File { file: &'a mut File, limit: usize },
 }
+
+/// Marks the gap in a log, for a reader who has only the file: a killed worker
+/// leaves no receipt to count the dropped bytes.
+pub const SEAM: &[u8] = b"\n[ml-expd: output dropped here; this log keeps its start and its end]\n";
+/// A flood or a node loss should not take the end of the log with it. This bounds
+/// how long retained output waits in the page cache; a caller who publishes the
+/// log's hash still syncs it afterwards.
+const SYNC_INTERVAL: Duration = Duration::from_secs(5);
 
 pub struct Request<'a> {
     pub argv: &'a [String],
@@ -64,10 +75,13 @@ pub struct Captured {
     pub bytes: Vec<u8>,
     pub received_bytes: u64,
     pub retained_bytes: u64,
-    /// SHA256 of the exact retained pipe prefix, including file short writes.
+    /// Received output that is no longer retained. `SEAM` is not output, so it is
+    /// not counted here, though it is part of `retained_bytes`.
+    pub dropped_bytes: u64,
+    /// SHA256 of the exact retained bytes, including file short writes and `SEAM`.
     /// This remains the empty SHA256 when no child was spawned or no bytes
     /// were retained; it never describes an independently modified log file.
-    pub prefix_sha256: String,
+    pub retained_sha256: String,
     pub truncated: bool,
     /// False when EOF could not be observed within the final drain budget.
     pub complete: bool,
@@ -78,7 +92,8 @@ impl Default for Captured {
             bytes: Vec::new(),
             received_bytes: 0,
             retained_bytes: 0,
-            prefix_sha256: format!("{:x}", Sha256::digest([])),
+            dropped_bytes: 0,
+            retained_sha256: format!("{:x}", Sha256::digest([])),
             truncated: false,
             complete: false,
         }
@@ -304,13 +319,27 @@ struct CaptureState<'a> {
     value: Captured,
     digest: Sha256,
     failed: bool,
+    /// File capture: digest of the first half and `SEAM`, where each drop restarts.
+    head_digest: Sha256,
+    /// File capture: the newest bytes, which each drop moves back. They are also on
+    /// disk; this copy keeps a change made to the file out of the digest.
+    newest: Vec<u8>,
+    dropped: bool,
+    unsynced: bool,
+    synced: Instant,
 }
 impl<'a> CaptureState<'a> {
     fn new(target: Capture<'a>) -> io::Result<Self> {
-        if let Capture::File { file, .. } = &target {
+        if let Capture::File { file, limit } = &target {
             let metadata = file.metadata()?;
             if !metadata.is_file() || metadata.len() != 0 {
                 return Err(io::Error::other("capture requires a regular file"));
+            }
+            if *limit < 4 * SEAM.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "capture file limit cannot hold its seam",
+                ));
             }
         }
         Ok(Self {
@@ -318,63 +347,115 @@ impl<'a> CaptureState<'a> {
             value: Captured::default(),
             digest: Sha256::new(),
             failed: false,
+            head_digest: Sha256::new(),
+            newest: Vec::new(),
+            dropped: false,
+            unsynced: false,
+            synced: Instant::now(),
         })
     }
     fn push(&mut self, bytes: &[u8]) -> io::Result<()> {
         self.value.received_bytes = self.value.received_bytes.saturating_add(bytes.len() as u64);
-        let limit = match &self.target {
-            Capture::Memory { limit } | Capture::File { limit, .. } => *limit as u64,
-        };
-        let retain = bytes
-            .len()
-            .min(limit.saturating_sub(self.value.retained_bytes) as usize);
-        self.value.truncated |= retain < bytes.len() || self.failed;
         if self.failed {
+            self.value.truncated = true;
             return Ok(());
         }
-        match &mut self.target {
-            Capture::Memory { .. } => {
-                self.value.bytes.extend_from_slice(&bytes[..retain]);
-                self.value.retained_bytes += retain as u64;
-                self.digest.update(&bytes[..retain]);
+        if let Capture::Memory { limit } = &self.target {
+            let room = (*limit as u64).saturating_sub(self.value.retained_bytes);
+            let retain = bytes.len().min(room as usize);
+            self.value.truncated |= retain < bytes.len();
+            self.value.bytes.extend_from_slice(&bytes[..retain]);
+            self.value.retained_bytes += retain as u64;
+            self.digest.update(&bytes[..retain]);
+            return Ok(());
+        }
+        self.write_file(bytes).inspect_err(|_| {
+            self.failed = true;
+            self.value.truncated = true;
+        })
+    }
+    /// The log is always one readable file whose end is the newest output. When it
+    /// is full, the older half of its end goes. A kill during the move can repeat
+    /// or lose bytes before the end, but not the end itself.
+    fn write_file(&mut self, mut bytes: &[u8]) -> io::Result<()> {
+        let Capture::File { file, limit } = &self.target else {
+            return Err(io::Error::other("capture target is not a file"));
+        };
+        let limit = *limit as u64;
+        let head = limit / 2;
+        let start = head + SEAM.len() as u64;
+        let keep = (limit - start) / 2;
+        while !bytes.is_empty() {
+            let at = self.value.retained_bytes;
+            if at == limit {
+                file.write_all_at(SEAM, head)?;
+                file.write_all_at(&self.newest, start)?;
+                file.set_len(start + keep)?;
+                self.digest = self.head_digest.clone();
+                self.digest.update(&self.newest);
+                self.newest.clear();
+                self.value.retained_bytes = start + keep;
+                self.value.truncated = true;
+                self.dropped = true;
+                continue;
             }
-            Capture::File { file, .. } => {
-                let mut remaining = &bytes[..retain];
-                while !remaining.is_empty() {
-                    match file.write_at(remaining, self.value.retained_bytes) {
-                        Ok(0) => {
-                            self.failed = true;
-                            self.value.truncated = true;
-                            return Err(io::Error::new(
-                                io::ErrorKind::WriteZero,
-                                "capture write failed",
-                            ));
-                        }
-                        Ok(n) => {
-                            self.value.retained_bytes += n as u64;
-                            self.digest.update(&remaining[..n]);
-                            remaining = &remaining[n..];
-                        }
-                        Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                        Err(error) => {
-                            self.failed = true;
-                            self.value.truncated = true;
-                            return Err(error);
-                        }
-                    }
+            // Stop at each boundary so that one write is on one side of it.
+            let end = [head, limit - keep, limit]
+                .into_iter()
+                .find(|boundary| *boundary > at)
+                .unwrap_or(limit);
+            let count = bytes.len().min((end - at) as usize);
+            match file.write_at(&bytes[..count], at) {
+                Ok(0) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WriteZero,
+                        "capture write failed",
+                    ));
                 }
+                Ok(n) => {
+                    self.digest.update(&bytes[..n]);
+                    self.value.retained_bytes += n as u64;
+                    self.unsynced = true;
+                    if at >= limit - keep {
+                        self.newest.extend_from_slice(&bytes[..n]);
+                    }
+                    if at + n as u64 == head {
+                        self.head_digest = self.digest.clone();
+                        self.head_digest.update(SEAM);
+                    }
+                    bytes = &bytes[n..];
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(error),
             }
         }
         Ok(())
     }
+    fn sync_when_due(&mut self) {
+        if !self.unsynced || self.synced.elapsed() < SYNC_INTERVAL {
+            return;
+        }
+        if let Capture::File { file, .. } = &self.target {
+            // A storage error here reaches the next write or the caller's sync.
+            let _ = file.sync_data();
+        }
+        self.unsynced = false;
+        self.synced = Instant::now();
+    }
     fn finish(mut self) -> Captured {
-        self.value.prefix_sha256 = format!("{:x}", self.digest.finalize());
+        let seam = if self.dropped { SEAM.len() as u64 } else { 0 };
+        self.value.dropped_bytes = self
+            .value
+            .received_bytes
+            .saturating_sub(self.value.retained_bytes - seam);
+        self.value.retained_sha256 = format!("{:x}", self.digest.finalize());
         self.value
     }
     fn drain(&mut self, pipe: &mut Option<impl Read>) -> io::Result<bool> {
         let Some(reader) = pipe else {
             return Ok(false);
         };
+        self.sync_when_due();
         let mut progressed = false;
         let mut buffer = [0; 64 * 1024];
         // Fairness bound: a continuous flood cannot starve stdin, stderr,

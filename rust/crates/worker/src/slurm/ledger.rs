@@ -675,6 +675,16 @@ impl Helper {
                 reason: UnknownReason::MalformedLedger,
             });
         }
+        // The last check before anything durable. A failure here leaves the
+        // Attempt Prepared, so Submit can run again; after START it could not.
+        if self
+            .verify_shared(request.intent(), &snapshot.directory)
+            .is_err()
+        {
+            return Ok(ReplyOutcome::Unknown {
+                reason: UnknownReason::StorageUnavailable,
+            });
+        }
         snapshot.directory.publish_new(
             OsStr::new(START),
             &json(&Started {
@@ -687,7 +697,6 @@ impl Helper {
             .directory
             .replace_regular(OsStr::new(STATE), &json(&snapshot.record)?)?;
         self.verify_issued(request.intent())?;
-        self.verify_shared(request.intent(), &snapshot.directory)?;
         let argv = vec![
             self.config.sbatch_program.display().to_string(),
             "--parsable".into(),
@@ -755,5 +764,20 @@ impl Helper {
         Ok(ReplyOutcome::Submitted {
             job_id: job.as_str().into(),
         })
+    }
+    /// Submit with `change` applied after the ledger read has passed.
+    #[cfg(test)]
+    pub(super) fn submit_after(
+        &self,
+        request: &Request,
+        change: impl FnOnce(),
+    ) -> Result<ReplyOutcome> {
+        let cancelled = AtomicBool::new(false);
+        let lock = self.lock(&cancelled)?;
+        let ReadLedger::Found(snapshot) = self.read_ledger(request.intent())? else {
+            return Err(Error::Bootstrap);
+        };
+        change();
+        self.submit(request, snapshot, &lock, &cancelled)
     }
 }

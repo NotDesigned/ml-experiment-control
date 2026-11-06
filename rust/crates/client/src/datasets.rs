@@ -178,6 +178,11 @@ pub fn upload(
     definition
         .validate()
         .map_err(|_| Error::Observation("dataset exceeds metadata or multipart bounds"))?;
+    definition.manifest_budget().map_err(|_| {
+        Error::Observation(
+            "dataset file list exceeds the 256 KiB a Run can mount, about 2,000 files; package many small files into fewer",
+        )
+    })?;
     let asset = definition.asset_id();
     eprintln!(
         "Dataset {asset}: {archive_bytes} bytes; resume by repeating this upload with the same directory."
