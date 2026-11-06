@@ -127,9 +127,7 @@ impl Settings {
                 &serde_json::Value::Object(mapping),
             )
             .map_err(why!(at("project_definition")))?;
-            if definition.project() != project.project
-                || self.project_lifecycle && definition.campaign_files().next().is_some()
-            {
+            if definition.project() != project.project {
                 return Err(at("project_definition"));
             }
             for root in &project.run_roots {

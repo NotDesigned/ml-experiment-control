@@ -309,7 +309,7 @@ mod tests {
             crate::read_config::initialize(&registry).unwrap();
             let project = temp.path().join("demo/project.json");
             fs::create_dir_all(temp.path().join("demo/runs")).unwrap();
-            ml_exp_io::write_atomic(&project,&serde_json::to_vec(&json!({"schema_version":1,"project":"demo","title":"Synthetic lifecycle","run_roots":["runs"],"campaigns":[]})).unwrap(),true).unwrap();
+            ml_exp_io::write_atomic(&project,&serde_json::to_vec(&json!({"schema_version":1,"project":"demo","title":"Synthetic lifecycle","run_roots":["runs"]})).unwrap(),true).unwrap();
             let settings=crate::read_config::Settings::from_json(&serde_json::to_vec(&json!({"schema_version":1,"registry_root":registry,"projects":[{"project":"demo","project_file":project,"run_roots":[temp.path().join("demo/runs")]}]})).unwrap()).unwrap();
             Service::initialize(&settings, "2026-10-27T00:00:00Z", &"1".repeat(32)).unwrap();
             let service = Arc::new(Service::open(&settings).unwrap());

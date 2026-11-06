@@ -72,10 +72,7 @@ fn exact(map: &Map<String, Value>, key: &str, expected: &str) -> Result<(), Docu
     }
 }
 fn version(map: &Map<String, Value>) -> Result<(), DocumentError> {
-    if map
-        .get("schema_version")
-        .is_some_and(|v| v.as_u64() != Some(1))
-    {
+    if map.get("schema_version").and_then(Value::as_u64) != Some(1) {
         return Err(DocumentError::Version);
     }
     Ok(())

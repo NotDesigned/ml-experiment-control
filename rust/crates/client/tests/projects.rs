@@ -16,7 +16,7 @@ fn health() -> Value {
     json!({"capabilities":["project-lifecycle.v1"]})
 }
 fn record(project: &str, state: &str) -> Value {
-    json!({"project":project,"project_file":"/approved/project.yaml","state":state,"source":"MANUAL","registered_at":"first","updated_at":"now","state_reason":"test"})
+    json!({"project":project,"project_file":"/approved/project.json","state":state,"source":"MANUAL","registered_at":"first","updated_at":"now","state_reason":"test"})
 }
 struct Request {
     head: String,
@@ -134,12 +134,12 @@ fn cli_all_project_commands_use_the_baseline_routes_and_exactly_one_mutation() {
             vec![
                 "project",
                 "register",
-                "/approved/project.yaml",
+                "/approved/project.json",
                 "--expected-revision",
                 "7",
             ],
             "/api/project-lifecycle/register",
-            json!({"source":{"kind":"daemon_path","manifest_path":"/approved/project.yaml"},"expected_revision":7}),
+            json!({"source":{"kind":"daemon_path","manifest_path":"/approved/project.json"},"expected_revision":7}),
             json!({"project":record("demo","ACTIVE")}),
         ),
         (

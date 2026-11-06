@@ -31,7 +31,7 @@ impl Fixture {
         fs::create_dir(root.join("runs")).unwrap();
         write(
             &root.join("project.json"),
-            &json!({"schema_version":1,"project":"demo","title":"Owned fixture","run_roots":["runs"],"campaigns":[]}),
+            &json!({"schema_version":1,"project":"demo","title":"Owned fixture","run_roots":["runs"]}),
         );
         ml_exp_io::write_atomic(&root.join("token"), TOKEN.as_bytes(), true).unwrap();
         let reads = root.join("reads.json");

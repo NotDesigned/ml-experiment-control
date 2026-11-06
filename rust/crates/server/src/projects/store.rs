@@ -24,10 +24,6 @@ pub enum Error {
     Invalid,
     #[error("project registry source binding differs from approved configuration")]
     Binding,
-    #[error(
-        "native Project registration requires empty campaigns; Campaign loading is not implemented"
-    )]
-    UnsupportedDefinition,
     #[error("project registry transition is unavailable")]
     Transition(#[from] projects::Error),
     #[error("project registry is busy")]

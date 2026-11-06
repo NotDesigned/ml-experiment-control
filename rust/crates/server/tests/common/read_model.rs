@@ -39,7 +39,7 @@ pub fn attempt(id: &str) -> AttemptSnapshot {
     AttemptSnapshot {
         attempt_id: id.into(),
         manifest: document(
-            json!({"project":"demo","run_id":"trial","attempt_id":id}),
+            json!({"schema_version":1,"project":"demo","run_id":"trial","attempt_id":id}),
             ManifestSource::AttemptJson,
         ),
         provenance: Provenance {
@@ -76,7 +76,7 @@ pub fn snapshot() -> Snapshot {
         project: "demo".into(),
         run_id: "trial".into(),
         run: document(
-            json!({"project":"demo","run_id":"trial"}),
+            json!({"schema_version":1,"project":"demo","run_id":"trial"}),
             ManifestSource::RunJson,
         ),
         current_status,

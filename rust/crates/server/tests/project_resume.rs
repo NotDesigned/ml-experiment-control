@@ -108,7 +108,7 @@ impl Fixture {
 }
 #[test]
 fn resume_revalidates_missing_malformed_foreign_and_unsupported_sources_before_any_write() {
-    for corruption in ["missing", "malformed", "foreign", "schema", "campaign"] {
+    for corruption in ["missing", "malformed", "foreign", "schema", "unknown_key"] {
         let fixture = Fixture::new();
         let service = fixture.service();
         service
@@ -118,9 +118,9 @@ fn resume_revalidates_missing_malformed_foreign_and_unsupported_sources_before_a
         match corruption{
    "missing"=>fs::remove_file(fixture.manifest()).unwrap(),
    "malformed"=>write(&fixture.manifest(),b"project: [unfinished"),
-   "foreign"=>write(&fixture.manifest(),&serde_json::to_vec(&json!({"project":"foreign","title":"Another project","run_roots":["runs"]})).unwrap()),
-   "schema"=>write(&fixture.manifest(),&serde_json::to_vec(&json!({"project":"demo","title":false,"run_roots":["runs"]})).unwrap()),
-   "campaign"=>write(&fixture.manifest(),&serde_json::to_vec(&json!({"project":"demo","title":"Unloaded catalog","run_roots":["runs"],"campaigns":[{"name":"unloaded","file":"campaign.yaml"}]})).unwrap()),
+   "foreign"=>write(&fixture.manifest(),&serde_json::to_vec(&json!({"schema_version":1,"project":"foreign","title":"Another project","run_roots":["runs"]})).unwrap()),
+   "schema"=>write(&fixture.manifest(),&serde_json::to_vec(&json!({"schema_version":1,"project":"demo","title":false,"run_roots":["runs"]})).unwrap()),
+   "unknown_key"=>write(&fixture.manifest(),&serde_json::to_vec(&json!({"schema_version":1,"project":"demo","title":"Extra key","run_roots":["runs"],"controller":{}})).unwrap()),
    _=>unreachable!()
   }
         let damaged = fs::read(fixture.manifest()).ok();

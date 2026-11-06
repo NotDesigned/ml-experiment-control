@@ -1,10 +1,7 @@
 //! Lifecycle registry and project definition outputs over synthetic path evidence.
-use ml_exp_core::{
-    canonical,
-    projects::{
-        self, Change, LifecycleRecord, PathEvidence, ProjectDefinition, RegistrationSource,
-        Registry, Seed,
-    },
+use ml_exp_core::projects::{
+    self, Change, LifecycleRecord, PathEvidence, ProjectDefinition, RegistrationSource, Registry,
+    Seed,
 };
 use serde_json::{Value, json};
 
@@ -62,10 +59,10 @@ fn registry_payloads_parse_only_from_objects() {
 fn register_is_a_no_op_for_the_same_path_adds_new_projects_and_refuses_duplicates() {
     for case in [
         literal(
-            r#"{"input":{"op":"register","payload":{"schema_version":1,"projects":[{"project":"alpha","project_file":"/reference/alpha/experiments/project.yaml","state":"ACTIVE","source":"MANUAL","registered_at":"original","updated_at":"old","state_reason":"original reason"}]},"project":"alpha","path":"/reference/alpha/experiments/project.yaml"},"expected":{"ok":true,"value":{"result":{"project":"alpha","project_file":"/reference/alpha/experiments/project.yaml","state":"ACTIVE","source":"MANUAL","registered_at":"original","updated_at":"old","state_reason":"original reason"},"commit":null}},"paths":[{"provided":"/reference/alpha/experiments/project.yaml","expanded_absolute":"/reference/alpha/experiments/project.yaml","canonical_absolute":"/reference/alpha/experiments/project.yaml"}]}"#,
+            r#"{"input":{"op":"register","payload":{"schema_version":1,"projects":[{"project":"alpha","project_file":"/reference/alpha/experiments/project.json","state":"ACTIVE","source":"MANUAL","registered_at":"original","updated_at":"old","state_reason":"original reason"}]},"project":"alpha","path":"/reference/alpha/experiments/project.json"},"expected":{"ok":true,"value":{"result":{"project":"alpha","project_file":"/reference/alpha/experiments/project.json","state":"ACTIVE","source":"MANUAL","registered_at":"original","updated_at":"old","state_reason":"original reason"},"commit":null}},"paths":[{"provided":"/reference/alpha/experiments/project.json","expanded_absolute":"/reference/alpha/experiments/project.json","canonical_absolute":"/reference/alpha/experiments/project.json"}]}"#,
         ),
         literal(
-            r#"{"input":{"op":"register","payload":{"schema_version":1,"projects":[{"project":"alpha","project_file":"/reference/alpha/experiments/project.yaml","state":"ACTIVE","source":"MANUAL","registered_at":"original","updated_at":"old","state_reason":"original reason"}]},"project":"beta","path":"/reference/beta/project.yaml"},"expected":{"ok":true,"value":{"result":{"project":"beta","project_file":"/reference/beta/project.yaml","state":"ACTIVE","source":"MANUAL","registered_at":"2026-10-27T09:41:23.456789+00:00","updated_at":"2026-10-27T09:41:23.456789+00:00","state_reason":"registered"},"commit":{"payload":{"schema_version":1,"projects":[{"project":"alpha","project_file":"/reference/alpha/experiments/project.yaml","state":"ACTIVE","source":"MANUAL","registered_at":"original","updated_at":"old","state_reason":"original reason"},{"project":"beta","project_file":"/reference/beta/project.yaml","state":"ACTIVE","source":"MANUAL","registered_at":"2026-10-27T09:41:23.456789+00:00","updated_at":"2026-10-27T09:41:23.456789+00:00","state_reason":"registered"}]},"event":{"event":"REGISTER","project":"beta","at":"2026-10-27T09:41:23.456789+00:00","detail":{"project":"beta","project_file":"/reference/beta/project.yaml","state":"ACTIVE","source":"MANUAL","registered_at":"2026-10-27T09:41:23.456789+00:00","updated_at":"2026-10-27T09:41:23.456789+00:00","state_reason":"registered"}}}}},"paths":[{"provided":"/reference/alpha/experiments/project.yaml","expanded_absolute":"/reference/alpha/experiments/project.yaml","canonical_absolute":"/reference/alpha/experiments/project.yaml"},{"provided":"/reference/beta/project.yaml","expanded_absolute":"/reference/beta/project.yaml","canonical_absolute":"/reference/beta/project.yaml"}]}"#,
+            r#"{"input":{"op":"register","payload":{"schema_version":1,"projects":[{"project":"alpha","project_file":"/reference/alpha/experiments/project.json","state":"ACTIVE","source":"MANUAL","registered_at":"original","updated_at":"old","state_reason":"original reason"}]},"project":"beta","path":"/reference/beta/project.json"},"expected":{"ok":true,"value":{"result":{"project":"beta","project_file":"/reference/beta/project.json","state":"ACTIVE","source":"MANUAL","registered_at":"2026-10-27T09:41:23.456789+00:00","updated_at":"2026-10-27T09:41:23.456789+00:00","state_reason":"registered"},"commit":{"payload":{"schema_version":1,"projects":[{"project":"alpha","project_file":"/reference/alpha/experiments/project.json","state":"ACTIVE","source":"MANUAL","registered_at":"original","updated_at":"old","state_reason":"original reason"},{"project":"beta","project_file":"/reference/beta/project.json","state":"ACTIVE","source":"MANUAL","registered_at":"2026-10-27T09:41:23.456789+00:00","updated_at":"2026-10-27T09:41:23.456789+00:00","state_reason":"registered"}]},"event":{"event":"REGISTER","project":"beta","at":"2026-10-27T09:41:23.456789+00:00","detail":{"project":"beta","project_file":"/reference/beta/project.json","state":"ACTIVE","source":"MANUAL","registered_at":"2026-10-27T09:41:23.456789+00:00","updated_at":"2026-10-27T09:41:23.456789+00:00","state_reason":"registered"}}}}},"paths":[{"provided":"/reference/alpha/experiments/project.json","expanded_absolute":"/reference/alpha/experiments/project.json","canonical_absolute":"/reference/alpha/experiments/project.json"},{"provided":"/reference/beta/project.json","expanded_absolute":"/reference/beta/project.json","canonical_absolute":"/reference/beta/project.json"}]}"#,
         ),
     ] {
         let paths = evidence(&case);
@@ -85,7 +82,7 @@ fn register_is_a_no_op_for_the_same_path_adds_new_projects_and_refuses_duplicate
         assert_eq!(result(change, record), case["expected"]["value"]);
     }
     let case = literal(
-        r#"{"input":{"op":"register","payload":{"schema_version":1,"projects":[{"project":"alpha","project_file":"/reference/alpha/experiments/project.yaml","state":"ACTIVE","source":"MANUAL","registered_at":"original","updated_at":"old","state_reason":"original reason"}]},"project":"beta","path":"/reference/alpha/experiments/project.yaml"},"expected":{"ok":false,"error_type":"ProjectRegistryError"},"paths":[{"provided":"/reference/alpha/experiments/project.yaml","expanded_absolute":"/reference/alpha/experiments/project.yaml","canonical_absolute":"/reference/alpha/experiments/project.yaml"}]}"#,
+        r#"{"input":{"op":"register","payload":{"schema_version":1,"projects":[{"project":"alpha","project_file":"/reference/alpha/experiments/project.json","state":"ACTIVE","source":"MANUAL","registered_at":"original","updated_at":"old","state_reason":"original reason"}]},"project":"beta","path":"/reference/alpha/experiments/project.json"},"expected":{"ok":false,"error_type":"ProjectRegistryError"},"paths":[{"provided":"/reference/alpha/experiments/project.json","expanded_absolute":"/reference/alpha/experiments/project.json","canonical_absolute":"/reference/alpha/experiments/project.json"}]}"#,
     );
     let paths = evidence(&case);
     assert!(
@@ -100,10 +97,10 @@ fn register_is_a_no_op_for_the_same_path_adds_new_projects_and_refuses_duplicate
 fn lifecycle_actions_record_one_event_and_refuse_a_repeated_state() {
     for case in [
         literal(
-            r#"{"input":{"op":"action","payload":{"schema_version":1,"projects":[{"project":"alpha","project_file":"/reference/alpha/experiments/project.yaml","state":"ACTIVE","source":"MANUAL","registered_at":"original","updated_at":"old","state_reason":"original reason"}]},"project":"alpha","action":"pause","reason":""},"expected":{"ok":true,"value":{"result":{"project":"alpha","project_file":"/reference/alpha/experiments/project.yaml","state":"PAUSED","source":"MANUAL","registered_at":"original","updated_at":"2026-10-27T09:41:23.456789+00:00","state_reason":""},"commit":{"payload":{"schema_version":1,"projects":[{"project":"alpha","project_file":"/reference/alpha/experiments/project.yaml","state":"PAUSED","source":"MANUAL","registered_at":"original","updated_at":"2026-10-27T09:41:23.456789+00:00","state_reason":""}]},"event":{"event":"PAUSED","project":"alpha","at":"2026-10-27T09:41:23.456789+00:00","detail":{"from":"ACTIVE","reason":""}}}}},"paths":[{"provided":"/reference/alpha/experiments/project.yaml","expanded_absolute":"/reference/alpha/experiments/project.yaml","canonical_absolute":"/reference/alpha/experiments/project.yaml"}]}"#,
+            r#"{"input":{"op":"action","payload":{"schema_version":1,"projects":[{"project":"alpha","project_file":"/reference/alpha/experiments/project.json","state":"ACTIVE","source":"MANUAL","registered_at":"original","updated_at":"old","state_reason":"original reason"}]},"project":"alpha","action":"pause","reason":""},"expected":{"ok":true,"value":{"result":{"project":"alpha","project_file":"/reference/alpha/experiments/project.json","state":"PAUSED","source":"MANUAL","registered_at":"original","updated_at":"2026-10-27T09:41:23.456789+00:00","state_reason":""},"commit":{"payload":{"schema_version":1,"projects":[{"project":"alpha","project_file":"/reference/alpha/experiments/project.json","state":"PAUSED","source":"MANUAL","registered_at":"original","updated_at":"2026-10-27T09:41:23.456789+00:00","state_reason":""}]},"event":{"event":"PAUSED","project":"alpha","at":"2026-10-27T09:41:23.456789+00:00","detail":{"from":"ACTIVE","reason":""}}}}},"paths":[{"provided":"/reference/alpha/experiments/project.json","expanded_absolute":"/reference/alpha/experiments/project.json","canonical_absolute":"/reference/alpha/experiments/project.json"}]}"#,
         ),
         literal(
-            r#"{"input":{"op":"action","payload":{"schema_version":1,"projects":[{"project":"alpha","project_file":"/reference/alpha/experiments/project.yaml","state":"PAUSED","source":"MANUAL","registered_at":"original","updated_at":"old","state_reason":"original reason"}]},"project":"alpha","action":"resume","reason":""},"expected":{"ok":true,"value":{"result":{"project":"alpha","project_file":"/reference/alpha/experiments/project.yaml","state":"ACTIVE","source":"MANUAL","registered_at":"original","updated_at":"2026-10-27T09:41:23.456789+00:00","state_reason":""},"commit":{"payload":{"schema_version":1,"projects":[{"project":"alpha","project_file":"/reference/alpha/experiments/project.yaml","state":"ACTIVE","source":"MANUAL","registered_at":"original","updated_at":"2026-10-27T09:41:23.456789+00:00","state_reason":""}]},"event":{"event":"ACTIVE","project":"alpha","at":"2026-10-27T09:41:23.456789+00:00","detail":{"from":"PAUSED","reason":""}}}}},"paths":[{"provided":"/reference/alpha/experiments/project.yaml","expanded_absolute":"/reference/alpha/experiments/project.yaml","canonical_absolute":"/reference/alpha/experiments/project.yaml"}]}"#,
+            r#"{"input":{"op":"action","payload":{"schema_version":1,"projects":[{"project":"alpha","project_file":"/reference/alpha/experiments/project.json","state":"PAUSED","source":"MANUAL","registered_at":"original","updated_at":"old","state_reason":"original reason"}]},"project":"alpha","action":"resume","reason":""},"expected":{"ok":true,"value":{"result":{"project":"alpha","project_file":"/reference/alpha/experiments/project.json","state":"ACTIVE","source":"MANUAL","registered_at":"original","updated_at":"2026-10-27T09:41:23.456789+00:00","state_reason":""},"commit":{"payload":{"schema_version":1,"projects":[{"project":"alpha","project_file":"/reference/alpha/experiments/project.json","state":"ACTIVE","source":"MANUAL","registered_at":"original","updated_at":"2026-10-27T09:41:23.456789+00:00","state_reason":""}]},"event":{"event":"ACTIVE","project":"alpha","at":"2026-10-27T09:41:23.456789+00:00","detail":{"from":"PAUSED","reason":""}}}}},"paths":[{"provided":"/reference/alpha/experiments/project.json","expanded_absolute":"/reference/alpha/experiments/project.json","canonical_absolute":"/reference/alpha/experiments/project.json"}]}"#,
         ),
     ] {
         let input = &case["input"];
@@ -119,7 +116,7 @@ fn lifecycle_actions_record_one_event_and_refuse_a_repeated_state() {
         assert_eq!(result(change, record), case["expected"]["value"]);
     }
     let case = literal(
-        r#"{"input":{"op":"action","payload":{"schema_version":1,"projects":[{"project":"alpha","project_file":"/reference/alpha/experiments/project.yaml","state":"PAUSED","source":"MANUAL","registered_at":"original","updated_at":"old","state_reason":"original reason"}]},"project":"alpha","action":"pause","reason":""},"expected":{"ok":false,"error_type":"ApplicationError"},"paths":[{"provided":"/reference/alpha/experiments/project.yaml","expanded_absolute":"/reference/alpha/experiments/project.yaml","canonical_absolute":"/reference/alpha/experiments/project.yaml"}]}"#,
+        r#"{"input":{"op":"action","payload":{"schema_version":1,"projects":[{"project":"alpha","project_file":"/reference/alpha/experiments/project.json","state":"PAUSED","source":"MANUAL","registered_at":"original","updated_at":"old","state_reason":"original reason"}]},"project":"alpha","action":"pause","reason":""},"expected":{"ok":false,"error_type":"ApplicationError"},"paths":[{"provided":"/reference/alpha/experiments/project.json","expanded_absolute":"/reference/alpha/experiments/project.json","canonical_absolute":"/reference/alpha/experiments/project.json"}]}"#,
     );
     assert!(
         registry(&case)
@@ -132,7 +129,7 @@ fn lifecycle_actions_record_one_event_and_refuse_a_repeated_state() {
 #[test]
 fn unregister_removes_only_the_named_project_and_refuses_an_unknown_one() {
     let case = literal(
-        r#"{"input":{"op":"unregister","payload":{"schema_version":1,"projects":[{"project":"alpha","project_file":"/reference/alpha/experiments/project.yaml","state":"ACTIVE","source":"MANUAL","registered_at":"original","updated_at":"old","state_reason":"original reason"},{"project":"beta","project_file":"/reference/beta/project.yaml","state":"ACTIVE","source":"MANUAL","registered_at":"original","updated_at":"old","state_reason":"original reason"}],"custom":7},"project":"alpha","reason":""},"expected":{"ok":true,"value":{"result":{"project":"alpha","project_file":"/reference/alpha/experiments/project.yaml","state":"ACTIVE","source":"MANUAL","registered_at":"original","updated_at":"old","state_reason":"original reason"},"commit":{"payload":{"schema_version":1,"projects":[{"project":"beta","project_file":"/reference/beta/project.yaml","state":"ACTIVE","source":"MANUAL","registered_at":"original","updated_at":"old","state_reason":"original reason"}],"custom":7},"event":{"event":"UNREGISTER","project":"alpha","at":"2026-10-27T09:41:23.456789+00:00","detail":{"from":"ACTIVE","project_file":"/reference/alpha/experiments/project.yaml","reason":""}}}}},"paths":[{"provided":"/reference/alpha/experiments/project.yaml","expanded_absolute":"/reference/alpha/experiments/project.yaml","canonical_absolute":"/reference/alpha/experiments/project.yaml"},{"provided":"/reference/beta/project.yaml","expanded_absolute":"/reference/beta/project.yaml","canonical_absolute":"/reference/beta/project.yaml"}]}"#,
+        r#"{"input":{"op":"unregister","payload":{"schema_version":1,"projects":[{"project":"alpha","project_file":"/reference/alpha/experiments/project.json","state":"ACTIVE","source":"MANUAL","registered_at":"original","updated_at":"old","state_reason":"original reason"},{"project":"beta","project_file":"/reference/beta/project.json","state":"ACTIVE","source":"MANUAL","registered_at":"original","updated_at":"old","state_reason":"original reason"}],"custom":7},"project":"alpha","reason":""},"expected":{"ok":true,"value":{"result":{"project":"alpha","project_file":"/reference/alpha/experiments/project.json","state":"ACTIVE","source":"MANUAL","registered_at":"original","updated_at":"old","state_reason":"original reason"},"commit":{"payload":{"schema_version":1,"projects":[{"project":"beta","project_file":"/reference/beta/project.json","state":"ACTIVE","source":"MANUAL","registered_at":"original","updated_at":"old","state_reason":"original reason"}],"custom":7},"event":{"event":"UNREGISTER","project":"alpha","at":"2026-10-27T09:41:23.456789+00:00","detail":{"from":"ACTIVE","project_file":"/reference/alpha/experiments/project.json","reason":""}}}}},"paths":[{"provided":"/reference/alpha/experiments/project.json","expanded_absolute":"/reference/alpha/experiments/project.json","canonical_absolute":"/reference/alpha/experiments/project.json"},{"provided":"/reference/beta/project.json","expanded_absolute":"/reference/beta/project.json","canonical_absolute":"/reference/beta/project.json"}]}"#,
     );
     let change = registry(&case)
         .unwrap()
@@ -154,7 +151,7 @@ fn unregister_removes_only_the_named_project_and_refuses_an_unknown_one() {
 fn unregister_all_commits_only_when_a_project_was_registered() {
     for case in [
         literal(
-            r#"{"input":{"op":"unregister_all","payload":{"schema_version":1,"projects":[{"project":"alpha","project_file":"/reference/alpha/experiments/project.yaml","state":"ACTIVE","source":"MANUAL","registered_at":"original","updated_at":"old","state_reason":"original reason"}],"custom":7},"reason":"  "},"expected":{"ok":true,"value":{"result":[{"project":"alpha","project_file":"/reference/alpha/experiments/project.yaml","state":"ACTIVE","source":"MANUAL","registered_at":"original","updated_at":"old","state_reason":"original reason"}],"commit":{"payload":{"schema_version":1,"projects":[],"custom":7},"event":{"event":"UNREGISTER","project":"","at":"2026-10-27T09:41:23.456789+00:00","detail":{"reason":"  ","unregistered":[{"project":"alpha","from":"ACTIVE","project_file":"/reference/alpha/experiments/project.yaml"}]}}}}},"paths":[{"provided":"/reference/alpha/experiments/project.yaml","expanded_absolute":"/reference/alpha/experiments/project.yaml","canonical_absolute":"/reference/alpha/experiments/project.yaml"}]}"#,
+            r#"{"input":{"op":"unregister_all","payload":{"schema_version":1,"projects":[{"project":"alpha","project_file":"/reference/alpha/experiments/project.json","state":"ACTIVE","source":"MANUAL","registered_at":"original","updated_at":"old","state_reason":"original reason"}],"custom":7},"reason":"  "},"expected":{"ok":true,"value":{"result":[{"project":"alpha","project_file":"/reference/alpha/experiments/project.json","state":"ACTIVE","source":"MANUAL","registered_at":"original","updated_at":"old","state_reason":"original reason"}],"commit":{"payload":{"schema_version":1,"projects":[],"custom":7},"event":{"event":"UNREGISTER","project":"","at":"2026-10-27T09:41:23.456789+00:00","detail":{"reason":"  ","unregistered":[{"project":"alpha","from":"ACTIVE","project_file":"/reference/alpha/experiments/project.json"}]}}}}},"paths":[{"provided":"/reference/alpha/experiments/project.json","expanded_absolute":"/reference/alpha/experiments/project.json","canonical_absolute":"/reference/alpha/experiments/project.json"}]}"#,
         ),
         literal(
             r#"{"input":{"op":"unregister_all","payload":{"schema_version":1,"projects":[],"custom":"preserve"},"reason":""},"expected":{"ok":true,"value":{"result":[],"commit":null}},"paths":[]}"#,
@@ -175,7 +172,7 @@ fn bootstrap_records_first_creation_and_an_existing_registry_wins_over_seeds() {
             r#"{"input":{"op":"bootstrap","payload":{"schema_version":1,"projects":[]},"exists":false,"seeds":[]},"expected":{"ok":true,"value":{"result":[],"commit":{"payload":{"schema_version":1,"projects":[]},"event":{"event":"BOOTSTRAP","project":"","at":"2026-10-27T09:41:23.456789+00:00","detail":{"imported":[]}}}}},"paths":[]}"#,
         ),
         literal(
-            r#"{"input":{"op":"bootstrap","payload":{"schema_version":1,"projects":[{"project":"alpha","project_file":"/reference/alpha/experiments/project.yaml","state":"ACTIVE","source":"MANUAL","registered_at":"original","updated_at":"old","state_reason":"original reason"}]},"exists":true,"seeds":[{"project":"alpha","path":"/reference/alpha.yaml"}]},"expected":{"ok":true,"value":{"result":[{"project":"alpha","project_file":"/reference/alpha/experiments/project.yaml","state":"ACTIVE","source":"MANUAL","registered_at":"original","updated_at":"old","state_reason":"original reason"}],"commit":null}},"paths":[{"provided":"/reference/alpha/experiments/project.yaml","expanded_absolute":"/reference/alpha/experiments/project.yaml","canonical_absolute":"/reference/alpha/experiments/project.yaml"},{"provided":"/reference/alpha.yaml","expanded_absolute":"/reference/alpha.yaml","canonical_absolute":"/reference/alpha.yaml"}]}"#,
+            r#"{"input":{"op":"bootstrap","payload":{"schema_version":1,"projects":[{"project":"alpha","project_file":"/reference/alpha/experiments/project.json","state":"ACTIVE","source":"MANUAL","registered_at":"original","updated_at":"old","state_reason":"original reason"}]},"exists":true,"seeds":[{"project":"alpha","path":"/reference/alpha.yaml"}]},"expected":{"ok":true,"value":{"result":[{"project":"alpha","project_file":"/reference/alpha/experiments/project.json","state":"ACTIVE","source":"MANUAL","registered_at":"original","updated_at":"old","state_reason":"original reason"}],"commit":null}},"paths":[{"provided":"/reference/alpha/experiments/project.json","expanded_absolute":"/reference/alpha/experiments/project.json","canonical_absolute":"/reference/alpha/experiments/project.json"},{"provided":"/reference/alpha.yaml","expanded_absolute":"/reference/alpha.yaml","canonical_absolute":"/reference/alpha.yaml"}]}"#,
         ),
     ] {
         let paths = evidence(&case);
@@ -207,20 +204,17 @@ fn bootstrap_records_first_creation_and_an_existing_registry_wins_over_seeds() {
 }
 
 #[test]
-fn definitions_fill_defaults_keep_unicode_and_require_a_title() {
-    let case = literal(
-        r#"{"input":{"project":"alpha","title":"实验项目","run_roots":[]},"expected":{"ok":true,"value":{"schema_version":1,"project":"alpha","title":"实验项目","run_roots":[],"controller":null,"campaigns":[],"metrics_schema":null,"base_dir":null}}}"#,
+fn definitions_keep_unicode_and_require_a_title() {
+    let definition = ProjectDefinition::from_value(
+        &json!({"schema_version":1,"project":"alpha","title":"实验项目","run_roots":[]}),
+    )
+    .unwrap();
+    assert_eq!(definition.title, "实验项目");
+    assert!(definition.run_roots.is_empty());
+    assert!(
+        ProjectDefinition::from_value(
+            &json!({"schema_version":1,"project":"alpha","run_roots":["runs"]})
+        )
+        .is_err()
     );
-    let actual = ProjectDefinition::from_value(&case["input"])
-        .unwrap()
-        .to_value();
-    assert_eq!(actual, case["expected"]["value"]);
-    assert_eq!(
-        canonical::bytes(&actual).unwrap(),
-        canonical::bytes(&case["expected"]["value"]).unwrap()
-    );
-    let case = literal(
-        r#"{"input":{"project":"alpha","run_roots":["runs"]},"expected":{"ok":false,"error_type":"ValidationError"}}"#,
-    );
-    assert!(ProjectDefinition::from_value(&case["input"]).is_err());
 }

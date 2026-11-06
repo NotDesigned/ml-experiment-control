@@ -4,7 +4,7 @@ use ml_exp_io::directory::Directory;
 use serde_json::{Map, Value, json};
 use std::{ffi::OsStr, fs, os::unix::fs::symlink, path::Path};
 
-const PROJECT: &[u8] = br#"{"schema_version":1,"project":"demo","title":"Synthetic readonly reader","run_roots":["runs"],"campaigns":[]}"#;
+const PROJECT: &[u8] = br#"{"schema_version":1,"project":"demo","title":"Synthetic readonly reader","run_roots":["runs"]}"#;
 fn native_run() -> Value {
     json!({"schema_version":1,"project":"demo","run_id":"train",
         "created_at":"2026-10-27T01:02:03Z","config_path":"train.json",

@@ -51,11 +51,6 @@ impl From<crate::projects::Error> for Error {
                 "PROJECT_SOURCE_BINDING_MISMATCH",
                 "registered Project identity differs from approved source configuration",
             ),
-            E::UnsupportedDefinition => error(
-                422,
-                "PROJECT_DEFINITION_UNSUPPORTED",
-                "native registration requires empty campaigns; Campaign loading is unavailable",
-            ),
             E::Transition(ml_exp_core::projects::Error::UnknownProject) => {
                 error(404, "UNKNOWN_PROJECT", "registered Project is unavailable")
             }

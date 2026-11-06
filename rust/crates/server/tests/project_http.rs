@@ -50,7 +50,7 @@ impl Fixture {
         let status = run.join("status.json");
         private_json(
             &project,
-            &json!({"schema_version":1,"project":"demo","title":"Native synthetic science","run_roots":["runs"],"campaigns":[]}),
+            &json!({"schema_version":1,"project":"demo","title":"Native synthetic science","run_roots":["runs"]}),
         );
         private_json(
             &manifest,
@@ -58,7 +58,7 @@ impl Fixture {
         );
         private_json(
             &attempt,
-            &json!({"project":"demo","run_id":"trial","attempt_id":"attempt-001"}),
+            &json!({"schema_version":1,"project":"demo","run_id":"trial","attempt_id":"attempt-001"}),
         );
         private_json(
             &status,

@@ -34,13 +34,6 @@ impl Service {
                 .project(&project.project, None)
                 .map_err(why!(Error::Invalid))?;
             let definition = ProjectDefinition::from_value(&Value::Object(document.metadata))?;
-            if definition.campaign_files().next().is_some()
-                || !definition.to_value()["campaigns"]
-                    .as_array()
-                    .is_some_and(Vec::is_empty)
-            {
-                return Err(Error::UnsupportedDefinition);
-            }
             if definition.project() != project.project {
                 return Err(Error::Invalid);
             }
@@ -150,13 +143,6 @@ impl Service {
         let definition = ProjectDefinition::from_value(&Value::Object(document.metadata.clone()))?;
         if definition.project() != project {
             return Err(Error::Invalid);
-        }
-        if definition.campaign_files().next().is_some()
-            || !definition.to_value()["campaigns"]
-                .as_array()
-                .is_some_and(Vec::is_empty)
-        {
-            return Err(Error::UnsupportedDefinition);
         }
         Ok(document)
     }

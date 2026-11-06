@@ -260,7 +260,9 @@ unread. To move to it:
 3. **Generate a new `exchange.signing_key_file`.** Workers launched by the old service
    hold capabilities from the old key, and they must not reach the new one.
 4. **Convert Project files to JSON** before the first Run. A YAML Project file is not
-   read. Runs get new W&B IDs, so they start new W&B runs.
+   read. A Project file holds exactly `schema_version` (1), `project`, `title` and
+   `run_roots`, so remove `controller`, `campaigns`, `metrics_schema` and `base_dir`.
+   Runs get new W&B IDs, so they start new W&B runs.
 5. **Rebuild Runtime images.** Every image needs the new worker, whose hash
    `--first-install` writes to `builds.worker_sha256`. Pin the same hash wherever you
    configure a Runtime by hand, such as a cloud backend's `worker_sha256`. A Slurm
@@ -285,8 +287,9 @@ source, timestamps and operator reason. A research question is not required or
 loaded. Use `ml-exp project` to register and change state; `project register` takes
 a daemon-host path and uploads nothing. Source import uploads to an approved Project.
 
-The authored file owns title, Run roots and optional Campaign catalogue. Registry removal does not delete that file, source, Runs, Attempts,
-datasets or artifacts, and never stops scheduler jobs.
+The authored file holds exactly `schema_version` (1), `project`, `title` and `run_roots`;
+any other key is refused. Registry removal does not delete that file, source, Runs,
+Attempts, datasets or artifacts, and never stops scheduler jobs.
 
 ### States
 
