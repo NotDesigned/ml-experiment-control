@@ -95,11 +95,12 @@ Then write `ROOT/deployment.json` ([example](../rust/deploy/deployment.example.j
 `cloud_config` must name an existing file, because the tool pins the worker there.
 
 An API-only host can use a `cloud_config` holding `{}`. With no `builds` block the tool
-needs no builder: it neither runs `python` nor touches `builder_unit`, so those two
-settings may name things that do not exist yet. It still copies the bridge sources to
-`python_site_packages`. To add builds later, follow [Image builder](#image-builder).
-With a `builds` block, set up the builder's interpreter and unit first, because the
-tool imports the bridge with `python` and refuses if that fails.
+needs no builder: it neither runs `python` nor reads `builder_config` nor touches
+`builder_unit`, so those three settings may name things that do not exist yet. It still
+copies the bridge sources to `python_site_packages`. To add builds later, follow
+[Image builder](#image-builder). With a `builds` block, set up the builder's
+interpreter, configuration and unit first, because the tool checks `builder_config`
+with the new bridge under `python` and refuses if that fails.
 
 ```sh
 python3 deploy/deploy_native.py --root /opt/ml-exp --version X.Y.Z --first-install          # verify only
@@ -136,11 +137,28 @@ python3 deploy/deploy_native.py --root /opt/ml-exp --rollback
 Always run the copy from the bundle being installed.
 
 Without `--apply` it changes nothing. It verifies every hash in the bundle, runs the
-new `ml-expd-rs --check` against the live configuration, imports the new bridge with
-the builder's interpreter when `builds` is configured, and refuses a downgrade or an
-active build (a builder
+new `ml-expd-rs --check` against the live configuration, runs the new bridge's
+`--check` against `builder_config` with the builder's interpreter when `builds` is
+configured, and refuses a downgrade or an active build (a builder
 holds `<identity>.lock` for the whole build). Also confirm that no transfer or
 submission you care about is mid-request; the tool does not inspect those.
+
+The builder refuses any configuration key it does not know, and `/api/health` does not
+cover the builder, so this check is what stops a bad key before it stops builds. Run
+the tool without `--apply` first and resolve anything it refuses.
+
+**Before upgrading to a release without the ACR fallback:**
+
+1. Add `builder_config` to `ROOT/deployment.json`, naming the file the builder unit
+   loads with `--config`. The tool refuses a `deployment.json` without it.
+2. Remove `acr_fallback`, with its `git_repository`, `wait_seconds` and `prefer`, from
+   that file. No other key changes. Doing this first is safe: the installed release
+   then publishes straight through the DSW. The builder reads the file when it starts,
+   so the upgrade's restart applies the change.
+3. If you set `prefer: true` to avoid an unavailable DSW Docker engine, make that engine
+   work or set `publisher` to `buildkit`, because nothing falls back any more. An ACR
+   registry remains usable as the configured `repository`. A leftover `.acr.json` in
+   the builder state is never read.
 
 With `--apply` it keeps the installed files in `ROOT/previous/`, stops the API and
 requires exit status 0, stops the builder, takes the publisher locks that exist (a

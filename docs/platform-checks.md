@@ -32,7 +32,7 @@ scientific admission rules.
 - Blanket exclusion of checkpoint files from an explicit result export.
 - Desktop Docker tunnels, remote Docker engines, desktop data staging and CCR
   HTTP blob relays. Builds use a CPU PAI DSW publishing to a configured registry
-  (optional ACR fallback) or a local BuildKit engine. Payload
+  or a local BuildKit engine. Payload
   transfers target backend storage with a bounded API buffer.
 
 ## Identity across API address changes

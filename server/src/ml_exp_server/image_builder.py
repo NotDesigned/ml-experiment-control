@@ -33,24 +33,28 @@ CONFIG_KEYS = frozenset({
     "registry_auth_file", "registry_auth_hosts", "registry_blob_hosts", "docker", "skopeo",
     "ephemeral_buildkit", "buildkit_image", "buildkit_http_proxy", "buildkit_network",
     "build_storage_path", "build_expansion_factor", "build_reserve_bytes", "build_min_free_inodes",
-    "pai_dsw", "acr_fallback", "sensecore_mirror"})
+    "pai_dsw", "sensecore_mirror"})
+
+
+def check_config(config: dict) -> None:
+    unknown = sorted(set(config) - CONFIG_KEYS)
+    if unknown:
+        raise ValueError("unknown builder configuration: " + ", ".join(unknown))
+    missing = [key for key in ("native_worker_bin", "native_source_root") if key not in config]
+    if missing:
+        raise ValueError("builder configuration lacks " + ", ".join(missing))
+    proxy = config.get("buildkit_http_proxy")
+    if "buildkit_http_proxy" in config and (not isinstance(proxy, str) or not re.fullmatch(r"https?://[A-Za-z0-9._-]+:[0-9]{1,5}/?", proxy)):
+        raise ValueError("BuildKit HTTP proxy must be a credential-free HTTP endpoint")
+    network = config.get("buildkit_network")
+    if "buildkit_network" in config and (not isinstance(network, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", network)):
+        raise ValueError("invalid private BuildKit network")
 
 
 class ImageBuilder:
     def __init__(self, config: dict):
-        unknown = sorted(set(config) - CONFIG_KEYS)
-        if unknown:
-            raise ValueError("unknown builder configuration: " + ", ".join(unknown))
-        missing = [key for key in ("native_worker_bin", "native_source_root") if key not in config]
-        if missing:
-            raise ValueError("builder configuration lacks " + ", ".join(missing))
+        check_config(config)
         self.config = config
-        proxy = config.get("buildkit_http_proxy")
-        if "buildkit_http_proxy" in config and (not isinstance(proxy, str) or not re.fullmatch(r"https?://[A-Za-z0-9._-]+:[0-9]{1,5}/?", proxy)):
-            raise ValueError("BuildKit HTTP proxy must be a credential-free HTTP endpoint")
-        network = config.get("buildkit_network")
-        if "buildkit_network" in config and (not isinstance(network, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", network)):
-            raise ValueError("invalid private BuildKit network")
         self.root = Path(config["state_root"])
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         if self.config.get("ephemeral_buildkit"):
@@ -286,8 +290,15 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--check", action="store_true", help="validate the configuration and start nothing")
     args = parser.parse_args()
-    config = json.loads(args.config.read_text())
+    try:
+        config = json.loads(args.config.read_text())
+        check_config(config)
+    except (OSError, ValueError) as error:
+        raise SystemExit(f"{args.config}: {error}") from error
+    if args.check:
+        return
     socket_path = Path(config["socket"])
     socket_path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
     os.chown(socket_path.parent, 0, config["client_gid"])

@@ -4,6 +4,7 @@
   "server_config": "/etc/ml-exp/server.json",
   "client_config": "/etc/ml-exp/local-client.json",
   "cloud_config": "/etc/ml-exp/cloud.json",
+  "builder_config": "/etc/ml-exp/builder.json",
   "builder_state": "/var/lib/ml-exp/builder",
   "python": "/opt/ml-exp/image-effects/bin/python",
   "python_site_packages": "/opt/ml-exp/image-effects/lib/python3.11/site-packages",

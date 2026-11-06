@@ -31,7 +31,7 @@ TARGET = "x86_64-unknown-linux-gnu"
 BINARIES = ("ml-exp", "ml-expd-rs", "ml-exp-worker-rs")
 PACKAGES = ("experiment_control", "ml_exp_server", "ml_exp_worker")
 SETTINGS = ("api_unit", "builder_unit", "server_config", "client_config", "cloud_config",
-            "builder_state", "python", "python_site_packages", "publisher_locks")
+            "builder_config", "builder_state", "python", "python_site_packages", "publisher_locks")
 
 
 class Refused(Exception):
@@ -336,7 +336,9 @@ def preflight(settings, unpacked, work):
     command(str(unpacked / "bin/ml-expd-rs"), "--config", settings["server_config"], "--check",
             **service_account(settings))
     if builder_configured(settings):
-        command(settings["python"], "-c", "import ml_exp_server.image_builder",
+        # /api/health does not cover the builder, so its refusal must surface here.
+        command(settings["python"], "-m", "ml_exp_server.image_builder",
+                "--config", settings["builder_config"], "--check",
                 cwd=str(work), env={**os.environ, "PYTHONPATH": str(unpacked / "python")})
     return "sha256:" + sha256(unpacked / "bin/ml-exp-worker-rs")
 
