@@ -45,16 +45,20 @@ impl Request {
     }
     pub fn id(&self, project: &str) -> Result<String, &'static str> {
         self.validate(project)?;
-        Ok(format!(
-            "preparation-{}",
-            &canonical::digest(&json!([
-                "native-experiment-preparation.v1",
-                project,
-                self.request_id
-            ]))
-            .map_err(|_| "preparation identity")?[..32]
-        ))
+        id(project, &self.request_id)
     }
+}
+/// The recovery identity of a request, known before its source has been uploaded.
+pub fn id(project: &str, request_id: &str) -> Result<String, &'static str> {
+    Ok(format!(
+        "preparation-{}",
+        &canonical::digest(&json!([
+            "native-experiment-preparation.v1",
+            project,
+            request_id
+        ]))
+        .map_err(|_| "preparation identity")?[..32]
+    ))
 }
 
 /// A bounded Cartesian product. Expanding a batch never submits work and does

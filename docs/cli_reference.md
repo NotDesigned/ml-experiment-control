@@ -1,12 +1,15 @@
 # Native client commands
 
 Run `ml-exp --help`, then `ml-exp <group> --help` for the installed version's
-exact flags. The client stores its default URL and token in private config;
+exact flags. `--help` lists what most people need; `ml-exp --help-all` hides nothing. The client stores its default URL and token in private config;
 commands do not require SSH, Docker or cloud credentials.
 
 | Group | Purpose |
 | --- | --- |
-| `config` | Save or inspect the API connection |
+| `submit` | Confirm once, then build, send and follow a job; see the [quickstart](api-quickstart.md#run-a-repository) |
+| `status`, `logs`, `results` | Read the latest submission from this machine, or one named with `--project` and `--run` |
+| `cancel`, `retry` | Ask, then stop the latest submission or run it again |
+| `config` | Save or inspect the API connection, and the default Project and executor |
 | `check` | Validate the connection and read API capabilities |
 | `backend` | List executors, read cached capacity or request a refresh |
 | `source` | Upload immutable source or inspect its identity |

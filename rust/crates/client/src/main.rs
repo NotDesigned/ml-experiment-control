@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use ml_exp_client::{
     Client, artifacts, config, credentials, datasets, observation, presentation, projects, read,
     session, sources, status, submissions, watch,
@@ -9,7 +9,8 @@ use std::{io::Read, path::PathBuf};
 #[command(
     name = "ml-exp",
     version,
-    about = "Submit experiments, inspect progress and retrieve verified results"
+    about = "Submit experiments, inspect progress and retrieve verified results",
+    after_help = "Every command, including recovery and administration: ml-exp --help-all"
 )]
 struct Args {
     #[arg(long, global = true, env = "ML_EXPD_API_URL")]
@@ -24,6 +25,112 @@ struct Args {
 }
 #[derive(Subcommand)]
 enum Command {
+    /// Submit a source directory with its Dockerfile: confirm once, then build and send.
+    #[command(
+        after_help = "Repeating the same command finds the same job and sends nothing new. \
+Change the code, the settings or --seed to run again.\n\n\
+For every field and each separate step, see `ml-exp run start` and `ml-exp run execute`."
+    )]
+    Submit {
+        /// Directory holding the code and its Dockerfile.
+        #[arg(default_value = ".")]
+        directory: PathBuf,
+        #[arg(long)]
+        gpus: Option<u32>,
+        /// Longest the job may run, such as 90s, 10m, 2h or 1d.
+        #[arg(long, value_parser = ml_exp_client::submit::parse_time)]
+        time: Option<u64>,
+        /// Uses the saved project unless given.
+        #[arg(long)]
+        project: Option<String>,
+        /// Uses the saved executor unless given; `ml-exp backend` lists them. A prefix of
+        /// fixed shapes, such as `sensecore-n6ls`, takes the smallest shape that fits.
+        #[arg(long)]
+        executor: Option<String>,
+        /// Sized from --gpus unless given. A fixed shape always runs whole.
+        #[arg(long)]
+        cpus: Option<u32>,
+        /// In GB. Sized from --gpus unless given. A fixed shape always runs whole.
+        #[arg(long)]
+        memory: Option<u32>,
+        /// An uploaded dataset, as NAME=asset.HASH. Training reads it through DATASETS_JSON.
+        #[arg(long, value_parser = ml_exp_client::submit::parse_data)]
+        data: Vec<(String, String)>,
+        /// An environment variable for the job, as KEY=VALUE.
+        #[arg(long, value_parser = ml_exp_client::submit::parse_env)]
+        env: Vec<(String, String)>,
+        /// 0 unless given.
+        #[arg(long)]
+        seed: Option<i64>,
+        /// Names the Run. Derived from the directory and the inputs unless given.
+        #[arg(long)]
+        run: Option<String>,
+        /// Dockerfile inside the directory, `Dockerfile` unless given.
+        #[arg(long)]
+        dockerfile: Option<String>,
+        /// An experiment file for what the options do not cover, such as metrics,
+        /// W&B or scheduling. Options given here win.
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// Skip the question. Required without a terminal.
+        #[arg(long)]
+        yes: bool,
+        /// Return after submitting rather than showing the job's status until it ends.
+        #[arg(long)]
+        detach: bool,
+        /// The command to run in the image, after `--`.
+        #[arg(last = true)]
+        command: Vec<String>,
+    },
+    /// Show the latest submission, or the one named with --project and --run.
+    Status {
+        #[command(flatten)]
+        target: Target,
+        #[arg(long)]
+        details: bool,
+        /// Observe the same Attempt without submitting or restarting it.
+        #[arg(long)]
+        watch: bool,
+        /// Observation budget; an in-flight HTTP read keeps its own timeout.
+        #[arg(long, default_value_t = 1800.0)]
+        seconds: f64,
+    },
+    /// Read the logs of the latest submission, or the one named with --project and --run.
+    Logs {
+        #[command(flatten)]
+        target: Target,
+        #[arg(long, default_value = "both", value_parser = ["both", "stdout", "stderr"])]
+        stream: String,
+        #[arg(long, default_value_t = 80)]
+        lines: i64,
+    },
+    /// Download and verify the results of the latest submission.
+    Results {
+        /// Named after the Run unless given.
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Keep the server's copy after downloading.
+        #[arg(long)]
+        keep: bool,
+    },
+    /// Cancel the latest submission, after saying which one.
+    Cancel {
+        /// Skip the question. Required without a terminal.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Run the latest submission's Run again, from the start or a checkpoint.
+    Retry {
+        /// A checkpoint from `ml-exp run checkpoints`. From the start unless given.
+        #[arg(long)]
+        checkpoint: Option<String>,
+        /// Skip the question. Required without a terminal.
+        #[arg(long)]
+        yes: bool,
+        /// Return after submitting rather than showing the job's status until it ends.
+        #[arg(long)]
+        detach: bool,
+    },
     /// Read scheduler allocation evidence, or explicitly refresh the cache.
     Backend {
         executor: Option<String>,
@@ -31,11 +138,13 @@ enum Command {
         refresh: bool,
     },
     /// Plan and execute administrative payload removal or Run retirement.
+    #[command(hide = true)]
     Admin {
         #[command(subcommand)]
         command: ml_exp_client::administration::Command,
     },
     /// Create, inspect and stop an explicitly leased SSH debug machine.
+    #[command(hide = true)]
     Debug {
         #[command(subcommand)]
         command: ml_exp_client::debug::Command,
@@ -47,6 +156,7 @@ enum Command {
         command: ml_exp_client::runtime::Command,
     },
     /// Install a checksum-verified standalone native release.
+    #[command(hide = true)]
     Update {
         /// Exact native version; omitted selects the latest stable native release.
         #[arg(long)]
@@ -60,8 +170,10 @@ enum Command {
         command: Data,
     },
     /// Validate the authenticated connection (no job submission).
+    #[command(hide = true)]
     Check,
     /// Read a JSON endpoint under /api/.
+    #[command(hide = true)]
     Get { path: String },
     /// Create, submit or observe an experiment through explicit native operations.
     Run {
@@ -69,11 +181,13 @@ enum Command {
         command: Run,
     },
     /// Register and manage daemon tracking; research files and jobs are unchanged.
+    #[command(hide = true)]
     Project {
         #[command(subcommand)]
         command: Project,
     },
     /// Pack and publish immutable source, or inspect an exact source identity.
+    #[command(hide = true)]
     Source {
         #[command(subcommand)]
         command: Source,
@@ -292,7 +406,13 @@ impl Project {
 enum Config {
     Set {
         #[arg(long)]
-        token_file: PathBuf,
+        token_file: Option<PathBuf>,
+        /// The Project `submit` uses when none is given.
+        #[arg(long)]
+        project: Option<String>,
+        /// The executor `submit` uses when none is given.
+        #[arg(long)]
+        executor: Option<String>,
     },
     Show,
 }
@@ -681,7 +801,109 @@ enum Output {
     Json(serde_json::Value),
     Text(String),
 }
-fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
+fn config_path(selected: Option<PathBuf>) -> PathBuf {
+    selected.unwrap_or_else(|| {
+        let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
+        let home = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(PathBuf::from);
+        config::default_config_path(xdg.as_deref(), home.as_deref())
+    })
+}
+fn submissions_directory(config: &std::path::Path) -> PathBuf {
+    config
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .join("submissions")
+}
+/// The short commands are the `run` commands, with the latest submission filled in.
+fn expand(command: Command, config: &std::path::Path) -> Result<Command, ml_exp_client::Error> {
+    let directory = submissions_directory(config);
+    let unnamed = |target: &Target| {
+        target.state.is_none() && target.project.is_none() && target.run.is_none()
+    };
+    let fill = |target: &mut Target| -> Result<(), ml_exp_client::Error> {
+        if unnamed(target) {
+            let latest = ml_exp_client::submit::latest(&directory)?;
+            target.project = Some(latest.project);
+            target.run = Some(latest.run_id);
+        }
+        Ok(())
+    };
+    Ok(match command {
+        Command::Status {
+            mut target,
+            details,
+            watch,
+            seconds,
+        } => {
+            // A submit that has not sent a job yet has only its preparation to show.
+            if unnamed(&target) {
+                let latest = ml_exp_client::submit::latest(&directory)?;
+                if latest.submission_id.is_none() {
+                    return Ok(Command::Run {
+                        command: Run::Preparation {
+                            project: latest.project,
+                            run: latest.run_id,
+                        },
+                    });
+                }
+            }
+            fill(&mut target)?;
+            Command::Run {
+                command: Run::Status {
+                    target,
+                    details,
+                    watch,
+                    seconds,
+                },
+            }
+        }
+        Command::Logs {
+            mut target,
+            stream,
+            lines,
+        } => {
+            if unnamed(&target)
+                && ml_exp_client::submit::latest(&directory)?
+                    .submission_id
+                    .is_none()
+            {
+                return Err(ml_exp_client::Error::Observation(
+                    "the latest submission has not sent a job, so it has no logs; \
+                     `ml-exp status` shows its preparation",
+                ));
+            }
+            fill(&mut target)?;
+            Command::Run {
+                command: Run::Logs {
+                    target,
+                    stream,
+                    lines,
+                },
+            }
+        }
+        Command::Results { output, keep } => {
+            let latest = ml_exp_client::submit::latest(&directory)?;
+            let submission = latest
+                .submission_id
+                .ok_or(ml_exp_client::Error::Observation(
+                    "the latest submission is still being prepared, so it has no results yet",
+                ))?;
+            let name = format!("{}{}", latest.run_id, sources::RESULTS_SUFFIX);
+            Command::Run {
+                command: Run::Download {
+                    output: output.unwrap_or_else(|| name.into()),
+                    submission,
+                    keep,
+                },
+            }
+        }
+        other => other,
+    })
+}
+fn run(mut args: Args) -> Result<(), Box<dyn std::error::Error>> {
+    args.command = expand(args.command, &config_path(args.config.clone()))?;
     if let Command::Backend {
         executor: Some(executor),
         ..
@@ -882,27 +1104,41 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         ),
         _ => None,
     };
-    let config = args.config.unwrap_or_else(|| {
-        let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
-        let home = std::env::var_os("HOME")
-            .or_else(|| std::env::var_os("USERPROFILE"))
-            .map(PathBuf::from);
-        config::default_config_path(xdg.as_deref(), home.as_deref())
-    });
+    let config = config_path(args.config);
     let settings = credentials::load_settings(&config)?;
     let result = match args.command {
         Command::Config {
             command: Config::Show,
         } => Output::Json(settings.public()),
         Command::Config {
-            command: Config::Set { token_file },
+            command:
+                Config::Set {
+                    token_file,
+                    project,
+                    executor,
+                },
         } => {
-            let url = args
-                .url
-                .as_deref()
-                .or(settings.url.as_deref())
-                .ok_or("set --url")?;
-            let settings = credentials::settings_from_token_file(url, token_file)?;
+            if token_file.is_none() && project.is_none() && executor.is_none() {
+                return Err("set --token-file, --project or --executor".into());
+            }
+            for id in [&project, &executor].into_iter().flatten() {
+                ml_exp_core::identity::validate_id(id)?;
+            }
+            let project = project.or_else(|| settings.project.clone());
+            let executor = executor.or_else(|| settings.executor.clone());
+            let mut settings = match token_file {
+                Some(token_file) => {
+                    let url = args
+                        .url
+                        .as_deref()
+                        .or(settings.url.as_deref())
+                        .ok_or("set --url")?;
+                    credentials::settings_from_token_file(url, token_file)?
+                }
+                None => settings,
+            };
+            settings.project = project;
+            settings.executor = executor;
             credentials::save_settings(&settings, &config)?;
             Output::Json(settings.public())
         }
@@ -933,6 +1169,90 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             let token = credentials::load_token(plan.token_source)?;
             let client = Client::new(&plan.base_url, token)?;
             match command {
+                Command::Submit {
+                    directory,
+                    gpus,
+                    time,
+                    project,
+                    executor,
+                    cpus,
+                    memory,
+                    data,
+                    env,
+                    seed,
+                    run,
+                    dockerfile,
+                    file,
+                    yes,
+                    detach,
+                    command,
+                } => {
+                    let file = file
+                        .map(|path| {
+                            std::fs::read(&path).map_err(|_| {
+                                format!("cannot read the experiment file {}", path.display())
+                            })
+                        })
+                        .transpose()?;
+                    let spec = ml_exp_client::submit::spec(
+                        ml_exp_client::submit::Options {
+                            project,
+                            executor,
+                            directory,
+                            dockerfile,
+                            command,
+                            gpus,
+                            cpus,
+                            memory_gb: memory,
+                            walltime_seconds: time,
+                            seed,
+                            run_id: run,
+                            data,
+                            env,
+                        },
+                        file.as_deref(),
+                        settings.project.as_deref(),
+                        settings.executor.as_deref(),
+                    )?;
+                    ml_exp_core::identity::validate_id(&spec.project)?;
+                    ml_exp_core::identity::validate_id(&spec.executor)?;
+                    report(
+                        ml_exp_client::submit::run(
+                            &client,
+                            &spec,
+                            &submissions_directory(&config),
+                            hooks(&mut |summary| confirm(summary, yes), &mut printed, !detach),
+                        )?,
+                        args.json,
+                    )?
+                }
+                Command::Cancel { yes } => {
+                    let value = ml_exp_client::submit::cancel(
+                        &client,
+                        &submissions_directory(&config),
+                        hooks(&mut |summary| confirm(summary, yes), &mut printed, false),
+                    )?;
+                    if args.json {
+                        Output::Json(value)
+                    } else {
+                        Output::Text(
+                            "Cancel requested. `ml-exp status` shows when it has stopped.".into(),
+                        )
+                    }
+                }
+                Command::Retry {
+                    checkpoint,
+                    yes,
+                    detach,
+                } => report(
+                    ml_exp_client::submit::retry(
+                        &client,
+                        &submissions_directory(&config),
+                        checkpoint,
+                        hooks(&mut |summary| confirm(summary, yes), &mut printed, !detach),
+                    )?,
+                    args.json,
+                )?,
                 Command::Backend { executor, refresh } => {
                     client.health()?;
                     Output::Json(if let Some(executor) = executor {
@@ -1262,7 +1582,81 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     }
     Ok(())
 }
+type Confirm<'a> = &'a mut dyn FnMut(&str) -> Result<bool, ml_exp_client::Error>;
+fn hooks<'a>(
+    confirm: Confirm<'a>,
+    progress: &'a mut dyn FnMut(&str),
+    follow: bool,
+) -> ml_exp_client::submit::Hooks<'a> {
+    ml_exp_client::submit::Hooks {
+        confirm,
+        progress,
+        poll: std::time::Duration::from_secs(5),
+        deadline: std::time::Duration::from_secs(6 * 3600),
+        silence: std::time::Duration::from_secs(600),
+        follow,
+        follow_poll: std::time::Duration::from_secs(30),
+    }
+}
+fn printed(line: &str) {
+    eprintln!("{line}");
+}
+/// The output is complete, and the command still fails if the job did not succeed.
+fn report(value: serde_json::Value, json: bool) -> Result<Output, Box<dyn std::error::Error>> {
+    let failed = ml_exp_client::submit::failure(&value);
+    let output = if json {
+        Output::Json(value)
+    } else {
+        Output::Text(ml_exp_client::submit::report(&value))
+    };
+    let Some(reason) = failed else {
+        return Ok(output);
+    };
+    match output {
+        Output::Json(value) => println!("{}", serde_json::to_string_pretty(&value)?),
+        Output::Text(text) => println!("{text}"),
+    }
+    Err(reason.into())
+}
+/// Show what will be spent and ask, once. No terminal means no one can answer.
+fn confirm(summary: &str, yes: bool) -> Result<bool, ml_exp_client::Error> {
+    use std::io::{IsTerminal, Write};
+    eprintln!("{summary}");
+    if yes {
+        return Ok(true);
+    }
+    if !std::io::stdin().is_terminal() {
+        return Err(ml_exp_client::Error::Observation(
+            "nothing was done: pass --yes to go ahead without a terminal",
+        ));
+    }
+    eprint!("Proceed? [y/N] ");
+    std::io::stderr().flush().ok();
+    let mut answer = String::new();
+    std::io::stdin()
+        .read_line(&mut answer)
+        .map_err(|_| ml_exp_client::Error::Observation("nothing was done: no answer"))?;
+    Ok(matches!(answer.trim(), "y" | "Y" | "yes"))
+}
+/// The default help lists what most people need. This one hides nothing.
+fn help_all() -> std::process::ExitCode {
+    let mut command = Args::command();
+    let names: Vec<String> = command
+        .get_subcommands()
+        .map(|sub| sub.get_name().to_owned())
+        .collect();
+    for name in names {
+        command = command.mut_subcommand(name, |sub| sub.hide(false));
+    }
+    if command.print_help().is_err() {
+        return std::process::ExitCode::FAILURE;
+    }
+    std::process::ExitCode::SUCCESS
+}
 fn main() -> std::process::ExitCode {
+    if std::env::args().nth(1).as_deref() == Some("--help-all") {
+        return help_all();
+    }
     match run(Args::parse()) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {

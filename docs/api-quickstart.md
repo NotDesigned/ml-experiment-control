@@ -17,25 +17,95 @@ and replace `X.Y.Z` with that release's version. On Windows use
 
 ```sh
 bash install-native.sh --version X.Y.Z
-ml-exp --url https://api.example/ml-expd config set --token-file /private/api-token
-ml-exp check
-ml-exp backend
-ml-exp project list
+ml-exp --url https://api.example/ml-expd config set --token-file /private/api-token \
+  --project my-study --executor pai-h200
+ml-exp backend    # the executors, and what each allows
 ```
 
-The installer places `ml-exp` in `~/.local/bin` unless you pass `--prefix`.
-Later commands reuse the saved URL and token; see [configuration](configuration.md).
+The installer places `ml-exp` in `~/.local/bin` unless you pass `--prefix`. The saved
+Project and executor are only defaults; see [configuration](configuration.md).
 
-`check` validates the authenticated connection and prints the server's
-version, capabilities and source limits. `backend` lists configured executors;
-`backend EXECUTOR` reads cached capacity. Neither allocates a GPU or promises
-immediate resources. `ml-exp get /api/readiness` reports per-backend submission
-availability. Its `training=INCOMPLETE` describes recorded acceptance evidence and
-does not by itself mean submission is unavailable.
+## Run a repository
 
-## First experiment
+The repository needs a Dockerfile whose external `FROM` lines are pinned by digest;
+`ml-exp get /api/environments` lists approved bases, and the
+[Dockerfile rules](builds.md#dockerfile-contract) say what else is required. The code
+reads where to write from its environment:
 
-Keep each kind of file separate:
+```python
+import json, os
+
+with open(os.environ["METRICS_PATH"], "a") as metrics:
+    metrics.write(json.dumps({"name": "loss", "value": 0.05, "unit": "dimensionless", "step": 1}) + "\n")
+with open(os.path.join(os.environ["OUTPUT_DIR"], "summary.json"), "w") as summary:
+    json.dump({"final_loss": 0.05}, summary)
+```
+
+Then one command does the rest:
+
+```sh
+ml-exp submit ~/my-repo --gpus 1 --time 2h -- python3 train.py
+```
+
+```text
+Run my-repo-3fa81c2e
+  executor  pai-h200
+  command   python3 train.py
+  image     registry.example/base@sha256:...
+  source    42 files from /home/me/my-repo
+  resources 1 GPU, 8 CPU, 32 GB
+  time      up to 7200 seconds
+  spend     up to 2 GPU hours
+Proceed? [y/N]
+```
+
+After you answer, it uploads the source, builds the image, prepares and sends the job,
+then shows the backend's status until the job ends. Anything already done is skipped.
+Ctrl-C stops the watching, and a job already sent keeps running. The command fails if
+the job does not end in success. Afterwards:
+
+```sh
+ml-exp status     # the latest submission from this machine
+ml-exp logs
+ml-exp results    # download and verify the results
+ml-exp cancel     # ask, then stop it
+ml-exp retry      # ask, then run it again; --checkpoint resumes from one
+```
+
+**Running it again.** The job's identity comes from the directory name, the code and the
+settings, so repeating the same command goes back to the same job and sends nothing new.
+This is what makes it safe to repeat after a lost connection. To run again, change the
+code or settings, or pass `--seed` or `--run`. A failed job is run again with `ml-exp retry`.
+
+**What is uploaded.** In a git repository, the files git tracks and the files it does not
+ignore, with nested repositories following their own rules. Elsewhere, every file except
+`.git`, `.venv` and `__pycache__`. The question shows how many. Keep data and outputs out;
+the limits are 20,000 files, 256 MiB and 64 MiB compressed.
+
+**Preparation needs the client.** Closing it during a build pauses the work, and repeating
+the command resumes it. Use `--detach` to return right after the job is sent, and `--yes`
+to skip the question in a script; without a terminal `--yes` is required.
+
+### Options
+
+| Need | Option |
+| --- | --- |
+| Another backend | `--executor pai-h200`. A prefix of fixed shapes, such as `sensecore-n6ls`, takes the smallest that fits |
+| CPUs and memory | `--cpus`, `--memory`. Sized from `--gpus` unless given. A fixed shape always runs whole |
+| Another Dockerfile | `--dockerfile docker/train.Dockerfile` |
+| Environment variables | `--env KEY=VALUE`. Platform names are refused |
+| An uploaded dataset | `--data train=asset.HASH`, from [`ml-exp data upload`](data.md); read its path from `DATASETS_JSON` |
+| Everything else | `--file experiment.json` |
+
+`--file` takes the experiment file below, with everything `submit` derives left out, for
+metrics, W&B, scheduling and required files. Options win over the file, and the file over
+saved settings. It cannot set `request_id`, `source_id`, `base_image` or `runtime_id`; to
+fix those, use the steps below.
+
+## Each step separately
+
+`submit` runs existing operations in order. Run them yourself to reuse a Runtime, to use a
+fixed source, or to look at each step. Keep each kind of file separate:
 
 ```text
 study/
@@ -44,22 +114,6 @@ study/
   experiment.json
   trial.state.json        # created by the client; preserve for recovery
   results/                # downloads; never include in source
-```
-
-The Dockerfile pins its bases by digest; see the
-[Dockerfile rules](builds.md#dockerfile-contract). Training code writes metrics to
-`METRICS_PATH` and results to `OUTPUT_DIR`:
-
-```python
-import json, os
-
-with open(os.environ["METRICS_PATH"], "a") as metrics:
-    for step in range(1, 21):
-        record = {"name": "loss", "value": 1 / step, "unit": "dimensionless", "step": step}
-        metrics.write(json.dumps(record) + "\n")
-        metrics.flush()
-with open(os.path.join(os.environ["OUTPUT_DIR"], "summary.json"), "w") as summary:
-    json.dump({"final_loss": 0.05}, summary)
 ```
 
 Upload the source and keep the returned source ID:

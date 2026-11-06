@@ -71,6 +71,12 @@ pub struct Settings {
     pub url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token_file: Option<PathBuf>,
+    /// Used by `submit` when no `--project` is given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    /// Used by `submit` when no `--executor` is given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub executor: Option<String>,
 }
 
 impl Settings {
@@ -80,6 +86,7 @@ impl Settings {
         Ok(Self {
             url: Some(normalize_url(url)?),
             token_file: Some(token_file),
+            ..Self::default()
         })
     }
 
@@ -105,7 +112,14 @@ impl Settings {
     }
 
     pub fn public(&self) -> serde_json::Value {
-        serde_json::json!({"url":self.url, "token_configured": self.token_file.is_some(), "token_file":self.token_file})
+        let mut value = serde_json::json!({"url":self.url, "token_configured": self.token_file.is_some(), "token_file":self.token_file});
+        if let Some(project) = &self.project {
+            value["project"] = project.as_str().into();
+        }
+        if let Some(executor) = &self.executor {
+            value["executor"] = executor.as_str().into();
+        }
+        value
     }
 
     /// Explicit environment candidates are supplied by the shell. A saved token

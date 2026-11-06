@@ -746,7 +746,8 @@ pub fn response(plan: &Plan, value: Value) -> Result<Value, Error> {
         Expected::Submission(expected) if id != expected => return Err(Error::Response),
         _ => {}
     }
-    if plan.path.ends_with("/cancel") {
+    // Only Slurm keeps a cancellation record. A cloud job reports through its observation.
+    if plan.path.ends_with("/cancel") && value["cloud_observation"].is_null() {
         let state: ml_exp_core::slurm::cancellation::State =
             serde_json::from_value(value["cancellation"].clone()).map_err(|_| Error::Response)?;
         state.validate().map_err(|_| Error::Response)?;

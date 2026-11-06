@@ -557,3 +557,40 @@ fn local_attachment_has_official_help_and_watch_finish_are_exclusive() {
     assert!(!conflict.status.success());
     assert!(String::from_utf8_lossy(&conflict.stderr).contains("cannot be used"));
 }
+
+#[test]
+fn the_default_help_is_short_and_help_all_hides_nothing() {
+    let temp = tempfile::tempdir().unwrap();
+    let help = |argument: &str| {
+        let output = command(temp.path()).arg(argument).output().unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let short = help("--help");
+    for word in [
+        "submit",
+        "status",
+        "logs",
+        "results",
+        "cancel",
+        "retry",
+        "--help-all",
+    ] {
+        assert!(short.contains(word), "{word}");
+    }
+    for word in ["admin", "contract", "project"] {
+        assert!(
+            !short
+                .lines()
+                .any(|line| line.trim_start().starts_with(word)),
+            "{word}"
+        );
+    }
+    let all = help("--help-all");
+    for word in ["submit", "admin", "project", "source", "debug"] {
+        assert!(
+            all.lines().any(|line| line.trim_start().starts_with(word)),
+            "{word}"
+        );
+    }
+}

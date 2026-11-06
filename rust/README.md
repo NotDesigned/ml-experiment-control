@@ -163,6 +163,9 @@ list/refresh using the saved request identity instead of creating another machin
 
 ## One experiment configuration
 
+[`ml-exp submit`](../docs/api-quickstart.md#run-a-repository) does all of this for the
+common case. The steps below are for reusing a Runtime or fixing a source.
+
 Register an approved Project, upload source, and upload or reference data first:
 
 ```sh

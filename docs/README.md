@@ -9,7 +9,7 @@ records.
 
 ## Use an existing service
 
-1. [Client quickstart](api-quickstart.md): the complete install-to-results path.
+1. [Client quickstart](api-quickstart.md): install, then run a repository with one command.
 2. [Native usage guide](../rust/README.md): further commands, configuration shapes and batches.
 3. [Client commands](cli_reference.md): command groups and recovery examples.
 4. [Data](data.md): target-backed uploads, resume, download scripts and limits.
