@@ -82,7 +82,7 @@ flowchart LR
 ## Client configuration
 
 The client command is `ml-exp`. Releases provide Linux x86_64/ARM64,
-macOS Intel/Apple Silicon and Windows x86_64 executables. The ARM64 Linux client
+macOS Intel/Apple Silicon when built, and Windows x86_64 executables. The ARM64 Linux client
 is statically linked with musl; the API/worker bundle remains Linux x86_64.
 Download the installer from the [latest release](https://github.com/NotDesigned/ml-experiment-control/releases/latest), then use
 `install-native.sh --version X.Y.Z` on Linux/macOS or

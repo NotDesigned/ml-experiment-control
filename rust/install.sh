@@ -36,7 +36,7 @@ native_base="https://github.com/NotDesigned/ml-experiment-control/releases/downl
 native_asset="ml-exp-$native_target"
 curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --max-time 60 --max-filesize 65536 "$native_base/SHA256SUMS" -o "$native_tmp/SHA256SUMS"
 native_hash="$(awk -v name="$native_asset" '$2 == name { hash=$1; count++ } END { if(count!=1) exit 1; print hash }' "$native_tmp/SHA256SUMS")"
-[[ "$native_hash" =~ ^[0-9a-f]{64}$ ]]
+[[ "$native_hash" =~ ^[0-9a-f]{64}$ ]] || { echo "This release has no client for $native_target; build it with cargo, or try another release" >&2; exit 2; }
 curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --max-time 180 --max-filesize 134217728 "$native_base/$native_asset" -o "$native_tmp/ml-exp"
 [[ "$(native_file_hash "$native_tmp/ml-exp")" == "$native_hash" ]]
 chmod 755 "$native_tmp/ml-exp"

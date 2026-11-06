@@ -14,7 +14,7 @@ Backend credentials and image builds stay on the server side.
 
 Download `install-native.sh` from the
 [latest native release](https://github.com/NotDesigned/ml-experiment-control/releases/latest).
-Clients are published for Linux x86_64/ARM64, macOS Intel/Apple Silicon and
+Clients are published for Linux x86_64/ARM64, macOS Intel/Apple Silicon when built, and
 Windows x86_64. The API and worker deployment bundle targets Linux x86_64.
 
 Replace `X.Y.Z` with that release's version; the installer requires an exact
