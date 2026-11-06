@@ -126,9 +126,11 @@ impl World {
     }
 }
 
+/// Method, path and body of each request, in order.
+type Requests = Mutex<Vec<(String, String, Vec<u8>)>>;
 struct Fake {
     world: Arc<Mutex<World>>,
-    requests: Arc<Mutex<Vec<(String, String, Vec<u8>)>>>,
+    requests: Arc<Requests>,
     stop: Arc<AtomicBool>,
     address: std::net::SocketAddr,
     worker: Option<std::thread::JoinHandle<()>>,
@@ -194,12 +196,7 @@ impl Drop for Fake {
         self.worker.take().unwrap().join().unwrap();
     }
 }
-#[allow(clippy::type_complexity)]
-fn serve(
-    mut socket: TcpStream,
-    world: &Mutex<World>,
-    requests: &Mutex<Vec<(String, String, Vec<u8>)>>,
-) {
+fn serve(mut socket: TcpStream, world: &Mutex<World>, requests: &Requests) {
     socket.set_nonblocking(false).unwrap();
     socket
         .set_read_timeout(Some(Duration::from_secs(5)))
