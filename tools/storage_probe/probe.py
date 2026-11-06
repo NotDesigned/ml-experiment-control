@@ -65,12 +65,12 @@ def attempt(create, target, own):
     return "won"
 
 
-def race(meeting, root, name, create):
+def race(meeting, root, name, create, rounds):
     """Both sides create one name at an agreed moment; the two results are compared per round."""
     directory = root / f"race-{name}"
     directory.mkdir(exist_ok=True)
     mine = []
-    for number in range(RACE_ROUNDS):
+    for number in range(rounds):
         start = time.time() + 0.5
         if meeting.role == "a":
             meeting.say(f"{name}-{number}-start", start)
@@ -223,6 +223,7 @@ def main(arguments=None):
     parser.add_argument("--session", default="default",
                         help="a new word for each pair of jobs, because old facts stay on disk")
     parser.add_argument("--timeout", type=float, default=1800)
+    parser.add_argument("--race-rounds", type=int, default=RACE_ROUNDS)
     parser.add_argument("--note", default="", help="pass words with a space to see how the provider quotes them")
     args = parser.parse_args(arguments)
     if args.dir is None:
@@ -260,7 +261,8 @@ def main(arguments=None):
         "lock_held_by_a": lock_round(meeting, "a", lock, "lock-a"),
         "lock_held_by_b": lock_round(meeting, "b", lock, "lock-b"),
         "stat_per_second": stat_rate(root),
-        "races": {name: race(meeting, root, name, create) for name, create in CREATORS.items()},
+        "races": {name: race(meeting, root, name, create, args.race_rounds)
+                  for name, create in CREATORS.items()},
     }
     result["findings"] = verdict(result)
     meeting.say("result", result)
