@@ -233,19 +233,16 @@ fn a_non_ascii_manifest_is_sealed_as_raw_utf8_and_only_those_bytes_bind() {
             .environment["LABEL"],
         label
     );
-    let escaped: String = text
-        .chars()
-        .map(|c| {
-            if c.is_ascii() {
-                c.to_string()
-            } else {
-                c.encode_utf16(&mut [0; 2])
-                    .iter()
-                    .map(|unit| format!("\\u{unit:04x}"))
-                    .collect()
+    let mut escaped = String::new();
+    for c in text.chars() {
+        if c.is_ascii() {
+            escaped.push(c);
+        } else {
+            for unit in c.encode_utf16(&mut [0; 2]).iter() {
+                escaped.push_str(&format!("\\u{unit:04x}"));
             }
-        })
-        .collect();
+        }
+    }
     let escaped_sha256 = format!("{:x}", Sha256::digest(escaped.as_bytes()));
     assert!(launch::verify_binding(escaped.as_bytes(), &binding(escaped_sha256)).is_err());
 
