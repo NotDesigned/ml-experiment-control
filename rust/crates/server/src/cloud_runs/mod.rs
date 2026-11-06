@@ -11,7 +11,6 @@ pub use config::{Definition, Settings};
 pub(crate) fn routes() -> axum::Router<std::sync::Arc<crate::AppState>> {
     http::routes().merge(sync_http::routes())
 }
-pub use observer::Observer;
 pub use service::Service;
 pub(crate) use service::failure;
 

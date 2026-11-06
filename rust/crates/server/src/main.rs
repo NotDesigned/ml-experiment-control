@@ -346,13 +346,12 @@ async fn main() -> std::process::ExitCode {
         println!("{address}");
     }
     let _observer = match polling.filter(|policy| policy.enabled) {
-        Some(policy) => match ml_exp_server::background::Observer::start(
-            reads
-                .as_ref()
-                .and_then(|api| api.submissions())
-                .expect("submission polling configuration"),
-            policy,
-        ) {
+        Some(policy) => match reads
+            .as_ref()
+            .and_then(|api| api.submissions())
+            .expect("submission polling configuration")
+            .start_observer(policy)
+        {
             Ok(observer) => Some(observer),
             Err(error) => {
                 eprintln!("{error}");
@@ -366,7 +365,7 @@ async fn main() -> std::process::ExitCode {
         .and_then(|api| api.cloud())
         .filter(|s| s.polling_enabled())
     {
-        Some(service) => match ml_exp_server::cloud_runs::Observer::start(service) {
+        Some(service) => match service.start_observer() {
             Ok(observer) => Some(observer),
             Err(_) => {
                 eprintln!("cloud scheduler observer unavailable");

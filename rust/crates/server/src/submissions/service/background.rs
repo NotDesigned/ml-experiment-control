@@ -1,7 +1,8 @@
 //! Opt-in background sampling shares the explicit read-only effect paths.
 //! Each tick performs at most one bounded RPC and releases the execution lock.
 use super::*;
-use ml_exp_core::polling::Phase;
+use crate::background::{Polled, Worker};
+use ml_exp_core::polling::{Phase, Policy};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -20,8 +21,68 @@ struct Sample {
     last_success_at: Option<String>,
 }
 
+/// Slurm's side of the observer: it applies the RPC time limit, treats a busy
+/// service as a retry of the same phase and reports each result in `observer.json`.
+struct Polling {
+    service: Arc<Service>,
+    limit: std::time::Duration,
+}
+impl Polled for Polling {
+    fn discover(&self) -> Option<BTreeSet<String>> {
+        match self.service.background_candidates() {
+            Ok(found) => {
+                if found.is_empty() {
+                    let _ = self.service.background_report(None, None, Ok(()));
+                }
+                Some(found)
+            }
+            Err(error) => {
+                let _ = self.service.background_report(None, None, Err(&error));
+                None
+            }
+        }
+    }
+    fn sample(&self, action: &str, phase: Phase, stop: &AtomicBool) -> crate::background::Sample {
+        let Ok((now, _)) = crate::projects::transition_context() else {
+            return crate::background::Sample {
+                ok: false,
+                busy: false,
+            };
+        };
+        let outcome = self
+            .service
+            .background_sample(action, phase, &now, stop, self.limit);
+        let _ =
+            self.service
+                .background_report(Some(action), Some(phase), outcome.as_ref().map(|_| ()));
+        crate::background::Sample {
+            ok: outcome.is_ok(),
+            busy: matches!(outcome, Err(Error::Busy)),
+        }
+    }
+    fn started(&self) {
+        let _ = self.service.background_report(None, None, Ok(()));
+    }
+    fn stopped(&self) {
+        let _ = self.service.background_stopped();
+    }
+}
+
 impl Service {
-    pub fn background_leader(&self) -> Result<FileLock> {
+    pub fn start_observer(self: Arc<Self>, policy: Policy) -> Result<Worker> {
+        if !policy.enabled || !policy.validate() {
+            return Err(Error::Configuration);
+        }
+        let leader = self.background_leader()?;
+        let limit = std::time::Duration::from_secs(policy.rpc_timeout_seconds);
+        let polling = Polling {
+            service: self,
+            limit,
+        };
+        crate::background::observe("native-observer", polling, policy, leader)
+            .map_err(why!(Error::Configuration))
+    }
+    fn background_leader(&self) -> Result<FileLock> {
         self.directory
             .lock(
                 OsStr::new(".observer.lock"),
@@ -32,7 +93,7 @@ impl Service {
             )
             .map_err(why_lock!(Error::Busy, Error::Authority))
     }
-    pub fn background_report(
+    fn background_report(
         &self,
         action: Option<&str>,
         phase: Option<Phase>,
@@ -79,7 +140,7 @@ impl Service {
         }
         self.directory.replace_regular(OsStr::new("observer.json"),&serde_json::to_vec(&json!({"status":if code.is_some(){"RETRY_PENDING"}else if action.is_some(){"OBSERVING"}else{"IDLE"},"at":at,"submission_id":action,"phase":phase.map(|p|format!("{p:?}")),"error":code,"provider_mutations":false,"heartbeat_proven":false})).map_err(why!(Error::Configuration))?).map_err(why!(Error::Uncertain))
     }
-    pub fn background_stopped(&self) -> Result<()> {
+    fn background_stopped(&self) -> Result<()> {
         let (at, _) = crate::projects::transition_context().map_err(why!(Error::Configuration))?;
         self.directory.replace_regular(OsStr::new("observer.json"),&serde_json::to_vec(&json!({"status":"STOPPED","at":at,"provider_mutations":false,"heartbeat_proven":false})).map_err(why!(Error::Configuration))?).map_err(why!(Error::Uncertain))
     }
@@ -149,7 +210,7 @@ impl Service {
             ml_exp_core::json::own_mapping(&bytes).map_err(why!(Error::Authority))?,
         ))
     }
-    pub fn background_candidates(&self) -> Result<BTreeSet<String>> {
+    fn background_candidates(&self) -> Result<BTreeSet<String>> {
         let mut actions = BTreeSet::new();
         for project in &self.settings.projects {
             if !project.discovery_enabled() {
@@ -212,7 +273,7 @@ impl Service {
         }
         Ok(actions)
     }
-    pub fn background_sample(
+    fn background_sample(
         &self,
         action: &str,
         phase: Phase,
