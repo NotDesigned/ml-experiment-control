@@ -2,10 +2,9 @@
 //! each backend's service and reaches a provider only by calling those services.
 //! A failed read is an answer of its own: it never falls through to a backend.
 use crate::{
-    cloud_runs,
+    backends::{cloud::service as cloud, slurm::service as slurm},
     error::{Error, error},
     read_api::Api,
-    submissions,
 };
 use ml_exp_core::records::{ActionKind, RunKind};
 use serde::Deserialize;
@@ -13,11 +12,11 @@ use serde_json::Value;
 use std::sync::{Arc, atomic::AtomicBool};
 
 pub enum Owner {
-    Slurm(Arc<submissions::Service>),
-    Cloud(Arc<cloud_runs::Service>),
+    Slurm(Arc<slurm::Service>),
+    Cloud(Arc<cloud::Service>),
 }
-type Cloud = Option<Arc<cloud_runs::Service>>;
-type Slurm = Option<Arc<submissions::Service>>;
+type Cloud = Option<Arc<cloud::Service>>;
+type Slurm = Option<Arc<slurm::Service>>;
 
 fn cloud_absent() -> Error {
     error(
@@ -100,7 +99,7 @@ impl Api {
         )
     }
     /// For routes only the cloud service has. This chooses nothing.
-    pub fn cloud_only(&self) -> Result<Arc<cloud_runs::Service>, Error> {
+    pub fn cloud_only(&self) -> Result<Arc<cloud::Service>, Error> {
         self.cloud().ok_or_else(cloud_absent)
     }
 }
@@ -225,8 +224,8 @@ pub fn apply(
         }
     }
 }
-fn slurm_failure(refreshing: bool, cause: submissions::Error) -> Error {
-    if refreshing && matches!(cause, submissions::Error::Uncertain) {
+fn slurm_failure(refreshing: bool, cause: slurm::Error) -> Error {
+    if refreshing && matches!(cause, slurm::Error::Uncertain) {
         error(
             503,
             "WORKER_OBSERVATION_CACHE_UNCERTAIN",
@@ -243,15 +242,15 @@ mod tests {
 
     #[test]
     fn only_a_slurm_refresh_reports_an_uncertain_sample_instead_of_an_uncertain_effect() {
-        let refreshed = slurm_failure(true, submissions::Error::Uncertain);
+        let refreshed = slurm_failure(true, slurm::Error::Uncertain);
         assert_eq!(
             (refreshed.status, refreshed.code),
             (503, "WORKER_OBSERVATION_CACHE_UNCERTAIN")
         );
-        let effect = slurm_failure(false, submissions::Error::Uncertain);
-        let public = Error::from(submissions::Error::Uncertain);
+        let effect = slurm_failure(false, slurm::Error::Uncertain);
+        let public = Error::from(slurm::Error::Uncertain);
         assert_eq!((effect.status, effect.code), (public.status, public.code));
-        let other = slurm_failure(true, submissions::Error::Busy);
+        let other = slurm_failure(true, slurm::Error::Busy);
         assert_eq!((other.status, other.code), (503, "SUBMISSION_BUSY"));
     }
 

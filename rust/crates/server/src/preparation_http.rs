@@ -1,10 +1,12 @@
 use crate::{
     AppState,
-    cloud_runs::{Continue, ExternalExecutors},
+    backends::{
+        cloud::service::{Continue, ExternalExecutors},
+        slurm::service as slurm,
+    },
     http_effect::{self, OnTimeout},
     read_api,
     runs::{self, Owner},
-    submissions,
 };
 use axum::{
     Router,
@@ -22,7 +24,7 @@ fn invalid() -> read_api::Error {
         detail: "invalid experiment configuration or exact preparation identity",
     }
 }
-fn external(slurm: &Option<Arc<submissions::Service>>) -> Option<&dyn ExternalExecutors> {
+fn external(slurm: &Option<Arc<slurm::Service>>) -> Option<&dyn ExternalExecutors> {
     slurm.as_deref().map(|s| s as &dyn ExternalExecutors)
 }
 pub(crate) fn routes() -> Router<Arc<AppState>> {
@@ -152,7 +154,7 @@ async fn advance(
                 let run_id = run.run_id.clone();
                 slurm
                     .create_run(&project, *run, &now)
-                    .map_err(submissions::http::creation_failure)?;
+                    .map_err(slurm::http::creation_failure)?;
                 let submission = slurm.prepare(&project, &run_id, approval, context)?;
                 cloud
                     .experiment_finish(&project, &id, submission)

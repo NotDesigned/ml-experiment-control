@@ -31,7 +31,8 @@ pub mod runs;
 pub mod sources;
 pub mod storage;
 pub mod tracking;
-// Tests pinned by the no-replay guard name this path.
+// For tests only: `tests/cloud_runs.rs` and `submission_tests.rs` are sealed and
+// name these paths. Production code names the backend tree.
 use axum::{
     Json, Router,
     extract::{Request, State},
@@ -126,7 +127,7 @@ fn health_document(
     reads: bool,
     lifecycle: bool,
     sources: Option<&sources::Service>,
-    submissions: Option<&submissions::Service>,
+    submissions: Option<&backends::slurm::service::Service>,
 ) -> serde_json::Value {
     let mut capabilities = vec!["bearer-auth.v1", "deployment-readiness.v1"];
     if lifecycle {
@@ -145,14 +146,14 @@ fn health_document(
         capabilities.push("native-cancellation.v1");
         capabilities.push("native-metric-history.v1");
         capabilities.push("native-tracking-status.v1");
-        if submissions.is_some_and(submissions::Service::can_create_runs) {
+        if submissions.is_some_and(backends::slurm::service::Service::can_create_runs) {
             capabilities.push("native-attempt-retry.v1");
         }
     }
-    if submissions.is_some_and(submissions::Service::can_create_runs) {
+    if submissions.is_some_and(backends::slurm::service::Service::can_create_runs) {
         capabilities.push("native-run-creation.v1");
     }
-    if submissions.is_some_and(submissions::Service::has_datasets) {
+    if submissions.is_some_and(backends::slurm::service::Service::has_datasets) {
         capabilities.push("native-datasets.v1");
     }
     json!({
@@ -160,8 +161,8 @@ fn health_document(
         "openapi_path":"/api/v2/openapi.json", "capabilities":capabilities,
         "projects":projects, "workspace_id":workspace_id, "local_reads_configured":reads,
         "source_archive_limits":sources.map(sources::Service::limits),
-        "scheduler_mutations":submissions.is_some_and(submissions::Service::enabled),
-        "run_writes":submissions.is_some_and(submissions::Service::can_create_runs),
+        "scheduler_mutations":submissions.is_some_and(backends::slurm::service::Service::enabled),
+        "run_writes":submissions.is_some_and(backends::slurm::service::Service::can_create_runs),
         "deployment":readiness::observe(None)
     })
 }
@@ -601,11 +602,11 @@ pub fn app(auth: Auth, reads: Option<Arc<read_api::Api>>) -> Router {
         .merge(read_http::routes())
         .merge(projects::http::routes())
         .merge(sources::http::routes())
-        .merge(submissions::http::routes())
-        .merge(submissions::dataset_http::routes())
-        .merge(cloud_runs::routes())
-        .merge(cloud_runs::build_routes())
-        .merge(cloud_runs::debug_routes())
+        .merge(backends::slurm::service::http::routes())
+        .merge(backends::slurm::service::dataset_http::routes())
+        .merge(backends::cloud::service::routes())
+        .merge(backends::cloud::service::build_routes())
+        .merge(backends::cloud::service::debug_routes())
         .merge(administration_http::routes())
         .merge(preparation_http::routes())
         .merge(local_http::routes())

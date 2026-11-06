@@ -218,10 +218,10 @@ Run. See [data](data.md).
 ## Internal boundary for another backend
 
 There is no plugin mechanism or backend registry. Slurm lives in the server's
-`backends/slurm` and `submissions/`. PAI and SenseCore share `backends/cloud` and
-`cloud_runs/`: the `Profile` enum in `backends/cloud/adapter.rs` selects the provider,
-and its request compiler lives in `core/src/cloud/`. Data preparation
-(`cloud_runs/service/script_preparation.rs`, `data_delivery.rs`) and independent result
+`backends/slurm`. PAI and SenseCore share `backends/cloud`: the `Profile` enum in
+`backends/cloud/adapter.rs` selects the provider, and its request compiler lives in
+`core/src/cloud/`. Data preparation
+(`backends/cloud/service/engine/script_preparation.rs`, `data_delivery.rs`) and independent result
 collection (`synchronization.rs`) are separate operations from training. Another cloud
 provider means a new `Profile` variant and compiler, written against those modules.
 

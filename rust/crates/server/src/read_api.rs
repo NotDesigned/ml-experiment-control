@@ -145,8 +145,8 @@ pub struct Api {
     lifecycle: Option<Arc<crate::projects::Service>>,
     sources: Option<Arc<crate::sources::Service>>,
     actions: Option<crate::operations::Store>,
-    submissions: Option<Arc<crate::submissions::Service>>,
-    cloud: Option<Arc<crate::cloud_runs::Service>>,
+    submissions: Option<Arc<crate::backends::slurm::service::Service>>,
+    cloud: Option<Arc<crate::backends::cloud::service::Service>>,
     administration: Option<Arc<crate::administration::Service>>,
     local_roots: BTreeMap<String, PathBuf>,
     local_tracking: ml_exp_core::tracking::RoutingSettings,
@@ -276,7 +276,7 @@ impl Api {
     }
     pub fn with_submissions(
         mut self,
-        service: Arc<crate::submissions::Service>,
+        service: Arc<crate::backends::slurm::service::Service>,
     ) -> Result<Self, read_config::Error> {
         if !service.matches_configuration(
             &self.registry_root,
@@ -291,12 +291,12 @@ impl Api {
         self.submissions = Some(service);
         Ok(self)
     }
-    pub fn submissions(&self) -> Option<Arc<crate::submissions::Service>> {
+    pub fn submissions(&self) -> Option<Arc<crate::backends::slurm::service::Service>> {
         self.submissions.clone()
     }
     pub fn with_cloud(
         mut self,
-        service: Arc<crate::cloud_runs::Service>,
+        service: Arc<crate::backends::cloud::service::Service>,
     ) -> Result<Self, read_config::Error> {
         if !service.matches(
             &self.registry_root,
@@ -308,7 +308,7 @@ impl Api {
         self.cloud = Some(service);
         Ok(self)
     }
-    pub fn cloud(&self) -> Option<Arc<crate::cloud_runs::Service>> {
+    pub fn cloud(&self) -> Option<Arc<crate::backends::cloud::service::Service>> {
         self.cloud.clone()
     }
     pub fn active_project_count(&self) -> Result<usize, Error> {
@@ -661,7 +661,7 @@ impl Api {
             .unwrap_or_else(|| service.for_run(project, run, &now))
         {
             Ok(value) => value,
-            Err(crate::submissions::Error::Missing) => return Ok(value),
+            Err(crate::backends::slurm::service::Error::Missing) => return Ok(value),
             Err(cause) => return Err(cause.into()),
         };
         let projected = if let Some(attempt) = attempt {

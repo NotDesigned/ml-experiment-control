@@ -1,7 +1,12 @@
 //! Opt-in administrative plans, distinct from download acknowledgements. Keep
 //! small immutable manifests/audit records; payload removal needs a reviewed
 //! plan and exact terminal scheduler evidence from the original backend.
-use crate::{cloud_runs, deletion::RunFence, experiments, read_config, runs::Owner, submissions};
+use crate::{
+    backends::{cloud::service as cloud, slurm::service as slurm},
+    deletion::RunFence,
+    experiments, read_config,
+    runs::Owner,
+};
 use ml_exp_core::{
     checkpoints::{self},
     maintenance::{Plan, Selection},
@@ -71,8 +76,8 @@ struct Saved {
 pub struct Service {
     settings: read_config::Settings,
     directory: Directory,
-    slurm: Option<Arc<submissions::Service>>,
-    cloud: Option<Arc<cloud_runs::Service>>,
+    slurm: Option<Arc<slurm::Service>>,
+    cloud: Option<Arc<cloud::Service>>,
 }
 impl Service {
     pub fn initialize(settings: &read_config::Settings) -> Result<()> {
@@ -90,8 +95,8 @@ impl Service {
     }
     pub fn open(
         settings: read_config::Settings,
-        slurm: Option<Arc<submissions::Service>>,
-        cloud: Option<Arc<cloud_runs::Service>>,
+        slurm: Option<Arc<slurm::Service>>,
+        cloud: Option<Arc<cloud::Service>>,
     ) -> Result<Self> {
         let (root, _) = read_config::workspace(&settings.registry_root).map_err(why!(invalid()))?;
         let directory = root

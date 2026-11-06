@@ -184,10 +184,12 @@ def service_crossing_failures(root):
     """Neither service names the other: each asks through a one-question trait."""
     failures = []
     for home, other in [
-        ("backends/cloud/service", "submissions"),
-        ("backends/slurm/service", "cloud_runs"),
+        ("backends/cloud/service", r"(?:submissions|slurm::service)"),
+        ("backends/slurm/service", r"(?:cloud_runs|cloud::service)"),
     ]:
         pattern = re.compile(rf"\b{other}::Service\b")
+        if not (root / SERVER / home).is_dir():
+            failures.append(f"{home}: the service has moved, so this rule reads nothing")
         for path in rust_files(root, SERVER / home):
             for line in code_lines(root, path):
                 if pattern.search(line):
@@ -320,6 +322,18 @@ class GuardDetects(unittest.TestCase):
             SERVER / "backends/slurm/service/engine.rs", "cloud: Arc<crate::cloud_runs::Service>,\n"
         )
         self.assertEqual(len(service_crossing_failures(self.root)), 2)
+        self.write(
+            SERVER / "backends/cloud/service/preparations.rs",
+            "slurm: Option<&crate::backends::slurm::service::Service>,\n",
+        )
+        self.write(
+            SERVER / "backends/slurm/service/engine.rs",
+            "cloud: Arc<crate::backends::cloud::service::Service>,\n",
+        )
+        self.assertEqual(len(service_crossing_failures(self.root)), 2)
+        (self.root / SERVER / "backends/cloud/service/preparations.rs").unlink()
+        (self.root / SERVER / "backends/cloud/service").rmdir()
+        self.assertIn("has moved", service_crossing_failures(self.root)[0])
 
 
 if __name__ == "__main__":

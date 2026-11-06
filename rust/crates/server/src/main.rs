@@ -196,7 +196,7 @@ async fn main() -> std::process::ExitCode {
         )
         .map_err(|_| "invalid read configuration")
         .and_then(|settings| {
-            ml_exp_server::submissions::Service::initialize(&settings)
+            ml_exp_server::backends::slurm::service::Service::initialize(&settings)
                 .map_err(|_| "cannot initialize fresh submission namespace")
         }) {
             Ok(()) => {
@@ -214,7 +214,7 @@ async fn main() -> std::process::ExitCode {
             ml_exp_server::read_config::load(args.read_config.as_deref().expect("required config"))
                 .map_err(|_| "invalid read configuration")
                 .and_then(|settings| {
-                    ml_exp_server::cloud_runs::Service::initialize(&settings)
+                    ml_exp_server::backends::cloud::service::Service::initialize(&settings)
                         .map_err(|_| "cannot initialize fresh cloud namespace")
                 });
         return match result {
@@ -455,8 +455,8 @@ fn open_api(
         )?);
         let mut api = api.with_sources(source.clone())?;
         if let Some(path) = cloud_config {
-            let config = ml_exp_server::cloud_runs::Settings::load(path)?;
-            let cloud = ml_exp_server::cloud_runs::Service::open(
+            let config = ml_exp_server::backends::cloud::service::Settings::load(path)?;
+            let cloud = ml_exp_server::backends::cloud::service::Service::open(
                 settings.clone(),
                 config,
                 source.clone(),
@@ -466,9 +466,9 @@ fn open_api(
             api = api.with_cloud(std::sync::Arc::new(cloud))?;
         }
         if let Some(path) = submission_config {
-            let config = ml_exp_server::submissions::config::load(path)?;
+            let config = ml_exp_server::backends::slurm::service::config::load(path)?;
             let submissions = std::sync::Arc::new(
-                ml_exp_server::submissions::Service::open(
+                ml_exp_server::backends::slurm::service::Service::open(
                     settings,
                     source,
                     api.lifecycle(),
@@ -476,7 +476,10 @@ fn open_api(
                     config.enabled,
                 )?
                 .with_runtime_builder(api.cloud().map(|cloud| {
-                    cloud as std::sync::Arc<dyn ml_exp_server::submissions::RuntimeBuilder>
+                    cloud
+                        as std::sync::Arc<
+                            dyn ml_exp_server::backends::slurm::service::RuntimeBuilder,
+                        >
                 }))
                 .with_run_creation(config.creation)?
                 .with_tracking(tracking.unwrap_or_default()),

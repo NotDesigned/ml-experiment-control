@@ -56,7 +56,7 @@ pub trait Source: Send + Sync {
         candidate_scopes(store)
     }
 }
-impl Source for crate::submissions::Service {
+impl Source for crate::backends::slurm::service::Service {
     fn publisher_leader(&self) -> Result<ml_exp_io::directory::FileLock> {
         self.publisher_leader().map_err(why!(Error::Storage))
     }

@@ -2,7 +2,7 @@
 //! remote command is the pure scheduler observation plan, with bounded output.
 use super::*;
 use ml_exp_core::capacity::{self, Observation};
-impl crate::cloud_runs::ExternalExecutors for Service {
+impl crate::backends::cloud::service::ExternalExecutors for Service {
     fn accepts(&self, executor: &str) -> bool {
         Service::accepts(self, executor)
     }

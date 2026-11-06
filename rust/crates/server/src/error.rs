@@ -2,7 +2,7 @@
 //! Every domain error converts here, so a handler's `?` picks the public answer.
 //! No conversion echoes provider or request text. Mappings that depend on the
 //! operation stay at their call site: `creation_failure` and the refresh remap in
-//! `submissions::http`, and the exact Submission lookup in `read_api`.
+//! `backends::slurm::service::http`, and the exact Submission lookup in `read_api`.
 use crate::{experiments, read_model};
 
 #[derive(Clone, Copy, Debug, thiserror::Error)]
@@ -119,9 +119,9 @@ impl From<read_model::Error> for Error {
         }
     }
 }
-impl From<crate::submissions::Error> for Error {
-    fn from(error: crate::submissions::Error) -> Self {
-        use crate::submissions::Error as E;
+impl From<crate::backends::slurm::service::Error> for Error {
+    fn from(error: crate::backends::slurm::service::Error) -> Self {
+        use crate::backends::slurm::service::Error as E;
         let (status, code, detail) = match error {
             E::Missing | E::Action(crate::operations::Error::NotFound) => (
                 404,
