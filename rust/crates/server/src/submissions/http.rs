@@ -2,8 +2,9 @@
 //! original provider identity, while only execute can submit a new scheduler job.
 use super::{Context, Error, Service};
 use crate::{
-    AppState, read_api,
-    read_http::{self, Access},
+    AppState,
+    http_effect::{self, OnTimeout},
+    read_api,
 };
 use axum::{
     Router,
@@ -54,17 +55,17 @@ async fn tracking(
     RawQuery(raw): RawQuery,
 ) -> Response {
     let Ok(Path((project, run))) = path else {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     };
     if ml_exp_core::identity::validate_id(&project).is_err()
         || ml_exp_core::identity::validate_id(&run).is_err()
     {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
     if let Err(error) = read_api::no_parameters(raw.as_deref()) {
-        return read_http::failure(error);
+        return http_effect::failure(error);
     }
-    read_http::execute(state, Access::Read, move |api, _| {
+    http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
         if let Some(value) = api.local_tracking_status(&project, &run)? {
             return Ok(value);
         }
@@ -81,9 +82,9 @@ async fn tracking(
 }
 async fn observer(State(state): State<Arc<AppState>>, RawQuery(raw): RawQuery) -> Response {
     if let Err(error) = read_api::no_parameters(raw.as_deref()) {
-        return read_http::failure(error);
+        return http_effect::failure(error);
     }
-    read_http::execute(state, Access::Read, move |api, _| {
+    http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
         service(api)?.background_status().map_err(Into::into)
     })
     .await
@@ -94,10 +95,10 @@ async fn checkpoint_list(
     RawQuery(raw): RawQuery,
 ) -> Response {
     let Ok(Path((project, run, attempt))) = path else {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     };
     if let Err(error) = read_api::no_parameters(raw.as_deref()) {
-        return read_http::failure(error);
+        return http_effect::failure(error);
     }
     checkpoint_get(state, project, run, attempt, None).await
 }
@@ -107,10 +108,10 @@ async fn checkpoint_read(
     RawQuery(raw): RawQuery,
 ) -> Response {
     let Ok(Path((project, run, attempt, id))) = path else {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     };
     if let Err(error) = read_api::no_parameters(raw.as_deref()) {
-        return read_http::failure(error);
+        return http_effect::failure(error);
     }
     checkpoint_get(state, project, run, attempt, Some(id)).await
 }
@@ -128,9 +129,9 @@ async fn checkpoint_get(
             .as_ref()
             .is_some_and(|id| ml_exp_core::checkpoints::validate_checkpoint_id(id).is_err())
     {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
-    read_http::execute(state, Access::Read, move |api, _| {
+    http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
         if let Some(cloud) = api.cloud() {
             if cloud.handles_run(&project, &run)? {
                 return cloud
@@ -188,19 +189,19 @@ async fn create(
     body: Result<Bytes, BytesRejection>,
 ) -> Response {
     let Ok(Path(project)) = path else {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     };
     if ml_exp_core::identity::validate_id(&project).is_err() {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
     if let Err(error) = read_api::no_parameters(raw.as_deref()) {
-        return read_http::failure(error);
+        return http_effect::failure(error);
     }
     let request: ml_exp_core::first_submission::native::creation::Request = match decode(body) {
         Ok(value) => value,
-        Err(error) => return read_http::failure(error),
+        Err(error) => return http_effect::failure(error),
     };
-    read_http::execute(state, Access::RunCreate, move |api, now| {
+    http_effect::execute(state, OnTimeout::RunCreate, move |api, now| {
         if let Some(cloud) = api.cloud() {
             if cloud.accepts(&request.executor) {
                 return cloud
@@ -253,15 +254,15 @@ async fn existing(
     RawQuery(raw): RawQuery,
 ) -> Response {
     let Ok(Path((project, run))) = path else {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     };
     if let Err(error) = identities(&project, &run) {
-        return read_http::failure(error);
+        return http_effect::failure(error);
     }
     if let Err(error) = read_api::no_parameters(raw.as_deref()) {
-        return read_http::failure(error);
+        return http_effect::failure(error);
     }
-    read_http::execute(state, Access::Read, move |api, now| {
+    http_effect::execute(state, OnTimeout::NoEffect, move |api, now| {
         if let Some(cloud) = api.cloud() {
             if cloud.handles_run(&project, &run)? {
                 return cloud
@@ -282,19 +283,19 @@ async fn prepare(
     body: Result<Bytes, BytesRejection>,
 ) -> Response {
     let Ok(Path((project, run))) = path else {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     };
     if let Err(error) = identities(&project, &run) {
-        return read_http::failure(error);
+        return http_effect::failure(error);
     }
     if let Err(error) = read_api::no_parameters(raw.as_deref()) {
-        return read_http::failure(error);
+        return http_effect::failure(error);
     }
     let approval: Approval = match decode(body) {
         Ok(value) => value,
-        Err(error) => return read_http::failure(error),
+        Err(error) => return http_effect::failure(error),
     };
-    read_http::execute(state, Access::Submission, move |api, now| {
+    http_effect::execute(state, OnTimeout::Submission, move |api, now| {
         let now = clock(now)?;
         let expires = OffsetDateTime::parse(&now, &Rfc3339)
             .map_err(|_| invalid())?
@@ -372,13 +373,13 @@ async fn change(
     body: Result<Bytes, BytesRejection>,
 ) -> Response {
     let Ok(Path((identity, operation))) = path else {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     };
     if validate_action_id(&identity).is_err() {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
     if let Err(error) = read_api::no_parameters(raw.as_deref()) {
-        return read_http::failure(error);
+        return http_effect::failure(error);
     }
     let operation = match operation.as_str() {
         "download-ticket" => decode::<Part>(body).map(|r| Operation::DownloadTicket(r.part)),
@@ -428,9 +429,9 @@ async fn change(
     };
     let operation = match operation {
         Ok(value) => value,
-        Err(error) => return read_http::failure(error),
+        Err(error) => return http_effect::failure(error),
     };
-    let access = if matches!(
+    let on_timeout = if matches!(
         &operation,
         Operation::History
             | Operation::DownloadTicket(_)
@@ -439,13 +440,13 @@ async fn change(
             | Operation::Collect
             | Operation::Acknowledge(_)
     ) {
-        Access::Read
+        OnTimeout::NoEffect
     } else {
-        Access::Submission
+        OnTimeout::Submission
     };
-    read_http::execute_timeout(
+    http_effect::execute_timeout(
         state,
-        access,
+        on_timeout,
         std::time::Duration::from_secs(120),
         move |api, now| {
             let now = clock(now)?;
@@ -512,15 +513,15 @@ async fn artifact_metadata(
     RawQuery(raw): RawQuery,
 ) -> Response {
     let Ok(Path(identity)) = path else {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     };
     if validate_action_id(&identity).is_err() {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
     if let Err(e) = read_api::no_parameters(raw.as_deref()) {
-        return read_http::failure(e);
+        return http_effect::failure(e);
     }
-    read_http::execute(state, Access::Read, move |api, _| {
+    http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
         if let Some(cloud) = api.cloud() {
             if cloud.handles_action(&identity)? {
                 return cloud.artifacts(&identity).map_err(Into::into);

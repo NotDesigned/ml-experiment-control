@@ -14,6 +14,7 @@ pub mod deletion;
 pub mod deployment;
 pub mod error;
 pub mod experiments;
+mod http_effect;
 mod local_http;
 mod native_contract;
 pub mod objects;
@@ -167,7 +168,7 @@ async fn health(State(state): State<Arc<AppState>>) -> Response {
     if state.reads.is_none() {
         return Json(health_document(0, "unconfigured", false, false, None, None)).into_response();
     }
-    read_http::execute(state, read_http::Access::Read, |api, _| {
+    http_effect::execute(state, http_effect::OnTimeout::NoEffect, |api, _| {
         let mut document = health_document(
             api.active_project_count()?,
             api.workspace_id(),
@@ -254,7 +255,7 @@ async fn readiness(State(state): State<Arc<AppState>>) -> Response {
     if state.reads.is_none() {
         return Json(readiness::observe(None)).into_response();
     }
-    read_http::execute(state, read_http::Access::Read, |api, _| {
+    http_effect::execute(state, http_effect::OnTimeout::NoEffect, |api, _| {
         Ok(readiness::observe(Some(api)))
     })
     .await

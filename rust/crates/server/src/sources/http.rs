@@ -1,8 +1,8 @@
 //! HTTP adapters for bounded source archive publication and exact lookup.
 use super::Service;
 use crate::{
+    http_effect::{self, OnTimeout},
     read_api,
-    read_http::{self, Access},
 };
 use axum::{
     Router,
@@ -66,12 +66,12 @@ async fn upload(
 ) -> Response {
     let (project, digest) = match query(raw.as_deref()) {
         Ok(value) => value,
-        Err(error) => return read_http::failure(error),
+        Err(error) => return http_effect::failure(error),
     };
     let source_service = match state.reads.clone().and_then(|api| service(&api).ok()) {
         Some(value) => value,
         None => {
-            return read_http::failure(read_api::Error {
+            return http_effect::failure(read_api::Error {
                 status: 501,
                 code: "SOURCE_ARCHIVE_NOT_CONFIGURED",
                 detail: "source archive storage is not enabled",
@@ -80,12 +80,12 @@ async fn upload(
     };
     let limit = source_service.maximum_archive_bytes().min(MAX_BODY as u64);
     if let Err(error) = source_service.authorize_upload(&project, &digest) {
-        return read_http::failure(error);
+        return http_effect::failure(error);
     }
     let mut staged = match NamedTempFile::new() {
         Ok(file) => file,
         Err(_) => {
-            return read_http::failure(read_api::Error {
+            return http_effect::failure(read_api::Error {
                 status: 503,
                 code: "SOURCE_ARCHIVE_STAGE_UNAVAILABLE",
                 detail: "source archive could not be staged safely",
@@ -98,7 +98,7 @@ async fn upload(
         let frame = match frame {
             Ok(frame) => frame,
             Err(_) => {
-                return read_http::failure(read_api::Error {
+                return http_effect::failure(read_api::Error {
                     status: 400,
                     code: "SOURCE_ARCHIVE_BODY_INVALID",
                     detail: "source archive request body could not be read",
@@ -108,7 +108,7 @@ async fn upload(
         let data = match frame.into_data() {
             Ok(data) => data,
             Err(_) => {
-                return read_http::failure(read_api::Error {
+                return http_effect::failure(read_api::Error {
                     status: 400,
                     code: "SOURCE_ARCHIVE_BODY_INVALID",
                     detail: "source archive request body contained unsupported trailers",
@@ -118,7 +118,7 @@ async fn upload(
         received = match received.checked_add(data.len() as u64) {
             Some(value) if value <= limit => value,
             _ => {
-                return read_http::failure(read_api::Error {
+                return http_effect::failure(read_api::Error {
                     status: 413,
                     code: "SOURCE_ARCHIVE_LIMIT",
                     detail: "source archive exceeds the configured upload limit",
@@ -126,7 +126,7 @@ async fn upload(
             }
         };
         if staged.write_all(&data).is_err() {
-            return read_http::failure(read_api::Error {
+            return http_effect::failure(read_api::Error {
                 status: 503,
                 code: "SOURCE_ARCHIVE_STAGE_UNAVAILABLE",
                 detail: "source archive could not be staged safely",
@@ -134,22 +134,22 @@ async fn upload(
         }
     }
     if staged.as_file_mut().sync_all().is_err() {
-        return read_http::failure(read_api::Error {
+        return http_effect::failure(read_api::Error {
             status: 503,
             code: "SOURCE_ARCHIVE_STAGE_UNAVAILABLE",
             detail: "source archive could not be made durable",
         });
     }
     if staged.as_file_mut().rewind().is_err() {
-        return read_http::failure(read_api::Error {
+        return http_effect::failure(read_api::Error {
             status: 503,
             code: "SOURCE_ARCHIVE_STAGE_UNAVAILABLE",
             detail: "source archive staging file could not be rewound",
         });
     }
-    read_http::execute_timeout(
+    http_effect::execute_timeout(
         state,
-        Access::Write,
+        OnTimeout::Effect,
         Duration::from_secs(600),
         move |api, now| {
             let service = service(api)?;
@@ -168,7 +168,7 @@ async fn read(
     State(state): State<Arc<crate::AppState>>,
     Path((project, source_id)): Path<(String, String)>,
 ) -> Response {
-    read_http::execute(state, Access::Read, move |api, _| {
+    http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
         service(api)?.read(&project, &source_id)
     })
     .await
@@ -178,7 +178,7 @@ async fn lookup(
     State(state): State<Arc<crate::AppState>>,
     Path((project, digest)): Path<(String, String)>,
 ) -> Response {
-    read_http::execute(state, Access::Read, move |api, _| {
+    http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
         service(api)?.lookup(&project, &digest)
     })
     .await

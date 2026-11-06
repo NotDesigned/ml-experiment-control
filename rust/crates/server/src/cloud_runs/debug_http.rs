@@ -1,6 +1,7 @@
 use crate::{
-    AppState, read_api,
-    read_http::{self, Access},
+    AppState,
+    http_effect::{self, OnTimeout},
+    read_api,
 };
 use axum::{
     Router,
@@ -42,9 +43,9 @@ fn timestamp(now: f64) -> Result<String, read_api::Error> {
 }
 async fn list(State(state): State<Arc<AppState>>, RawQuery(query): RawQuery) -> Response {
     if read_api::no_parameters(query.as_deref()).is_err() {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
-    read_http::execute(state, Access::Read, move |api, _| {
+    http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
         service(api)?.debug_list().map_err(Into::into)
     })
     .await
@@ -55,9 +56,9 @@ async fn show(
     RawQuery(query): RawQuery,
 ) -> Response {
     if read_api::no_parameters(query.as_deref()).is_err() {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
-    read_http::execute(state, Access::Read, move |api, _| {
+    http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
         service(api)?.debug_status(&id).map_err(Into::into)
     })
     .await
@@ -68,7 +69,7 @@ async fn create(
     body: Bytes,
 ) -> Response {
     if read_api::no_parameters(query.as_deref()).is_err() {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
     let request = match ml_exp_core::json::mapping(&body)
         .ok()
@@ -78,11 +79,11 @@ async fn create(
         .filter(|v| v.validate().is_ok())
     {
         Some(r) => r,
-        None => return read_http::failure(invalid()),
+        None => return http_effect::failure(invalid()),
     };
-    read_http::execute_timeout(
+    http_effect::execute_timeout(
         state,
-        Access::Write,
+        OnTimeout::Effect,
         std::time::Duration::from_secs(180),
         move |api, now| {
             service(api)?
@@ -99,23 +100,23 @@ async fn change(
     body: Bytes,
 ) -> Response {
     if read_api::no_parameters(query.as_deref()).is_err() {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
     let Ok(m) = ml_exp_core::json::mapping(&body) else {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     };
     let expected = match op.as_str() {
         "refresh" => json!({}),
         "stop" => json!({"confirmation":format!("STOP {id}")}),
         "delete" => json!({"confirmation":format!("DELETE {id}")}),
-        _ => return read_http::failure(invalid()),
+        _ => return http_effect::failure(invalid()),
     };
     if Value::Object(m) != expected {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
-    read_http::execute_timeout(
+    http_effect::execute_timeout(
         state,
-        Access::Write,
+        OnTimeout::Effect,
         std::time::Duration::from_secs(180),
         move |api, now| {
             let service = service(api)?;

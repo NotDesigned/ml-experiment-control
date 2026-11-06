@@ -1,6 +1,7 @@
 use crate::{
-    AppState, read_api,
-    read_http::{self, Access},
+    AppState,
+    http_effect::{self, OnTimeout},
+    read_api,
 };
 use axum::{
     Router,
@@ -44,7 +45,7 @@ async fn worker_read(
     uri: axum::http::Uri,
 ) -> Response {
     if read_api::no_parameters(raw.as_deref()).is_err() {
-        return read_http::failure(read_api::Error {
+        return http_effect::failure(read_api::Error {
             status: 422,
             code: "INVALID_WORKER_EXCHANGE",
             detail: "worker reads take no query parameters",
@@ -61,13 +62,13 @@ async fn worker_read(
         None
     };
     let Some(token) = token else {
-        return read_http::failure(read_api::Error {
+        return http_effect::failure(read_api::Error {
             status: 401,
             code: "WORKER_AUTH_REQUIRED",
             detail: "Attempt worker authentication required",
         });
     };
-    read_http::execute(state, Access::Read, move |api, _| {
+    http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
         let cloud = api.cloud().ok_or(read_api::Error {
             status: 501,
             code: "WORKER_EXCHANGE_NOT_CONFIGURED",
@@ -100,7 +101,7 @@ async fn artifact(
             .and_then(|_| ml_exp_core::identity::validate_attempt(&attempt))
             .is_err()
     {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
     let values: Vec<_> = headers.get_all("authorization").iter().collect();
     let token = if values.len() == 1 {
@@ -113,7 +114,7 @@ async fn artifact(
         None
     };
     let Some(token) = token else {
-        return read_http::failure(read_api::Error {
+        return http_effect::failure(read_api::Error {
             status: 401,
             code: "WORKER_AUTH_REQUIRED",
             detail: "Attempt worker authentication required",
@@ -125,11 +126,11 @@ async fn artifact(
             .and_then(|v| serde_json::from_value(serde_json::Value::Object(v)).ok())
         {
             Some(r) => r,
-            None => return read_http::failure(invalid()),
+            None => return http_effect::failure(invalid()),
         };
-    read_http::execute_timeout(
+    http_effect::execute_timeout(
         state,
-        Access::Write,
+        OnTimeout::Effect,
         std::time::Duration::from_secs(3600),
         move |api, now| {
             let cloud = api.cloud().ok_or(read_api::Error {
@@ -166,7 +167,7 @@ async fn receive(
             .and_then(|_| ml_exp_core::identity::validate_attempt(&attempt))
             .is_err()
     {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
     let values: Vec<_> = headers.get_all("authorization").iter().collect();
     let token = if values.len() == 1 {
@@ -179,7 +180,7 @@ async fn receive(
         None
     };
     let Some(token) = token else {
-        return read_http::failure(read_api::Error {
+        return http_effect::failure(read_api::Error {
             status: 401,
             code: "WORKER_AUTH_REQUIRED",
             detail: "Attempt worker authentication required",
@@ -190,9 +191,9 @@ async fn receive(
         .and_then(|v| serde_json::from_value(serde_json::Value::Object(v)).ok())
     {
         Some(p) => p,
-        None => return read_http::failure(invalid()),
+        None => return http_effect::failure(invalid()),
     };
-    read_http::execute(state, Access::Write, move |api, now| {
+    http_effect::execute(state, OnTimeout::Effect, move |api, now| {
         let cloud = api.cloud().ok_or(read_api::Error {
             status: 501,
             code: "WORKER_EXCHANGE_NOT_CONFIGURED",
@@ -224,7 +225,7 @@ async fn dataset(
         || body.as_ref() != b"{}"
         || !ml_exp_core::datasets::asset_id(&asset)
     {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
     let values: Vec<_> = headers.get_all("authorization").iter().collect();
     let token = if values.len() == 1 {
@@ -237,13 +238,13 @@ async fn dataset(
         None
     };
     let Some(token) = token else {
-        return read_http::failure(read_api::Error {
+        return http_effect::failure(read_api::Error {
             status: 401,
             code: "WORKER_AUTH_REQUIRED",
             detail: "Attempt worker authentication required",
         });
     };
-    read_http::execute(state, Access::Read, move |api, _| {
+    http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
         api.cloud()
             .ok_or_else(invalid)?
             .dataset_ticket(&project, &run, &attempt, &token, &asset, part)

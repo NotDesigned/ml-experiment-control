@@ -1,6 +1,7 @@
 use crate::{
-    AppState, read_api,
-    read_http::{self, Access},
+    AppState,
+    http_effect::{self, OnTimeout},
+    read_api,
 };
 use axum::{
     Router,
@@ -43,9 +44,9 @@ async fn list(
     RawQuery(query): RawQuery,
 ) -> Response {
     if read_api::no_parameters(query.as_deref()).is_err() {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
-    read_http::execute(state, Access::Read, move |api, _| {
+    http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
         service(api)?.runtimes(&project).map_err(Into::into)
     })
     .await
@@ -59,16 +60,16 @@ async fn prepare(
     if ml_exp_core::identity::validate_id(&project).is_err()
         || read_api::no_parameters(query.as_deref()).is_err()
     {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
     let request: ml_exp_core::cloud::build::Definition = match ml_exp_core::json::mapping(&body)
         .ok()
         .and_then(|v| serde_json::from_value(Value::Object(v)).ok())
     {
         Some(r) => r,
-        None => return read_http::failure(invalid()),
+        None => return http_effect::failure(invalid()),
     };
-    read_http::execute(state, Access::Write, move |api, _| {
+    http_effect::execute(state, OnTimeout::Effect, move |api, _| {
         service(api)?
             .prepare_runtime(&project, request)
             .map_err(Into::into)
@@ -81,9 +82,9 @@ async fn show(
     RawQuery(query): RawQuery,
 ) -> Response {
     if read_api::no_parameters(query.as_deref()).is_err() {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
-    read_http::execute(state, Access::Read, move |api, _| {
+    http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
         service(api)?
             .runtime_status(&project, &runtime)
             .map_err(Into::into)
@@ -98,9 +99,9 @@ async fn observe(
     if !matches!(operation.as_str(), "logs" | "progress")
         || read_api::no_parameters(query.as_deref()).is_err()
     {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
-    read_http::execute(state, Access::Read, move |api, _| {
+    http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
         service(api)?
             .runtime_logs(&project, &runtime, operation == "progress")
             .map_err(Into::into)
@@ -114,19 +115,19 @@ async fn change(
     body: Bytes,
 ) -> Response {
     if read_api::no_parameters(query.as_deref()).is_err() {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
     let request = match ml_exp_core::json::mapping(&body) {
         Ok(m) => Value::Object(m),
-        Err(_) => return read_http::failure(invalid()),
+        Err(_) => return http_effect::failure(invalid()),
     };
     let execute = operation == "execute";
     if !(execute && request == json!({"confirmation":format!("BUILD {runtime}")})
         || matches!(operation.as_str(), "reconcile" | "materialize") && request == json!({}))
     {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
-    read_http::execute(state, Access::Write, move |api, _| {
+    http_effect::execute(state, OnTimeout::Effect, move |api, _| {
         let service = service(api)?;
         if execute {
             service.execute_runtime(&project, &runtime, &format!("BUILD {runtime}"))

@@ -1,6 +1,7 @@
 use crate::{
-    AppState, read_api,
-    read_http::{self, Access},
+    AppState,
+    http_effect::{self, OnTimeout},
+    read_api,
 };
 use axum::{
     Router,
@@ -19,9 +20,9 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
 }
 async fn list(State(state): State<Arc<AppState>>, RawQuery(query): RawQuery) -> Response {
     if read_api::no_parameters(query.as_deref()).is_err() {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
-    read_http::execute(state, Access::Read, move |api, _| {
+    http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
         let mut rows = api.submissions().map(|s| s.catalogue()).unwrap_or_default();
         if let Some(cloud) = api.cloud() {
             rows.extend(cloud.catalogue()?);
@@ -58,7 +59,7 @@ async fn refresh(
     body: Bytes,
 ) -> Response {
     if body.as_ref() != b"{}" {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
     observe(state, executor, query, true).await
 }
@@ -71,11 +72,11 @@ async fn observe(
     if ml_exp_core::identity::validate_id(&executor).is_err()
         || read_api::no_parameters(query.as_deref()).is_err()
     {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
-    read_http::execute_timeout(
+    http_effect::execute_timeout(
         state,
-        Access::Read,
+        OnTimeout::NoEffect,
         std::time::Duration::from_secs(120),
         move |api, _| {
             let (now, _) = crate::projects::transition_context()?;

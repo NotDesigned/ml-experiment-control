@@ -2,8 +2,9 @@
 //! configuration by Service; requests cannot import arbitrary files or code.
 use super::{Operation, Service, transition_context};
 use crate::{
-    AppState, read_api,
-    read_http::{self, Access},
+    AppState,
+    http_effect::{self, OnTimeout},
+    read_api,
 };
 use axum::{
     Router,
@@ -125,9 +126,12 @@ impl RegisterRequest {
 
 async fn list(State(state): State<Arc<AppState>>, RawQuery(query): RawQuery) -> Response {
     if let Err(error) = read_api::no_parameters(query.as_deref()) {
-        return read_http::failure(error);
+        return http_effect::failure(error);
     }
-    read_http::execute(state, Access::Read, |api, _| api.project_lifecycle_read()).await
+    http_effect::execute(state, OnTimeout::NoEffect, |api, _| {
+        api.project_lifecycle_read()
+    })
+    .await
 }
 async fn register(
     State(state): State<Arc<AppState>>,
@@ -140,9 +144,9 @@ async fn register(
     })();
     let (path, revision) = match parsed {
         Ok(value) => value,
-        Err(error) => return read_http::failure(error),
+        Err(error) => return http_effect::failure(error),
     };
-    read_http::execute(state, Access::Write, move |api, _| {
+    http_effect::execute(state, OnTimeout::Project, move |api, _| {
         let service = service(api)?;
         let (now, id) = transition_context().map_err(read_api::Error::from)?;
         service
@@ -164,9 +168,9 @@ async fn unregister_all(
     })();
     let request = match parsed {
         Ok(value) => value,
-        Err(error) => return read_http::failure(error),
+        Err(error) => return http_effect::failure(error),
     };
-    read_http::execute(state, Access::Write, move |api, _| {
+    http_effect::execute(state, OnTimeout::Project, move |api, _| {
         let service = service(api)?;
         let (now, id) = transition_context().map_err(read_api::Error::from)?;
         service
@@ -216,9 +220,9 @@ async fn action(
     })();
     let (operation, revision) = match parsed {
         Ok(value) => value,
-        Err(error) => return read_http::failure(error),
+        Err(error) => return http_effect::failure(error),
     };
-    read_http::execute(state, Access::Write, move |api, _| {
+    http_effect::execute(state, OnTimeout::Project, move |api, _| {
         let service = service(api)?;
         let (now, id) = transition_context().map_err(read_api::Error::from)?;
         service

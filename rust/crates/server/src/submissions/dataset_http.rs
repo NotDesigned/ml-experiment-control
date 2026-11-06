@@ -1,8 +1,9 @@
 //! Acquire bounded ingress capacity before reading a dataset part. No payload
 //! file is created on the API host; durable acknowledgement belongs to gateway.
 use crate::{
-    AppState, read_api,
-    read_http::{self, Access},
+    AppState,
+    http_effect::{self, OnTimeout},
+    read_api,
 };
 use axum::{
     Router,
@@ -48,21 +49,21 @@ async fn import_oss(
     request: Request,
 ) -> Response {
     if let Err(e) = scope(&project, &executor, None, raw.as_deref()) {
-        return read_http::failure(e);
+        return http_effect::failure(e);
     }
     let (body, permit) = match ingress(&state, request, 8192).await {
         Ok(value) => value,
-        Err(e) => return read_http::failure(e),
+        Err(e) => return http_effect::failure(e),
     };
     let source = ml_exp_core::json::mapping(&body)
         .ok()
         .and_then(|v| serde_json::from_value::<datasets::oss::Import>(Value::Object(v)).ok());
     let Some(source) = source.filter(|v| v.validate().is_ok()) else {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     };
-    read_http::execute_timeout(
+    http_effect::execute_timeout(
         state,
-        Access::Write,
+        OnTimeout::Effect,
         Duration::from_secs(1230),
         move |api, _| {
             let _permit = permit;
@@ -94,9 +95,9 @@ async fn list(
     RawQuery(raw): RawQuery,
 ) -> Response {
     if let Err(e) = scope(&project, &executor, None, raw.as_deref()) {
-        return read_http::failure(e);
+        return http_effect::failure(e);
     }
-    read_http::execute(state, Access::Read, move |api, _| {
+    http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
         if let Some(cloud) = api.cloud().filter(|c| c.accepts(&executor)) {
             return cloud.dataset_list(&project, &executor).map_err(Into::into);
         }
@@ -126,9 +127,9 @@ async fn status(
     RawQuery(raw): RawQuery,
 ) -> Response {
     if let Err(e) = scope(&project, &executor, Some(&asset), raw.as_deref()) {
-        return read_http::failure(e);
+        return http_effect::failure(e);
     }
-    read_http::execute(state, Access::Read, move |api, _| {
+    http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
         if let Some(cloud) = api.cloud().filter(|c| c.accepts(&executor)) {
             return cloud
                 .dataset_state(&project, &executor, &asset)
@@ -178,9 +179,9 @@ async fn transfer(
     payload: Vec<u8>,
     permit: tokio::sync::OwnedSemaphorePermit,
 ) -> Response {
-    read_http::execute_timeout(
+    http_effect::execute_timeout(
         state,
-        Access::Write,
+        OnTimeout::Effect,
         Duration::from_secs(1230),
         move |api, _| {
             let _permit = permit;
@@ -208,17 +209,17 @@ async fn begin(
     request: Request,
 ) -> Response {
     if let Err(e) = scope(&project, &executor, None, raw.as_deref()) {
-        return read_http::failure(e);
+        return http_effect::failure(e);
     }
     let (body, permit) = match ingress(&state, request, datasets::MAX_METADATA / 2).await {
         Ok(v) => v,
-        Err(e) => return read_http::failure(e),
+        Err(e) => return http_effect::failure(e),
     };
     let definition = ml_exp_core::json::mapping(&body)
         .ok()
         .and_then(|value| serde_json::from_value::<Definition>(Value::Object(value)).ok());
     let Some(definition) = definition.filter(|d| d.validate().is_ok()) else {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     };
     transfer(
         state,
@@ -237,17 +238,17 @@ async fn part(
     request: Request,
 ) -> Response {
     if let Err(e) = scope(&project, &executor, Some(&asset), raw.as_deref()) {
-        return read_http::failure(e);
+        return http_effect::failure(e);
     }
     if number >= ml_exp_core::multipart::MAX_PARTS
         || ml_exp_core::sources::validate_archive_digest(&sha256).is_err()
     {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
     let (body, permit) =
         match ingress(&state, request, ml_exp_core::multipart::PART_BYTES as usize).await {
             Ok(v) => v,
-            Err(e) => return read_http::failure(e),
+            Err(e) => return http_effect::failure(e),
         };
     let command = Command::Part {
         asset_id: asset,
@@ -264,14 +265,14 @@ async fn complete(
     request: Request,
 ) -> Response {
     if let Err(e) = scope(&project, &executor, Some(&asset), raw.as_deref()) {
-        return read_http::failure(e);
+        return http_effect::failure(e);
     }
     let (body, permit) = match ingress(&state, request, 1).await {
         Ok(v) => v,
-        Err(e) => return read_http::failure(e),
+        Err(e) => return http_effect::failure(e),
     };
     if !body.is_empty() {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
     transfer(
         state,

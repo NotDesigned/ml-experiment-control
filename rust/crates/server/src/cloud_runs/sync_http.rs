@@ -1,6 +1,7 @@
 use crate::{
-    AppState, read_api,
-    read_http::{self, Access},
+    AppState,
+    http_effect::{self, OnTimeout},
+    read_api,
 };
 use axum::{
     Router,
@@ -59,14 +60,14 @@ async fn provider_diagnostics(
     body: Bytes,
 ) -> Response {
     let Some(lines) = diagnostic_lines(query.as_deref()) else {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     };
     if !empty(&body, true) {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
-    read_http::execute_timeout(
+    http_effect::execute_timeout(
         state,
-        Access::Read,
+        OnTimeout::NoEffect,
         std::time::Duration::from_secs(120),
         move |api, _| {
             api.cloud()
@@ -84,14 +85,14 @@ async fn data_provider_diagnostics(
     body: Bytes,
 ) -> Response {
     let Some(lines) = diagnostic_lines(query.as_deref()) else {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     };
     if !empty(&body, true) {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
-    read_http::execute_timeout(
+    http_effect::execute_timeout(
         state,
-        Access::Read,
+        OnTimeout::NoEffect,
         std::time::Duration::from_secs(120),
         move |api, _| {
             api.cloud()
@@ -111,14 +112,14 @@ async fn diagnose_sync(
 ) -> Response {
     let execute = method == Method::POST;
     if read_api::no_parameters(query.as_deref()).is_err() || !empty(&body, execute) {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
-    read_http::execute_timeout(
+    http_effect::execute_timeout(
         state,
         if execute {
-            Access::Submission
+            OnTimeout::Submission
         } else {
-            Access::Read
+            OnTimeout::NoEffect
         },
         std::time::Duration::from_secs(120),
         move |api, now| {
@@ -139,14 +140,14 @@ async fn diagnose_data(
 ) -> Response {
     let execute = method == Method::POST;
     if read_api::no_parameters(query.as_deref()).is_err() || !empty(&body, execute) {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
-    read_http::execute_timeout(
+    http_effect::execute_timeout(
         state,
         if execute {
-            Access::Submission
+            OnTimeout::Submission
         } else {
-            Access::Read
+            OnTimeout::NoEffect
         },
         std::time::Duration::from_secs(120),
         move |api, now| {
@@ -176,16 +177,16 @@ async fn show(
     RawQuery(query): RawQuery,
 ) -> Response {
     if read_api::no_parameters(query.as_deref()).is_err() {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
     let check = ml_exp_core::cloud::exchange::Sync {
         request_id: request.clone(),
         confirmation: format!("SYNC {action}"),
     };
     if check.validate(&action).is_err() {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
-    read_http::execute(state, Access::Read, move |api, now| {
+    http_effect::execute(state, OnTimeout::NoEffect, move |api, now| {
         api.cloud()
             .ok_or_else(invalid)?
             .sync_status(&action, &request, &clock(now)?)
@@ -200,21 +201,21 @@ async fn retry(
     body: Bytes,
 ) -> Response {
     if read_api::no_parameters(query.as_deref()).is_err() {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
     let retry: ml_exp_core::cloud::exchange::SyncRetry = match ml_exp_core::json::mapping(&body)
         .ok()
         .and_then(|m| serde_json::from_value(serde_json::Value::Object(m)).ok())
     {
         Some(r) => r,
-        None => return read_http::failure(invalid()),
+        None => return http_effect::failure(invalid()),
     };
     if retry.validate(&action, &request).is_err() {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
-    read_http::execute_timeout(
+    http_effect::execute_timeout(
         state,
-        Access::Submission,
+        OnTimeout::Submission,
         std::time::Duration::from_secs(120),
         move |api, now| {
             api.cloud()

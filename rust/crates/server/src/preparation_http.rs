@@ -1,6 +1,7 @@
 use crate::{
-    AppState, read_api,
-    read_http::{self, Access},
+    AppState,
+    http_effect::{self, OnTimeout},
+    read_api,
 };
 use axum::{
     Router,
@@ -48,9 +49,9 @@ async fn discover(
     RawQuery(query): RawQuery,
 ) -> Response {
     if read_api::no_parameters(query.as_deref()).is_err() {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
-    read_http::execute(state, Access::Read, move |api, now| {
+    http_effect::execute(state, OnTimeout::NoEffect, move |api, now| {
         if let Some(cloud) = api.cloud() {
             if let Some(value) = cloud.experiment_for_run(&project, &run)? {
                 return Ok(value);
@@ -81,19 +82,19 @@ async fn prepare(
     body: Bytes,
 ) -> Response {
     if read_api::no_parameters(query.as_deref()).is_err() {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
     let request: ml_exp_core::preparation::Request = match ml_exp_core::json::mapping(&body)
         .ok()
         .and_then(|m| serde_json::from_value(Value::Object(m)).ok())
     {
         Some(r) => r,
-        None => return read_http::failure(invalid()),
+        None => return http_effect::failure(invalid()),
     };
     if request.validate(&project).is_err() {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
-    read_http::execute(state, Access::Write, move |api, _| {
+    http_effect::execute(state, OnTimeout::Effect, move |api, _| {
         service(api)?
             .experiment_prepare(&project, request, api.submissions().as_deref())
             .map_err(Into::into)
@@ -106,9 +107,9 @@ async fn show(
     RawQuery(query): RawQuery,
 ) -> Response {
     if read_api::no_parameters(query.as_deref()).is_err() {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
-    read_http::execute(state, Access::Read, move |api, _| {
+    http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
         service(api)?
             .experiment_status(&project, &id)
             .map_err(Into::into)
@@ -122,15 +123,15 @@ async fn advance(
     body: Bytes,
 ) -> Response {
     if read_api::no_parameters(query.as_deref()).is_err() {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
     let confirmation = format!("PREPARE {id}");
     if ml_exp_core::json::mapping(&body).ok().map(Value::Object)
         != Some(json!({"confirmation":confirmation}))
     {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
-    read_http::execute(state, Access::RunCreate, move |api, _| {
+    http_effect::execute(state, OnTimeout::RunCreate, move |api, _| {
         let (now, transition) = crate::projects::transition_context()?;
         let timestamp =
             time::OffsetDateTime::parse(&now, &time::format_description::well_known::Rfc3339)

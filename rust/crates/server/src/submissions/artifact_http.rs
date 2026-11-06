@@ -1,7 +1,7 @@
 //! The download endpoint is intentionally the one GET that reads backend bytes.
 //! It neither publishes metadata nor acknowledges a successful download.
 use super::http::service;
-use crate::{AppState, read_api, read_http};
+use crate::{AppState, http_effect, read_api};
 use axum::{
     body::{Body, Bytes},
     extract::{Path, RawQuery, State},
@@ -29,25 +29,25 @@ pub(crate) async fn download(
     RawQuery(raw): RawQuery,
 ) -> Response {
     let Ok(Path((identity, sha256))) = path else {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     };
     if ml_exp_core::operations::validate_action_id(&identity).is_err()
         || ml_exp_core::sources::validate_archive_digest(&sha256).is_err()
     {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     }
     if let Err(error) = read_api::no_parameters(raw.as_deref()) {
-        return read_http::failure(error);
+        return http_effect::failure(error);
     }
     let Some(api) = state.reads.clone() else {
-        return read_http::failure(invalid());
+        return http_effect::failure(invalid());
     };
     let service = match service(&api) {
         Ok(s) => s,
-        Err(e) => return read_http::failure(e),
+        Err(e) => return http_effect::failure(e),
     };
     let Ok(permit) = state.read_slots.clone().try_acquire_owned() else {
-        return read_http::failure(read_api::Error {
+        return http_effect::failure(read_api::Error {
             status: 429,
             code: "DOWNLOAD_BUSY",
             detail: "download concurrency limit reached",
@@ -64,9 +64,9 @@ pub(crate) async fn download(
     let (download, bytes, permit) = match tokio::time::timeout(Duration::from_secs(35), task).await
     {
         Ok(Ok(Ok(v))) => v,
-        Ok(Ok(Err(e))) => return read_http::failure(e.into()),
+        Ok(Ok(Err(e))) => return http_effect::failure(e.into()),
         _ => {
-            return read_http::failure(read_api::Error {
+            return http_effect::failure(read_api::Error {
                 status: 503,
                 code: "ARTIFACT_STREAM_UNAVAILABLE",
                 detail: "backend stream could not be opened; no download acknowledgement was sent",
