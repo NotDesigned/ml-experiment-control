@@ -1,5 +1,6 @@
-//! Native signed REST effect shell. One HTTP request, no redirects, environment
-//! proxy, credential logging, implicit mutation retry or provider CLI.
+//! The cloud backend. This file is the native signed REST effect shell: one HTTP
+//! request, no redirects, environment proxy, credential logging, implicit mutation
+//! retry or provider CLI. `action` and `outbox` run it; `service` sits above.
 pub mod action;
 pub mod adapter;
 mod evidence;

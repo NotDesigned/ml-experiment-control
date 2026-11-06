@@ -1,14 +1,10 @@
 //! Trusted operator configuration; clients never supply SSH commands or image
 //! materialization receipts. Parsing is pure and opening files is explicit.
 use super::{Backend, Error};
-use crate::backends::slurm::{Budget, SshConfig};
+use crate::backends::slurm::{Budget, Ssh, SshConfig};
 use ml_exp_core::first_submission::native::{Profile, Runtime};
 use serde::Deserialize;
-use std::{
-    collections::BTreeMap,
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::{collections::BTreeMap, path::Path, time::Duration};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -32,19 +28,6 @@ pub struct Definition {
     pub data_helper_config: Option<String>,
     #[serde(default)]
     pub script_preparation: bool,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Ssh {
-    pub binary: PathBuf,
-    pub config_file: PathBuf,
-    pub known_hosts_file: PathBuf,
-    pub helper_path: String,
-    pub helper_config_path: String,
-    pub local_cwd: PathBuf,
-    pub agent_socket: Option<PathBuf>,
-    pub timeout_seconds: u32,
-    pub connect_timeout_seconds: u32,
 }
 impl Settings {
     pub fn from_slice(bytes: &[u8]) -> Result<Self, Error> {

@@ -16,7 +16,7 @@ pub struct Settings {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Materializer {
-    pub ssh: crate::submissions::config::Ssh,
+    pub ssh: crate::backends::slurm::Ssh,
     pub target: helper::Target,
     pub ssh_alias: String,
 }
