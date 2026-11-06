@@ -34,7 +34,7 @@ See [platform checks](platform-checks.md) for the distinction between user
 requirements, implementation limits and additional platform policies under review.
 
 The final image does not need Python to train: jobs start the statically linked
-worker, or on Slurm without a managed worker the Run's `command` directly, so training
+worker, so training
 code can use any language the image provides. The appended layer runs `chmod` through a shell, so the final stage needs
 `/bin/sh` and `chmod`. SenseCore ACP wraps the job in
 `timeout --signal=TERM --kill-after=30s`, so ACP images need a `timeout` accepting

@@ -182,19 +182,14 @@ pub fn run(config: Config, mut request: Request) -> std::io::Result<serde_json::
         sif_path: image.to_str().ok_or_else(invalid)?.into(),
         sif_sha256: format!("sha256:{sha}"),
         oci_image: request.runtime.image.clone(),
-        source_dir: Some(request.runtime.source_dir.clone()),
-        worker: Some(managed::Runtime {
+        source_dir: request.runtime.source_dir.clone(),
+        worker: managed::Runtime {
             program: request.runtime.worker_path.clone(),
             base_environment: BTreeMap::new(),
             runtime_environment: vec!["CUDA_VISIBLE_DEVICES".into(), "LD_LIBRARY_PATH".into()],
-        }),
+        },
     };
-    runtime
-        .worker
-        .as_ref()
-        .ok_or_else(invalid)?
-        .validate()
-        .map_err(|_| invalid())?;
+    runtime.worker.validate().map_err(|_| invalid())?;
     ml_exp_io::directory::seal_regular(&file, false)?;
     let receipt = Receipt { request, runtime };
     directory.publish_new(OsStr::new("receipt.json"), &serde_json::to_vec(&receipt)?)?;

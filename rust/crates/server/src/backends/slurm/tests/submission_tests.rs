@@ -72,8 +72,12 @@ impl Fixture {
         )
         .unwrap();
         let runtime = Runtime {
-            worker: None,
-            source_dir: None,
+            worker: ml_exp_core::slurm::managed::Runtime {
+                program: "/opt/ml-expd/bin/ml-exp-worker-rs".into(),
+                base_environment: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
+                runtime_environment: Vec::new(),
+            },
+            source_dir: "/workspace".into(),
             runtime_id: format!("runtime.{}", "2".repeat(64)),
             source_id: source_id.clone(),
             image_id: image.clone(),
@@ -756,11 +760,7 @@ fn prepared_submission_is_not_reused_or_authorized_after_a_project_edit() {
 fn project_edit_leaves_a_running_attempt_observable_and_cancellable() {
     let mut f = Fixture::new();
     let workdir = f.root.path().join("code");
-    f.runtime.worker = Some(ml_exp_core::slurm::managed::Runtime {
-        program: "/opt/ml-expd/bin/ml-exp-worker-rs".into(),
-        base_environment: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
-        runtime_environment: Vec::new(),
-    });
+    f.runtime.source_dir = workdir.to_str().unwrap().into();
     for filename in ["manifest.json", "attempts/attempt-001/attempt.json"] {
         let path = f.root.path().join("project/runs/train").join(filename);
         let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -1263,17 +1263,16 @@ fn immutable_run_creation_reuses_exact_metadata_and_admits_first_submission_afte
 fn newly_materialized_image_keeps_its_source_directory_through_the_launch_package() {
     let mut f = Fixture::new();
     let original = serde_json::to_value(&f.runtime).unwrap();
-    assert!(original.get("source_dir").is_none());
     assert_eq!(
         serde_json::to_value(serde_json::from_value::<Runtime>(original.clone()).unwrap()).unwrap(),
         original
     );
-    f.runtime.source_dir = Some("/ml-expd/source".into());
-    f.runtime.worker = Some(ml_exp_core::slurm::managed::Runtime {
-        program: "/usr/local/bin/ml-exp-worker-rs".into(),
-        base_environment: BTreeMap::new(),
-        runtime_environment: Vec::new(),
-    });
+    for field in ["worker", "source_dir"] {
+        let mut partial = original.clone();
+        partial.as_object_mut().unwrap().remove(field);
+        assert!(serde_json::from_value::<Runtime>(partial).is_err());
+    }
+    f.runtime.source_dir = "/ml-expd/source".into();
     let mut request = creation_request(&f);
     request.command = vec!["/usr/local/bin/python".into(), "train.py".into()];
     let service = f.service("ledger", true).with_run_creation(true).unwrap();
@@ -1492,17 +1491,11 @@ fn competing_run_creators_and_deletion_fence_cannot_replace_an_identity() {
 #[test]
 fn trusted_image_worker_changes_only_launch_entry_and_keeps_scientific_command_frozen() {
     let mut f = Fixture::new();
-    assert!(
-        serde_json::to_value(&f.runtime)
-            .unwrap()
-            .get("worker")
-            .is_none()
-    );
-    f.runtime.worker = Some(ml_exp_core::slurm::managed::Runtime {
+    f.runtime.worker = ml_exp_core::slurm::managed::Runtime {
         program: "/opt/ml-expd/bin/ml-exp-worker-rs".into(),
         base_environment: BTreeMap::from([("PATH".into(), "/opt/venv/bin:/usr/bin:/bin".into())]),
         runtime_environment: vec!["CUDA_VISIBLE_DEVICES".into()],
-    });
+    };
     let service = f.service("ledger", true);
     service
         .prepare("demo", "train", approval(), context(1))
@@ -1538,11 +1531,7 @@ fn trusted_image_worker_changes_only_launch_entry_and_keeps_scientific_command_f
 fn backend_checkpoint_registration_and_explicit_new_run_restore_are_scoped_and_immutable() {
     let mut f = Fixture::new();
     let workdir = f.root.path().join("code");
-    f.runtime.worker = Some(ml_exp_core::slurm::managed::Runtime {
-        program: "/opt/ml-expd/bin/ml-exp-worker-rs".into(),
-        base_environment: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
-        runtime_environment: Vec::new(),
-    });
+    f.runtime.source_dir = workdir.to_str().unwrap().into();
     let ready = json!({"step":4,"files":[{"path":"checkpoints/step-4/state.bin","bytes":7,"sha256":"9a129038d9a00aed0cf6a7ea059ca50a813449061ab87848cf1a13eafdf33b2c"}]});
     for filename in ["manifest.json", "attempts/attempt-001/attempt.json"] {
         let path = f.root.path().join("project/runs/train").join(filename);
@@ -1663,7 +1652,7 @@ fn backend_checkpoint_registration_and_explicit_new_run_restore_are_scoped_and_i
             attempt_id: "attempt-001".into(),
         },
         &spec,
-        f.runtime.worker.as_ref().unwrap(),
+        &f.runtime.worker,
         Some(&document),
     )
     .unwrap();
@@ -1676,7 +1665,7 @@ fn backend_checkpoint_registration_and_explicit_new_run_restore_are_scoped_and_i
             attempt_id: "attempt-001".into(),
         },
         &spec,
-        f.runtime.worker.as_ref().unwrap(),
+        &f.runtime.worker,
         Some(&reordered),
     )
     .unwrap();
@@ -1762,11 +1751,7 @@ fn backend_checkpoint_registration_and_explicit_new_run_restore_are_scoped_and_i
 fn exact_worker_refresh_survives_restart_and_never_changes_submission_or_retrains() {
     let mut f = Fixture::new();
     let workdir = f.root.path().join("code");
-    f.runtime.worker = Some(ml_exp_core::slurm::managed::Runtime {
-        program: "/opt/ml-expd/bin/ml-exp-worker-rs".into(),
-        base_environment: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
-        runtime_environment: Vec::new(),
-    });
+    f.runtime.source_dir = workdir.to_str().unwrap().into();
     for filename in ["manifest.json", "attempts/attempt-001/attempt.json"] {
         let path = f.root.path().join("project/runs/train").join(filename);
         let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();

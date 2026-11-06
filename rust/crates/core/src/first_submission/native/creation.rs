@@ -157,9 +157,6 @@ pub fn plan(
         &profile.data_root,
     )
     .map_err(|_| Error("dataset receipt scope"))?;
-    if !datasets.is_empty() && runtime.worker.is_none() {
-        return Err(Error("datasets require managed worker"));
-    }
     let spec = slurm::JobSpec {
         run_id: request.run_id.clone(),
         attempt_id: "attempt-001".into(),
@@ -193,8 +190,8 @@ pub fn plan(
         },
         resources: request.resources.clone(),
         execution: slurm::ExecutionConfig {
-            source_mount: runtime.source_dir.as_deref().unwrap_or("/workspace").into(),
-            workdir: runtime.source_dir.as_deref().unwrap_or("/workspace").into(),
+            source_mount: runtime.source_dir.clone(),
+            workdir: runtime.source_dir.clone(),
             managed_io: true,
             env: request.env.clone(),
         },
@@ -222,9 +219,6 @@ pub fn plan(
                 &profile.run_root,
             )
             .map_err(|_| Error("checkpoint scope or identity"))?;
-            if runtime.worker.is_none() {
-                return Err(Error("checkpoint restore requires managed worker"));
-            }
             protocol["resume_from"] = json!(reference);
         }
         (None, None) => {}
@@ -249,9 +243,6 @@ pub fn plan(
         run["artifacts"] = json!(policy);
     }
     if let Some(preparation) = &request.data_preparation {
-        if runtime.worker.is_none() {
-            return Err(Error("data preparation requires a managed worker"));
-        }
         run["data_preparation"] = json!(preparation);
     }
     if !datasets.is_empty() {

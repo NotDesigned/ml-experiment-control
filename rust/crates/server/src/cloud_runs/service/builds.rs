@@ -598,7 +598,7 @@ impl Service {
                     .1
             || !helper::valid_digest(&runtime.sif_sha256)
             || !ml_exp_core::slurm::absolute_path(&runtime.sif_path)
-            || runtime.worker.as_ref().map(|w| &w.program) != Some(&expected.worker_path)
+            || runtime.worker.program != expected.worker_path
         {
             return Err(cloud::Error::evidence());
         }
