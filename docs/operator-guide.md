@@ -295,6 +295,10 @@ every command with `registry_predates_clean_restart`, and nothing in it is read 
 changed. A deployment or tracking file with a key the release does not know is refused
 by `--check` and at startup.
 
+Before relying on a new shared filesystem, run the
+[storage probe](../tools/storage_probe/README.md). It establishes whether locks exclude
+across nodes, and other facts the code assumes and no test can show.
+
 ## Project registration and lifecycle
 
 This is the operator registry for indexing and polling, not a prerequisite
