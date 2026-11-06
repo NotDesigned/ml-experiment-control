@@ -298,7 +298,7 @@ fn dispatch(operation: &str, policy: &Policy) -> Result<Dispatch, Error> {
         "SUBMIT_RUN" | "RETRY_ATTEMPT" | "RUN_EVALUATION" | "CANCEL_RUN" => {
             (Dispatch::Scheduler, policy.allow_scheduler_mutations)
         }
-        _ => return Err(Error::State("historical operation is read-only")),
+        _ => return Err(Error::State("operation cannot be dispatched")),
     };
     if allowed {
         Ok(dispatch)
@@ -658,7 +658,7 @@ pub fn reconcile(
         operation,
         "SUBMIT_RUN" | "RETRY_ATTEMPT" | "RUN_EVALUATION" | "CANCEL_RUN"
     ) {
-        return Err(Error::State("historical operation is read-only"));
+        return Err(Error::State("operation cannot be dispatched"));
     }
     // Observation remains allowed when mutation policy is disabled.
     let observed = bound_observation(plan, &evidence.observation);

@@ -19,7 +19,6 @@ pub enum LifecycleState {
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum RegistrationSource {
     ConfigSeed,
-    LegacyOnboarding,
     Onboarding,
     Manual,
 }

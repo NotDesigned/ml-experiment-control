@@ -279,7 +279,7 @@ impl Packet {
                 crate::input_progress::MARKER,
                 serde_json::to_string(input).map_err(|_| Error("input progress"))?
             );
-            if crate::input_progress::parse_line(&line).record.as_ref() != Some(input)
+            if crate::input_progress::parse_line(&line).as_ref() != Some(input)
                 || !config
                     .datasets
                     .iter()

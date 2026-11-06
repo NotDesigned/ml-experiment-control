@@ -23,8 +23,6 @@ impl ProjectDefinition {
                 "campaigns",
                 "metrics_schema",
                 "base_dir",
-                "authored_file",
-                "daemon_run_root",
             ],
         )?;
         let version = fields
@@ -57,11 +55,6 @@ impl ProjectDefinition {
         let base_dir = optional(fields.get("base_dir"), |v| {
             Ok(json!(path_string(&string(Some(v))?)))
         })?;
-        for key in ["authored_file", "daemon_run_root"] {
-            optional(fields.get(key), |v| {
-                Ok(json!(path_string(&string(Some(v))?)))
-            })?;
-        }
         Ok(Self {
             value: json!({"schema_version":1,"project":project,"title":title,"run_roots":run_roots,"controller":controller,"campaigns":campaigns,"metrics_schema":metrics_schema,"base_dir":base_dir}),
         })
