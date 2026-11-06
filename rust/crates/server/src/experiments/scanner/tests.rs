@@ -30,7 +30,7 @@ impl Fixture {
         fs::create_dir_all(temp.path().join("project/runs")).unwrap();
         write(
             &temp.path().join("project/project.json"),
-            br#"{"project":"demo","title":"Synthetic"}"#,
+            br#"{"schema_version":1,"project":"demo","title":"Synthetic"}"#,
         );
         let fence = RunFence::new(temp.path().join("registry"));
         drop(fence.shared().unwrap()); // Explicit synthetic test-only bootstrap.

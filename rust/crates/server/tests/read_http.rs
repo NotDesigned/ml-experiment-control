@@ -505,7 +505,7 @@ fn authentication_and_query_errors_never_echo_request_credentials() {
     // A bare token in ordinary metadata is refused, not leaked or replaced.
     write_json(
         &fixture.project.join("project.json"),
-        &json!({"project":"demo","title":TOKEN}),
+        &json!({"schema_version":1,"project":"demo","title":TOKEN}),
     );
     let response = server.raw("/api/projects", &headers());
     assert_eq!(response.0, 409);
@@ -514,7 +514,7 @@ fn authentication_and_query_errors_never_echo_request_credentials() {
     assert_eq!(server.raw("/api/projects", &headers()), response); // no automatic mutation or repair
     write_json(
         &fixture.project.join("project.json"),
-        &json!({"project":"demo","title":"Synthetic science"}),
+        &json!({"schema_version":1,"project":"demo","title":"Synthetic science"}),
     );
     let journal = records::Store::open(&fixture.registry, &fixture.workspace).unwrap();
     let guard = journal.guard("demo", "train").unwrap();
