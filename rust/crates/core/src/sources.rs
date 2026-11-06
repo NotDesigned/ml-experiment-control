@@ -422,11 +422,7 @@ fn bounded_json(value: &Value) -> Result<()> {
             return Err(Error::Limit);
         }
     }
-    if canonical::python_json_bytes(value)
-        .map_err(|_| Error::Metadata)?
-        .len()
-        > MAX_METADATA_BYTES
-    {
+    if canonical::bytes(value).map_err(|_| Error::Metadata)?.len() > MAX_METADATA_BYTES {
         return Err(Error::Limit);
     }
     Ok(())

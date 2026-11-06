@@ -60,8 +60,7 @@ impl Scope {
 }
 
 pub fn encoded(value: &Value) -> Result<String> {
-    String::from_utf8(canonical::python_json_bytes(value)?)
-        .map_err(|_| Error::Invalid("encoded JSON UTF-8"))
+    Ok(canonical::text(value)?)
 }
 pub fn digest(value: &Value) -> Result<String> {
     Ok(canonical::digest(value)?)

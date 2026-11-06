@@ -1,6 +1,6 @@
 //! Lifecycle registry and project definition outputs over synthetic path evidence.
 use ml_exp_core::{
-    canonical::python_json_bytes,
+    canonical,
     projects::{
         self, Change, LifecycleRecord, PathEvidence, ProjectDefinition, RegistrationSource,
         Registry, Seed,
@@ -216,8 +216,8 @@ fn definitions_fill_defaults_keep_unicode_and_require_a_title() {
         .to_value();
     assert_eq!(actual, case["expected"]["value"]);
     assert_eq!(
-        python_json_bytes(&actual).unwrap(),
-        python_json_bytes(&case["expected"]["value"]).unwrap()
+        canonical::bytes(&actual).unwrap(),
+        canonical::bytes(&case["expected"]["value"]).unwrap()
     );
     let case = literal(
         r#"{"input":{"project":"alpha","run_roots":["runs"]},"expected":{"ok":false,"error_type":"ValidationError"}}"#,

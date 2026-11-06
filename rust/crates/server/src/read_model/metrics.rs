@@ -356,7 +356,7 @@ pub fn merge_metrics(
     for record in all {
         let mut identity = record.as_object().cloned().ok_or(Error::Evidence)?;
         identity.shift_remove("source");
-        let key = canonical::python_json_bytes(&Value::Object(identity))?;
+        let key = canonical::bytes(&Value::Object(identity))?;
         if let Some(index) = keys.get(&key) {
             merged[*index] = record;
         } else {

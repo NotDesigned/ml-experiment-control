@@ -6,7 +6,6 @@ mod python_printability;
 mod result;
 mod schema;
 
-pub use crate::canonical::protocol_identity;
 pub use observation::python_string;
 
 /// Python-reference Unicode printability, shared by pure human presentation.

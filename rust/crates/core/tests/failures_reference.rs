@@ -9,8 +9,8 @@ fn same_json(actual: &Value, expected: &Value) {
     // Canonical bytes compare exact JSON numbers and all other fields, rather
     // than treating those equivalent parser spellings as a mismatch.
     assert_eq!(
-        ml_exp_core::canonical::python_json_bytes(actual).unwrap(),
-        ml_exp_core::canonical::python_json_bytes(expected).unwrap(),
+        ml_exp_core::canonical::bytes(actual).unwrap(),
+        ml_exp_core::canonical::bytes(expected).unwrap(),
     );
 }
 

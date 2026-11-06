@@ -159,8 +159,7 @@ pub fn plan_with_inputs(
         // so API authorship and helper re-reading derive identical bytes.
         checkpoint_restore: restore
             .map(|value| {
-                let bytes = crate::canonical::python_json_bytes(value)
-                    .map_err(|_| helper::Error::Metadata)?;
+                let bytes = crate::canonical::bytes(value).map_err(|_| helper::Error::Metadata)?;
                 serde_json::from_slice(&bytes).map_err(|_| helper::Error::Metadata)
             })
             .transpose()?,

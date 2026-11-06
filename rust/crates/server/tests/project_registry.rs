@@ -1,7 +1,7 @@
 //! Filesystem acceptance of the native project registry. Only synthetic private
 //! temporary roots are used; no scientific files, providers or production state.
 use ml_exp_core::{
-    canonical::python_json_bytes,
+    canonical,
     projects::{LifecycleState, Seed},
 };
 use ml_exp_server::{
@@ -32,7 +32,7 @@ fn write(path: &Path, bytes: &[u8]) {
     fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
 }
 fn encoded(value: &Value) -> Vec<u8> {
-    let mut bytes = python_json_bytes(value).unwrap();
+    let mut bytes = canonical::bytes(value).unwrap();
     bytes.push(b'\n');
     bytes
 }

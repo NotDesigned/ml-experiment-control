@@ -1,7 +1,7 @@
 //! Sealed exact-Attempt launch contract. Validation, encoding and verification
 //! are pure; capability loading, HTTPS and process execution belong to shells.
 use crate::{
-    canonical::python_json_bytes,
+    canonical,
     identity::{validate_attempt, validate_id},
 };
 use serde::{Deserialize, Serialize};
@@ -149,8 +149,7 @@ pub fn encode(document: &Value) -> Result<Vec<u8>, Error> {
     {
         return Err(Error("invalid launch manifest timeout"));
     }
-    let body =
-        python_json_bytes(document).map_err(|_| Error("invalid launch manifest encoding"))?;
+    let body = canonical::bytes(document).map_err(|_| Error("invalid launch manifest encoding"))?;
     if body.len() > MAX_BYTES {
         return Err(Error("launch manifest exceeds size limit"));
     }

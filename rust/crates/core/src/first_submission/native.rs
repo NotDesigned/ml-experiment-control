@@ -486,9 +486,7 @@ pub fn prepare(
     if end <= start || end - start > time::Duration::hours(24) {
         return Err(Error("gate window"));
     }
-    let manifest =
-        String::from_utf8(canonical::python_json_bytes(attempt).map_err(|_| Error("encoding"))?)
-            .map_err(|_| Error("encoding"))?;
+    let manifest = canonical::text(attempt).map_err(|_| Error("encoding"))?;
     let spec = job(attempt, &binding)?;
     let datasets = crate::datasets::document_mounts(
         run,

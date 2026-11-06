@@ -1656,7 +1656,7 @@ fn backend_checkpoint_registration_and_explicit_new_run_restore_are_scoped_and_i
         Some(&document),
     )
     .unwrap();
-    let encoded = ml_exp_core::canonical::python_json_bytes(&document).unwrap();
+    let encoded = ml_exp_core::canonical::bytes(&document).unwrap();
     let reordered: Value = serde_json::from_slice(&encoded).unwrap();
     let other = ml_exp_core::slurm::managed::plan_restoring(
         &helper::Scope {

@@ -63,6 +63,52 @@ fn sense() -> sensecore::Profile {
     }
 }
 #[test]
+fn sync_child_and_retry_tokens_are_deterministic_and_pinned() {
+    let action = "action-0123456789abcdef";
+    let request_id = "0123456789abcdef0123456789abcdef";
+    let sync = exchange::Sync {
+        request_id: request_id.into(),
+        confirmation: format!("SYNC {action}"),
+    };
+    let child = sync.job(&job()).unwrap();
+    assert_eq!(
+        child.submission_token,
+        sync.job(&job()).unwrap().submission_token
+    );
+    assert_eq!(child.submission_token, "d2f7b62b1d29c703c19418947d77d91f");
+    let retry = exchange::SyncRetry {
+        expected_failed_job_id: "dlc-failed-1".into(),
+        confirmation: format!("RETRY SYNC {action} {request_id} dlc-failed-1"),
+    };
+    let again = retry.job(action, request_id, &job()).unwrap();
+    assert_eq!(
+        again.submission_token,
+        retry
+            .job(action, request_id, &job())
+            .unwrap()
+            .submission_token
+    );
+    assert_eq!(again.submission_token, "73fc8327354413352ef45f6c7bae564c");
+    // A request id is 32 hex at the entry points. These pin the same two identity
+    // inputs with non-ASCII text, which the encoder must also keep stable.
+    let parent = "a".repeat(32);
+    assert_eq!(
+        canonical::digest(&json!(["native-cloud-sync.v1", parent, "模型😀"])).unwrap()[..32],
+        *"d9db8ef910d65d7fc7d6fed308204c58"
+    );
+    assert_eq!(
+        canonical::digest(&json!([
+            "native-cloud-sync-retry.v1",
+            action,
+            "模型😀",
+            "dlc-failed-1",
+            parent
+        ]))
+        .unwrap()[..32],
+        *"f2ed566dcc42a106065ca7985994c1e1"
+    );
+}
+#[test]
 fn cloud_run_authorship_launch_and_approval_preserve_science_and_exact_attempt() {
     let runtime = run::Runtime {
         runtime_id: format!("runtime.{}", "1".repeat(64)),

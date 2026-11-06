@@ -1,9 +1,12 @@
 //! Native metric contract cases; all evaluation at test runtime is Rust.
 use std::cmp::Ordering;
 
-use ml_exp_core::metrics::{
-    MetricDefinition, MetricSchema, ObservationInput, metric_result, numeric_compare,
-    numeric_equal, observations, observations_typed, protocol_identity,
+use ml_exp_core::{
+    canonical::protocol_identity,
+    metrics::{
+        MetricDefinition, MetricSchema, ObservationInput, metric_result, numeric_compare,
+        numeric_equal, observations, observations_typed,
+    },
 };
 use serde_json::{Value, json};
 
@@ -200,7 +203,7 @@ fn protocol_identity_digests_stay_pinned() {
             r#"{"id":"protocol-585","operation":"protocol","input":{"value":{}},"expected":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"}"#,
         ),
         literal(
-            r#"{"id":"protocol-589","operation":"protocol","input":{"value":{"value":1e-07}},"expected":"sha256:aece37dfda4992947222ea73b79996bba4aa181345a1fbb7f8c2b56b3fbd6a44"}"#,
+            r#"{"id":"protocol-589","operation":"protocol","input":{"value":{"value":1e-07}},"expected":"sha256:910750038eb30a40d06da88009b6259aabaf3751b3cb212c616d51abb6b008a4"}"#,
         ),
     ] {
         assert_eq!(

@@ -1,6 +1,5 @@
 use ml_exp_core::{
-    canonical::python_json_bytes,
-    durable,
+    canonical, durable,
     projects::{self, LifecycleRecord, PathEvidence, RegistrationSource, Registry, Seed},
 };
 use ml_exp_io::directory::{Directory, FileLock, LockOptions, Wait};
@@ -151,7 +150,7 @@ fn journal(bytes: &[u8]) -> Result<(Vec<Value>, Option<Vec<u8>>), Error> {
     }
 }
 fn encoded(value: &Value) -> Result<Vec<u8>, Error> {
-    let mut bytes = python_json_bytes(value).map_err(why!(Error::Invalid))?;
+    let mut bytes = canonical::bytes(value).map_err(why!(Error::Invalid))?;
     bytes.push(b'\n');
     Ok(bytes)
 }

@@ -100,7 +100,7 @@ impl MetricValue {
                 "inf"
             }
             .to_owned(),
-            Self::Float(value) => crate::canonical::python_float(*value).unwrap(),
+            Self::Float(value) => crate::canonical::float_text(*value).unwrap(),
             Self::InvalidRepr(value) => value.clone(),
         }
     }
@@ -161,7 +161,7 @@ pub(crate) fn python_repr(value: &Value) -> String {
             let raw = number.to_string();
             if raw.contains(['.', 'e', 'E']) {
                 if let Some(number) = number.as_f64().filter(|number| number.is_finite()) {
-                    crate::canonical::python_float(number).unwrap()
+                    crate::canonical::float_text(number).unwrap()
                 } else {
                     if raw.starts_with('-') { "-inf" } else { "inf" }.to_owned()
                 }

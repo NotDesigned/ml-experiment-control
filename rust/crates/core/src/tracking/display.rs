@@ -7,11 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use super::{Error, Result};
-use crate::{
-    canonical::{self, JsonOptions},
-    metrics::numeric_compare,
-    observation::python_equal,
-};
+use crate::{canonical, metrics::numeric_compare, observation::python_equal};
 
 const FIELDS: [&str; 5] = ["name", "unit", "protocol_id", "dataset_id", "variant_id"];
 pub const DISPLAY_VERSION: i64 = 4;
@@ -44,10 +40,7 @@ pub fn identity(value: &Value) -> Result<String> {
     for field in FIELDS {
         fields.insert(field.into(), get(value, field).clone());
     }
-    Ok(
-        String::from_utf8(canonical::python_json_bytes(&Value::Object(fields))?)
-            .expect("canonical JSON is UTF-8"),
-    )
+    Ok(canonical::text(&Value::Object(fields))?)
 }
 pub fn number(value: &Value) -> Result<bool> {
     let Some(number) = value.as_number() else {
@@ -436,16 +429,9 @@ pub fn summary_patch(
         context.insert("selection".into(), get(row, "selection").clone());
         definitions.insert(text(row, "result")?.into(), Value::Object(context));
     }
-    let json = canonical::encode(
-        &Value::Object(definitions),
-        JsonOptions {
-            compact: false,
-            ..JsonOptions::default()
-        },
-    )?;
     values.insert(
         "ml_expd/display_definitions_json".into(),
-        json!(String::from_utf8(json).expect("canonical JSON is UTF-8")),
+        json!(canonical::text(&Value::Object(definitions))?),
     );
     values.insert("ml_expd/display_coverage".into(), json!(coverage));
     values.insert(

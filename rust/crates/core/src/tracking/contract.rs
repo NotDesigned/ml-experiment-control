@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use super::{Error, Result};
-use crate::canonical::{self, JsonOptions};
+use crate::canonical;
 use serde_json::{Value, json};
 
 /// A missing preparation option retains historical intent JSON; an explicitly
@@ -243,22 +243,9 @@ pub fn resolve_preparation(
     resolve(Some(&selected), settings, project)
 }
 
-fn parameter_json() -> JsonOptions {
-    JsonOptions {
-        sort_keys: false,
-        ensure_ascii: true,
-        compact: false,
-    }
-}
 pub fn finite_parameters(value: &Value) -> Result<&Value> {
     if !value.is_null() {
-        canonical::encode(value, parameter_json())?;
+        canonical::bytes(value)?;
     }
     Ok(value)
-}
-/// Raw JSON boundary so NaN/Infinity can be rejected without replacing them with
-/// valid JSON null/zero. Returned bytes use Python's ordinary spaced JSON format.
-pub fn finite_parameters_json(bytes: &[u8]) -> Result<Vec<u8>> {
-    let encoded = canonical::python_json_from_slice(bytes, parameter_json())?;
-    Ok(encoded)
 }
