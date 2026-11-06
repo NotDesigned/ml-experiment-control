@@ -2134,7 +2134,7 @@ async fn a_run_that_cannot_be_read_or_is_deleted_has_no_owner() {
 
         let manifest = f.run_directory("cloud-run").join("manifest.json");
         let original = fs::read(&manifest).unwrap();
-        ml_exp_io::write_atomic(&manifest, b"{", true).unwrap();
+        fs::write(&manifest, b"{").unwrap();
         let unreadable = (409, "EXPERIMENT_DISCOVERY_UNAVAILABLE");
         assert_eq!(refusal(api.run_owner("demo", "cloud-run")), unreadable);
         let (status, body) = routed(
@@ -2145,7 +2145,7 @@ async fn a_run_that_cannot_be_read_or_is_deleted_has_no_owner() {
         )
         .await;
         assert_eq!((status, body["code"].as_str()), (409, Some(unreadable.1)));
-        ml_exp_io::write_atomic(&manifest, &original, true).unwrap();
+        fs::write(&manifest, &original).unwrap();
         assert!(matches!(
             api.run_owner("demo", "cloud-run"),
             Ok(Owner::Cloud(_))
