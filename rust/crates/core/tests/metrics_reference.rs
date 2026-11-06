@@ -1,9 +1,12 @@
 //! Native metric contract cases; all evaluation at test runtime is Rust.
 use std::cmp::Ordering;
 
-use ml_exp_core::metrics::{
-    MetricDefinition, MetricSchema, ObservationInput, metric_result, numeric_compare,
-    numeric_equal, observations, observations_typed, protocol_identity,
+use ml_exp_core::{
+    canonical::protocol_identity,
+    metrics::{
+        MetricDefinition, MetricSchema, ObservationInput, metric_result, numeric_compare,
+        numeric_equal, observations, observations_typed,
+    },
 };
 use serde_json::{Value, json};
 
@@ -37,6 +40,20 @@ fn schemas_fill_defaults_keep_unicode_names_and_refuse_unknown_fields() {
     ] {
         assert!(MetricSchema::from_value(&case["input"]["value"]).is_err());
     }
+    for value in [
+        json!({"schema_version":true}),
+        json!({"schema_version":1.0}),
+        json!({"schema_version":"1"}),
+        json!({"definitions":{"m":{"unit":"u","required":1}}}),
+        json!({"definitions":{"m":{"unit":"u","required":0}}}),
+        json!({"definitions":{"m":{"unit":"u","required":"true"}}}),
+        json!({"definitions":{"m":{"unit":"u","required":"yes"}}}),
+        json!({"definitions":{"m":{"unit":"u","required":null}}}),
+    ] {
+        assert!(MetricSchema::from_value(&value).is_err(), "{value}");
+    }
+    let strict = json!({"schema_version":1,"definitions":{"m":{"unit":"u","required":false}}});
+    assert!(MetricSchema::from_value(&strict).is_ok());
     let case = literal(
         r#"{"id":"definition-unit-8","operation":"definition","input":{"value":{"unit":"\u007f"}},"expected":{"unit":"\u007f","required":false,"description":"","aggregation":"scalar","numerator_unit":null,"denominator_unit":null}}"#,
     );
@@ -200,7 +217,7 @@ fn protocol_identity_digests_stay_pinned() {
             r#"{"id":"protocol-585","operation":"protocol","input":{"value":{}},"expected":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"}"#,
         ),
         literal(
-            r#"{"id":"protocol-589","operation":"protocol","input":{"value":{"value":1e-07}},"expected":"sha256:aece37dfda4992947222ea73b79996bba4aa181345a1fbb7f8c2b56b3fbd6a44"}"#,
+            r#"{"id":"protocol-589","operation":"protocol","input":{"value":{"value":1e-07}},"expected":"sha256:910750038eb30a40d06da88009b6259aabaf3751b3cb212c616d51abb6b008a4"}"#,
         ),
     ] {
         assert_eq!(

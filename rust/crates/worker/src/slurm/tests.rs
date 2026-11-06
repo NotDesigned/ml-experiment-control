@@ -278,7 +278,7 @@ fn foreign_targets_tokens_and_frozen_content_are_rejected_without_dispatch() {
 }
 
 #[test]
-fn missing_heads_or_locks_are_never_recreated_and_legacy_claims_remain_unknown() {
+fn missing_heads_or_locks_are_never_recreated_and_incomplete_claims_remain_unknown() {
     let (root, helper) = fixture("printf '123\\n'");
     let prepare = request();
     let path = claim(root.path());
@@ -286,7 +286,7 @@ fn missing_heads_or_locks_are_never_recreated_and_legacy_claims_remain_unknown()
     assert_eq!(
         handle(&helper, &prepare).outcome,
         ReplyOutcome::Unknown {
-            reason: UnknownReason::LegacyClaim
+            reason: UnknownReason::IncompleteClaim
         }
     );
     assert_eq!(fs::read_dir(&path).unwrap().count(), 0);

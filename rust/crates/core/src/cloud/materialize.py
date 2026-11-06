@@ -1,4 +1,4 @@
-"""Compatibility launcher for immutable worker17 images (CPU data preparation).
+"""CPU data preparation inside an existing Runtime image.
 
 The worker owns downloads, archive validation, extraction and the READY callback.
 Only its temporary JSON configuration and verified local archive live here.
@@ -33,9 +33,7 @@ def main():
             except (OSError, subprocess.CalledProcessError):
                 raise RuntimeError("DATA_IMPORT_FAILED") from None
             config["source"] = {"kind": "file", "path": archive}
-            command = [worker, "data-copy", "--config-json", json.dumps(config, separators=(",", ":")), "--channel-json", channel]
-            if storage != "null":
-                command += ["--storage-json", storage]
+            command = [worker, "data-copy", "--config-json", json.dumps(config, separators=(",", ":")), "--channel-json", channel, "--storage-json", storage]
             try:
                 subprocess.run(command, check=True)
             except (OSError, subprocess.CalledProcessError):

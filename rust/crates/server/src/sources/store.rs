@@ -1,6 +1,6 @@
 //! Durable immutable source trees and archive receipts.
 //!
-//! This is an isolated preview store. It never imports a Project implicitly,
+//! This store never imports a Project implicitly,
 //! executes repository code, or retries a publication whose effect is unclear.
 use super::archive;
 use ml_exp_core::sources::{self, Metadata, Policy, TreeDigest, TreeEntry, TreeKind, TreePlan};

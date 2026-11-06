@@ -1,4 +1,4 @@
-//! Source archive validation and exact legacy tree identities. Files, directory
+//! Source archive validation and exact tree identities. Files, directory
 //! observations, time and archive digests are explicit inputs. No source is run.
 use crate::{canonical, identity};
 use serde::{Deserialize, Serialize};
@@ -46,7 +46,7 @@ impl Policy {
         Ok(())
     }
     /// Includes tar/PAX framing, not just regular-file payload. The I/O boundary
-    /// must apply this bound to the complete decompressed stream as Python does.
+    /// must apply this bound to the complete decompressed stream.
     pub fn expanded_archive_limit(&self) -> Result<u64> {
         self.validate()?;
         Ok(self.max_source_bytes + self.max_source_files as u64 * 2048 + CHUNK_BYTES as u64)
@@ -240,8 +240,7 @@ impl TreePlan {
                 .or_default()
                 .push(path.clone());
         }
-        // BTreeMap iteration sorts UTF-8 names in Unicode code-point order,
-        // as Python's sorted(children,key=lambda p:p.name) does for valid UTF-8.
+        // BTreeMap iteration sorts UTF-8 names in Unicode code-point order.
         let mut ordered = Vec::with_capacity(table.len());
         let mut pending = vec![String::new()];
         while let Some(parent) = pending.pop() {
@@ -422,11 +421,7 @@ fn bounded_json(value: &Value) -> Result<()> {
             return Err(Error::Limit);
         }
     }
-    if canonical::python_json_bytes(value)
-        .map_err(|_| Error::Metadata)?
-        .len()
-        > MAX_METADATA_BYTES
-    {
+    if canonical::bytes(value).map_err(|_| Error::Metadata)?.len() > MAX_METADATA_BYTES {
         return Err(Error::Limit);
     }
     Ok(())
@@ -557,7 +552,7 @@ mod tests {
     }
 
     #[test]
-    fn streaming_tree_digest_matches_python_length_framed_identity() {
+    fn streaming_tree_digest_matches_its_length_framed_identity() {
         let policy = Policy::default();
         let plan = TreePlan::new(
             vec![

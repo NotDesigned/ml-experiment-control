@@ -13,10 +13,10 @@ use std::{
     time::{Duration, Instant},
 };
 fn health() -> Value {
-    json!({"min_client_protocol_version":2,"api_protocol_version":2,"capabilities":["project-lifecycle.v1"]})
+    json!({"capabilities":["project-lifecycle.v1"]})
 }
 fn record(project: &str, state: &str) -> Value {
-    json!({"project":project,"project_file":"/approved/project.yaml","state":state,"source":"MANUAL","registered_at":"first","updated_at":"now","state_reason":"test"})
+    json!({"project":project,"project_file":"/approved/project.json","state":state,"source":"MANUAL","registered_at":"first","updated_at":"now","state_reason":"test"})
 }
 struct Request {
     head: String,
@@ -120,13 +120,6 @@ fn authenticated(request: &Request, method: &str, path: &str) {
             .count(),
         1
     );
-    assert_eq!(
-        request
-            .head
-            .matches("x-ml-expd-client-protocol: 2\r\n")
-            .count(),
-        1
-    );
 }
 #[test]
 fn cli_all_project_commands_use_the_baseline_routes_and_exactly_one_mutation() {
@@ -141,12 +134,12 @@ fn cli_all_project_commands_use_the_baseline_routes_and_exactly_one_mutation() {
             vec![
                 "project",
                 "register",
-                "/approved/project.yaml",
+                "/approved/project.json",
                 "--expected-revision",
                 "7",
             ],
             "/api/project-lifecycle/register",
-            json!({"source":{"kind":"daemon_path","manifest_path":"/approved/project.yaml"},"expected_revision":7}),
+            json!({"source":{"kind":"daemon_path","manifest_path":"/approved/project.json"},"expected_revision":7}),
             json!({"project":record("demo","ACTIVE")}),
         ),
         (
@@ -196,10 +189,12 @@ fn cli_all_project_commands_use_the_baseline_routes_and_exactly_one_mutation() {
         let temp = tempfile::tempdir().unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}/ml-expd", listener.local_addr().unwrap());
+        let token = temp.path().join("token");
+        write_atomic(&token, b"project-test-secret\n", true).unwrap();
         let settings = temp.path().join("settings.json");
         write_atomic(
             &settings,
-            &serde_json::to_vec(&json!({"url":base,"token":"project-test-secret"})).unwrap(),
+            &serde_json::to_vec(&json!({"url":base,"token_file":token})).unwrap(),
             true,
         )
         .unwrap();
@@ -351,7 +346,7 @@ fn typed_library_posts_preserve_redirect_409_and_invalid_identity_boundaries() {
     }
 }
 #[test]
-fn protocol_or_capability_failure_never_sends_the_planned_post() {
+fn invalid_health_or_a_missing_capability_never_sends_the_planned_post() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let client = Client::new(&base, "project-test-secret".into()).unwrap();
@@ -360,11 +355,7 @@ fn protocol_or_capability_failure_never_sends_the_planned_post() {
         expected_revision: Some(0),
     })
     .unwrap();
-    for health in [
-        json!({}),
-        json!({"min_client_protocol_version":2,"api_protocol_version":2}),
-        json!({"min_client_protocol_version":2,"api_protocol_version":2,"capabilities":["training-submit.v1"]}),
-    ] {
+    for health in [json!({}), json!({"capabilities":["training-submit.v1"]})] {
         assert!(projects::execute(&client, &plan, &health).is_err());
     }
     no_repeat(&listener);

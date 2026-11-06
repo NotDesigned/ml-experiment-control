@@ -11,7 +11,7 @@ use crate::{
 use ml_exp_core::{
     canonical,
     first_submission::native::{self, Approval, Binding, Prepared, Profile, Runtime},
-    operations::{FrozenFiles, Policy},
+    operations::FrozenFiles,
     slurm::helper,
 };
 use ml_exp_io::directory::{Directory, FileLock, LockOptions, effective_uid};
@@ -80,7 +80,6 @@ type Result<T> = std::result::Result<T, Error>;
 pub struct Backend {
     pub profile: Profile,
     pub ssh: SshConfig,
-    pub control_helper: Option<super::config::ControlHelper>,
     pub runtimes: BTreeMap<String, Runtime>,
     pub data_helper_config: Option<String>,
     pub script_preparation: bool,
@@ -121,9 +120,6 @@ impl Backend {
     pub(super) fn validate(&self) -> Result<()> {
         self.profile.validate()?;
         self.ssh.validate().map_err(why!(Error::Configuration))?;
-        self.control_ssh()
-            .validate()
-            .map_err(why!(Error::Configuration))?;
         if let Some(path) = &self.data_helper_config {
             let mut data = self.ssh.clone();
             data.helper_config_path = path.clone();
@@ -140,18 +136,6 @@ impl Backend {
             return Err(Error::Configuration);
         }
         Ok(())
-    }
-    /// Preserve the dispatch fingerprint while allowing a compatible helper
-    /// upgrade for existing-job control. Host, credentials, target and budgets
-    /// come exclusively from the original trusted SSH configuration.
-    fn control_ssh(&self) -> SshConfig {
-        let mut ssh = self.ssh.clone();
-        if let Some(helper) = &self.control_helper {
-            ssh.helper_path.clone_from(&helper.helper_path);
-            ssh.helper_config_path
-                .clone_from(&helper.helper_config_path);
-        }
-        ssh
     }
     fn fingerprint(&self) -> Result<String> {
         let ssh = &self.ssh;
@@ -400,14 +384,9 @@ impl Service {
             .values()
             .find(|b| b.profile.target == prepared.request.intent().target)
             .ok_or(Error::Authority)?;
-        let policy = Policy {
-            allow_scheduler_mutations: true,
-            ..Default::default()
-        };
         let files = FrozenFiles {
             execution_campaign_sha256: Some(prepared.binding.run_sha256.clone()),
             execution_manifest_sha256: Some(prepared.request.intent().manifest_sha256.clone()),
-            ..Default::default()
         };
         self.check(&prepared)?;
         let check = || {
@@ -423,7 +402,6 @@ impl Service {
             Execute {
                 action_id: action,
                 confirmation,
-                policy: &policy,
                 files: &files,
                 claim: ClaimContext {
                     now: context.now,
@@ -462,10 +440,9 @@ impl Service {
             self.still_live(&guard, &prepared.binding.project, &prepared.binding.run_id)
                 .map_err(why!(crate::backends::slurm::action::Error::Guard))
         };
-        let ssh = backend.control_ssh();
         let snapshot = Runner {
             actions: &self.actions,
-            ssh: &ssh,
+            ssh: &backend.ssh,
         }
         .reconcile(action, &check, cancelled)?;
         self.public(snapshot, now)

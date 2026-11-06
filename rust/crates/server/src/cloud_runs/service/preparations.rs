@@ -59,7 +59,6 @@ impl Service {
                     source_dir: "/ml-expd/source".into(),
                     worker_path: "/usr/local/bin/ml-exp-worker-rs".into(),
                     worker_sha256: worker.into(),
-                    worker_features: Default::default(),
                 }
             } else {
                 self.runtime(project, &run.executor, &run.runtime_id)?

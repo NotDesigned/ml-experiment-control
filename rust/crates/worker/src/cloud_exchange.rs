@@ -25,6 +25,8 @@ use std::{
     time::{Duration, Instant},
 };
 const STATE: &str = ".cloud-exchange.json";
+/// Unit tests reach no server, so they do not wait out the production budget.
+const DRAIN_BUDGET: Duration = Duration::from_secs(if cfg!(test) { 1 } else { 60 });
 #[cfg(test)]
 mod tests;
 #[derive(Serialize, Deserialize)]
@@ -196,7 +198,6 @@ impl Transport for Https {
             .client
             .post(&channel.url)
             .bearer_auth(&channel.token)
-            .header(ml_exp_core::CLIENT_PROTOCOL_HEADER, "2")
             .header("content-type", "application/json")
             .body(bytes)
             .send()
@@ -225,7 +226,6 @@ impl Transport for Https {
 /// This can run alone on a CPU collector without invoking a training process.
 pub fn once(package: &Package, transport: &impl Transport) -> Result<bool> {
     package.validate().map_err(|_| Error::Configuration)?;
-    let channel = package.channel.as_ref().ok_or(Error::Configuration)?;
     let root = Directory::open(&package.config.attempt_root, false).map_err(|_| Error::Storage)?;
     let _lock = root
         .lock(
@@ -289,7 +289,7 @@ pub fn once(package: &Package, transport: &impl Transport) -> Result<bool> {
             state.complete,
         )
         .map_err(|_| Error::Binding)?;
-    let ack = transport.send(channel, pending)?;
+    let ack = transport.send(&package.channel, pending)?;
     ack.validate(pending).map_err(|_| Error::Binding)?;
     if let Some(history) = &pending.history {
         state.cursor = Some(history.next.clone());
@@ -303,7 +303,7 @@ pub fn once(package: &Package, transport: &impl Transport) -> Result<bool> {
 }
 pub fn drain(package: &Package, cancelled: &AtomicBool) -> Result<bool> {
     let transport = Https::new()?;
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now() + DRAIN_BUDGET;
     while Instant::now() < deadline && !cancelled.load(Ordering::Relaxed) {
         match once(package, &transport) {
             Ok(true) => return Ok(true),

@@ -108,8 +108,8 @@ async fn execute_with_timeout(
     let Some(api) = state.reads.clone() else {
         return failure(read_api::Error {
             status: 501,
-            code: "RUST_PORT_NOT_CONFIGURED",
-            detail: "local experiment services are not configured in this preview",
+            code: "READS_NOT_CONFIGURED",
+            detail: "local experiment services are not configured",
         });
     };
     let Ok(permit) = state.read_slots.clone().try_acquire_owned() else {

@@ -88,14 +88,12 @@ struct Flow {
     preparation: Value,
     run: Value,
     listing: Value,
-    selected: Value,
     attempt: Option<String>,
     materialized: bool,
     progress: Value,
     collection: Value,
     collection_error: Option<Value>,
     progress_enabled: bool,
-    collection_enabled: bool,
     details: bool,
     saved: bool,
 }
@@ -135,14 +133,11 @@ fn identity_step(
                 preparation: json!({"status":"NOT_OBSERVED","phase":null}),
                 run: json!({}),
                 listing: json!({}),
-                selected: json!({}),
                 materialized: false,
                 progress: json!({"availability":"NOT_OBSERVED","diagnostic":null}),
                 collection: json!({}),
                 collection_error: None,
                 progress_enabled: capability(&health, "execution-progress.v1"),
-                collection_enabled: capability(&health, "result-collection.v1")
-                    || capability(&health, "result-collection-read.v1"),
                 details,
                 saved,
             }
@@ -229,15 +224,6 @@ impl Flow {
                     progress = value["submission_id"].as_str().map(str::to_owned);
                 }
             }
-            if let Some(action) = self.reference.action.clone() {
-                self.evidence.insert("action".into(), action.clone());
-                if action["operation"] == "RETRY_ATTEMPT" {
-                    self.preparation = json!({"status":action["execution"]["status"],"phase":null});
-                    if self.progress_enabled {
-                        progress = action["action_id"].as_str().map(str::to_owned);
-                    }
-                }
-            }
         }
         if let Some(id) = progress {
             let path = format!("/api/submissions/{}/progress", observation::segment(&id)?);
@@ -250,22 +236,12 @@ impl Flow {
         self.request(Phase::Run, path)
     }
     fn before_submission(&self) -> bool {
-        let action = mapping(self.evidence.get("action").unwrap_or(&Value::Null));
-        let mut submission = mapping(self.evidence.get("submission").unwrap_or(&Value::Null));
-        let execution = mapping(&action["execution"]);
-        if !truth(&submission) && action["operation"] == "RETRY_ATTEMPT" {
-            submission = json!({"status":execution["status"],"execution":execution});
-        }
-        action["operation"] == "RETRY_ATTEMPT"
+        let submission = mapping(self.evidence.get("submission").unwrap_or(&Value::Null));
+        submission["status"] == "EXECUTING"
             && matches!(
-                execution["status"].as_str(),
-                Some("BLOCKED" | "PREPARED" | "AUTHORIZED")
+                self.progress["phase"].as_str(),
+                Some("VALIDATING_SOURCE" | "STAGING")
             )
-            || submission["status"] == "EXECUTING"
-                && matches!(
-                    self.progress["phase"].as_str(),
-                    Some("VALIDATING_SOURCE" | "STAGING")
-                )
             || submission["status"] == "FAILED"
                 && submission["execution"]["resolution"] == "FAILED_BEFORE_SUBMISSION"
     }
@@ -339,7 +315,7 @@ impl Flow {
                 let entries = value["attempts"]
                     .as_array()
                     .ok_or_else(|| fail("invalid Run Attempt listing"))?;
-                if self.attempt.is_none() && self.reference.state_kind.is_none() {
+                if self.attempt.is_none() && !self.saved {
                     self.attempt = value["current_attempt_id"].as_str().map(str::to_owned);
                     if !value["current_attempt_id"].is_null() && self.attempt.is_none() {
                         return Err(fail("choose an exact attempt-NNN identity"));
@@ -360,8 +336,7 @@ impl Flow {
                     if selected.len() > 1 {
                         return Err(fail("Run listing contains duplicate exact Attempts"));
                     }
-                    if let Some(row) = selected.first() {
-                        self.selected = (*row).clone();
+                    if !selected.is_empty() {
                         self.materialized = true;
                     } else if !self.before_submission()
                         || value["current_attempt_id"] == attempt.as_str()
@@ -373,7 +348,7 @@ impl Flow {
                             "requested exact Attempt is absent from the Run listing",
                         ));
                     }
-                } else if !entries.is_empty() && self.reference.state_kind.is_none() {
+                } else if !entries.is_empty() && !self.saved {
                     return Err(fail(
                         "Run has Attempts but no current Attempt; choose --attempt",
                     ));
@@ -492,7 +467,7 @@ impl Flow {
         }
     }
     fn collection(self) -> Result<Step, Error> {
-        if self.materialized && self.collection_enabled {
+        if self.materialized {
             let path = format!(
                 "{}/attempts/{}/collection",
                 self.endpoint()?,
@@ -515,11 +490,10 @@ impl Flow {
             self.evidence
                 .insert("collection".into(), self.collection.clone());
         }
-        let scheduler = &self.run["evidence"]["scheduler"];
-        let native_exact_read = (scheduler.get("freshness").is_some()
-            || scheduler.get("evidence_availability").is_some())
-            && scheduler["attempt_id"] != json!(self.attempt);
-        if self.materialized && (self.details || native_exact_read) {
+        // The Run view carries the current Attempt's layers only. Any other
+        // Attempt needs its separately scoped exact GET.
+        let exact_read = self.run["evidence"]["scheduler"]["attempt_id"] != json!(self.attempt);
+        if self.materialized && (self.details || exact_read) {
             let identity = format!(
                 "{}::{}",
                 self.reference.run_id,
@@ -538,8 +512,8 @@ impl Flow {
         if !self.materialized {
             return json!({});
         }
-        // The Run view carries current journal evidence. A historical native
-        // observation needs the separately scoped exact-Attempt GET instead.
+        // The Run view carries current journal evidence. An earlier Attempt
+        // needs the separately scoped exact-Attempt GET instead.
         let exact = self
             .evidence
             .get("attempt")
@@ -559,22 +533,11 @@ impl Flow {
         let worker = self.layer("worker");
         let model = self.layer("model");
         let scheduler_detail = mapping(&scheduler["detail"]);
-        // Native projections explicitly distinguish unavailable scheduler
-        // evidence from a process/Attempt state. Legacy servers omit these
-        // fields and retain their established listing fallback.
-        let native_scheduler = &self.run["evidence"]["scheduler"];
         let scheduler_unknown = json!(if self.materialized {
             "UNKNOWN"
         } else {
             "NOT_SUBMITTED"
         });
-        let scheduler_fallback = if native_scheduler.get("freshness").is_some()
-            || native_scheduler.get("evidence_availability").is_some()
-        {
-            scheduler_unknown
-        } else {
-            otherwise(&self.selected["state"], scheduler_unknown)
-        };
         let queue = otherwise(
             &mapping(&self.progress["queue"]),
             mapping(&scheduler_detail["queue"]),
@@ -588,7 +551,7 @@ impl Flow {
         if model["state"].is_null() && truth(&observation) {
             let step = &observation["step"];
             let timestamp = &observation["timestamp"];
-            model_view = json!({"state":if step.is_null(){"present".into()}else{format!("step {}",ml_exp_core::metrics::python_string(step))},"step":step,
+            model_view = json!({"state":if step.is_null(){"present".into()}else{format!("step {}",ml_exp_core::metrics::json_text(step))},"step":step,
                 "last_metric":observation,"metric_record":{"sequence":metric["sequence"],"event_id":metric["event_id"],"source":metric["source"]},
                 "observed_at":timestamp,"stale":if timestamp.is_null(){json!(true)}else{Value::Null}});
         }
@@ -610,7 +573,7 @@ impl Flow {
                 .collect(),
         );
         let mut value = json!({"project":self.reference.project,"run_id":self.reference.run_id,"attempt_id":self.attempt,"preparation":self.preparation,
-            "scheduler":{"state":otherwise(&scheduler["state"],scheduler_fallback),
+            "scheduler":{"state":otherwise(&scheduler["state"],scheduler_unknown),
                 "backend":scheduler_detail["backend"],"job_id":scheduler_detail["backend_job_id"],"native_state":scheduler_detail["raw_state"],
                 "observed_at":scheduler["as_of"],"stale":get_or(&scheduler,"stale",json!(true)),"reason":otherwise(&queue["reason"],otherwise(&scheduler_detail["reason"],scheduler_detail["pending_reason"].clone()))},
             "training":{"status":get_or(&training,"status",json!("UNKNOWN")),"exit_code":training["exit_code"],"process_state":process["state"],"observed_at":process["as_of"],"stale":get_or(&process,"stale",json!(true))},

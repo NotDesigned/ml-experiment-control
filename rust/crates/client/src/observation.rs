@@ -5,13 +5,6 @@ use ml_exp_core::identity::validate_attempt;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Kind {
-    Experiment,
-    TrainingOperation,
-}
-
 #[derive(Default)]
 pub struct Selection<'a> {
     pub project: Option<&'a str>,
@@ -24,7 +17,6 @@ pub struct Hints {
     pub project: Option<String>,
     pub run_id: Option<String>,
     pub attempt_id: Option<String>,
-    pub state_kind: Kind,
     pub saved: Value,
 }
 #[derive(Clone, Serialize)]
@@ -33,11 +25,9 @@ pub struct Reference {
     pub project: String,
     pub run_id: String,
     pub attempt_id: Option<String>,
-    pub state_kind: Option<Kind>,
     pub saved: Value,
     pub preparation: Option<Value>,
     pub submission: Option<Value>,
-    pub action: Option<Value>,
 }
 pub enum Step {
     Complete(Reference),
@@ -51,7 +41,6 @@ pub struct Read {
 enum Phase {
     Preparation(String),
     Submission(String),
-    Action,
 }
 
 fn fail(message: &'static str) -> Error {
@@ -90,8 +79,8 @@ fn action_id(value: Option<&Value>) -> Result<String, Error> {
         .ok_or_else(|| fail("invalid saved Submission identity"))
 }
 
-/// API read IDs intentionally retain the baseline's broader historical grammar.
-/// They are never reused as filesystem paths or as managed resource identities.
+/// API read IDs have a broader grammar than managed identities. They are never
+/// reused as filesystem paths or as managed resource identities.
 pub fn segment(value: &str) -> Result<String, Error> {
     if value.is_empty()
         || value.len() > 256
@@ -118,63 +107,39 @@ fn optional_hint(saved: &Value, key: &str) -> Result<Option<String>, Error> {
 
 pub fn server_hint(saved: &Value) -> Result<Option<String>, Error> {
     if !saved.is_object() {
-        return Err(fail(
-            "observation requires a saved experiment or training-operation state",
-        ));
+        return Err(fail("observation requires a saved experiment state"));
     }
     optional_hint(saved, "server")
 }
 
 pub fn reference(saved: &Value) -> Result<Hints, Error> {
     let server = server_hint(saved)?;
-    let (state_kind, target) = if saved.get("contract").and_then(Value::as_str)
-        == Some("training-operation.v1")
-    {
-        if !matches!(
-            saved.get("operation").and_then(Value::as_str),
-            Some("cancel" | "retry")
-        ) || !saved.get("plan").is_some_and(Value::is_object)
+    if saved.get("config_sha256").is_none() {
+        return Err(fail("observation requires an experiment state"));
+    }
+    for key in ["preparation", "submission"] {
+        if saved
+            .get(key)
+            .is_some_and(|v| !v.is_null() && !v.is_object())
         {
-            return Err(fail(
-                "training preparation reply is unknown; inspect its recovery URL and attach the original Action; no Attempt was guessed",
-            ));
+            return Err(fail("invalid saved preparation or Submission identity"));
         }
-        let target = attempt(saved["plan"].get("attempt_id"))?;
-        attempt(saved.get("source_attempt_id"))?;
-        if action_id(saved["plan"].get("action_id")).is_err() {
-            return Err(fail("invalid saved training Action identity"));
-        }
-        (Kind::TrainingOperation, Some(target))
-    } else if saved.get("config_sha256").is_some() {
-        for key in ["preparation", "submission"] {
-            if saved
-                .get(key)
-                .is_some_and(|v| !v.is_null() && !v.is_object())
-            {
-                return Err(fail("invalid saved preparation or Submission identity"));
-            }
-        }
-        let submission = saved.get("submission").filter(|v| truth(v)).or_else(|| {
-            saved
-                .get("preparation")
-                .and_then(|p| p.get("submission"))
-                .filter(|v| truth(v))
-        });
-        if submission.is_some_and(|v| !v.is_object()) {
-            return Err(fail("invalid saved Submission identity"));
-        }
-        let target = if let Some(submission) = submission {
-            let target = attempt(submission.get("attempt_id"))?;
-            action_id(submission.get("submission_id"))?;
-            Some(target)
-        } else {
-            None
-        };
-        (Kind::Experiment, target)
+    }
+    let submission = saved.get("submission").filter(|v| truth(v)).or_else(|| {
+        saved
+            .get("preparation")
+            .and_then(|p| p.get("submission"))
+            .filter(|v| truth(v))
+    });
+    if submission.is_some_and(|v| !v.is_object()) {
+        return Err(fail("invalid saved Submission identity"));
+    }
+    let target = if let Some(submission) = submission {
+        let target = attempt(submission.get("attempt_id"))?;
+        action_id(submission.get("submission_id"))?;
+        Some(target)
     } else {
-        return Err(fail(
-            "observation requires an experiment state or training-operation.v1 plan",
-        ));
+        None
     };
     let project = optional_hint(saved, "project")?;
     let run_id = optional_hint(saved, "run_id")?;
@@ -186,7 +151,6 @@ pub fn reference(saved: &Value) -> Result<Hints, Error> {
         project,
         run_id,
         attempt_id: target,
-        state_kind,
         saved: saved.clone(),
     })
 }
@@ -235,7 +199,7 @@ fn bind(base: &str, hints: Option<Hints>, selection: Selection<'_>) -> Result<Re
         .or(old_project)
         .filter(|v| !v.is_empty())
         .ok_or_else(|| {
-            fail("provide --project and --run for old state without a complete Run identity")
+            fail("provide --project and --run for a saved state without a complete Run identity")
         })?
         .to_owned();
     let run_id = selection
@@ -243,7 +207,7 @@ fn bind(base: &str, hints: Option<Hints>, selection: Selection<'_>) -> Result<Re
         .or(old_run)
         .filter(|v| !v.is_empty())
         .ok_or_else(|| {
-            fail("provide --project and --run for old state without a complete Run identity")
+            fail("provide --project and --run for a saved state without a complete Run identity")
         })?
         .to_owned();
     segment(&project)?;
@@ -261,69 +225,15 @@ fn bind(base: &str, hints: Option<Hints>, selection: Selection<'_>) -> Result<Re
         project,
         run_id,
         attempt_id,
-        state_kind: hints.as_ref().map(|h| h.state_kind),
         saved: hints.map(|h| h.saved).unwrap_or_else(|| json!({})),
         preparation: None,
         submission: None,
-        action: None,
     })
-}
-
-fn action_identity(action: &Value, reference: &Reference) -> Result<(), Error> {
-    let saved = &reference.saved;
-    let plan = &saved["plan"];
-    let source = attempt(saved.get("source_attempt_id"))?;
-    let target = reference
-        .attempt_id
-        .as_deref()
-        .ok_or_else(|| fail("choose an exact attempt-NNN identity"))?;
-    let operation = match saved["operation"].as_str() {
-        Some("retry") => "RETRY_ATTEMPT",
-        Some("cancel") => "CANCEL_RUN",
-        _ => return Err(fail("invalid saved training Action identity")),
-    };
-    let scope = json!({"project":reference.project,"scope_type":"attempt","object_id":format!("{}::{source}",reference.run_id)});
-    if !action.is_object()
-        || action["operation"] != operation
-        || action["scope"] != scope
-        || action["run_id"] != reference.run_id
-        || action["attempt_id"] != target
-        || !action["execution"].is_object()
-        || ["intent_digest", "gate_bundle_digest"].iter().any(|key| {
-            !action
-                .get(*key)
-                .and_then(Value::as_str)
-                .is_some_and(|v| named_hex(v, "sha256:", 64))
-        })
-        || ["action_id", "intent_digest", "gate_bundle_digest"]
-            .iter()
-            .any(|key| action.get(*key) != plan.get(*key))
-    {
-        return Err(fail(
-            "Action identity differs from the saved exact training operation",
-        ));
-    }
-    if operation == "CANCEL_RUN" && target != source
-        || operation == "RETRY_ATTEMPT" && target == source
-    {
-        return Err(fail("saved training Action targets an invalid Attempt"));
-    }
-    let request = saved
-        .get("request")
-        .filter(|v| v.is_object())
-        .ok_or_else(|| fail("Action target differs from the saved retry request"))?;
-    if request
-        .get("new_attempt_id")
-        .is_some_and(|value| value.as_str() != Some(target))
-    {
-        return Err(fail("Action target differs from the saved retry request"));
-    }
-    Ok(())
 }
 
 pub fn begin(base: &str, saved: Option<&Value>, selection: Selection<'_>) -> Result<Step, Error> {
     let reference = bind(base, saved.map(reference).transpose()?, selection)?;
-    if reference.state_kind == Some(Kind::Experiment) {
+    if saved.is_some() {
         let original = reference
             .saved
             .get("submission")
@@ -360,25 +270,6 @@ pub fn begin(base: &str, saved: Option<&Value>, selection: Selection<'_>) -> Res
             }
         }
         return submission_step(reference, original.as_ref());
-    }
-    if reference.state_kind == Some(Kind::TrainingOperation) {
-        action_identity(&reference.saved["plan"], &reference)?;
-        if let Some(action) = reference.saved.get("action").filter(|v| !v.is_null()) {
-            action_identity(action, &reference)?;
-        }
-        let path = format!(
-            "/api/actions/{}",
-            segment(
-                reference.saved["plan"]["action_id"]
-                    .as_str()
-                    .ok_or_else(|| fail("invalid saved training Action identity"))?
-            )?
-        );
-        return Ok(Step::Read(Read {
-            path,
-            reference,
-            phase: Phase::Action,
-        }));
     }
     Ok(Step::Complete(reference))
 }
@@ -471,11 +362,6 @@ impl Read {
                     "Submission identity differs from the saved exact Attempt",
                 )?;
                 reference.submission = Some(value);
-                Ok(Step::Complete(reference))
-            }
-            Phase::Action => {
-                action_identity(&value, &reference)?;
-                reference.action = Some(value);
                 Ok(Step::Complete(reference))
             }
         }

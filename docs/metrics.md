@@ -68,8 +68,13 @@ One line is one JSON object, for example:
 
 Names/units are nonempty printable strings, at most 128 characters. One encoded
 line is limited to 64 KiB. Convert tensors with `.item()` before writing.
+Lines are UTF-8 JSON. A byte order mark or any other encoding makes that line an
+`INVALID_METRIC_JSONL` diagnostic; write files with `encoding="utf-8"`.
 Missing values, NaN and infinity never become zero; nonfinite values remain
-failed evidence. Different units/protocols cannot silently overwrite one another.
+failed evidence. A failed value keeps at most 128 characters of its text in
+`invalid_value`: a string as written, `true` or `false`, `nan`, `inf` or `-inf`,
+and a list or object as sorted compact JSON with nonfinite numbers as those
+words. Lists and objects that differ only in key order are therefore one event. Different units/protocols cannot silently overwrite one another.
 Metric checkpoint/data references are authored labels; checkpoint file/hash
 verification is a separate registration contract.
 
@@ -109,7 +114,7 @@ not at every training step. Matching requirements must be satisfied together in
 the same protocol/checkpoint/dataset/variant/epoch/step context. A value from
 another context cannot fill a gap. Entirely unobserved contexts do not prove
 that evaluation ran. Without `required_when`, requirements apply to every
-observed context, preserving old schema behavior.
+observed context.
 
 Empty definitions allow arbitrary names with explicit units. A nonempty schema
 marks undeclared names; at most 256 definitions are accepted. Evaluation metadata
@@ -137,17 +142,14 @@ Parquet/JSONL artifacts so they can be regrouped without rerunning the model.
 
 ## Compact API and validation
 
-Current clients use `metric-records.v1`:
-
 ```http
-GET /api/attempts/P/R::attempt-001/metrics?format=records&name=validation_loss&max_points=2000
+GET /api/attempts/P/R::attempt-001/metrics?name=validation_loss&max_points=2000
 ```
 
 Repeat `name` for multiple exact metric names; a comma is part of a name, not a
-separator. The retired Run-level `/api/runs/P/R/metrics` route, which is not native, supported the same query,
-resolving the current Attempt. Responses contain identity fields, `protocol_id`,
-`records`, `validation`, `total_records`, `downsampled`, `missing_names` and
-`source_attempt_id`. They omit legacy duplicate projections and server paths.
+separator. Responses contain identity fields, `protocol_id`, `records`,
+`validation`, `total_records`, `downsampled`, `missing_names` and
+`source_attempt_id`. They omit server paths.
 
 `total_records` counts matching normalized records. `validation` checks complete
 history before name filtering/downsampling, including required metrics, failed
@@ -156,22 +158,17 @@ records and conflicts. Use full exported JSONL for analysis of every point.
 are `NOT_OBSERVED`; incomplete contexts are `PARTIAL`; invalid values, units,
 protocols or conflicting rewrites are `FAILED`. Identical observations deduplicate.
 
-Legacy HTTP callers that omit `format` retain their existing response. The API's
-legacy `keys` parameter selects record fields; it is not a metric-name filter and
-cannot be combined with `format=records`. Prefer CLI `--name`; it requires the
-new capability instead of guessing legacy semantics.
-
 ## Delivery and retention
 
 Workers read complete newline-terminated records roughly every five seconds,
 in batches of at most 64. Retry preserves event IDs and cursor without stopping
 training. A final uploaded root `metrics.jsonl` or `train_metrics.jsonl` can fill
 delivery gaps; journal-write failure prevents archive publication until retry.
-Stdout-only/old worker observations may be sampled and cannot reconstruct a full
-curve. Use a Runtime with `experiment-records.v1` for live delivery.
+Stdout-only observations may be sampled and cannot reconstruct a full
+curve; complete records are the live delivery path.
 
 Accepted metrics survive result archive ACK/release. The canonical journal and
-independent publication cursors remain in the historical `tracking/outbox.sqlite`;
+independent publication cursors remain in `tracking/outbox.sqlite`;
 this is not a second copy of weights or datasets. See [W&B](wandb.md) for display,
 publication confirmation and the distinction between curves and final results.
 
@@ -309,4 +306,4 @@ not provided by `attach`. Do not stop a live training process to switch tracking
 The initial chain is 64 zeroes. Each exact packet ACK supplies the next chain
 and offset. The official client owns packet encoding and recovery state. The
 capability is `native-local-metrics.v1`; all endpoints require the usual bearer
-authentication and protocol 2 header.
+authentication.

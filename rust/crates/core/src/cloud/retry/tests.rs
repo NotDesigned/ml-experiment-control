@@ -1,9 +1,5 @@
 use super::*;
-use crate::{
-    first_submission::native::retry::StartFrom,
-    managed::evidence::{Observation, Phase},
-    state::RunState,
-};
+use crate::{first_submission::native::retry::StartFrom, state::RunState};
 const ACTION: &str = "action-0123456789abcdef";
 fn fixture() -> (Value, Receipt) {
     let sha = format!("sha256:{}", "a".repeat(64));
@@ -23,34 +19,9 @@ fn fixture() -> (Value, Receipt) {
         restart_from: Some(StartFrom {
             run_id: "train".into(),
             attempt_id: "attempt-001".into(),
-            sync_request_id: "b".repeat(32),
         }),
         max_gpu_hours: 2.,
         reason: "cache repaired before training".into(),
-    };
-    let worker = Observation {
-        contract: crate::managed::evidence::CONTRACT.into(),
-        identity: crate::launch::Identity {
-            project: "demo".into(),
-            run_id: "train".into(),
-            attempt_id: "attempt-001".into(),
-        },
-        manifest_sha256: sha.clone(),
-        phase: Phase::Prepared,
-        safe_to_retry: false,
-        receipt: None,
-        runtime_environment_sha256: None,
-    };
-    let input = serde_json::from_value(json!({"at":"2026-10-31T00:00:01Z","phase":"FAILED","asset_id":format!("asset.{}","c".repeat(64)),"code":"DATA_CACHE_UNAVAILABLE"})).unwrap();
-    let proof = StartupProof {
-        sync_request_id: "b".repeat(32),
-        baseline_sequence: 2,
-        sequence: 4,
-        fenced_at: "2026-10-31T00:00:00Z".into(),
-        observed_at: "2026-10-31T00:00:02Z".into(),
-        packet_sha256: sha.clone(),
-        worker,
-        inputs: vec![input],
     };
     let receipt = Receipt {
         contract: CONTRACT.into(),
@@ -67,7 +38,6 @@ fn fixture() -> (Value, Receipt) {
         request,
         reserved_gpu_seconds: 7200,
         created_at: "2026-10-31T00:00:03Z".into(),
-        startup_failure: Some(proof),
     };
     (
         json!({"project":"demo","run_id":"train","resources":{"gpus":1},"native_cloud":{"walltime_seconds":3600},
@@ -100,7 +70,6 @@ fn full_restart_preserves_science_and_budget_and_is_deterministic() {
 #[test]
 fn explicit_restart_needs_a_terminal_parent_not_a_special_failure_code() {
     let (run, mut receipt) = fixture();
-    receipt.startup_failure = None;
     receipt.request.max_gpu_hours = 0.;
     receipt.request_sha256 = receipt.request.identity(ACTION).unwrap();
     assert!(plan(&run, receipt.clone(), &Value::Null).is_ok());
@@ -108,12 +77,12 @@ fn explicit_restart_needs_a_terminal_parent_not_a_special_failure_code() {
     assert!(plan(&run, receipt, &Value::Null).is_err());
 }
 #[test]
-fn legacy_retry_request_json_and_hash_are_unchanged_and_sources_are_exclusive() {
-    let legacy = json!({"confirmation":format!("RETRY {ACTION}"),"resume_from":{"run_id":"train","attempt_id":"attempt-001","checkpoint_id":format!("checkpoint.{}","a".repeat(64))},"max_gpu_hours":2.0,"reason":"restore"});
-    let request: Request = serde_json::from_value(legacy.clone()).unwrap();
-    assert_eq!(json!(request), legacy);
+fn retry_request_json_and_hash_are_stable_and_sources_are_exclusive() {
+    let original = json!({"confirmation":format!("RETRY {ACTION}"),"resume_from":{"run_id":"train","attempt_id":"attempt-001","checkpoint_id":format!("checkpoint.{}","a".repeat(64))},"max_gpu_hours":2.0,"reason":"restore"});
+    let request: Request = serde_json::from_value(original.clone()).unwrap();
+    assert_eq!(json!(request), original);
     let expected = crate::canonical::protocol_identity(
-        &json!({"contract":retry::CONTRACT,"parent_action":ACTION,"request":legacy}),
+        &json!({"contract":retry::CONTRACT,"parent_action":ACTION,"request":original}),
     )
     .unwrap();
     assert_eq!(request.identity(ACTION).unwrap(), expected);

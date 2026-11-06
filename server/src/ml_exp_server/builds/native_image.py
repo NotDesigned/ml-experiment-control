@@ -1,6 +1,5 @@
 """Small image effect adapter; native Runtime identities belong to Rust.
 
-Legacy recipes, worker bytes and their published receipts are untouched.
 This adapter requires its own explicitly configured native worker executable
 and source namespace. It never imports a training environment on the API host.
 """
@@ -15,7 +14,7 @@ import stat
 import tempfile
 
 from .builder_client import IMAGE, PROJECT, BuildReceiptMissingError
-from .image_build_context import BUILD_LOG, BUILD_PROGRESS, BUILD_CACHE, BUILD_RETRY
+from .image_build_context import BUILD_LOG, BUILD_PROGRESS, BUILD_CACHE
 from ..dockerfile_build import inspect_dockerfile, INTERNAL
 from ..projects.source_revisions import _tree_digest
 from ..runs.execution_progress import record_progress, progress_view
@@ -145,10 +144,6 @@ def request(builder, value):
             if result.get("request") != frozen:
                 raise ValueError("native build receipt differs")
             return result
-        retried = definition.exists()
-        from .native_worker import freeze_features
-        freeze_features(binary, value["worker_sha256"],
-                        builder.root / (identifier + ".native-worker.json"))
         atomic_json(definition, frozen)
         record_progress(progress, "PREPARING_CONTEXT", "Preparing the sealed native worker and source")
         with tempfile.TemporaryDirectory(prefix="native-build-", dir=builder.root) as directory:
@@ -177,8 +172,7 @@ def request(builder, value):
                     stream.write(f"\n!{INTERNAL}/\n!{INTERNAL}/**\n")
             tokens = [(var, var.set(data)) for var, data in (
                 (BUILD_LOG, log), (BUILD_PROGRESS, progress),
-                (BUILD_CACHE, builder.config["repository"] + ":native-cache-" + hashlib.sha256(value["project"].encode()).hexdigest()[:24]),
-                (BUILD_RETRY, identifier if retried else None))]
+                (BUILD_CACHE, builder.config["repository"] + ":native-cache-" + hashlib.sha256(value["project"].encode()).hexdigest()[:24]))]
             try:
                 tag = builder.config["repository"] + ":bundle-" + identifier
                 if builder.config.get("publisher") == "pai-dsw":
@@ -203,10 +197,5 @@ def _finish(builder, value, image, frozen, receipt):
         image = mirror(builder, {"source_image": image, "target_tag": target})["image"]
     result = {"runtime_id": value["runtime_id"], "project": value["project"], "source_id": value["source_id"], "recipe": RECIPE, "request": frozen,
               "runtime": {"runtime_id": value["runtime_id"], "source_id": value["source_id"], "image": image, "source_dir": "/ml-expd/source", "worker_path": "/usr/local/bin/ml-exp-worker-rs", "worker_sha256": value["worker_sha256"]}}
-    from .native_worker import load_features
-    features = load_features(builder.root / (value["runtime_id"].removeprefix("runtime.") + ".native-worker.json"),
-                             value["worker_sha256"])
-    if features:
-        result["runtime"]["worker_features"] = features
     atomic_json(receipt, result)
     return result

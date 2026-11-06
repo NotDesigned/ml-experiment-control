@@ -172,8 +172,8 @@ pub fn redact_lines(input: &str) -> String {
             match serde_json::from_str::<Value>(&payload) {
                 Ok(mut value) if value.is_object() => {
                     redact_json_value(&mut value);
-                    // Preserve the historical BTreeMap wire ordering even when
-                    // application crates enable serde_json preserve_order.
+                    // Keep sorted keys on the wire even when application crates
+                    // enable serde_json preserve_order.
                     value.sort_all_objects();
                     match serde_json::to_string(&value) {
                         Ok(payload) => output.push_str(&payload),
@@ -218,6 +218,15 @@ mod tests {
             assert!(!output.contains(secret));
         }
         assert_eq!(output.matches("<redacted>").count(), 4);
+    }
+
+    #[test]
+    fn redacts_a_secret_in_compact_json_text() {
+        let output = redact_line(r#"{"note":"kept","token":"alpha","api_key":"bravo"}"#);
+        for secret in ["alpha", "bravo"] {
+            assert!(!output.contains(secret), "{output}");
+        }
+        assert!(output.contains("kept"));
     }
 
     #[test]
@@ -303,7 +312,7 @@ mod tests {
     }
 
     #[test]
-    fn structured_evidence_can_exceed_the_legacy_128_kib_limit() {
+    fn structured_evidence_can_exceed_128_kib() {
         let payload = "x".repeat(131_073);
         let input = format!("{STRUCTURED_EVIDENCE_PREFIX}{{\"large_summary\":\"{payload}\"}}\n");
         let output = redact_lines(&input);

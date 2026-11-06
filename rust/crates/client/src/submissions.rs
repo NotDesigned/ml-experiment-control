@@ -1,7 +1,7 @@
 //! Pure request and response planning; one explicit transport call per command.
 //! Mutation response loss retains uncertainty and never triggers a second POST.
 use crate::{Client, Error, session};
-use ml_exp_core::{identity, operations::validate_submission_id};
+use ml_exp_core::{identity, operations::validate_action_id};
 use serde_json::{Value, json};
 
 pub enum Command<'a> {
@@ -436,7 +436,7 @@ pub fn plan(command: Command<'_>) -> Result<Plan, Error> {
                 }
                 _ => unreachable!(),
             };
-            validate_submission_id(id).map_err(|_| invalid())?;
+            validate_action_id(id).map_err(|_| invalid())?;
             return Ok(Plan {
                 path: format!("/api/submissions/{id}{suffix}"),
                 body: body
@@ -685,7 +685,7 @@ pub fn response(plan: &Plan, value: Value) -> Result<Value, Error> {
         return Ok(value);
     }
     let id = value["submission_id"].as_str().ok_or(Error::Response)?;
-    validate_submission_id(id).map_err(|_| Error::Response)?;
+    validate_action_id(id).map_err(|_| Error::Response)?;
     let project = value["project"].as_str().ok_or(Error::Response)?;
     let run = value["run_id"].as_str().ok_or(Error::Response)?;
     identity::validate_id(project).map_err(|_| Error::Response)?;
@@ -764,14 +764,7 @@ pub fn execute(client: &Client, plan: &Plan, health: &Value) -> Result<Value, Er
     session::validate_health(health)?;
     let creates = matches!(plan.expected, Expected::Creation { .. });
     let capability = if matches!(plan.expected, Expected::Tracking { .. }) {
-        if health["capabilities"]
-            .as_array()
-            .is_some_and(|caps| caps.iter().any(|v| v == "tracking-status-read.v1"))
-        {
-            "tracking-status-read.v1"
-        } else {
-            "native-tracking-status.v1"
-        }
+        "native-tracking-status.v1"
     } else if plan.path.ends_with("/sync")
         || matches!(plan.expected, Expected::Synchronization { .. })
         || matches!(plan.expected, Expected::Diagnostic(_))
@@ -790,11 +783,8 @@ pub fn execute(client: &Client, plan: &Plan, health: &Value) -> Result<Value, Er
     } else if plan.refreshes {
         "native-worker-observation.v1"
     } else {
-        "native-slurm-submissions.v1"
+        "native-submissions.v1"
     };
-    let neutral = health["capabilities"]
-        .as_array()
-        .is_some_and(|caps| caps.iter().any(|v| v == "native-submissions.v1"));
     let scheduler_refresh = plan.path.ends_with("/refresh")
         && health["capabilities"]
             .as_array()
@@ -806,7 +796,6 @@ pub fn execute(client: &Client, plan: &Plan, health: &Value) -> Result<Value, Er
     if !(health["capabilities"]
         .as_array()
         .is_some_and(|caps| caps.iter().any(|v| v == capability))
-        || capability == "native-slurm-submissions.v1" && neutral
         || scheduler_refresh
         || checkpoint_read)
         || plan.executes && health["scheduler_mutations"] != true

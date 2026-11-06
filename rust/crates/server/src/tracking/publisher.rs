@@ -40,30 +40,7 @@ struct Saved {
     remote_finished: bool,
     ever_opened: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    display_contract: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     history_repair: Option<HistoryRepair>,
-}
-impl Saved {
-    fn display_version(&self, confirmed: i64, observed_display: i64) -> Result<i64> {
-        let version = self.display_contract.unwrap_or_else(|| {
-            if self.ever_opened
-                || self.finish_requested
-                || confirmed > 0
-                || observed_display > 0
-                || !self.state.sent.is_empty()
-                || self.state.display_version.is_some()
-            {
-                2
-            } else {
-                tracking::STABLE_DISPLAY_VERSION
-            }
-        });
-        match version {
-            2..=4 => Ok(version),
-            _ => Err(Error::Publication("DISPLAY_CONTRACT_UNSUPPORTED")),
-        }
-    }
 }
 pub struct Publisher {
     stop: Arc<AtomicBool>,
@@ -310,9 +287,7 @@ fn publish_bound(
     if saved.state.confirmed > confirmed {
         return Err(Error::Identity);
     }
-    let display_version =
-        saved.display_version(confirmed, status["display_version"].as_i64().unwrap_or(0))?;
-    saved.display_contract = Some(display_version);
+    let display_version = tracking::DISPLAY_VERSION;
     saved.state.confirmed = confirmed;
     saved.state.sent.retain(|sequence, _| *sequence > confirmed);
     let mut events = store
@@ -461,13 +436,8 @@ fn publish_bound(
         return save(store, &guard, scope, &saved, phase, error, &at);
     }
     let display = store
-        .display(&guard, scope, through, display_version)
-        .map_err(|error| match error {
-            crate::records::Error::Invalid(
-                code @ ("DISPLAY_NAME_CONFLICT" | "DISPLAY_VARIANT_LABEL_REQUIRED"),
-            ) => Error::Publication(code),
-            _ => Error::Storage,
-        })?;
+        .display(&guard, scope, through)
+        .map_err(why!(Error::Storage))?;
     let keys: Vec<String> =
         serde_json::from_value(remote["summary_keys"].clone()).map_err(why!(Error::Identity))?;
     let mut effects = Vec::new();
@@ -475,9 +445,9 @@ fn publish_bound(
         effects.push(match action {
             PublicationAction::EmitHistory{sequence,event_id}=>{
                 let event=events.iter().find(|event|event.seq==sequence&&event.event_id==event_id).ok_or(Error::Identity)?;
-                json!({"operation":"history","sequence":sequence,"record":tracking::history_record(&event.document(),&display).map_err(why!(Error::Publication("JOURNAL_HISTORY_PROJECTION_INVALID")))?})
+                json!({"operation":"history","sequence":sequence,"record":tracking::history_record(&event.document(),&display).map_err(history_error)?})
             },
-            PublicationAction::PublishDisplay{..}=>json!({"operation":"display","patch":tracking::summary_patch(&display,&keys,terminal,"worker JSONL; accepted observations").map_err(why!(Error::Identity))?}),
+            PublicationAction::PublishDisplay{..}=>json!({"operation":"display","patch":tracking::summary_patch(&display,&keys,"worker JSONL; accepted observations").map_err(why!(Error::Identity))?}),
             PublicationAction::Finish{..}=>json!({"operation":"finish","exit_code":exit_code}),
         });
     }
@@ -503,6 +473,12 @@ fn publish_bound(
         return Err(Error::Transport);
     }
     Ok(())
+}
+fn history_error(error: tracking::Error) -> Error {
+    match error {
+        tracking::Error::Display(code @ "DISPLAY_NAME_CONFLICT") => Error::Publication(code),
+        _ => Error::Publication("JOURNAL_HISTORY_PROJECTION_INVALID"),
+    }
 }
 fn save(
     store: &Store,

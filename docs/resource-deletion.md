@@ -16,7 +16,6 @@ ml-exp admin retire --project P --run R --confirmation 'CONFIRMATION_RETURNED_BY
 or one `checkpoint` (with `--checkpoint`). Datasets and source trees are out of
 scope. `admin retire` retires a terminal Run registration and keeps small audit
 records. Real provider cleanup remains pending acceptance; see the
-[acceptance status](rust-rewrite.md).
+[acceptance status](acceptance-status.md).
 
-The native client has no `run delete` command. That flow belonged to the retired
-Python service; tag `v1.5.1` preserves its documentation.
+The native client has no `run delete` command.

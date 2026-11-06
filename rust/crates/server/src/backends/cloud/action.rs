@@ -6,10 +6,7 @@ use super::{
     outbox::Outbox,
 };
 use crate::operations::{Execute, Store};
-use ml_exp_core::{
-    cloud::action::{self, Execution, Outcome},
-    operations::Dispatch,
-};
+use ml_exp_core::cloud::action::{self, Execution, Outcome};
 use serde_json::Value;
 use std::sync::atomic::{AtomicBool, Ordering};
 pub struct Runner<'a, T> {
@@ -63,16 +60,12 @@ impl<T: Transport> Runner<'_, T> {
             .claim(
                 command.action_id,
                 command.confirmation,
-                command.policy,
                 command.files,
                 command.claim,
             )
             .map_err(action_error)?;
-        let Some(dispatch) = claimed.dispatch else {
+        if !claimed.execute {
             return Ok(claimed.snapshot);
-        };
-        if dispatch != Dispatch::Scheduler {
-            return Err(Error::evidence());
         }
         self.validate(&claimed.snapshot, request)?;
         let state = guard()

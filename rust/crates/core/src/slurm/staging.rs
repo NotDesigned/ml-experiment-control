@@ -55,7 +55,6 @@ pub fn plan(intent: &helper::FrozenIntent, manifest: &[u8]) -> helper::Result<Op
     }
     let doc = Value::Object(crate::json::mapping(manifest).map_err(|_| helper::Error::Metadata)?);
     if doc["schema_version"] != 1
-        || doc["identity_version"] != 2
         || doc["project"] != intent.scope.project
         || doc["run_id"] != intent.scope.run_id
         || doc["attempt_id"] != intent.scope.attempt_id

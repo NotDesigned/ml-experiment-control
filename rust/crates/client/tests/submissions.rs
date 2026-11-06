@@ -75,9 +75,9 @@ fn discovery_accepts_retained_preparation_before_any_submission_exists() {
     assert!(submissions::response(&plan, wrong).is_err());
 }
 #[test]
-fn checkpoint_free_retry_requires_exact_parent_and_frozen_cpu_sync_choice() {
+fn checkpoint_free_retry_requires_exact_parent() {
     let request: ml_exp_core::first_submission::native::retry::Request = serde_json::from_value(json!({
-        "confirmation":format!("RETRY {ID}"),"restart_from":{"run_id":"train","attempt_id":"attempt-001","sync_request_id":"a".repeat(32)},"max_gpu_hours":2.0,"reason":"cache repair"
+        "confirmation":format!("RETRY {ID}"),"restart_from":{"run_id":"train","attempt_id":"attempt-001"},"max_gpu_hours":2.0,"reason":"cache repair"
     })).unwrap();
     let plan = submissions::plan(Command::Retry {
         submission: ID,
@@ -90,14 +90,14 @@ fn checkpoint_free_retry_requires_exact_parent_and_frozen_cpu_sync_choice() {
         "reserved_gpu_seconds":7200,"run_sha256":format!("sha256:{}","b".repeat(64)),"attempt_sha256":format!("sha256:{}","c".repeat(64))});
     assert!(submissions::response(&plan, response.clone()).is_ok());
     let mut wrong = response.clone();
-    wrong["restart_from"]["sync_request_id"] = json!("f".repeat(32));
+    wrong["restart_from"]["attempt_id"] = json!("attempt-002");
     assert!(submissions::response(&plan, wrong).is_err());
     let mut wrong = response;
     wrong["resume_from"] = json!({"run_id":"train","attempt_id":"attempt-001","checkpoint_id":format!("checkpoint.{}","d".repeat(64))});
     assert!(submissions::response(&plan, wrong).is_err());
 }
 fn health() -> Value {
-    json!({"api_protocol_version":2,"min_client_protocol_version":2,"capabilities":["native-slurm-submissions.v1"],"scheduler_mutations":true})
+    json!({"capabilities":["native-submissions.v1"],"scheduler_mutations":true})
 }
 fn response() -> Value {
     json!({"submission_id":ID,"project":"demo","run_id":"train","attempt_id":"attempt-001","operation":"SUBMIT_RUN","status":"PREPARED","confirmation":format!("EXECUTE {ID}"),"execution":{"status":"PREPARED","revision":0}})
@@ -307,7 +307,6 @@ fn one_post_is_sent_and_lost_or_foreign_response_never_replays_it() {
                 "post /api/runs/demo/train/submissions http/1.1\r\n"
             }));
             assert!(head.contains("authorization: bearer synthetic-token"));
-            assert!(head.contains("x-ml-expd-client-protocol: 2"));
             let size: usize = head
                 .lines()
                 .find_map(|line| line.strip_prefix("content-length: "))
@@ -367,7 +366,7 @@ fn one_post_is_sent_and_lost_or_foreign_response_never_replays_it() {
         })
         .unwrap();
         let mut h = health();
-        h["capabilities"] = json!(["native-run-creation.v1", "native-slurm-submissions.v1"]);
+        h["capabilities"] = json!(["native-run-creation.v1", "native-submissions.v1"]);
         let result = submissions::execute(&client, &plan, &h);
         if mode == "success" {
             let value = result.unwrap();
@@ -395,7 +394,7 @@ fn a_reads_only_daemon_refuses_checkpoint_reads_before_connecting() {
     })
     .unwrap();
     let mut reads_only = health();
-    reads_only["capabilities"] = json!(["metric-records.v1", "result-collection-read.v1"]);
+    reads_only["capabilities"] = json!([]);
     assert!(matches!(
         submissions::execute(&client, &plan, &reads_only),
         Err(Error::Observation(

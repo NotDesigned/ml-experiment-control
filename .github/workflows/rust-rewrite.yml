@@ -55,7 +55,7 @@ jobs:
       - run: cargo test --locked --manifest-path rust/Cargo.toml --workspace
       - run: cargo build --locked --manifest-path rust/Cargo.toml --workspace --bins
       - name: Exercise native binaries with isolated temporary configuration
-        run: bash rust/tests/preview-smoke.sh
+        run: bash rust/tests/smoke.sh
 
   image-effects:
     needs: plan
@@ -68,8 +68,8 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-          cache-dependency-path: rust/tests/image-bridge-requirements.txt
-      - run: python -m pip install -r rust/tests/image-bridge-requirements.txt
+          cache-dependency-path: rust/deploy/image-bridge-requirements.txt
+      - run: python -m pip install -r rust/deploy/image-bridge-requirements.txt
       - name: Check optional image bridge without provider requests
         env:
           PYTHONPATH: server/src:src:worker/src

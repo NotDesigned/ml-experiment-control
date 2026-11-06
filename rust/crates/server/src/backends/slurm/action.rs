@@ -3,12 +3,9 @@
 //! or automatic provider replay is performed here.
 use super::{CallOutcome, SshConfig, call};
 use crate::operations::{self, Store};
-use ml_exp_core::{
-    operations::Dispatch,
-    slurm::{
-        action::{self, Outcome, Uncertain},
-        helper::{Reply, ReplyOutcome, Request},
-    },
+use ml_exp_core::slurm::{
+    action::{self, Outcome, Uncertain},
+    helper::{Reply, ReplyOutcome, Request},
 };
 use serde_json::Value;
 use std::{
@@ -58,15 +55,11 @@ impl Runner<'_> {
         let claimed = self.actions.claim(
             command.action_id,
             command.confirmation,
-            command.policy,
             command.files,
             command.claim,
         )?;
-        let Some(dispatch) = claimed.dispatch else {
+        if !claimed.execute {
             return Ok(claimed.snapshot);
-        };
-        if dispatch != Dispatch::Scheduler {
-            return Err(Error::Binding);
         }
         let snapshot = claimed.snapshot;
         action::validate(&snapshot, prepare).map_err(why!(Error::Binding))?;

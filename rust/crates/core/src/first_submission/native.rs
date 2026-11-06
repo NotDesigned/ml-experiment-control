@@ -20,7 +20,7 @@ pub mod retry;
 /// state. A receipt proves the recorded observation, not current liveness.
 pub fn project_run(mut run: Value, submission: &Value) -> Result<Value> {
     let id = field(submission, "submission_id")?;
-    crate::operations::validate_submission_id(id).map_err(|_| Error("Submission identity"))?;
+    crate::operations::validate_action_id(id).map_err(|_| Error("Submission identity"))?;
     if submission["project"] != run["project"]
         || submission["run_id"] != run["run_id"]
         || submission["attempt_id"] != run["current_attempt_id"]
@@ -188,12 +188,9 @@ pub struct Runtime {
     pub sif_path: String,
     pub sif_sha256: String,
     pub oci_image: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worker: Option<slurm::managed::Runtime>,
-    /// Source directory inside the immutable image. Older receipts retain the
-    /// original /workspace convention and unchanged serialization.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_dir: Option<String>,
+    pub worker: slurm::managed::Runtime,
+    /// Source directory inside the immutable image.
+    pub source_dir: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -337,7 +334,6 @@ pub fn definition(
     }
     for value in [run, attempt] {
         if value["schema_version"] != 1
-            || value["identity_version"] != 2
             || field(value, "project")? != binding.project
             || field(value, "run_id")? != binding.run_id
             || !value.get("resume").is_none_or(Value::is_null)
@@ -379,7 +375,7 @@ pub fn definition(
                 &profile.run_root,
             )
             .map_err(|_| Error("checkpoint scope or identity"))?;
-            if reference.run_id == binding.run_id && !continuation || runtime.worker.is_none() {
+            if reference.run_id == binding.run_id && !continuation {
                 return Err(Error("checkpoint restore"));
             }
         }
@@ -395,23 +391,18 @@ pub fn definition(
         &spec.storage.project_data_root,
     )
     .map_err(|_| Error("dataset bindings"))?;
-    if !datasets.is_empty() && runtime.worker.is_none() {
-        return Err(Error("datasets require managed worker"));
-    }
-    if let Some(worker) = &runtime.worker {
-        slurm::managed::plan_with_inputs(
-            &Scope {
-                project: binding.project.clone(),
-                run_id: binding.run_id.clone(),
-                attempt_id: binding.attempt_id.clone(),
-            },
-            &spec,
-            worker,
-            attempt.get("native_checkpoint"),
-            &datasets,
-        )
-        .map_err(|_| Error("managed worker runtime or environment"))?;
-    }
+    slurm::managed::plan_with_inputs(
+        &Scope {
+            project: binding.project.clone(),
+            run_id: binding.run_id.clone(),
+            attempt_id: binding.attempt_id.clone(),
+        },
+        &spec,
+        &runtime.worker,
+        attempt.get("native_checkpoint"),
+        &datasets,
+    )
+    .map_err(|_| Error("managed worker runtime or environment"))?;
     let gpu = slurm::parse_gres(&spec.backend.gres).map_err(|_| Error("GPU request"))?;
     let seconds = slurm::walltime_seconds(&spec.backend.time).map_err(|_| Error("walltime"))?;
     if spec.storage.run_dir
@@ -457,9 +448,8 @@ pub fn definition(
         || runtime.sif_path != spec.backend.sif_path
         || !helper::valid_digest(&runtime.sif_sha256)
         || spec.backend.oci_image.as_deref() != Some(&runtime.oci_image)
-        || runtime.source_dir.as_deref().is_some_and(|directory| {
-            !slurm::absolute_path(directory) || spec.execution.workdir != directory
-        })
+        || !slurm::absolute_path(&runtime.source_dir)
+        || spec.execution.workdir != runtime.source_dir
         || field(&run["container"], "runtime_id")? != runtime.runtime_id
         || !runtime
             .runtime_id
@@ -496,9 +486,7 @@ pub fn prepare(
     if end <= start || end - start > time::Duration::hours(24) {
         return Err(Error("gate window"));
     }
-    let manifest =
-        String::from_utf8(canonical::python_json_bytes(attempt).map_err(|_| Error("encoding"))?)
-            .map_err(|_| Error("encoding"))?;
+    let manifest = canonical::text(attempt).map_err(|_| Error("encoding"))?;
     let spec = job(attempt, &binding)?;
     let datasets = crate::datasets::document_mounts(
         run,
@@ -512,13 +500,12 @@ pub fn prepare(
         run_id: binding.run_id.clone(),
         attempt_id: binding.attempt_id.clone(),
     };
-    let mut launch_spec = spec.clone();
-    if let Some(worker) = &runtime.worker {
-        let package = slurm::managed::plan_for_document(&scope, &spec, worker, attempt, &datasets)
+    let package =
+        slurm::managed::plan_for_document(&scope, &spec, &runtime.worker, attempt, &datasets)
             .map_err(|_| Error("managed launch"))?;
-        launch_spec.command = slurm::managed::command(&package, worker)
-            .map_err(|_| Error("managed launch command"))?;
-    }
+    let mut launch_spec = spec.clone();
+    launch_spec.command = slurm::managed::command(&package, &runtime.worker)
+        .map_err(|_| Error("managed launch command"))?;
     let script = slurm::render_job_with_datasets(&launch_spec, Some(token), &datasets)
         .map_err(|_| Error("script"))?;
     let attempt_path = format!(
@@ -554,7 +541,7 @@ pub fn prepare(
             target: profile.target.clone(),
             staging: Some(slurm::staging::Requirement {
                 runs_root: profile.run_root.clone(),
-                worker: runtime.worker.clone(),
+                worker: Some(runtime.worker.clone()),
             }),
             scope,
             submission_token: token.into(),

@@ -17,12 +17,11 @@ CREATE TABLE IF NOT EXISTS runs (project TEXT, run TEXT, route TEXT NOT NULL, co
 CREATE TABLE IF NOT EXISTS scopes (
  id TEXT PRIMARY KEY, project TEXT, run TEXT, attempt TEXT, wandb_id TEXT NOT NULL,
  confirmed INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'PENDING', error TEXT,
- last_attempt_at TEXT,last_confirmed_at TEXT,failures INTEGER NOT NULL DEFAULT 0);
+ last_attempt_at TEXT,last_confirmed_at TEXT,failures INTEGER NOT NULL DEFAULT 0,
+ display_version INTEGER NOT NULL DEFAULT 0,display_confirmed INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS events (scope TEXT,seq INTEGER,event_id TEXT,payload TEXT NOT NULL,dedup TEXT,
  PRIMARY KEY(scope,seq),UNIQUE(scope,event_id),UNIQUE(scope,dedup));
 CREATE TABLE IF NOT EXISTS event_ids (scope TEXT,event_id TEXT,digest TEXT NOT NULL,PRIMARY KEY(scope,event_id));
-CREATE TABLE IF NOT EXISTS display_metrics (destination TEXT,signature TEXT,public_name TEXT,context TEXT,
- PRIMARY KEY(destination,signature),UNIQUE(destination,public_name));
 CREATE TABLE IF NOT EXISTS native_publications (scope TEXT PRIMARY KEY,state TEXT NOT NULL);
 "#;
 
@@ -307,27 +306,16 @@ impl Store {
         })
     }
 
-    /// Bind an historical archive to its declared schema without enabling a
-    /// publisher. Existing frozen routes and schemas always take precedence.
-    pub fn prepare_import(
-        &self,
-        guard: &RecordGuard<'_>,
-        attempt: &str,
-        manifest: &Value,
-    ) -> Result<(String, Value)> {
+    /// The scope and frozen config an import writes under. The Run must already
+    /// be bound, so an import can neither choose nor change a route or schema.
+    pub fn import_scope(&self, guard: &RecordGuard<'_>, attempt: &str) -> Result<(String, Value)> {
         if self.read_only {
             return Err(Error::ReadOnly);
         }
         self.require_guard(guard)?;
-        let binding = match self.binding_raw(&guard.project, &guard.run)? {
-            Some(binding) => binding,
-            None => {
-                let binding = records::historical_binding(manifest)?;
-                self.bind(guard, &binding["route"], &binding["config"])?;
-                self.binding_raw(&guard.project, &guard.run)?
-                    .ok_or(Error::Unbound)?
-            }
-        };
+        let binding = self
+            .binding_raw(&guard.project, &guard.run)?
+            .ok_or(Error::Unbound)?;
         let scope = self.scope(guard, attempt)?;
         self.require_scope(guard, &scope)?;
         Ok((scope, binding["config"].clone()))
@@ -582,19 +570,6 @@ mod publication;
 
 fn initialize_schema(transaction: &rusqlite::Transaction<'_>, workspace_seed: &str) -> Result<()> {
     transaction.execute_batch(SCHEMA)?;
-    let columns: Vec<String> = {
-        let mut statement = transaction.prepare("PRAGMA table_info(scopes)")?;
-        statement
-            .query_map([], |row| row.get(1))?
-            .collect::<std::result::Result<_, _>>()?
-    };
-    for column in ["display_version", "display_confirmed"] {
-        if !columns.iter().any(|existing| existing == column) {
-            transaction.execute_batch(&format!(
-                "ALTER TABLE scopes ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"
-            ))?;
-        }
-    }
     let workspace: Option<String> = transaction
         .query_row("SELECT value FROM meta WHERE key='workspace'", [], |row| {
             row.get(0)
@@ -686,7 +661,7 @@ impl Store {
     pub fn pending(&self, guard: &RecordGuard<'_>) -> Result<Vec<Value>> {
         self.require_guard(guard)?;
         let rows=self.database.read_only(|connection| -> Result<_> {
-        let mut statement=connection.prepare("SELECT s.* FROM scopes s JOIN runs r ON r.project=s.project AND r.run=s.run WHERE s.project=? AND s.run=? AND json_extract(r.route,'$.enabled')=1 AND (confirmed < (SELECT COALESCE(MAX(seq),0) FROM events WHERE scope=s.id) OR (confirmed>0 AND (display_version<2 OR display_confirmed<confirmed))) ORDER BY COALESCE(last_attempt_at,'')")?;
+        let mut statement=connection.prepare("SELECT s.* FROM scopes s JOIN runs r ON r.project=s.project AND r.run=s.run WHERE s.project=? AND s.run=? AND json_extract(r.route,'$.enabled')=1 AND (confirmed < (SELECT COALESCE(MAX(seq),0) FROM events WHERE scope=s.id) OR (confirmed>0 AND (display_version<4 OR display_confirmed<confirmed))) ORDER BY COALESCE(last_attempt_at,'')")?;
         let rows = statement
             .query_map(params![guard.project, guard.run], row_document)?
             .collect::<std::result::Result<Vec<_>, _>>()?;

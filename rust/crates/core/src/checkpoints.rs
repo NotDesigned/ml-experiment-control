@@ -7,7 +7,6 @@
 use crate::{canonical, identity, sources};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
-use sha2::Digest;
 use std::collections::BTreeSet;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
@@ -298,16 +297,8 @@ fn context_value(context: &Context) -> Value {
 }
 
 fn identity_digest(value: &Value) -> Result<String> {
-    let bytes = canonical::encode(
-        value,
-        canonical::JsonOptions {
-            sort_keys: true,
-            ensure_ascii: false,
-            compact: true,
-        },
-    )
-    .map_err(|_| Error::Document)?;
-    Ok(format!("checkpoint.{:x}", sha2::Sha256::digest(bytes)))
+    let digest = canonical::digest(value).map_err(|_| Error::Document)?;
+    Ok(format!("checkpoint.{digest}"))
 }
 
 /// Build the immutable checkpoint document and derive its exact identity.
@@ -458,7 +449,7 @@ mod tests {
     }
 
     #[test]
-    fn python_checkpoint_identity_and_sorted_manifest_are_exact() {
+    fn checkpoint_identity_and_sorted_manifest_are_exact() {
         let context = context(&context_value()).unwrap();
         let value = document(&context, &ready()).unwrap();
         assert_eq!(

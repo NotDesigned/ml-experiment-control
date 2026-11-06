@@ -16,7 +16,6 @@ pub(super) struct Saved {
     pub(super) bundle: Bundle,
     pub(super) state: Option<State>,
     pub(super) released_parts: u64,
-    #[serde(default)]
     pub(super) administrative_release: Option<String>,
 }
 impl Service {

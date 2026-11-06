@@ -4,7 +4,7 @@ use ml_exp_core::state::RunState;
 use serde_json::Value;
 
 fn fixture() -> Value {
-    serde_json::from_str(include_str!("fixtures/slurm/python-reference.json")).unwrap()
+    serde_json::from_str(include_str!("fixtures/slurm/cases.json")).unwrap()
 }
 fn sample() -> JobSpec {
     serde_json::from_value(fixture()["render_cases"][0]["spec"].clone()).unwrap()
@@ -89,7 +89,7 @@ fn observe(
 }
 
 #[test]
-fn normalized_scheduler_states_preserve_python_semantics() {
+fn normalized_scheduler_states_follow_the_case_table() {
     let f = fixture();
     assert_eq!(f["normalization_cases"].as_array().unwrap().len(), 100);
     for c in f["normalization_cases"].as_array().unwrap() {
@@ -110,7 +110,7 @@ fn normalized_scheduler_states_preserve_python_semantics() {
     );
 }
 #[test]
-fn shell_quotes_and_long_job_names_match_python() {
+fn shell_quotes_and_long_job_names_follow_the_case_table() {
     let f = fixture();
     assert_eq!(f["quote_cases"].as_array().unwrap().len(), 25);
     for c in f["quote_cases"].as_array().unwrap() {
@@ -153,7 +153,7 @@ fn rendering_is_byte_exact_for_source_and_managed_oci_inputs() {
     assert!(render_job_with_datasets(&spec, None, &[]).is_err());
 }
 #[test]
-fn typed_configuration_preserves_reference_and_labels_hardening() {
+fn typed_configuration_accepts_exactly_the_valid_cases() {
     let f = fixture();
     assert_eq!(f["config_cases"].as_array().unwrap().len(), 24);
     for c in f["config_cases"].as_array().unwrap() {
@@ -161,9 +161,6 @@ fn typed_configuration_preserves_reference_and_labels_hardening() {
             .map(|s| s.validate().is_ok())
             .unwrap_or(false);
         assert_eq!(valid, c["native_valid"].as_bool().unwrap(), "{}", c["id"]);
-        if c["native_valid"] != c["python_valid"] {
-            assert!(c["difference"].as_str().is_some());
-        }
     }
     let mut s = sample();
     s.backend.kind = "wyd".into();

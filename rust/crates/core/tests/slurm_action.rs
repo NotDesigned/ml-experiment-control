@@ -39,7 +39,7 @@ fn fixture() -> (Value, Request) {
     (action::prepare(plan, &request).unwrap(), request)
 }
 #[test]
-fn native_plan_pins_all_execution_fields_and_does_not_reinterpret_legacy() {
+fn native_plan_pins_all_execution_fields_and_refuses_a_plan_without_its_binding() {
     let (plan, request) = fixture();
     action::validate(&plan, &request).unwrap();
     assert_eq!(
@@ -66,11 +66,11 @@ fn native_plan_pins_all_execution_fields_and_does_not_reinterpret_legacy() {
         changed[key] = value;
         assert!(action::validate(&changed, &request).is_err());
     }
-    let mut legacy = plan;
-    legacy.as_object_mut().unwrap().remove("native_slurm");
-    assert!(action::validate(&legacy, &request).is_err());
-    legacy["execution"] = json!({});
-    assert!(action::prepare(legacy, &request).is_err());
+    let mut unbound = plan;
+    unbound.as_object_mut().unwrap().remove("native_slurm");
+    assert!(action::validate(&unbound, &request).is_err());
+    unbound["execution"] = json!({});
+    assert!(action::prepare(unbound, &request).is_err());
     let (_, mut intent) = fixture();
     // A second preparation with a different token changes its stable Action ID.
     let mut frozen = intent.intent().clone();

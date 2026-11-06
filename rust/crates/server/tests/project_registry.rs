@@ -1,7 +1,7 @@
 //! Filesystem acceptance of the native project registry. Only synthetic private
 //! temporary roots are used; no scientific files, providers or production state.
 use ml_exp_core::{
-    canonical::python_json_bytes,
+    canonical,
     projects::{LifecycleState, Seed},
 };
 use ml_exp_server::{
@@ -32,7 +32,7 @@ fn write(path: &Path, bytes: &[u8]) {
     fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
 }
 fn encoded(value: &Value) -> Vec<u8> {
-    let mut bytes = python_json_bytes(value).unwrap();
+    let mut bytes = canonical::bytes(value).unwrap();
     bytes.push(b'\n');
     bytes
 }
@@ -71,7 +71,7 @@ impl Fixture {
     fn fresh() -> Self {
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path().join("projects");
-        let manifest = temporary.path().join("research_project.yaml");
+        let manifest = temporary.path().join("project.json");
         Self {
             _temporary: temporary,
             root,
@@ -86,12 +86,6 @@ impl Fixture {
         };
         let store = Store::initialize(&fixture.root, &[seed], NOW, &transition_id(100)).unwrap();
         (fixture, store)
-    }
-    fn imported(&self, head: &Value, events: &[Value]) {
-        private_directory(&self.root);
-        write(&self.root.join(HEAD), &encoded(head));
-        write(&self.root.join(EVENTS), &journal(events));
-        write(&self.root.join(LOCK), b"");
     }
     fn bytes(&self) -> (Vec<u8>, Vec<u8>) {
         (
@@ -113,88 +107,6 @@ impl Fixture {
         assert!(Store::open(&self.root).is_err());
         assert_eq!(self.bytes(), before);
         assert_eq!(self.entries(), entries);
-    }
-}
-
-#[test]
-fn actual_python_empty_legacy_head_is_read_without_adoption_writes_then_explicitly_registered() {
-    let baseline: Value =
-        serde_json::from_str(include_str!("../../../compatibility/durable.json")).unwrap();
-    assert_eq!(
-        baseline["baseline_commit"],
-        "e725faec689fb8395e692e27d00a8896fa7fe5a5"
-    );
-    // This head is the unmodified actual Python fixture. Its non-empty later
-    // heads exercise generic durability, not the full project record schema.
-    let fixture = Fixture::fresh();
-    fixture.imported(&baseline["cases"][0]["before"], &[]);
-    let before = fixture.bytes();
-    let store = Store::open(&fixture.root).unwrap();
-    let snapshot = store.snapshot(200).unwrap();
-    assert_eq!(snapshot.revision, 0);
-    assert!(snapshot.projects.is_empty());
-    assert!(!snapshot.journal_pending);
-    assert_eq!(fixture.bytes(), before);
-    let registered = execute(&store, &register(&fixture.manifest), 900, 0).unwrap();
-    assert_eq!(registered["source"], "MANUAL");
-    assert_eq!(registered["state"], "ACTIVE");
-    drop(store);
-    let reopened = Store::open(&fixture.root).unwrap();
-    let snapshot = reopened.snapshot(200).unwrap();
-    assert_eq!(snapshot.revision, 1);
-    assert_eq!(snapshot.events[0]["event"], "REGISTER");
-    assert_eq!(snapshot.events[0]["transition_id"], transition_id(900));
-    assert_eq!(
-        snapshot.projects[0].project_file,
-        fixture.manifest.to_str().unwrap()
-    );
-    assert!(!snapshot.journal_pending);
-}
-
-#[test]
-fn actual_python_durability_envelopes_compose_with_valid_lifecycle_records_and_keep_prefixes() {
-    let baseline: Value =
-        serde_json::from_str(include_str!("../../../compatibility/durable.json")).unwrap();
-    for (index, case) in baseline["cases"].as_array().unwrap().iter().enumerate() {
-        let fixture = Fixture::fresh();
-        // Explicitly COMPOSED fixture: actual Python durability head/event
-        // envelopes are retained, and the generic test's minimal project record
-        // gains the project-registry fields it intentionally did not contain.
-        let mut head = case["head"].clone();
-        let record = head["projects"][0].as_object_mut().unwrap();
-        record.insert("project_file".into(), json!(fixture.manifest));
-        record.insert("source".into(), json!("MANUAL"));
-        record.insert("registered_at".into(), json!(NOW));
-        record.insert("updated_at".into(), json!(NOW));
-        record.insert("state_reason".into(), json!("composed fixture"));
-        let mut events = case["events"].as_array().unwrap().clone();
-        events.push(case["transition"].clone());
-        fixture.imported(&head, &events);
-        let prefix = fs::read(fixture.root.join(EVENTS)).unwrap();
-        let store = Store::open(&fixture.root).unwrap();
-        let before = store.snapshot(200).unwrap();
-        let revision = case["revision"].as_u64().unwrap();
-        assert_eq!(before.revision, revision);
-        assert_eq!(before.events, events);
-        assert!(!before.journal_pending);
-        let transition = match before.projects[0].state {
-            LifecycleState::Active => "pause",
-            LifecycleState::Paused => "resume",
-            LifecycleState::Archived => "restore",
-        };
-        execute(&store, &action(transition), 1000 + index as u64, revision).unwrap();
-        let after = store.snapshot(200).unwrap();
-        assert_eq!(after.revision, revision + 1);
-        assert_eq!(&after.events[..events.len()], events);
-        assert!(
-            fs::read(fixture.root.join(EVENTS))
-                .unwrap()
-                .starts_with(&prefix)
-        );
-        assert_eq!(
-            json_file(&fixture.root.join(HEAD))["extra"],
-            case["head"]["extra"]
-        );
     }
 }
 
@@ -239,9 +151,9 @@ fn partial_and_unterminated_complete_tails_are_not_repaired_by_reads() {
         let (fixture, store) = Fixture::seeded();
         let mut bytes = fs::read(fixture.root.join(EVENTS)).unwrap();
         let original = bytes.clone();
-        let legacy = json!({"event":"LEGACY_NOTE","detail":"科学"});
+        let note = json!({"event":"NOTE","detail":"科学"});
         if complete {
-            let mut tail = encoded(&legacy);
+            let mut tail = encoded(&note);
             tail.pop();
             bytes.extend(tail);
         } else if tail_kind == "truncated_utf8" {
@@ -267,7 +179,7 @@ fn partial_and_unterminated_complete_tails_are_not_repaired_by_reads() {
         assert!(!snapshot.journal_pending);
         let mut expected = original;
         if complete {
-            expected.extend(encoded(&legacy));
+            expected.extend(encoded(&note));
         }
         assert_eq!(fs::read(fixture.root.join(EVENTS)).unwrap(), expected);
     }
@@ -453,7 +365,7 @@ fn publication_failure_after_head_replace_is_uncertain_and_explicitly_recoverabl
     }
     let (fixture, store) = Fixture::seeded();
     let mut events = store.snapshot(100).unwrap().events;
-    events.extend((0..32).map(|n| json!({"event":"LEGACY_NOTE","n":n,"detail":"x".repeat(2048)})));
+    events.extend((0..32).map(|n| json!({"event":"NOTE","n":n,"detail":"x".repeat(2048)})));
     let original_journal = journal(&events);
     assert!(original_journal.len() > 64 * 1024);
     write(&fixture.root.join(EVENTS), &original_journal);
@@ -544,7 +456,7 @@ impl ServiceFixture {
         for path in [&a, &b] {
             private_directory(&path.join("runs"));
             write(
-                &path.join("research_project.yaml"),
+                &path.join("project.json"),
                 &encoded(
                     &json!({"schema_version":1,"project":"demo","title":"Synthetic project","run_roots":["runs"]}),
                 ),
@@ -558,7 +470,7 @@ impl ServiceFixture {
         }
     }
     fn settings(&self, project: Option<&Path>) -> read_config::Settings {
-        let projects = project.map(|path| json!({"project":"demo","project_file":path.join("research_project.yaml"),"run_roots":[path.join("runs")],"runs":[],"discover_runs":false})).into_iter().collect::<Vec<_>>();
+        let projects = project.map(|path| json!({"project":"demo","project_file":path.join("project.json"),"run_roots":[path.join("runs")],"runs":[],"discover_runs":false})).into_iter().collect::<Vec<_>>();
         read_config::Settings::from_json(
             &serde_json::to_vec(
                 &json!({"schema_version":1,"registry_root":self.registry,"projects":projects}),
@@ -611,7 +523,7 @@ fn unregister_survives_restart_and_configuration_does_not_resurrect_it() {
     let settings = fixture.settings(Some(&fixture.a));
     Service::initialize(&settings, NOW, &transition_id(100)).unwrap();
     let service = Service::open(&settings).unwrap();
-    let manifest = fixture.a.join("research_project.yaml");
+    let manifest = fixture.a.join("project.json");
     let authored = fs::read(&manifest).unwrap();
     service
         .execute(
@@ -659,7 +571,7 @@ fn service_checks_approved_binding_under_the_mutation_lock_and_rejects_register_
     assert!(
         service
             .execute(
-                register(&fixture.b.join("research_project.yaml")),
+                register(&fixture.b.join("project.json")),
                 NOW,
                 &transition_id(101),
                 Some(1)
@@ -678,13 +590,7 @@ fn service_checks_approved_binding_under_the_mutation_lock_and_rejects_register_
         1,
     )
     .unwrap();
-    execute(
-        &store,
-        &register(&fixture.b.join("research_project.yaml")),
-        102,
-        2,
-    )
-    .unwrap();
+    execute(&store, &register(&fixture.b.join("project.json")), 102, 2).unwrap();
     let before = fixture.bytes();
     assert!(matches!(service.snapshot(), Err(Error::Binding)));
     assert!(matches!(

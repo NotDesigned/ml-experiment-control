@@ -50,33 +50,28 @@ pub struct Discovery {
     pub deleted: Vec<LocatedRun>,
 }
 
-fn read_manifest(
-    directory: &Directory,
-    sources: &[ManifestSource],
-) -> Result<Option<Document>, DiscoveryError> {
-    for source in sources {
-        let name = OsStr::new(source.filename());
-        if !directory.entry_exists(name)? {
-            continue;
-        }
-        // Discovery reads trees this service did not create, so a manifest that
-        // another group or user could rewrite is refused.
-        if !directory
-            .regular_identity(name)?
-            .is_some_and(|file| file.is_private_for(effective_uid()))
-        {
-            return Err(DiscoveryError::UnsafeEntry);
-        }
-        let mut file = directory.open_regular_read(name)?;
-        let length = file.metadata()?.len();
-        let mut bytes = Vec::new();
-        (&mut file).take(length + 1).read_to_end(&mut bytes)?;
-        if bytes.len() as u64 != length {
-            return Err(DiscoveryError::Changed);
-        }
-        return Ok(Some(Document::decode(&bytes, *source)?));
+fn read_manifest(directory: &Directory) -> Result<Option<Document>, DiscoveryError> {
+    let source = ManifestSource::RunJson;
+    let name = OsStr::new(source.filename());
+    if !directory.entry_exists(name)? {
+        return Ok(None);
     }
-    Ok(None)
+    // Discovery reads trees this service did not create, so a manifest that
+    // another group or user could rewrite is refused.
+    if !directory
+        .regular_identity(name)?
+        .is_some_and(|file| file.is_private_for(effective_uid()))
+    {
+        return Err(DiscoveryError::UnsafeEntry);
+    }
+    let mut file = directory.open_regular_read(name)?;
+    let length = file.metadata()?.len();
+    let mut bytes = Vec::new();
+    (&mut file).take(length + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 != length {
+        return Err(DiscoveryError::Changed);
+    }
+    Ok(Some(Document::decode(&bytes, source)?))
 }
 
 pub(super) fn scan(
@@ -85,12 +80,11 @@ pub(super) fn scan(
     project_filename: &OsStr,
     roots: &[Directory],
     fence: &RunFence,
-    run_sources: &[ManifestSource],
 ) -> Result<Discovery, DiscoveryError> {
     identity::validate_id(project).map_err(why!(DiscoveryError::UnsafeEntry))?;
     let guard = fence.shared_existing()?;
     let project_bytes = parent.read_whole(project_filename)?;
-    let project_document = Document::decode(&project_bytes, ManifestSource::ProjectYaml)?;
+    let project_document = Document::decode(&project_bytes, ManifestSource::ProjectJson)?;
     domain::validate_project(&project_document.metadata, project)?;
     for (index, root) in roots.iter().enumerate() {
         if roots[..index].iter().any(|previous| {
@@ -109,7 +103,7 @@ pub(super) fn scan(
         .map(|(index, root)| (index, root.clone(), Vec::<String>::new()))
         .collect();
     while let Some((root_index, directory, components)) = pending.pop() {
-        if let Some(manifest) = read_manifest(&directory, run_sources)? {
+        if let Some(manifest) = read_manifest(&directory)? {
             let run_id = manifest
                 .metadata
                 .get("run_id")
@@ -144,7 +138,7 @@ pub(super) fn scan(
                     let text = name.to_str().ok_or(DiscoveryError::UnsafeEntry)?;
                     identity::validate_observation_id(text)
                         .map_err(why!(DiscoveryError::UnsafeEntry))?;
-                    if matches!(text, "attempts" | "collected_run" | "uploaded_outputs") {
+                    if text == "attempts" {
                         return Err(DiscoveryError::UnsupportedLayout);
                     }
                     if components.len() >= MAX_DEPTH {

@@ -1,6 +1,6 @@
 //! Pure failure evidence assessment. A producer's label alone is diagnostic;
 //! no retry, execution permission or provider fact is inferred from it.
-use crate::metrics::python_string;
+use crate::metrics::json_text;
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::{Map, Number, Value, json};
@@ -30,9 +30,6 @@ pub struct AssessmentContext {
     pub domain_observed_at: Map<String, Value>,
     pub domain_attempt_ids: Map<String, Value>,
     pub domain_evidence_sources: Map<String, Value>,
-    pub decision_observed_at: Value,
-    pub decision_source_binding: String,
-    pub decision_evidence_source: Option<String>,
     /// Required to interpret a supported timezone-less ISO date/time. Without
     /// this explicit choice its freshness is unknown, not implicitly local.
     pub naive_utc_offset_seconds: Option<i32>,
@@ -47,9 +44,6 @@ impl Default for AssessmentContext {
             domain_observed_at: Map::new(),
             domain_attempt_ids: Map::new(),
             domain_evidence_sources: Map::new(),
-            decision_observed_at: Value::Null,
-            decision_source_binding: "EXACT_ATTEMPT".into(),
-            decision_evidence_source: None,
             naive_utc_offset_seconds: None,
         }
     }
@@ -77,13 +71,13 @@ fn get<'a>(value: &'a Value, key: &str) -> &'a Value {
 }
 fn or_string(value: &Value, default: &str) -> String {
     if truth(value) {
-        python_string(value)
+        json_text(value)
     } else {
         default.into()
     }
 }
 fn strip(value: &str) -> &str {
-    // Python's whitespace predicate additionally includes four C0 separators.
+    // Unicode whitespace, plus the four C0 separators U+001C to U+001F.
     value.trim_matches(|c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}'))
 }
 fn normalized_class(value: &Value) -> Option<String> {
@@ -140,7 +134,7 @@ pub fn compact_evidence(value: &Value) -> Value {
 }
 
 /// Numeric timestamps must be finite. Common ISO timestamps are parsed without
-/// consulting the host timezone. Unsupported legacy date grammars remain unknown.
+/// consulting the host timezone. Unsupported date grammars remain unknown.
 pub fn evidence_timestamp(value: &Value, naive_offset_seconds: Option<i32>) -> Option<f64> {
     if let Value::Number(number) = value {
         return number.as_f64().filter(|number| number.is_finite());
@@ -192,11 +186,7 @@ fn joined_tail(value: &Value) -> Result<String, FailureError> {
         return Ok(String::new());
     }
     Ok(match value {
-        Value::Array(values) => values
-            .iter()
-            .map(python_string)
-            .collect::<Vec<_>>()
-            .join("\n"),
+        Value::Array(values) => values.iter().map(json_text).collect::<Vec<_>>().join("\n"),
         Value::Object(values) => values.keys().cloned().collect::<Vec<_>>().join("\n"),
         Value::String(value) => value
             .chars()
@@ -387,7 +377,6 @@ fn assess(
 /// remain explicit provenance, not permission to refresh providers or retry.
 pub fn attempt_failure_evidence_assessment(
     collection: &Value,
-    decision: Option<&Value>,
     context: &AssessmentContext,
 ) -> Result<Value, FailureError> {
     if !collection.is_object() {
@@ -488,13 +477,6 @@ pub fn attempt_failure_evidence_assessment(
             value[key] = item;
         }
         diagnostics.push(value);
-    }
-    if let Some(class) = decision
-        .filter(|value| value.is_object())
-        .and_then(|value| normalized_class(get(value, "failure_class")))
-        .filter(|_| summary.is_null())
-    {
-        diagnostics.push(json!({"kind":"preliminary_failure_classification","failure_class":class,"source":"decision.failure_class","attempt_id":context.attempt_id,"attempt_state":state,"observed_at":evidence_timestamp(&context.decision_observed_at,context.naive_utc_offset_seconds),"applicability":"NON_APPLICABLE","source_binding":context.decision_source_binding,"evidence_source":context.decision_evidence_source,"reason":"decision metadata is contextual only and is not exact, fresh, terminal failure evidence"}));
     }
     Ok(
         json!({"failure_summary":summary,"diagnostic_evidence":compact_evidence(&Value::Array(diagnostics))}),

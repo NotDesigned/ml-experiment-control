@@ -203,33 +203,13 @@ impl Profile {
         self.validate()?;
         digest(&json!(self))
     }
+    /// Each provider issues exactly one contract. It is part of the identity
+    /// digest, and the provider also decides the machine's name format.
     pub fn recipe(&self, request: Create, now: &str) -> Result<Recipe> {
-        let contract = if matches!(self, Self::PaiDsw { .. }) {
-            "native-debug-machine.v4"
-        } else {
-            "native-debug-machine.v1"
+        let contract = match self {
+            Self::PaiDsw { .. } => "native-debug-machine.v4",
+            Self::SensecoreCci { .. } => "native-debug-machine.v1",
         };
-        self.recipe_version(request, now, contract)
-    }
-    /// Old issued recipes retain their original name and identity. In
-    /// particular, observing an uncertain v1 create must search its old name.
-    pub fn check_recipe(&self, recipe: &Recipe) -> Result<()> {
-        if self.recipe_version(recipe.request.clone(), &recipe.created_at, &recipe.contract)?
-            != *recipe
-        {
-            return Err(Error("debug frozen recipe"));
-        }
-        Ok(())
-    }
-    fn recipe_version(&self, request: Create, now: &str, contract: &str) -> Result<Recipe> {
-        if contract != "native-debug-machine.v1"
-            && !(matches!(
-                contract,
-                "native-debug-machine.v2" | "native-debug-machine.v3" | "native-debug-machine.v4"
-            ) && matches!(self, Self::PaiDsw { .. }))
-        {
-            return Err(Error("debug recipe contract"));
-        }
         self.validate()?;
         request.validate()?;
         let profile_sha256 = self.digest()?;
@@ -256,10 +236,9 @@ impl Profile {
             contract: contract.into(),
             // PAI's InstanceName is at most 27 ASCII letters/digits/underscores.
             // Ownership additionally binds the complete digest label and quota.
-            name: if contract != "native-debug-machine.v1" {
-                format!("ml_exp_{}", &identity[..20])
-            } else {
-                format!("ml-expd-debug-{}", &identity[..32])
+            name: match self {
+                Self::PaiDsw { .. } => format!("ml_exp_{}", &identity[..20]),
+                Self::SensecoreCci { .. } => format!("ml-expd-debug-{}", &identity[..32]),
             },
             identity: format!("debug.{identity}"),
             profile_sha256,
@@ -270,6 +249,15 @@ impl Profile {
             created_at: now.into(),
             request,
         })
+    }
+    /// A saved recipe must be exactly what this profile issues for its request
+    /// and creation time, so observing an uncertain create searches a name this
+    /// profile owns. Any changed name, contract or identity is refused.
+    pub fn check_recipe(&self, recipe: &Recipe) -> Result<()> {
+        if self.recipe(recipe.request.clone(), &recipe.created_at)? != *recipe {
+            return Err(Error("debug frozen recipe"));
+        }
+        Ok(())
     }
     fn req(
         &self,
@@ -366,15 +354,13 @@ impl Profile {
                     .and_then(|s| s.split(':').next())
                     .ok_or(Error("debug role"))?;
                 let mut mounts = storage.mounts();
-                if recipe.contract == "native-debug-machine.v4" {
-                    // DSW also mounts WorkspaceSource at /mnt/workspace. Its
-                    // explicit dataset mount must have a different name; DLC
-                    // keeps the ordinary /mnt/workspace mount convention.
-                    mounts[0]["MountPath"] = json!("/mnt/ml-expd-personal");
-                }
+                // DSW also mounts WorkspaceSource at /mnt/workspace. Its explicit
+                // dataset mount must have a different name; DLC keeps the
+                // ordinary /mnt/workspace mount convention.
+                mounts[0]["MountPath"] = json!("/mnt/ml-expd-personal");
                 json!({"WorkspaceId":profile.workspace_id,"ResourceId":profile.quota_id,"InstanceName":recipe.name,"ImageId":image_id,"Accessibility":"PRIVATE",
                     "RequestedResource":{"CPU":r.cpus.to_string(),"Memory":format!("{}Gi",r.memory_gb),"GPU":r.gpus.to_string()},"OversoldType":"ForbiddenQuotaOverSold",
-                    "Labels":[{"Key":"ml-expd.debug","Value":recipe.identity}],"Datasets":mounts,"WorkspaceSource":if recipe.contract=="native-debug-machine.v3"{"/mnt/workspace"}else{"/mnt/ml-expd-personal"},"UserVpc":vpc,
+                    "Labels":[{"Key":"ml-expd.debug","Value":recipe.identity}],"Datasets":mounts,"WorkspaceSource":"/mnt/ml-expd-personal","UserVpc":vpc,
                     "CredentialConfig":{"Enable":true,"AliyunEnvRoleKey":"0","Configs":[{"Key":"0","Type":"Role","Roles":[{"RoleArn":storage.role_arn,"RoleType":"service","AssumeRoleFor":account}]}]}})
             }
             Self::SensecoreCci { profile, image, .. } => {

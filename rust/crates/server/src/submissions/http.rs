@@ -15,7 +15,7 @@ use axum::{
     response::Response,
     routing::{get, post},
 };
-use ml_exp_core::{first_submission::native::Approval, operations::validate_submission_id};
+use ml_exp_core::{first_submission::native::Approval, operations::validate_action_id};
 use serde::Deserialize;
 use serde_json::Value;
 use std::sync::{Arc, atomic::AtomicBool};
@@ -271,8 +271,7 @@ fn decode<T: serde::de::DeserializeOwned>(
         code: "INVALID_SUBMISSION_BODY",
         detail: "submission body is invalid or exceeds 8 MiB",
     })?;
-    let value = crate::experiments::parse_mapping(&bytes, crate::experiments::Format::Json)
-        .map_err(|_| invalid())?;
+    let value = ml_exp_core::json::mapping(&bytes).map_err(|_| invalid())?;
     serde_json::from_value(Value::Object(value)).map_err(|_| invalid())
 }
 fn clock(now: f64) -> Result<String, read_api::Error> {
@@ -480,7 +479,7 @@ async fn change(
     let Ok(Path((identity, operation))) = path else {
         return read_http::failure(invalid());
     };
-    if validate_submission_id(&identity).is_err() {
+    if validate_action_id(&identity).is_err() {
         return read_http::failure(invalid());
     }
     if let Err(error) = read_api::no_parameters(raw.as_deref()) {
@@ -620,7 +619,7 @@ async fn artifact_metadata(
     let Ok(Path(identity)) = path else {
         return read_http::failure(invalid());
     };
-    if validate_submission_id(&identity).is_err() {
+    if validate_action_id(&identity).is_err() {
         return read_http::failure(invalid());
     }
     if let Err(e) = read_api::no_parameters(raw.as_deref()) {

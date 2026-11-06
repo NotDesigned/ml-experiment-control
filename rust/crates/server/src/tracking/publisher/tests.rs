@@ -5,27 +5,21 @@ use std::{fs, os::unix::fs::PermissionsExt};
 
 #[test]
 fn explicit_gap_repair_appends_original_ids_and_normal_publication_resumes_without_duplicates() {
-    for version in [3, 4] {
-        exercise_gap_repair(false, 2, version);
-    }
+    exercise_gap_repair(false, 2);
 }
 
 #[test]
 fn explicit_tail_repair_confirms_appended_tail_and_continues_without_duplicates() {
-    for version in [3, 4] {
-        exercise_gap_repair(false, 4, version);
-    }
+    exercise_gap_repair(false, 4);
 }
 
 #[test]
 fn uncertain_repair_is_observed_without_resending_or_clearing_original_reservations() {
-    for version in [3, 4] {
-        exercise_gap_repair(true, 2, version);
-        exercise_gap_repair(true, 4, version);
-    }
+    exercise_gap_repair(true, 2);
+    exercise_gap_repair(true, 4);
 }
 
-fn exercise_gap_repair(uncertain: bool, missing_sequence: i64, version: i64) {
+fn exercise_gap_repair(uncertain: bool, missing_sequence: i64) {
     struct FixtureSource(std::path::PathBuf);
     impl Source for FixtureSource {
         fn publisher_leader(&self) -> Result<ml_exp_io::directory::FileLock> {
@@ -81,15 +75,6 @@ fn exercise_gap_repair(uncertain: bool, missing_sequence: i64, version: i64) {
         .bind(&guard, &route, &json!({"ml_expd":{"run_id":"train"}}))
         .unwrap();
     let scope = store.scope(&guard, "attempt-001").unwrap();
-    if version == 3 {
-        let saved = Saved {
-            display_contract: Some(3),
-            ..Default::default()
-        };
-        store
-            .save_publication_state(&guard, &scope, &json!(saved), "PENDING", None, "fixture")
-            .unwrap();
-    }
     let metric = |step| Event {
         event_id: format!("m{step}"),
         payload: normalized_metric(
@@ -205,14 +190,7 @@ fn exercise_gap_repair(uncertain: bool, missing_sequence: i64, version: i64) {
             4
         }
     );
-    assert_eq!(
-        repaired[if version == 4 {
-            "ml_expd/axes/loss/step"
-        } else {
-            "axes/loss/step"
-        }],
-        missing_sequence
-    );
+    assert_eq!(repaired["ml_expd/axes/loss/step"], missing_sequence);
     assert_eq!(store.events(&guard, &scope, 0, 128).unwrap().len(), 5);
 }
 
@@ -251,20 +229,6 @@ fn uncertain_history_is_observed_without_opening_or_recreating_remote_runs() {
 
 #[test]
 fn delayed_remote_ack_restart_variants_and_terminal_finish_preserve_exact_cursors() {
-    exercise_delayed_publication(4);
-}
-
-#[test]
-fn already_started_legacy_display_keeps_names_and_reservations_across_restart() {
-    exercise_delayed_publication(2);
-}
-
-#[test]
-fn started_v3_keeps_prefixes_across_restart() {
-    exercise_delayed_publication(3);
-}
-
-fn exercise_delayed_publication(version: i64) {
     let root = tempfile::tempdir().unwrap();
     let cloud = root.path().join("cloud.json");
     fs::write(
@@ -300,24 +264,8 @@ fn exercise_delayed_publication(version: i64) {
         )
         .unwrap();
     let scope = store.scope(&guard, "attempt-001").unwrap();
-    if version != 4 {
-        // Exact shape of an older saved state, with no display_contract field.
-        let mut saved = serde_json::to_value(Saved::default()).unwrap();
-        saved["state"]["display_version"] = json!(version);
-        assert!(saved.get("display_contract").is_none());
-        if version == 3 {
-            saved["display_contract"] = json!(3);
-        }
-        store
-            .save_publication_state(&guard, &scope, &saved, "PENDING", None, "fixture")
-            .unwrap();
-    }
     let metric = |id: &str, step: u64, value: f64, variant: &str| {
-        let name = if version == 4 {
-            format!("loss/{variant}")
-        } else {
-            "loss".into()
-        };
+        let name = format!("loss/{variant}");
         Event{event_id:id.into(),payload:normalized_metric(&json!({"name":name,"unit":"nats/token","step":step,"value":value,"variant_id":variant}),&json!({})).unwrap()}
     };
     store
@@ -337,8 +285,6 @@ fn exercise_delayed_publication(version: i64) {
     let cycle = |sdk: &mut Option<Sdk>| publish_bound(&store, &runtime, sdk, &scope, &flag);
     let read_cloud = || serde_json::from_slice::<Value>(&fs::read(&cloud).unwrap()).unwrap();
     cycle(&mut sdk).unwrap();
-    let saved = store.publication_state(&guard, &scope).unwrap().unwrap();
-    assert_eq!(saved["display_contract"], version);
     assert_eq!(
         store.scope_status(&guard, &scope).unwrap().unwrap()["confirmed"],
         0
@@ -414,34 +360,10 @@ fn exercise_delayed_publication(version: i64) {
         json!(3.497610465568654)
     );
     let rows = remote["runs"][&id]["history"].as_array().unwrap();
-    let curve_keys: Vec<_> = rows
-        .iter()
-        .flat_map(|r| {
-            r.as_object()
-                .unwrap()
-                .keys()
-                .filter(|k| k.starts_with("curves/") && k.contains("/variants/"))
-        })
-        .collect();
-    if version != 4 {
-        assert!(curve_keys.len() >= 4, "variant curves remain distinct");
-    }
-    if version == 3 {
-        assert_eq!(rows[0]["curves/loss/variants/a"], 3.0);
-        assert_eq!(rows[2]["curves/loss/variants/b"], 5.0);
-        assert!(rows[0].get("curves/loss").is_none());
-        assert_eq!(
-            store.scope_status(&guard, &scope).unwrap().unwrap()["display_version"],
-            3
-        );
-    }
-    if version == 4 {
-        assert!(curve_keys.is_empty());
-        assert_eq!(rows[0]["loss/a"], 3.0);
-        assert_eq!(rows[2]["loss/b"], 5.0);
-        assert_eq!(remote["runs"][&id]["summary"]["loss/a"], 2.0);
-        assert_eq!(remote["runs"][&id]["summary"]["loss/b"], 4.0);
-    }
+    assert_eq!(rows[0]["loss/a"], 3.0);
+    assert_eq!(rows[2]["loss/b"], 5.0);
+    assert_eq!(remote["runs"][&id]["summary"]["loss/a"], 2.0);
+    assert_eq!(remote["runs"][&id]["summary"]["loss/b"], 4.0);
     assert!(
         !remote["runs"][&id]["summary"]
             .as_object()
@@ -450,11 +372,11 @@ fn exercise_delayed_publication(version: i64) {
             .any(|k| k.starts_with("results/")),
         "active losses are curves, not final comparison values"
     );
-    // Official Summary is not a Mapping: membership falls back to integer
-    // indexing and fails. Exercise deletion of actual legacy auto-summary keys.
-    let mut stale_summary = read_cloud();
-    stale_summary["runs"][&id]["summary"]["curves/legacy"] = json!(123.0);
-    fs::write(&cloud, stale_summary.to_string()).unwrap();
+    // A summary key that no observation in this journal names belongs to the
+    // caller, so publication leaves it alone.
+    let mut client_summary = read_cloud();
+    client_summary["runs"][&id]["summary"]["curves/client-owned"] = json!(123.0);
+    fs::write(&cloud, client_summary.to_string()).unwrap();
     store.append(&guard,&scope,&[Event{event_id:"terminal".into(),payload:json!({"kind":"lifecycle","data":{"phase":"METRICS_DRAINED","state":"SUCCEEDED"}})}]).unwrap();
     for _ in 0..4 {
         cycle(&mut sdk).unwrap();
@@ -464,10 +386,8 @@ fn exercise_delayed_publication(version: i64) {
     assert_eq!(status["status"], "FINISHED");
     assert_eq!(read_cloud()["finishes"], 1);
     assert_eq!(
-        read_cloud()["runs"][&id]["summary"]
-            .get("curves/legacy")
-            .is_none(),
-        version != 4
+        read_cloud()["runs"][&id]["summary"]["curves/client-owned"],
+        123.0
     );
     assert_eq!(
         read_cloud()["inits"],
@@ -479,13 +399,7 @@ fn exercise_delayed_publication(version: i64) {
         .as_object()
         .unwrap()
         .iter()
-        .filter(|(k, _)| {
-            if version == 4 {
-                ["loss/a", "loss/b"].contains(&k.as_str())
-            } else {
-                k.starts_with("results/")
-            }
-        })
+        .filter(|(k, _)| ["loss/a", "loss/b"].contains(&k.as_str()))
         .collect::<Vec<_>>();
     assert_eq!(finals.len(), 2);
     assert!(
@@ -507,81 +421,15 @@ fn exercise_delayed_publication(version: i64) {
 }
 
 #[test]
-fn display_version_selection_never_upgrades_started_or_uncertain_scopes() {
-    assert_eq!(Saved::default().display_version(0, 0).unwrap(), 4);
-    assert_eq!(Saved::default().display_version(1, 0).unwrap(), 2);
-    assert_eq!(Saved::default().display_version(0, 2).unwrap(), 2);
-    let mut old = Saved {
-        ever_opened: true,
-        ..Default::default()
-    };
-    assert_eq!(old.display_version(0, 0).unwrap(), 2);
-    old.ever_opened = false;
-    old.state.sent.insert(1, "unknown-send".into());
-    assert_eq!(old.display_version(0, 0).unwrap(), 2);
-    old.display_contract = Some(3);
-    let restored: Saved = serde_json::from_value(serde_json::to_value(&old).unwrap()).unwrap();
-    assert_eq!(restored.display_version(0, 0).unwrap(), 3);
-    assert_eq!(restored.state.sent, old.state.sent);
-    old.display_contract = Some(4);
-    assert_eq!(old.display_version(0, 0).unwrap(), 4);
-    old.display_contract = Some(5);
-    assert!(old.display_version(0, 0).is_err());
-}
-
-#[test]
-fn stable_projection_ignores_destination_reservations_and_reports_ambiguous_names() {
-    let root = tempfile::tempdir().unwrap();
-    let store = Store::open(root.path(), "0123456789abcdef0123456789abcdef").unwrap();
-    for (index, run) in ["train-a", "train-b"].iter().enumerate() {
-        let guard = store.guard("demo", run).unwrap();
-        store
-            .bind(
-                &guard,
-                &json!({"enabled":true,"entity":"fixture","project":"science"}),
-                &json!({}),
-            )
-            .unwrap();
-        let scope = store.scope(&guard, "attempt-001").unwrap();
-        let event = |protocol: &str| Event {
-            event_id: format!("{run}-{protocol}"),
-            payload: json!({"kind":"metrics","observations":[{"name":"train_loss","unit":"nats/token","protocol_id":protocol,"value":3.0,"step":1,"status":"VALID"}]}),
-        };
-        store.append(&guard, &scope, &[event(run)]).unwrap();
-        // Exercise the old allocator first so its reservation cannot influence v3.
-        let legacy = store.display(&guard, &scope, 1, 2).unwrap();
-        let stable = store.display(&guard, &scope, 1, 3).unwrap();
-        let row = stable["series"]
-            .as_object()
-            .unwrap()
-            .values()
-            .next()
-            .unwrap();
-        assert_eq!(row["curve"], "curves/train_loss");
-        if index == 1 {
-            assert_ne!(
-                legacy["series"]
-                    .as_object()
-                    .unwrap()
-                    .values()
-                    .next()
-                    .unwrap()["curve"],
-                row["curve"]
-            );
-        }
-        store
-            .append(&guard, &scope, &[event("different-protocol")])
-            .unwrap();
-        assert!(matches!(
-            store.display(&guard, &scope, 2, 3),
-            Err(crate::records::Error::Invalid("DISPLAY_NAME_CONFLICT"))
-        ));
-        assert_eq!(
-            store.total(&guard, &scope).unwrap(),
-            2,
-            "display errors preserve the accepted journal"
-        );
-    }
+fn a_name_collision_in_one_history_row_reports_its_own_code() {
+    assert!(matches!(
+        history_error(tracking::Error::Display("DISPLAY_NAME_CONFLICT")),
+        Error::Publication("DISPLAY_NAME_CONFLICT")
+    ));
+    assert!(matches!(
+        history_error(tracking::Error::Display("event payload")),
+        Error::Publication("JOURNAL_HISTORY_PROJECTION_INVALID")
+    ));
 }
 
 #[test]

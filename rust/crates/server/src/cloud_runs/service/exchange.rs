@@ -297,11 +297,7 @@ impl Service {
         &self,
         prepared: &Prepared,
     ) -> cloud::Result<crate::records::Store> {
-        let seed = self
-            .workspace
-            .strip_prefix("rust-preview-")
-            .ok_or_else(cloud::Error::evidence)?;
-        let store = crate::records::Store::open(&self.settings.registry_root, seed)
+        let store = crate::records::Store::open(&self.settings.registry_root, &self.workspace)
             .map_err(why!(cloud::Error::evidence()))?;
         let b = &prepared.execution.binding;
         let root = self
@@ -309,7 +305,7 @@ impl Service {
             .child(OsStr::new(&b.run_id), false)
             .map_err(io)?;
         let manifest = read(&root, "manifest.json")?;
-        let binding = ml_exp_core::records::observed_binding(&manifest, &b.run_sha256)
+        let binding = ml_exp_core::records::native_binding(&manifest, &b.run_sha256)
             .map_err(why!(cloud::Error::evidence()))?;
         let guard = store
             .guard(&b.project, &b.run_id)
@@ -643,13 +639,8 @@ impl crate::tracking::Source for Service {
             .map_err(why_lock!(crate::tracking::Error::Storage))
     }
     fn publisher_store(&self) -> Result<crate::records::Store, crate::tracking::Error> {
-        crate::records::Store::open(
-            &self.settings.registry_root,
-            self.workspace
-                .strip_prefix("rust-preview-")
-                .ok_or(crate::tracking::Error::Storage)?,
-        )
-        .map_err(why!(crate::tracking::Error::Storage))
+        crate::records::Store::open(&self.settings.registry_root, &self.workspace)
+            .map_err(why!(crate::tracking::Error::Storage))
     }
     fn tracking_journal(
         &self,

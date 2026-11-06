@@ -1,18 +1,17 @@
 # HTTP contract
 
-## Negotiate and authenticate
+## Discover and authenticate
 
-The current protocol is 2. `GET /api/health` returns `server_version`,
-`api_protocol_version`, `min_client_protocol_version`, `capabilities`, enabled
-policy and `openapi_path` (`/api/v2/openapi.json`). Package versions alone do not
-prove a capability is available; frozen worker images have their own capabilities.
+Client and server come from one release. `GET /api/health` returns
+`server_version`, `capabilities`, enabled policy and `openapi_path`
+(`/api/v2/openapi.json`). Package versions alone do not prove a capability is
+available.
 Platform metrics are accepted and queried independently of W&B. Without the
 optional SDK, publication reports `WANDB_SDK_NOT_INSTALLED`; it does not rewrite
 the frozen Run route or discard accepted records.
 
-Health also returns `supported_capabilities`
-(implemented protocols) and `deployment` (the readiness document). Mutation
-permissions and executor capabilities remain separate checks; these lists do not
+Health also returns `deployment` (the readiness document). Mutation permissions
+and executor capabilities remain separate checks; the capability list does not
 grant authorization. Authenticated `GET /api/readiness` returns the same document
 and sends no provider request. `training=INCOMPLETE` is always reported today with
 `training_status_scope=acceptance_evidence`: it describes recorded acceptance, not
@@ -24,12 +23,10 @@ Every normal API request sends:
 
 ```text
 Authorization: Bearer <private token>
-X-ML-Expd-Client-Protocol: 2
 ```
 
-Only headerless health GET may bootstrap protocol discovery; it still requires
-configured authentication. Invalid/unsupported protocol receives HTTP 426 before
-dispatch. A proxy must retain Authorization, protocol headers and the API prefix.
+A missing, wrong or repeated Authorization header receives HTTP 401 before
+dispatch. A proxy must retain Authorization and the API prefix.
 
 The daemon token file must be regular, daemon-owned, mode 0600 or stricter, with
 at least 32 non-whitespace characters. This is shared-token authentication, not
@@ -39,12 +36,12 @@ The daemon binds loopback only and has no native TLS. A TLS proxy fronts it, and
 remote clients use HTTPS.
 
 Retrieve the schema from `/api/v2/openapi.json` with `ml-exp get /api/v2/openapi.json`
-or an authenticated protocol-aware HTTP client. It may not list every native route.
+or an authenticated HTTP client. It may not list every native route.
 Use the [quickstart](api-quickstart.md) for the workflow.
 
 ## Async state and retries
 
-With `async-actions.v1`, execute durably claims an Action and returns EXECUTING
+Execute durably claims an Action and returns EXECUTING
 while a daemon-owned thread continues. Runtime/data delivery have their own
 durable async resources. Poll the returned ID; disconnecting does not cancel.
 After daemon interruption, in-flight operations require reconciliation, not replay.
@@ -75,7 +72,7 @@ reported and `NOT_REPORTED` otherwise, including for all Slurm Submissions.
 `GET /api/experiments/{project}/{run}/submissions` lists the current Attempt's cloud
 Submission for clients without saved state.
 
-Missing fields on older servers and null evidence mean unknown. A scheduler
+Null evidence means unknown. A scheduler
 terminal state is not overwritten by an earlier worker stage. The last received
 metric is not the largest step or best model, and an absent metric timestamp
 does not prove recent progress. These GETs do not refresh providers, create
@@ -118,14 +115,11 @@ explicit retry.
 Attempt is supplied, the client first reads `GET /api/runs/P/R/attempts` and binds
 the request to its current Attempt. These reads do not submit work.
 
-With `metric-records.v1`, the client requests `format=records` and repeats `name`
-to filter metric names. The compact response contains normalized `records`, full
-history `validation`, `total_records`, `downsampled`, `missing_names`, frozen
-`protocol_id` and exact Run/Attempt identity. Validation runs before filtering or
-sampling. It omits the duplicate legacy points/keys representation and filesystem
-paths. Omitting `format` keeps the old response; `keys` remains a legacy field
-filter. Mixing `format=records` with `keys` is rejected. See [metrics](metrics.md)
-for explicit result summaries and scoped requirements.
+Repeat `name` to filter metric names. The compact response contains normalized
+`records`, full history `validation`, `total_records`, `downsampled`,
+`missing_names`, frozen `protocol_id` and exact Run/Attempt identity. Validation
+runs before filtering or sampling. Unknown query parameters are refused. See
+[metrics](metrics.md) for explicit result summaries and scoped requirements.
 
 `ml-exp run cancel` and `ml-exp run retry` POST
 `/api/submissions/ID/cancel` and `/api/submissions/ID/retry`. Authorization and
@@ -147,14 +141,13 @@ For a complete install-to-results example use the [client quickstart](api-quicks
 This section is a lookup table for custom clients, Runtime reuse and diagnosis;
 request/response bodies are defined by the installed `GET /api/v2/openapi.json`.
 Paths are relative to the API base. `P`, `R`, `A`, `S` denote returned project,
-Run, Attempt and Submission IDs, not filesystem paths. `GET /api/health` is the
-protocol-discovery exception to the headers above.
+Run, Attempt and Submission IDs, not filesystem paths.
 
 ### Discover, import and build
 
 | Method/path | Resource or purpose |
 |---|---|
-| `GET /api/health` | Installed version, protocol, capabilities and policy |
+| `GET /api/health` | Installed version, capabilities and policy |
 | `GET /api/readiness` | Per-backend submission availability and evidence; no provider request |
 | `GET /api/executors` | Configured resource/backend choices |
 | `GET /api/backends/EXECUTOR_ID/capacity` | Cached capacity with its original observation time |
@@ -169,8 +162,8 @@ protocol-discovery exception to the headers above.
 | `GET …/runtimes/RUNTIME_ID/logs` / `/progress` | Build diagnostics |
 | `POST …/runtimes/RUNTIME_ID/reconcile` / `/materialize` | Observe publication without rebuilding; produce a Slurm SIF |
 
-New builds use Dockerfile only, with pinned external bases. Old READY images
-retain their workers; an obsolete unbuilt recipe requires new preparation.
+Builds use Dockerfile only, with pinned external bases. A READY image keeps its
+worker; an unbuilt recipe that no longer matches the builder requires new preparation.
 Source admission rejects links, unsafe paths and credential-looking filenames;
 it is not proof that file contents contain no secrets. See [builds](builds.md).
 
@@ -219,7 +212,7 @@ changing source, parameters or restore reference requires a new Run.
 |---|---|
 | `GET /api/runs/P/R` / `/attempts` | Run evidence and exact executions |
 | `GET /api/attempts/P/R::A/logs` | Stored bounded stdout/stderr |
-| `GET /api/attempts/P/R::A/metrics?format=records&name=loss` | Compact normalized [metrics](metrics.md); repeat `name` |
+| `GET /api/attempts/P/R::A/metrics?name=loss` | Compact normalized [metrics](metrics.md); repeat `name` |
 | `GET /api/runs/P/R/attempts/A/checkpoints` / `/checkpoints/CHECKPOINT_ID` | Registered checkpoint metadata |
 | `POST /api/submissions/S/checkpoint` | Verify and register a complete backend checkpoint |
 | `GET /api/runs/P/R/attempts/A/collection` | Training, collection and verification states |

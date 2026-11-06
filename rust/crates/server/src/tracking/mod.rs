@@ -29,10 +29,6 @@ pub enum Error {
     Identity,
     #[error("W&B journal or private publication store unavailable")]
     Storage,
-    #[error(
-        "tracking key {0} is no longer supported; remove it from the file and restart (historical data on disk is not touched)"
-    )]
-    RetiredKey(&'static str),
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -77,9 +73,6 @@ impl Config {
         let bytes =
             ml_exp_io::read_private(path, 16384, true).map_err(why!(Error::Configuration))?;
         let mapping = ml_exp_core::json::mapping(&bytes).map_err(why!(Error::Configuration))?;
-        if mapping.contains_key("historical_handoff") {
-            return Err(Error::RetiredKey("historical_handoff"));
-        }
         let config: Self =
             serde_json::from_value(Value::Object(mapping)).map_err(why!(Error::Configuration))?;
         if config.schema_version != 1

@@ -1,10 +1,10 @@
 use std::collections::BTreeSet;
 
 use super::{Error, Result};
-use crate::canonical::{self, JsonOptions};
+use crate::canonical;
 use serde_json::{Value, json};
 
-/// A missing preparation option retains historical intent JSON; an explicitly
+/// A missing preparation option stays absent from the intent JSON; an explicitly
 /// supplied false must remain present and override the server default.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WandbOptions {
@@ -117,7 +117,7 @@ pub struct WandbSettings {
     api_key: Option<String>,
     provided: BTreeSet<String>,
 }
-fn python_whitespace(value: char) -> bool {
+fn key_whitespace(value: char) -> bool {
     matches!(value,'\t'..='\r'|'\u{1c}'..='\u{20}'|'\u{85}'|'\u{a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}')
 }
 impl WandbSettings {
@@ -145,7 +145,7 @@ impl WandbSettings {
             None | Some(Value::Null) => None,
             Some(Value::String(key))
                 if (1..=512).contains(&key.chars().count())
-                    && !key.chars().any(|c| c < '!' || python_whitespace(c)) =>
+                    && !key.chars().any(|c| c < '!' || key_whitespace(c)) =>
             {
                 Some(key.clone())
             }
@@ -167,21 +167,6 @@ impl WandbSettings {
     }
     pub fn provided(&self, field: &str) -> bool {
         self.provided.contains(field)
-    }
-    pub fn provided_fields(&self) -> impl Iterator<Item = &str> {
-        self.provided.iter().map(String::as_str)
-    }
-    /// Equivalent to the reference's JSON-mode request serialization. Never
-    /// exposes the raw credential, including on failed validation paths.
-    pub fn to_public_value(&self) -> Value {
-        let mut value = self.options.to_value();
-        value["api_key"] = self
-            .api_key
-            .as_ref()
-            .map(|_| json!("**********"))
-            .unwrap_or(Value::Null);
-        value["clear_credentials"] = json!(self.clear_credentials);
-        value
     }
 }
 
@@ -243,22 +228,9 @@ pub fn resolve_preparation(
     resolve(Some(&selected), settings, project)
 }
 
-fn parameter_json() -> JsonOptions {
-    JsonOptions {
-        sort_keys: false,
-        ensure_ascii: true,
-        compact: false,
-    }
-}
 pub fn finite_parameters(value: &Value) -> Result<&Value> {
     if !value.is_null() {
-        canonical::encode(value, parameter_json())?;
+        canonical::bytes(value)?;
     }
     Ok(value)
-}
-/// Raw JSON boundary so NaN/Infinity can be rejected without replacing them with
-/// valid JSON null/zero. Returned bytes use Python's ordinary spaced JSON format.
-pub fn finite_parameters_json(bytes: &[u8]) -> Result<Vec<u8>> {
-    let encoded = canonical::python_json_from_slice(bytes, parameter_json())?;
-    Ok(encoded)
 }

@@ -23,7 +23,7 @@ mod preparation_cli;
 #[command(
     name = "ml-exp-worker-rs",
     version,
-    about = "Native local process preview; not a replacement for frozen managed workers",
+    about = "ML-Expd worker: runs one local process, or a managed, Slurm or cloud subcommand",
     after_help = "Slurm metadata: ml-exp-worker-rs slurm-helper --config /absolute/private.json --stdio\nExplicit bootstrap: replace --stdio with --initialize. See slurm-helper --help.\nSealed local worker: ml-exp-worker-rs managed-launch --config /absolute/private.json [--initialize|--inspect]"
 )]
 struct Args {
@@ -64,14 +64,6 @@ fn main() -> ExitCode {
             .as_deref()
             .and_then(std::ffi::OsStr::to_str)
         {
-            Some("--capabilities") if arguments.next().is_none() => {
-                println!(
-                    "{}",
-                    serde_json::json!({"contract":"native-worker-capabilities.v1",
-                    "features":["storage-layout.v1","script-preparation.v1","shared-cache-identity.v2","package-download.v1"]})
-                );
-                return ExitCode::SUCCESS;
-            }
             Some("data-copy") => {
                 return data_copy_cli::main_from(std::iter::once(binary).chain(arguments));
             }

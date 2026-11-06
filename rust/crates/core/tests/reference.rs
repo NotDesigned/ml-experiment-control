@@ -1,58 +1,9 @@
-//! Frozen behavior obtained by evaluating the original Python implementation.
-//! These tests do not import Python or contact any scheduler at test runtime.
-
-use std::collections::BTreeSet;
+//! Native boundaries of identities and submission tokens, and the Run state
+//! machine. Nothing here touches a scheduler.
 
 use ml_exp_core::identity::{submission_marker, validate_id};
 use ml_exp_core::state::RunState;
-use serde::Deserialize;
 
-const BASELINE: &str = "e725faec689fb8395e692e27d00a8896fa7fe5a5";
-const MANIFEST_SHA: &str = "2b51c7ccb21ef21f98f395de2487aa901a0b470331ad1b13e4173f2c80369ba6";
-const SUBMISSION_SHA: &str = "ec5b38bb27ea71d818deda7babdaa3229058c8f1e01a278a21c83ba94486ebad";
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Reference {
-    baseline_commit: String,
-    source_path: String,
-    source_sha256: String,
-    symbols: Vec<String>,
-    generation: String,
-}
-
-impl Reference {
-    fn assert_provenance(&self, source: &str, sha: &str, symbols: &[&str]) {
-        assert_eq!(self.baseline_commit, BASELINE);
-        assert_eq!(self.source_path, source);
-        assert_eq!(self.source_sha256, sha);
-        assert_eq!(self.symbols, symbols);
-        assert!(!self.generation.is_empty());
-    }
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Cases<T> {
-    schema_version: u32,
-    reference: Reference,
-    input_scope: String,
-    cases: Vec<T>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct IdentityCase {
-    value: String,
-    valid: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MarkerCase {
-    token: String,
-    valid: bool,
-    marker: Option<String>,
-}
 /// Every state pair, including sampled scheduler skips, requeue and terminal
 /// self-transitions. A pair missing from this table is refused.
 const ALLOWED_TRANSITIONS: [(&str, &[&str]); 12] = [
@@ -183,53 +134,96 @@ fn run_state_transitions_and_terminal_states_are_exact() {
     }
 }
 
+fn ascii() -> impl Iterator<Item = char> {
+    (0u8..=127).map(char::from)
+}
+
 #[test]
-fn identity_ascii_and_length_boundaries_match_python_reference() {
-    let fixture: Cases<IdentityCase> =
-        serde_json::from_str(include_str!("../../../compatibility/identity.json")).unwrap();
-    assert_eq!(fixture.schema_version, 1);
-    fixture.reference.assert_provenance(
-        "src/experiment_control/manifest.py",
-        MANIFEST_SHA,
-        &["validate_identity", "IDENTITY_RE"],
-    );
-    assert!(!fixture.input_scope.is_empty());
-    assert_eq!(fixture.cases.len(), 279);
-    let mut values = BTreeSet::new();
-    for case in fixture.cases {
-        assert!(values.insert(case.value.clone()));
-        let actual = validate_id(&case.value);
-        assert_eq!(actual.is_ok(), case.valid, "Python ID {:?}", case.value);
-        if let Ok(value) = actual {
-            assert_eq!(value, case.value);
-        }
+fn identity_accepts_only_ascii_names_within_the_length_limit() {
+    let accepted = [
+        "a".to_owned(),
+        "A".to_owned(),
+        "0".to_owned(),
+        "project-2026.10_27".to_owned(),
+        "attempt-001".to_owned(),
+        format!("source.{}", "a".repeat(64)),
+        "a".repeat(127),
+        "a".repeat(128),
+        format!("0{}", ".".repeat(127)),
+        format!("Z{}", "_".repeat(127)),
+        format!("1{}", "-".repeat(127)),
+    ];
+    for value in &accepted {
+        assert_eq!(validate_id(value).ok(), Some(value.as_str()));
+    }
+    let refused = [
+        String::new(),
+        "a".repeat(129),
+        "a".repeat(256),
+        ".hidden".to_owned(),
+        "..".to_owned(),
+        "../run".to_owned(),
+        "a/b".to_owned(),
+        "a\\b".to_owned(),
+        "\u{e9}".to_owned(),
+        "a\u{e9}".to_owned(),
+        "\u{6a21}\u{578b}".to_owned(),
+        "a\u{6a21}\u{578b}".to_owned(),
+        "a\u{a0}".to_owned(),
+        "\u{a0}a".to_owned(),
+        "a\u{1f642}".to_owned(),
+    ];
+    for value in &refused {
+        assert!(validate_id(value).is_err(), "{value:?}");
     }
 }
 
 #[test]
-fn submission_token_and_marker_match_python_reference() {
-    let fixture: Cases<MarkerCase> = serde_json::from_str(include_str!(
-        "../../../compatibility/submission-marker.json"
-    ))
-    .unwrap();
-    assert_eq!(fixture.schema_version, 1);
-    fixture.reference.assert_provenance(
-        "src/experiment_control/submission.py",
-        SUBMISSION_SHA,
-        &[
-            "submission_marker",
-            "validate_submission_token",
-            "SUBMISSION_TOKEN_RE",
-        ],
-    );
-    assert!(!fixture.input_scope.is_empty());
-    assert_eq!(fixture.cases.len(), 135);
-    let mut tokens = BTreeSet::new();
-    for case in fixture.cases {
-        assert!(tokens.insert(case.token.clone()));
-        assert_eq!(case.marker.is_some(), case.valid);
-        let actual = submission_marker(&case.token);
-        assert_eq!(actual.is_ok(), case.valid, "Python token {:?}", case.token);
-        assert_eq!(actual.ok(), case.marker, "Python marker {:?}", case.token);
+fn identity_checks_every_ascii_character_in_first_and_later_positions() {
+    for c in ascii() {
+        let first = c.to_string();
+        assert_eq!(
+            validate_id(&first).is_ok(),
+            c.is_ascii_alphanumeric(),
+            "{first:?}"
+        );
+        let later = format!("a{c}");
+        assert_eq!(
+            validate_id(&later).is_ok(),
+            c.is_ascii_alphanumeric() || "._-".contains(c),
+            "{later:?}"
+        );
+    }
+}
+
+#[test]
+fn submission_token_is_exactly_32_lowercase_hex_characters_and_names_its_marker() {
+    for token in [
+        "0".repeat(32),
+        "0123456789abcdef0123456789abcdef".to_owned(),
+        "f".repeat(32),
+    ] {
+        assert_eq!(
+            submission_marker(&token).ok(),
+            Some(format!("ml-exp-{token}"))
+        );
+    }
+    for token in [
+        String::new(),
+        "0".repeat(31),
+        "0".repeat(33),
+        format!("{}\n", "0".repeat(32)),
+        format!("{}\u{e9}", "0".repeat(31)),
+    ] {
+        assert!(submission_marker(&token).is_err(), "{token:?}");
+    }
+    for c in ascii() {
+        let token = format!("{}{c}", "0".repeat(31));
+        let valid = c.is_ascii_digit() || ('a'..='f').contains(&c);
+        assert_eq!(
+            submission_marker(&token).ok(),
+            valid.then(|| format!("ml-exp-{token}")),
+            "{token:?}"
+        );
     }
 }

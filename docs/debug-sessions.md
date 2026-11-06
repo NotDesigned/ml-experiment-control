@@ -80,7 +80,7 @@ Do not start replacements while the original allocation is uncertain.
 
 ## HTTP API
 
-All routes use the normal bearer authentication and protocol-2 header.
+All routes use the normal bearer authentication.
 
 | Method | Path | Meaning |
 | --- | --- | --- |
@@ -116,39 +116,61 @@ the private record, so changing the catalog cannot redirect cleanup.
 ## Operator configuration
 
 Configure machines in the cloud configuration's `debug` block: `enabled`,
-`max_active` and `profiles`. Existing PAI/SenseCore credential files and signed
-REST transports are reused; no `sco` command is invoked. Existing records retain
-their frozen profile for cleanup.
+`max_active` and `profiles`. Each profile holds a `credentials_file` and a nested
+`profile`. PAI/SenseCore credential files and signed REST transports are the same
+kind the backends use; no `sco` command is invoked. A machine's record keeps its
+frozen profile for cleanup. Unknown fields are refused at every level.
 
-The field lists below come from the retired Python profile format. Check the
-native field names against `rust/crates/core/src/cloud/debug.rs` before relying on them.
+```json
+{
+  "enabled": true,
+  "max_active": 2,
+  "profiles": {
+    "pai-debug": {
+      "credentials_file": "/etc/ml-exp/pai-credentials.json",
+      "profile": {
+        "provider": "pai_dsw",
+        "profile": {"region": "...", "workspace_id": "...", "quota_id": "...",
+                    "max_gpus": 1, "max_cpus": 8, "max_memory_gb": 32,
+                    "storage": {"cpfs_uri": "bmcpfs://cpfs-...", "workspace_user": "...",
+                                "role_arn": "acs:ram::..."},
+                    "vpc": {"VpcId": "...", "VSwitchId": "...", "SecurityGroupId": "..."}},
+        "image_id": "...",
+        "access": {"kind": "intranet"}
+      }
+    }
+  }
+}
+```
 
-DSW native fields:
+DSW (`provider: pai_dsw`) fields:
 
-- `workspace_id`, `quota_id`, an approved `image_id` with sshd.
-- `cpfs_uri`, `workspace_user`, `data_role_arn` using the same approved personal
-  storage/role policy as the DSW builder.
-- `user_vpc`: `VpcId`, `VSwitchId`, `SecurityGroupId`.
-- `ssh_access_type`: `intranet` or `internet`; internet additionally requires
-  existing `ssh_nat_gateway_id` and `ssh_eip_id`.
+- `profile`: the [PAI backend profile](pai.md), with `storage` and `vpc` both
+  required here. `storage` is the same approved personal CPFS and role as the DSW builder.
+- `image_id`: an approved image with sshd.
+- `access`: `{"kind":"intranet"}`, or
+  `{"kind":"internet","nat_gateway_id":"ngw-...","eip_id":"eip-..."}` naming an
+  existing NAT gateway and EIP.
 
 The personal CPFS path maps to `/mnt/workspace`, public models/datasets mount
 read-only, and visibility is PRIVATE. The server does not create a new NAT,
 EIP, security group, project mount or OSS filesystem mount. Native PAI assigns
-the public port; the literal string `Auto` must not be sent as `ExternalPort`.
+the public port.
 
-CCI native fields:
+CCI (`provider: sensecore_cci`) fields:
 
-- `workspace`, `aec2`, `worker_spec`, `image` with `/usr/sbin/sshd`, `ssh-keygen`
-  and `timeout` already installed. No network package installation at startup.
-- `mounts`: approved personal AFS mount entries with exactly `type: PV_AFS`,
-  `mount_path: /data`, `id`, and a **leading-slash** personal `subdir` (for
-  example `/alice`). Root and traversal paths are rejected.
-- `eip_name`, `external_ip`: an existing EIP in the chosen pool's VPC and zone.
+- `profile`: the [SenseCore backend profile](sensecore-rest.md). Its `purpose` must not
+  be `training`, `mount_path` must be `/data`, and `storage_subdir` must be one
+  leading-slash personal directory, such as `/alice`.
+- `image`: an image with `/usr/sbin/sshd`, `ssh-keygen` and `timeout` already
+  installed. No network package installation happens at startup.
+- `network`: an existing EIP in the chosen pool's VPC and zone, with all of
+  `eip_name`, `eip_id` (the path of that EIP in the profile's scope),
+  `nat_gateway_id`, `external_ip`, `external_port` (at least 1024) and `tenant_id`.
 
 The selected native resource specification must match the profile's CPU,
 memory and GPU count. CCI debug uses RESERVED quota. A new, session-owned DNAT
-rule is assigned an unused high port; no existing rule is migrated. Its UID,
+rule uses the profile's `external_port`; no existing rule is migrated. Its UID,
 creator, network and CCI target are checked before bind/unbind/delete of that
 port rule. CCI app/Service deletion is intentionally not provided. Shared
 EIPs/NAT and unrelated instances/rules are never removed.

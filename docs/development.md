@@ -11,14 +11,14 @@ cargo fmt --manifest-path rust/Cargo.toml --all -- --check
 cargo clippy --locked --manifest-path rust/Cargo.toml --workspace --all-targets -- -D warnings
 cargo test --locked --manifest-path rust/Cargo.toml --workspace
 cargo build --locked --manifest-path rust/Cargo.toml --workspace --bins
-bash rust/tests/preview-smoke.sh
+bash rust/tests/smoke.sh
 ```
 
 The executable smoke test uses private temporary state and local fake providers.
 Tests cover identities, state transitions, lost acknowledgements, concurrency,
 process control, archives, checkpoint recovery and metric publication. They do
 not prove that a cloud GPU or multi-node network is usable. Keep provider
-acceptance separate and inspect the [recorded limits](rust-rewrite.md).
+acceptance separate and inspect the [recorded limits](acceptance-status.md).
 
 The core receives values and returns decisions. Put filesystem, network, clock,
 randomness and process effects in the outer packages. Never replace uncertain
@@ -31,14 +31,12 @@ calling a provider:
 
 ```sh
 python3 -m venv .ops/image-bridge-venv
-.ops/image-bridge-venv/bin/pip install -r rust/tests/image-bridge-requirements.txt
+.ops/image-bridge-venv/bin/pip install -r rust/deploy/image-bridge-requirements.txt
 PYTHONPATH=server/src:src:worker/src .ops/image-bridge-venv/bin/python rust/tests/test_native_build_bridge.py
 ```
 
 This source test does not validate the builder's installed module. Before a
-builder rollout, use `tools/check_native_builder.py` with the unit's interpreter,
-accepted bridge/worker SHA values and required features, without PYTHONPATH or
-PYTHONHOME. Then verify a real daemon build and receipt. See the native guide.
+builder rollout, verify a real daemon build and receipt. See the native guide.
 
 ## CI and publication
 

@@ -2,7 +2,7 @@
 
 use std::io::{Read, Write};
 use std::path::Path;
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Output};
 use std::time::Duration;
 
 use ml_exp_io::{create_private_dir, write_atomic};
@@ -39,42 +39,12 @@ fn json_output(output: Output) -> serde_json::Value {
 }
 
 #[test]
-fn native_contract_validation_does_not_load_config_or_contact_http() {
+fn default_config_is_private_and_leaves_the_python_client_config_alone() {
     let temp = tempfile::tempdir().unwrap();
-    let mut child = command(temp.path())
-        .args(["contract", "intent-validate"])
-        .env("ML_EXPD_CLIENT_CONFIG", temp.path().join("missing.json"))
-        .env("ML_EXPD_API_TOKEN", "must-not-be-read")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .stdin(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(br#"{"kind":"SUBMIT_RUN","title":"native","draft":"{}"}"#)
-        .unwrap();
-    let output = child.wait_with_output().unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["kind"], "SUBMIT_RUN");
-    assert_eq!(value["resource_estimate"], "unknown");
-    assert!(output.stderr.is_empty());
-}
-
-#[test]
-fn default_preview_config_is_private_and_does_not_replace_existing_client_config() {
-    let temp = tempfile::tempdir().unwrap();
-    let legacy = temp.path().join(".config/ml-expd/client.json");
-    create_private_dir(legacy.parent().unwrap()).unwrap();
-    let original = br#"{"url":"https://legacy.invalid","token":"legacy-test-secret"}"#;
-    write_atomic(&legacy, original, true).unwrap();
+    let python = temp.path().join(".config/ml-expd/client.json");
+    create_private_dir(python.parent().unwrap()).unwrap();
+    let original = br#"{"url":"https://python.invalid","token":"python-test-secret"}"#;
+    write_atomic(&python, original, true).unwrap();
 
     let displayed = json_output(
         command(temp.path())
@@ -85,12 +55,12 @@ fn default_preview_config_is_private_and_does_not_replace_existing_client_config
     assert_eq!(displayed["url"], serde_json::Value::Null);
     assert_eq!(displayed["token_configured"], false);
     let token = temp.path().join("token");
-    write_atomic(&token, b"preview-test-secret\n", true).unwrap();
+    write_atomic(&token, b"cli-test-secret\n", true).unwrap();
     let displayed = json_output(
         command(temp.path())
             .args([
                 "--url",
-                "https://preview.invalid/ml-expd/",
+                "https://api.invalid/ml-expd/",
                 "config",
                 "set",
                 "--token-file",
@@ -99,36 +69,36 @@ fn default_preview_config_is_private_and_does_not_replace_existing_client_config
             .output()
             .unwrap(),
     );
-    assert_eq!(displayed["url"], "https://preview.invalid/ml-expd");
+    assert_eq!(displayed["url"], "https://api.invalid/ml-expd");
     assert_eq!(displayed["token_configured"], true);
-    assert!(!displayed.to_string().contains("preview-test-secret"));
-    assert!(
-        temp.path()
-            .join(".config/ml-expd-rust/client.json")
-            .is_file()
-    );
-    assert_eq!(std::fs::read(&legacy).unwrap(), original);
+    assert!(!displayed.to_string().contains("cli-test-secret"));
+    assert!(temp.path().join(".config/ml-exp/client.json").is_file());
+    assert_eq!(std::fs::read(&python).unwrap(), original);
 
-    let explicit = json_output(
-        command(temp.path())
-            .arg("--config")
-            .arg(&legacy)
-            .args(["config", "show"])
-            .output()
-            .unwrap(),
-    );
-    assert_eq!(explicit["url"], "https://legacy.invalid");
-    assert!(!explicit.to_string().contains("legacy-test-secret"));
-    assert_eq!(std::fs::read(&legacy).unwrap(), original);
+    let explicit = command(temp.path())
+        .arg("--config")
+        .arg(&python)
+        .args(["config", "show"])
+        .output()
+        .unwrap();
+    assert!(!explicit.status.success());
+    assert!(explicit.stdout.is_empty());
+    assert!(!String::from_utf8_lossy(&explicit.stderr).contains("python-test-secret"));
+    assert_eq!(std::fs::read(&python).unwrap(), original);
 }
 
 #[test]
 fn environment_url_and_token_candidates_drive_the_real_read_only_request() {
     let temp = tempfile::tempdir().unwrap();
+    let saved_token = temp.path().join("saved-token");
+    write_atomic(&saved_token, b"saved-test-secret\n", true).unwrap();
     let config = temp.path().join("settings.json");
     write_atomic(
         &config,
-        br#"{"url":"https://saved.invalid","token":"saved-test-secret"}"#,
+        &serde_json::to_vec(
+            &serde_json::json!({"url":"https://saved.invalid","token_file":saved_token}),
+        )
+        .unwrap(),
         true,
     )
     .unwrap();
@@ -156,13 +126,9 @@ fn environment_url_and_token_candidates_drive_the_real_read_only_request() {
             1
         );
         assert!(!request.contains("saved-test-secret"));
-        assert_eq!(
-            request.matches("x-ml-expd-client-protocol: 2\r\n").count(),
-            1
-        );
         socket
             .write_all(
-                b"HTTP/1.1 200 OK\r\nContent-Length: 68\r\nConnection: close\r\n\r\n{\"ok\":true,\"min_client_protocol_version\":2,\"api_protocol_version\":2}",
+                b"HTTP/1.1 200 OK\r\nContent-Length: 29\r\nConnection: close\r\n\r\n{\"ok\":true,\"capabilities\":[]}",
             )
             .unwrap();
     });
@@ -175,10 +141,7 @@ fn environment_url_and_token_candidates_drive_the_real_read_only_request() {
             .output()
             .unwrap(),
     );
-    assert_eq!(
-        displayed,
-        serde_json::json!({"ok":true,"min_client_protocol_version":2,"api_protocol_version":2})
-    );
+    assert_eq!(displayed, serde_json::json!({"ok":true,"capabilities":[]}));
     server.join().unwrap();
 
     let conflict = command(temp.path())
@@ -223,7 +186,7 @@ fn environment_token_file_does_not_use_an_ambient_system_proxy() {
         );
         socket
             .write_all(
-                b"HTTP/1.1 200 OK\r\nContent-Length: 68\r\nConnection: close\r\n\r\n{\"ok\":true,\"min_client_protocol_version\":2,\"api_protocol_version\":2}",
+                b"HTTP/1.1 200 OK\r\nContent-Length: 29\r\nConnection: close\r\n\r\n{\"ok\":true,\"capabilities\":[]}",
             )
             .unwrap();
     });
@@ -238,10 +201,7 @@ fn environment_token_file_does_not_use_an_ambient_system_proxy() {
             .output()
             .unwrap(),
     );
-    assert_eq!(
-        displayed,
-        serde_json::json!({"ok":true,"min_client_protocol_version":2,"api_protocol_version":2})
-    );
+    assert_eq!(displayed, serde_json::json!({"ok":true,"capabilities":[]}));
     server.join().unwrap();
 }
 
@@ -255,7 +215,7 @@ fn environment_token_file_and_xdg_config_paths_remain_supported() {
         .env("XDG_CONFIG_HOME", &xdg)
         .args([
             "--url",
-            "https://preview.invalid",
+            "https://api.invalid",
             "config",
             "set",
             "--token-file",
@@ -264,16 +224,11 @@ fn environment_token_file_and_xdg_config_paths_remain_supported() {
         .output()
         .unwrap();
     assert_eq!(json_output(output)["token_configured"], true);
-    assert!(xdg.join("ml-expd-rust/client.json").is_file());
-    assert!(
-        !temp
-            .path()
-            .join(".config/ml-expd-rust/client.json")
-            .exists()
-    );
+    assert!(xdg.join("ml-exp/client.json").is_file());
+    assert!(!temp.path().join(".config/ml-exp/client.json").exists());
 
     let ambiguous = command(temp.path())
-        .env("ML_EXPD_API_URL", "https://preview.invalid")
+        .env("ML_EXPD_API_URL", "https://api.invalid")
         .env("ML_EXPD_API_TOKEN", "inline-test-secret")
         .env("ML_EXPD_API_TOKEN_FILE", &token)
         .arg("check")
@@ -288,7 +243,7 @@ fn environment_token_file_and_xdg_config_paths_remain_supported() {
 }
 
 #[test]
-fn state_preflight_rejects_misdirected_credentials_before_the_handshake() {
+fn state_preflight_rejects_misdirected_credentials_before_any_request() {
     use serde_json::json;
     let temp = tempfile::tempdir().unwrap();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -320,12 +275,7 @@ fn state_preflight_rejects_misdirected_credentials_before_the_handshake() {
         assert!(matches!(listener.accept(), Err(e) if e.kind()==std::io::ErrorKind::WouldBlock));
     }
     let invalid = temp.path().join("invalid.json");
-    write_atomic(
-        &invalid,
-        b"{\"server\":\"https://foreign.invalid\",\"contract\":\"training-operation.v1\"}",
-        true,
-    )
-    .unwrap();
+    write_atomic(&invalid, b"{\"server\":\"https://foreign.invalid\"}", true).unwrap();
     let output = command(temp.path())
         .args(["--url", &base, "run", "status", "--state"])
         .arg(invalid)
@@ -339,20 +289,15 @@ fn state_preflight_rejects_misdirected_credentials_before_the_handshake() {
 
 #[test]
 fn real_status_cli_preserves_json_evidence_and_has_a_human_summary() {
-    use serde_json::{Value, json};
+    use serde_json::Value;
     use std::net::TcpListener;
-    let fixture: Value = serde_json::from_str(r#"{"health":{"capabilities":["execution-progress.v1","result-collection.v1"]},"requests":["/api/runs/p/r","/api/runs/p/r/attempts","/api/experiments/p/r/submissions","/api/submissions/action-aaaaaaaaaaaaaaaa/progress","/api/runs/p/r/attempts/attempt-001/collection"],"responses":{"/api/runs/p/r":{"project":"p","run_id":"r","evidence":{}},"/api/runs/p/r/attempts":{"project":"p","run_id":"r","current_attempt_id":"attempt-001","attempts":[{"attempt_id":"attempt-001","identity":"r::attempt-001","state":"RUNNING"}]},"/api/experiments/p/r/submissions":{"project":"p","run_id":"r","submissions":[{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"SUCCEEDED"}]},"/api/submissions/action-aaaaaaaaaaaaaaaa/progress":{"submission_id":"action-aaaaaaaaaaaaaaaa","run_id":"r","attempt_id":"attempt-001","phase":"TRAINING","availability":"AVAILABLE","last_metric":{"sequence":9,"event_id":"m9","source":"canonical-journal","observation":{"name":"loss","value":3.2,"unit":"nats/token","step":10,"variant_id":"v2"}}},"/api/runs/p/r/attempts/attempt-001/collection":{"project":"p","run_id":"r","attempt_id":"attempt-001","status":"AVAILABLE","verification":"SHA256_VERIFIED","download_available":true,"training":{"status":"COMPLETED","exit_code":0}}},"expected":{"project":"p","run_id":"r","attempt_id":"attempt-001","preparation":{"status":"NOT_OBSERVED","phase":null},"scheduler":{"state":"RUNNING","backend":null,"job_id":null,"native_state":null,"observed_at":null,"stale":true,"reason":null},"training":{"status":"COMPLETED","exit_code":0,"process_state":null,"observed_at":null,"stale":true},"publication":{"status":"AVAILABLE","phase":null,"download_available":true,"diagnostic":null,"error":null},"verification":{"status":"SHA256_VERIFIED"},"progress":{"availability":"AVAILABLE","phase":"TRAINING"},"queue":null,"worker":{"state":null,"observed_at":null,"stale":true},"model":{"state":"step 10","step":10,"last_metric":{"name":"loss","value":3.2,"unit":"nats/token","step":10,"variant_id":"v2"},"metric_record":{"sequence":9,"event_id":"m9","source":"canonical-journal"},"observed_at":null,"stale":true},"input_delivery":null,"worker_phase":null}}"#).unwrap();
+    let fixture: Value = serde_json::from_str(r#"{"health":{"capabilities":["execution-progress.v1"]},"requests":["/api/runs/p/r","/api/runs/p/r/attempts","/api/experiments/p/r/submissions","/api/submissions/action-aaaaaaaaaaaaaaaa/progress","/api/runs/p/r/attempts/attempt-001/collection"],"responses":{"/api/runs/p/r":{"project":"p","run_id":"r","evidence":{"scheduler":{"attempt_id":"attempt-001","state":"RUNNING"}}},"/api/runs/p/r/attempts":{"project":"p","run_id":"r","current_attempt_id":"attempt-001","attempts":[{"attempt_id":"attempt-001","identity":"r::attempt-001","state":"RUNNING"}]},"/api/experiments/p/r/submissions":{"project":"p","run_id":"r","submissions":[{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"SUCCEEDED"}]},"/api/submissions/action-aaaaaaaaaaaaaaaa/progress":{"submission_id":"action-aaaaaaaaaaaaaaaa","run_id":"r","attempt_id":"attempt-001","phase":"TRAINING","availability":"AVAILABLE","last_metric":{"sequence":9,"event_id":"m9","source":"canonical-journal","observation":{"name":"loss","value":3.2,"unit":"nats/token","step":10,"variant_id":"v2"}}},"/api/runs/p/r/attempts/attempt-001/collection":{"project":"p","run_id":"r","attempt_id":"attempt-001","status":"AVAILABLE","verification":"SHA256_VERIFIED","download_available":true,"training":{"status":"COMPLETED","exit_code":0}}},"expected":{"project":"p","run_id":"r","attempt_id":"attempt-001","preparation":{"status":"NOT_OBSERVED","phase":null},"scheduler":{"state":"RUNNING","backend":null,"job_id":null,"native_state":null,"observed_at":null,"stale":true,"reason":null},"training":{"status":"COMPLETED","exit_code":0,"process_state":null,"observed_at":null,"stale":true},"publication":{"status":"AVAILABLE","phase":null,"download_available":true,"diagnostic":null,"error":null},"verification":{"status":"SHA256_VERIFIED"},"progress":{"availability":"AVAILABLE","phase":"TRAINING"},"queue":null,"worker":{"state":null,"observed_at":null,"stale":true},"model":{"state":"step 10","step":10,"last_metric":{"name":"loss","value":3.2,"unit":"nats/token","step":10,"variant_id":"v2"},"metric_record":{"sequence":9,"event_id":"m9","source":"canonical-journal"},"observed_at":null,"stale":true},"input_delivery":null,"worker_phase":null}}"#).unwrap();
     for (human, watch) in [(false, false), (true, false), (false, true)] {
         let temp = tempfile::tempdir().unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let base = format!("http://{}/ml-expd", listener.local_addr().unwrap());
-        let mut responses = vec![("/api/health".to_string(), {
-            let mut health = fixture["health"].clone();
-            health["api_protocol_version"] = json!(2);
-            health["min_client_protocol_version"] = json!(2);
-            health
-        })];
+        let mut responses = vec![("/api/health".to_string(), fixture["health"].clone())];
         responses.extend(fixture["requests"].as_array().unwrap().iter().map(|p| {
             let path = p.as_str().unwrap();
             (path.to_owned(), fixture["responses"][path].clone())
@@ -402,11 +347,11 @@ fn real_logs_and_metrics_commands_follow_the_original_saved_attempt() {
     use std::net::TcpListener;
     for (case, view) in [
         (
-            r#"{"health":{"capabilities":["metric-records.v1"]},"saved":{"server":"https://example.test/ml-expd","project":"p","run_id":"r","config_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","submission":{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"SUCCEEDED"}},"requests":["/api/submissions/action-aaaaaaaaaaaaaaaa","/api/attempts/p/r%3A%3Aattempt-001/logs?stream=both&lines=80"],"responses":{"/api/submissions/action-aaaaaaaaaaaaaaaa":{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"SUCCEEDED"},"/api/attempts/p/r%3A%3Aattempt-001/logs?stream=both&lines=80":{"project":"p","run_id":"r","attempt_id":"attempt-001","stdout":["loss 3.1"],"stderr":[],"metrics":[{"name":"validation_loss","value":3.1,"unit":"nats/token","step":10,"variant_id":"masked","protocol_sha256":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","checkpoint_sha256":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","numerator":31.0,"denominator":10,"dataset":"fineweb-v1"}],"evaluation_status":"PARTIAL","next_cursor":null}},"expected":{"project":"p","run_id":"r","attempt_id":"attempt-001","stdout":["loss 3.1"],"stderr":[],"metrics":[{"name":"validation_loss","value":3.1,"unit":"nats/token","step":10,"variant_id":"masked","protocol_sha256":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","checkpoint_sha256":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","numerator":31.0,"denominator":10,"dataset":"fineweb-v1"}],"evaluation_status":"PARTIAL","next_cursor":null}}"#,
+            r#"{"health":{"capabilities":[]},"saved":{"server":"https://example.test/ml-expd","project":"p","run_id":"r","config_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","submission":{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"SUCCEEDED"}},"requests":["/api/submissions/action-aaaaaaaaaaaaaaaa","/api/attempts/p/r%3A%3Aattempt-001/logs?stream=both&lines=80"],"responses":{"/api/submissions/action-aaaaaaaaaaaaaaaa":{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"SUCCEEDED"},"/api/attempts/p/r%3A%3Aattempt-001/logs?stream=both&lines=80":{"project":"p","run_id":"r","attempt_id":"attempt-001","stdout":["loss 3.1"],"stderr":[],"metrics":[{"name":"validation_loss","value":3.1,"unit":"nats/token","step":10,"variant_id":"masked","protocol_sha256":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","checkpoint_sha256":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","numerator":31.0,"denominator":10,"dataset":"fineweb-v1"}],"evaluation_status":"PARTIAL","next_cursor":null}},"expected":{"project":"p","run_id":"r","attempt_id":"attempt-001","stdout":["loss 3.1"],"stderr":[],"metrics":[{"name":"validation_loss","value":3.1,"unit":"nats/token","step":10,"variant_id":"masked","protocol_sha256":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","checkpoint_sha256":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","numerator":31.0,"denominator":10,"dataset":"fineweb-v1"}],"evaluation_status":"PARTIAL","next_cursor":null}}"#,
             "logs",
         ),
         (
-            r#"{"health":{"capabilities":["metric-records.v1"]},"saved":{"contract":"training-operation.v1","server":"https://example.test/ml-expd","project":"p","run_id":"r","operation":"retry","source_attempt_id":"attempt-001","plan":{"action_id":"action-aaaaaaaaaaaaaaaa","operation":"RETRY_ATTEMPT","run_id":"r","attempt_id":"attempt-002","scope":{"project":"p","scope_type":"attempt","object_id":"r::attempt-001"},"execution":{"status":"PREPARED"},"intent_digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","gate_bundle_digest":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"},"request":{"new_attempt_id":"attempt-002"}},"requests":["/api/actions/action-aaaaaaaaaaaaaaaa","/api/attempts/p/r%3A%3Aattempt-002/metrics?max_points=2000&format=records"],"responses":{"/api/actions/action-aaaaaaaaaaaaaaaa":{"action_id":"action-aaaaaaaaaaaaaaaa","operation":"RETRY_ATTEMPT","run_id":"r","attempt_id":"attempt-002","scope":{"project":"p","scope_type":"attempt","object_id":"r::attempt-001"},"execution":{"status":"PREPARED"},"intent_digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","gate_bundle_digest":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"},"/api/attempts/p/r%3A%3Aattempt-002/metrics?max_points=2000&format=records":{"project":"p","run_id":"r","attempt_id":"attempt-002","stdout":["loss 3.1"],"stderr":[],"metrics":[{"name":"validation_loss","value":3.1,"unit":"nats/token","step":10,"variant_id":"masked","protocol_sha256":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","checkpoint_sha256":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","numerator":31.0,"denominator":10,"dataset":"fineweb-v1"}],"evaluation_status":"PARTIAL","next_cursor":null}},"expected":{"project":"p","run_id":"r","attempt_id":"attempt-002","stdout":["loss 3.1"],"stderr":[],"metrics":[{"name":"validation_loss","value":3.1,"unit":"nats/token","step":10,"variant_id":"masked","protocol_sha256":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","checkpoint_sha256":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","numerator":31.0,"denominator":10,"dataset":"fineweb-v1"}],"evaluation_status":"PARTIAL","next_cursor":null}}"#,
+            r#"{"health":{"capabilities":[]},"saved":{"server":"https://example.test/ml-expd","project":"p","run_id":"r","config_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","submission":{"project":"p","run_id":"r","attempt_id":"attempt-002","submission_id":"action-aaaaaaaaaaaaaaaa","status":"SUCCEEDED"}},"requests":["/api/submissions/action-aaaaaaaaaaaaaaaa","/api/attempts/p/r%3A%3Aattempt-002/metrics?max_points=2000"],"responses":{"/api/submissions/action-aaaaaaaaaaaaaaaa":{"project":"p","run_id":"r","attempt_id":"attempt-002","submission_id":"action-aaaaaaaaaaaaaaaa","status":"SUCCEEDED"},"/api/attempts/p/r%3A%3Aattempt-002/metrics?max_points=2000":{"project":"p","run_id":"r","attempt_id":"attempt-002","stdout":["loss 3.1"],"stderr":[],"metrics":[{"name":"validation_loss","value":3.1,"unit":"nats/token","step":10,"variant_id":"masked","protocol_sha256":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","checkpoint_sha256":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","numerator":31.0,"denominator":10,"dataset":"fineweb-v1"}],"evaluation_status":"PARTIAL","next_cursor":null}},"expected":{"project":"p","run_id":"r","attempt_id":"attempt-002","stdout":["loss 3.1"],"stderr":[],"metrics":[{"name":"validation_loss","value":3.1,"unit":"nats/token","step":10,"variant_id":"masked","protocol_sha256":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","checkpoint_sha256":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","numerator":31.0,"denominator":10,"dataset":"fineweb-v1"}],"evaluation_status":"PARTIAL","next_cursor":null}}"#,
             "metrics",
         ),
     ] {
@@ -419,10 +364,7 @@ fn real_logs_and_metrics_commands_follow_the_original_saved_attempt() {
         let mut saved = fixture["saved"].clone();
         saved["server"] = json!(&base);
         write_atomic(&state, &serde_json::to_vec(&saved).unwrap(), true).unwrap();
-        let mut health = fixture["health"].clone();
-        health["api_protocol_version"] = json!(2);
-        health["min_client_protocol_version"] = json!(2);
-        let mut responses = vec![("/api/health".to_string(), health)];
+        let mut responses = vec![("/api/health".to_string(), fixture["health"].clone())];
         responses.extend(fixture["requests"].as_array().unwrap().iter().map(|p| {
             let path = p.as_str().unwrap();
             (path.to_owned(), fixture["responses"][path].clone())
@@ -552,47 +494,6 @@ fn invalid_native_submission_is_rejected_before_loading_credentials() {
         assert!(output.stdout.is_empty());
     }
     assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 0);
-}
-
-#[test]
-fn allocation_contract_preserves_counts_and_rejects_incomplete_evidence() {
-    let temp = tempfile::tempdir().unwrap();
-    let node = "NodeName=n1 Partitions=gpu CfgTRES=cpu=16,gres/gpu=8 AllocTRES=cpu=4,gres/gpu=3 CPUTot=16 CPUAlloc=4 RealMemory=1024 AllocMem=256 State=MIXED";
-    for valid in [true, false] {
-        let evidence = if valid {
-            format!("{node}\nML_EXPD_QUEUE\n123\n")
-        } else {
-            node.to_owned()
-        };
-        let input = serde_json::json!({"output": evidence, "partition": "gpu"});
-        let mut child = command(temp.path())
-            .args(["contract", "slurm-allocation-validate"])
-            .env("ML_EXPD_CLIENT_CONFIG", temp.path().join("missing.json"))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(input.to_string().as_bytes())
-            .unwrap();
-        let output = child.wait_with_output().unwrap();
-        assert_eq!(output.status.success(), valid);
-        if valid {
-            let snapshot = json_output(output);
-            assert_eq!(snapshot["resources"]["gpus"]["unallocated"], 5);
-            assert_eq!(
-                snapshot["resources"]["memory_bytes"]["allocated"],
-                268435456
-            );
-            assert_eq!(snapshot["pending_queue_entries"], 1);
-        } else {
-            assert!(output.stdout.is_empty());
-        }
-    }
 }
 
 #[test]

@@ -4,7 +4,7 @@ fn object(required: &[&str], properties: Value) -> Value {
     json!({"type":"object","additionalProperties":false,"required":required,"properties":properties})
 }
 fn parameters(path: &str) -> Vec<Value> {
-    let mut result = vec![json!({"$ref":"#/components/parameters/protocol"})];
+    let mut result = Vec::new();
     for name in path
         .split('/')
         .filter_map(|s| s.strip_prefix('{').and_then(|s| s.strip_suffix('}')))
@@ -19,7 +19,7 @@ fn operation(path: &str, description: &str, body: Option<Value>) -> Value {
         "401":{"description":"Authentication required"},"403":{"description":"Disabled by operator"},
         "404":{"description":"Identity not found"},"409":{"description":"Frozen identity, state or effect cannot be confirmed; inspect the original record"},
         "410":{"description":"Object released or administratively retired"},"422":{"description":"Invalid request"},
-        "426":{"description":"Client protocol 2 required"},"429":{"description":"Local capacity full"},
+        "429":{"description":"Local capacity full"},
         "501":{"description":"Capability is not configured"},"503":{"description":"Effect or provider observation unavailable; original evidence retained"}}});
     if let Some(schema) = body {
         value["requestBody"] =
@@ -136,12 +136,6 @@ pub(crate) fn extend(document: &mut Value) {
         "/api/projects/{project}/datasets/{executor}",
         "get",
         "List retained immutable dataset identities and upload/cache readiness; no payload read or provider request. ARCHIVED means uploaded bytes are verified, not that the backend cache is READY.",
-        None,
-    );
-    insert(
-        "/api/actions/policy",
-        "get",
-        "Read configured native mutation permissions only; no provider query, legacy Action execution or training acceptance claim.",
         None,
     );
     insert(

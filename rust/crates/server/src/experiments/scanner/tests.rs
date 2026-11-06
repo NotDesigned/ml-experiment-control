@@ -1,6 +1,7 @@
 use super::*;
 use crate::experiments::{ProjectBinding, Store};
-use serde_json::{Map, Value, json};
+use serde_json::{Map, json};
+use sha2::{Digest, Sha256};
 use std::{
     fs,
     os::unix::fs::{PermissionsExt, symlink},
@@ -28,8 +29,8 @@ impl Fixture {
         let temp = tempfile::tempdir().unwrap();
         fs::create_dir_all(temp.path().join("project/runs")).unwrap();
         write(
-            &temp.path().join("project/research_project.yaml"),
-            b"project: demo\ntitle: Synthetic\n",
+            &temp.path().join("project/project.json"),
+            br#"{"schema_version":1,"project":"demo","title":"Synthetic"}"#,
         );
         let fence = RunFence::new(temp.path().join("registry"));
         drop(fence.shared().unwrap()); // Explicit synthetic test-only bootstrap.
@@ -40,7 +41,7 @@ impl Fixture {
         Store::open(
             vec![ProjectBinding {
                 project: "demo".into(),
-                project_file: temp.path().join("project/research_project.yaml"),
+                project_file: temp.path().join("project/project.json"),
                 run_roots: roots,
             }],
             fence.clone(),
@@ -64,59 +65,34 @@ impl Fixture {
 #[test]
 fn canonical_and_instance_scoped_runs_are_unique_and_payloads_are_not_scanned() {
     let fixture = Fixture::new();
-    // Keep the checked-in legacy bytes unchanged and bind their actual Project.
-    write(
-        &fixture.temp.path().join("project/research_project.yaml"),
-        b"project: elf\n",
-    );
-    write(
-        &fixture.runs().join("first/manifest.json"),
-        b"{\"project\":\"elf\",\"run_id\":\"first\"}",
-    );
-    let store = Store::open(
-        vec![ProjectBinding {
-            project: "elf".into(),
-            project_file: fixture.temp.path().join("project/research_project.yaml"),
-            run_roots: vec![fixture.runs()],
-        }],
-        fixture.fence.clone(),
-    )
-    .unwrap();
-    // Actual baseline discover_run_dirs supports controller state/instance/campaign.
+    fixture.add("first", "first");
+    // Controller state/instance/campaign layouts are found at any depth.
     let scoped = fixture.runs().join("state/instance-1/campaign-1/second");
-    let source: Value =
-        serde_json::from_str(include_str!("../fixtures/python-manifests-v1.json")).unwrap();
-    let legacy = source["cases"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|case| case["name"] == "legacy-control")
-        .unwrap();
-    write(
-        &scoped.join("manifest.yaml"),
-        legacy["raw"].as_str().unwrap().as_bytes(),
-    );
+    let bytes = native("second");
+    write(&scoped.join("manifest.json"), &bytes);
     // Stop at the authoritative parent, including when a science copy has a
     // different ID or a payload entry would be unsafe outside a Run.
     write(
-        &scoped.join("collected_run/manifest.yaml"),
-        b"project: demo\nrun_id: mirror-copy\n",
+        &scoped.join("collected_run/manifest.json"),
+        &native("mirror-copy"),
     );
     symlink("/never-follow-training-data", scoped.join("dataset-link")).unwrap();
-    let found = store.discover("elf").unwrap();
+    let found = fixture.discover().unwrap();
     assert_eq!(found.runs.len(), 2);
     assert!(found.deleted.is_empty());
-    let legacy_id = legacy["metadata"]["run_id"].as_str().unwrap();
-    let legacy_run = found
+    let second = found
         .runs
         .iter()
-        .find(|located| located.reference.run_id == legacy_id)
+        .find(|located| located.reference.run_id == "second")
         .unwrap();
     assert_eq!(
-        legacy_run.reference.relative_components,
+        second.reference.relative_components,
         ["state", "instance-1", "campaign-1", "second"]
     );
-    assert_eq!(legacy_run.raw_sha256, legacy["raw_sha256"]);
+    assert_eq!(
+        second.raw_sha256,
+        format!("sha256:{:x}", Sha256::digest(&bytes))
+    );
     assert!(
         found
             .runs
@@ -134,7 +110,7 @@ fn duplicate_run_ids_are_rejected_even_for_identical_bytes_and_across_roots() {
         if different {
             write(
                 &fixture.runs().join("namespace/two/manifest.json"),
-                b"{\"project\":\"demo\",\"run_id\":\"same\",\"seed\":2}",
+                b"{\"schema_version\":1,\"project\":\"demo\",\"run_id\":\"same\",\"seed\":2}",
             );
         }
         assert!(matches!(
@@ -160,15 +136,15 @@ fn canonical_corruption_foreign_identity_and_science_only_copies_are_not_absence
         let run = fixture.runs().join("trial");
         match case {
             "corrupt" => {
-                write(&run.join("manifest.yaml"), b"broken: [");
+                write(&run.join("manifest.json"), b"broken: [");
             }
             "foreign" => write(
                 &run.join("manifest.json"),
                 b"{\"project\":\"other\",\"run_id\":\"trial\"}",
             ),
             "science-only" => write(
-                &run.join("collected_run/manifest.yaml"),
-                b"project: demo\nrun_id: copied\n",
+                &run.join("attempts/attempt-001/attempt.json"),
+                &native("copied"),
             ),
             _ => unreachable!(),
         }

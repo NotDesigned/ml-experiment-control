@@ -94,8 +94,7 @@ impl Api {
         }
         let dir = root.child(OsStr::new(run), false).map_err(io)?;
         if !dir.entry_exists(OsStr::new("manifest.json")).map_err(io)? {
-            // Existing Slurm Runs can have only manifest.yaml. A local ingress
-            // directory, however, must retain its registered JSON manifest.
+            // A local ingress directory must retain its registered manifest.
             return if dir.entry_exists(OsStr::new("local-ingress")).map_err(io)? {
                 Err(invalid())
             } else {
@@ -137,13 +136,7 @@ impl Api {
         let expected =
             ml_exp_core::records::native_binding(manifest, sha).map_err(why!(invalid()))?;
         let store = if write {
-            crate::records::Store::open(
-                &self.registry_root,
-                self.workspace_id
-                    .strip_prefix("rust-preview-")
-                    .ok_or_else(invalid)?,
-            )
-            .map_err(record)?
+            crate::records::Store::open(&self.registry_root, &self.workspace_id).map_err(record)?
         } else {
             crate::records::Store::read_only(&self.registry_root)
         };
@@ -177,13 +170,8 @@ impl Api {
             .map_err(why_lock!(crate::tracking::Error::Storage))
     }
     pub fn local_publisher_store(&self) -> Result<crate::records::Store, crate::tracking::Error> {
-        crate::records::Store::open(
-            &self.registry_root,
-            self.workspace_id
-                .strip_prefix("rust-preview-")
-                .ok_or(crate::tracking::Error::Storage)?,
-        )
-        .map_err(why!(crate::tracking::Error::Storage))
+        crate::records::Store::open(&self.registry_root, &self.workspace_id)
+            .map_err(why!(crate::tracking::Error::Storage))
     }
     pub fn register_local(
         &self,
@@ -296,13 +284,8 @@ impl Api {
         let (dir, manifest, sha) = self
             .local_document(project, &request.run_id)?
             .ok_or_else(invalid)?;
-        let store = crate::records::Store::open(
-            &self.registry_root,
-            self.workspace_id
-                .strip_prefix("rust-preview-")
-                .ok_or_else(invalid)?,
-        )
-        .map_err(record)?;
+        let store =
+            crate::records::Store::open(&self.registry_root, &self.workspace_id).map_err(record)?;
         let expected =
             ml_exp_core::records::native_binding(&manifest, &sha).map_err(why!(invalid()))?;
         {

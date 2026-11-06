@@ -34,7 +34,7 @@ pub struct Sync {
 }
 impl Sync {
     pub fn validate(&self, action: &str) -> Result<()> {
-        crate::operations::validate_submission_id(action).map_err(|_| Error("sync submission"))?;
+        crate::operations::validate_action_id(action).map_err(|_| Error("sync submission"))?;
         crate::submission::validate_submission_token(&self.request_id)
             .map_err(|_| Error("sync request ID"))?;
         if self.confirmation != format!("SYNC {action}") {
@@ -127,8 +127,8 @@ mod sync_retry_tests {
             command: vec![
                 "/worker".into(),
                 "cloud-launch".into(),
-                "--package-json".into(),
-                "{}".into(),
+                "--package-url".into(),
+                "https://api.example/api/worker-exchange/demo/train/attempt-001/package".into(),
             ],
             gpus: 8,
             cpus: 64,
@@ -279,7 +279,7 @@ impl Packet {
                 crate::input_progress::MARKER,
                 serde_json::to_string(input).map_err(|_| Error("input progress"))?
             );
-            if crate::input_progress::parse_line(&line).record.as_ref() != Some(input)
+            if crate::input_progress::parse_line(&line).as_ref() != Some(input)
                 || !config
                     .datasets
                     .iter()

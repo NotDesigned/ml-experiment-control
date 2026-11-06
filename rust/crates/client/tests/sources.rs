@@ -11,8 +11,7 @@ use std::{
 };
 
 fn health() -> Value {
-    json!({"min_client_protocol_version":2,"api_protocol_version":2,
-        "capabilities":["source-archive.v1"],"source_imports":true})
+    json!({"capabilities":["source-archive.v1"]})
 }
 fn result(digest: &str) -> Value {
     json!({"project":"demo","source_id":format!("source.{}","b".repeat(64)),
@@ -70,7 +69,6 @@ fn request(stream: &mut TcpStream) -> (String, u64) {
             .count(),
         1
     );
-    assert_eq!(head.matches("x-ml-expd-client-protocol: 2\r\n").count(), 1);
     let length = head
         .lines()
         .find_map(|line| line.strip_prefix("content-length: "))
@@ -342,11 +340,7 @@ fn invalid_health_or_changed_local_archive_never_sends_upload() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let client = Client::new(&base, "source-test-secret".into()).unwrap();
-    for health in [
-        json!({"api_protocol_version":2,"min_client_protocol_version":2,"capabilities":["source-import.v1"]}),
-        json!({"api_protocol_version":2,"min_client_protocol_version":2,"capabilities":["source-archive.v1"],"source_imports":false}),
-        json!({"api_protocol_version":1,"min_client_protocol_version":1}),
-    ] {
+    for health in [json!({"capabilities":["source-import.v1"]}), json!({})] {
         let archive = payload();
         let plan = sources::plan_archive("demo", &archive.sha256, archive.bytes).unwrap();
         assert!(sources::upload(&client, &plan, archive.file, &health).is_err());

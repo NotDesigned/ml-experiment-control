@@ -1,6 +1,5 @@
 use ml_exp_core::{
-    canonical::python_json_bytes,
-    durable,
+    canonical, durable,
     projects::{self, LifecycleRecord, PathEvidence, RegistrationSource, Registry, Seed},
 };
 use ml_exp_io::directory::{Directory, FileLock, LockOptions, Wait};
@@ -25,10 +24,6 @@ pub enum Error {
     Invalid,
     #[error("project registry source binding differs from approved configuration")]
     Binding,
-    #[error(
-        "native Project registration requires empty campaigns; Campaign loading is not implemented"
-    )]
-    UnsupportedDefinition,
     #[error("project registry transition is unavailable")]
     Transition(#[from] projects::Error),
     #[error("project registry is busy")]
@@ -83,8 +78,7 @@ pub struct Store {
 }
 
 /// Stored native paths were already resolved by trusted configuration. Reading
-/// the ledger never expands a home or follows an authored path. Legacy aliases
-/// need an operator-provided path resolver before importing that namespace.
+/// the ledger never expands a home or follows an authored path.
 pub fn canonical_path(path: &str) -> Result<PathEvidence, Error> {
     let p = Path::new(path);
     if !p.is_absolute()
@@ -151,7 +145,7 @@ fn journal(bytes: &[u8]) -> Result<(Vec<Value>, Option<Vec<u8>>), Error> {
     }
 }
 fn encoded(value: &Value) -> Result<Vec<u8>, Error> {
-    let mut bytes = python_json_bytes(value).map_err(why!(Error::Invalid))?;
+    let mut bytes = canonical::bytes(value).map_err(why!(Error::Invalid))?;
     bytes.push(b'\n');
     Ok(bytes)
 }

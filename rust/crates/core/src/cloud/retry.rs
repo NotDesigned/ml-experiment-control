@@ -12,18 +12,6 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 pub const CONTRACT: &str = "native-cloud-retry.v1";
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct StartupProof {
-    pub sync_request_id: String,
-    pub baseline_sequence: u64,
-    pub sequence: u64,
-    pub fenced_at: String,
-    pub observed_at: String,
-    pub packet_sha256: String,
-    pub worker: crate::managed::evidence::Observation,
-    pub inputs: Vec<crate::input_progress::Record>,
-}
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Receipt {
     pub contract: String,
     pub parent_action: String,
@@ -34,8 +22,6 @@ pub struct Receipt {
     pub request_sha256: String,
     pub reserved_gpu_seconds: u64,
     pub created_at: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub startup_failure: Option<StartupProof>,
 }
 impl Receipt {
     pub fn validate(&self, run: &Value, attempt: &str) -> Result<()> {

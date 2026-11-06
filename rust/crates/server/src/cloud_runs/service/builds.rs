@@ -1,6 +1,6 @@
-//! Rust owns Runtime identity, dispatch intent and reconciliation. The existing
-//! isolated builder may remain Python; its narrow native-image recipe receipt
-//! cannot be mistaken for a legacy Python-worker image.
+//! Rust owns Runtime identity, dispatch intent and reconciliation. The builder
+//! is a separate Python process; its narrow native-image recipe receipt cannot
+//! be mistaken for another image.
 use super::*;
 use ml_exp_core::cloud::{build::Definition, run::Runtime};
 #[derive(Deserialize)]
@@ -71,7 +71,6 @@ struct Record {
     source_receipt_sha256: String,
     worker_sha256: String,
     started: bool,
-    #[serde(default)]
     slurm_runtime: Option<ml_exp_core::first_submission::native::Runtime>,
     runtime: Option<Runtime>,
     diagnostic: Option<Value>,
@@ -598,7 +597,7 @@ impl Service {
                     .1
             || !helper::valid_digest(&runtime.sif_sha256)
             || !ml_exp_core::slurm::absolute_path(&runtime.sif_path)
-            || runtime.worker.as_ref().map(|w| &w.program) != Some(&expected.worker_path)
+            || runtime.worker.program != expected.worker_path
         {
             return Err(cloud::Error::evidence());
         }

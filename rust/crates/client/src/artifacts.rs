@@ -4,7 +4,7 @@ use crate::{Client, Error, session};
 use ml_exp_core::{
     artifacts::{self, publication::State},
     multipart,
-    operations::validate_submission_id,
+    operations::validate_action_id,
 };
 use serde_json::{Value, json};
 use std::{
@@ -43,7 +43,7 @@ fn enabled(health: &Value) -> Result<(), Error> {
     Ok(())
 }
 pub fn plan(action: &str, operation: &str, body: Option<Value>) -> Result<Plan, Error> {
-    validate_submission_id(action).map_err(|_| invalid())?;
+    validate_action_id(action).map_err(|_| invalid())?;
     if !matches!(
         (operation, body.is_some()),
         ("artifacts", false)

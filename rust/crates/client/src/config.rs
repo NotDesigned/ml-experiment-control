@@ -48,7 +48,7 @@ pub fn default_config_path(xdg_config_home: Option<&Path>, home: Option<&Path>) 
     xdg_config_home
         .map(Path::to_path_buf)
         .unwrap_or_else(|| home.unwrap_or(Path::new("")).join(".config"))
-        .join("ml-expd-rust/client.json")
+        .join("ml-exp/client.json")
 }
 
 /// A selected credential, not yet loaded from disk. Never formatted or serialized.
@@ -70,8 +70,6 @@ pub struct Settings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    token: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub token_file: Option<PathBuf>,
 }
 
@@ -81,7 +79,6 @@ impl Settings {
     pub fn from_token_reference(url: &str, token_file: PathBuf) -> Result<Self, Error> {
         Ok(Self {
             url: Some(normalize_url(url)?),
-            token: None,
             token_file: Some(token_file),
         })
     }
@@ -90,13 +87,8 @@ impl Settings {
         if let Some(url) = &self.url {
             normalize_url(url)?;
         }
-        if self.token.is_some() && self.token_file.is_some()
-            || (self.token.is_some() || self.token_file.is_some()) && self.url.is_none()
-        {
+        if self.token_file.is_some() && self.url.is_none() {
             return Err(Error::Config);
-        }
-        if let Some(token) = &self.token {
-            validate_token(token)?;
         }
         Ok(())
     }
@@ -113,11 +105,11 @@ impl Settings {
     }
 
     pub fn public(&self) -> serde_json::Value {
-        serde_json::json!({"url":self.url, "token_configured": self.token.is_some() || self.token_file.is_some(), "token_file":self.token_file})
+        serde_json::json!({"url":self.url, "token_configured": self.token_file.is_some(), "token_file":self.token_file})
     }
 
-    /// Explicit environment candidates are supplied by the shell. Saved secrets
-    /// remain bound to their normalized URL; an explicit token overrides them.
+    /// Explicit environment candidates are supplied by the shell. A saved token
+    /// file stays bound to its normalized URL; an explicit token overrides it.
     pub fn resolve(
         &self,
         selected_url: Option<&str>,
@@ -134,7 +126,7 @@ impl Settings {
             TokenSource::Inline(token.to_owned())
         } else if let Some(path) = env_file {
             TokenSource::File(path.to_path_buf())
-        } else if self.token.is_some() || self.token_file.is_some() {
+        } else if let Some(path) = &self.token_file {
             if self
                 .url
                 .as_deref()
@@ -145,10 +137,7 @@ impl Settings {
             {
                 return Err(Error::CredentialScope);
             }
-            match &self.token_file {
-                Some(path) => TokenSource::File(path.clone()),
-                None => TokenSource::Inline(self.token.clone().ok_or(Error::Token)?),
-            }
+            TokenSource::File(path.clone())
         } else {
             return Err(Error::Token);
         };
@@ -188,7 +177,7 @@ mod tests {
 
     #[test]
     fn planning_token_files_is_pure_and_scope_is_checked_before_io() {
-        let missing = PathBuf::from("/deliberately-missing/native-preview-token");
+        let missing = PathBuf::from("/deliberately-missing/native-token");
         let settings =
             Settings::from_token_reference("https://example.invalid/ml-expd/", missing.clone())
                 .unwrap();
@@ -213,15 +202,13 @@ mod tests {
     }
 
     #[test]
-    fn environment_precedence_is_explicit_and_secrets_are_not_public() {
-        let settings = Settings::from_json(
-            br#"{"url":"https://example.invalid","token":"saved-test-secret"}"#,
-        )
-        .unwrap();
-        assert!(!settings.public().to_string().contains("saved-test-secret"));
+    fn environment_precedence_is_explicit() {
+        let settings =
+            Settings::from_token_reference("https://example.invalid", "saved-token".into())
+                .unwrap();
         let plan = settings.resolve(None, None, None).unwrap();
         assert!(
-            matches!(plan.token_source, TokenSource::Inline(token) if token == "saved-test-secret")
+            matches!(plan.token_source, TokenSource::File(path) if path == Path::new("saved-token"))
         );
         let plan = settings
             .resolve(
@@ -248,13 +235,11 @@ mod tests {
     }
 
     #[test]
-    fn private_json_rejects_ambiguous_or_unbound_secrets_and_unknown_fields() {
+    fn private_json_rejects_unbound_references_inline_tokens_and_unknown_fields() {
         for bytes in [
-            br#"{"token":"test-secret"}"#.as_slice(),
-            br#"{"token_file":"private-token"}"#,
-            br#"{"url":"https://example.invalid","token":"test-secret","token_file":"token"}"#,
+            br#"{"token_file":"private-token"}"#.as_slice(),
+            br#"{"url":"https://example.invalid","token":"test-secret"}"#,
             br#"{"url":"https://example.invalid","unknown":true}"#,
-            br#"{"url":"https://example.invalid","token":"bad header"}"#,
             b"not JSON",
         ] {
             assert!(Settings::from_json(bytes).is_err());
@@ -306,17 +291,17 @@ mod tests {
     }
 
     #[test]
-    fn preview_default_is_separate_from_existing_python_client_configuration() {
+    fn default_configuration_path_is_under_the_client_directory() {
         assert_eq!(
             default_config_path(None, Some(Path::new("/home/researcher"))),
-            Path::new("/home/researcher/.config/ml-expd-rust/client.json")
+            Path::new("/home/researcher/.config/ml-exp/client.json")
         );
         assert_eq!(
             default_config_path(
                 Some(Path::new("/private/config")),
                 Some(Path::new("ignored"))
             ),
-            Path::new("/private/config/ml-expd-rust/client.json")
+            Path::new("/private/config/ml-exp/client.json")
         );
     }
 }

@@ -33,7 +33,7 @@ const REGISTRY: &str = "registry.json";
 const LOCK: &str = ".slurm-helper.lock";
 const STATE: &str = "state.json";
 const INTENT: &str = "intent.json";
-const MANIFEST: &str = "manifest.yaml";
+const MANIFEST: &str = "manifest.json";
 const SCRIPT: &str = "job.sbatch";
 const START: &str = "submit.started.json";
 const RECEIPT: &str = "receipt.json";
@@ -373,7 +373,7 @@ impl Helper {
             });
         }
         if registered.is_none() {
-            return Ok(ReadLedger::Unknown(UnknownReason::LegacyClaim));
+            return Ok(ReadLedger::Unknown(UnknownReason::IncompleteClaim));
         }
         let directory = run.child(OsStr::new(&name), false)?;
         if !directory.entry_exists(OsStr::new(STATE))? {
@@ -381,7 +381,7 @@ impl Helper {
                 if directory.entry_exists(OsStr::new(INTENT))? {
                     UnknownReason::MalformedLedger
                 } else {
-                    UnknownReason::LegacyClaim
+                    UnknownReason::IncompleteClaim
                 },
             ));
         }
@@ -598,12 +598,12 @@ impl Helper {
             .replace_regular(OsStr::new(REGISTRY), &registry_bytes)?;
         let run = self.run(request.intent(), true)?;
         let name = Self::claim_name(request.intent());
-        // Never repair an empty old claim or race another marker's creator.
+        // Never repair an incomplete claim or race another marker's creator.
         if run.entry_exists(OsStr::new(&name))? {
             return Ok(Reply::for_request(
                 request,
                 ReplyOutcome::Unknown {
-                    reason: UnknownReason::LegacyClaim,
+                    reason: UnknownReason::IncompleteClaim,
                 },
             )?);
         }

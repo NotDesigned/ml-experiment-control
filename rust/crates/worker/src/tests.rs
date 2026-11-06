@@ -211,7 +211,7 @@ fn log_floods_are_bounded_and_existing_receipt_reports_incomplete_capture() {
     }
     let receipt: serde_json::Value =
         serde_json::from_slice(&fs::read(output.join("execution.json")).unwrap()).unwrap();
-    assert_eq!(receipt["contract"], "rust-local-execution-preview.v1");
+    assert_eq!(receipt["contract"], "native-local-execution.v1");
     assert_eq!(receipt["error"]["code"], "OUTPUT_LIMIT_EXCEEDED");
     assert_eq!(receipt.as_object().unwrap().len(), 8);
 }

@@ -6,12 +6,11 @@ mod display;
 pub mod publication;
 
 pub use contract::{
-    RoutingSettings, WandbOptions, WandbSettings, finite_parameters, finite_parameters_json,
-    resolve, resolve_preparation,
+    RoutingSettings, WandbOptions, WandbSettings, finite_parameters, resolve, resolve_preparation,
 };
 pub use display::{
-    DefinitionSpec, Projection, STABLE_DISPLAY_VERSION, SummaryPatch, curve_record,
-    definition_specs, fingerprint, identity, number, stem, summary_patch,
+    DISPLAY_VERSION, DefinitionSpec, Projection, SummaryPatch, curve_record, definition_specs,
+    identity, number, summary_patch,
 };
 
 #[derive(Clone, Debug, thiserror::Error)]

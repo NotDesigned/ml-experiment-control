@@ -109,7 +109,7 @@ def transport(channel):
     if not address.path.startswith("/api/worker-exchange/"):
         raise ValueError()
     request = urllib.request.Request(channel["url"] + "/status", headers={
-        "Authorization": "Bearer " + channel["token"], "X-ML-Expd-Client-Protocol": "2"
+        "Authorization": "Bearer " + channel["token"]
     }, method="GET")
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
     try:

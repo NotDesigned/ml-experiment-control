@@ -79,10 +79,8 @@ pub fn repair(
             json!({"scope":scope,"status":"REPAIR_ACK_PENDING","confirmed":confirmed,"writes":0}),
         );
     }
-    let version =
-        saved.display_version(confirmed, status["display_version"].as_i64().unwrap_or(0))?;
     let display = store
-        .display(&guard, scope, through, version)
+        .display(&guard, scope, through)
         .map_err(why!(Error::Identity))?;
     let effects: Vec<_> = missing.iter().map(|item| {
         let event = events.iter().find(|e|e.seq==item.sequence && e.event_id==item.event_id).ok_or(Error::Identity)?;

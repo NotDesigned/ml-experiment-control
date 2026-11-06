@@ -27,21 +27,11 @@ pub struct Settings {
 pub struct Definition {
     pub profile: Profile,
     pub ssh: Ssh,
-    /// Optional upgraded helper for inspecting and cancelling existing jobs.
-    /// It shares the frozen SSH target and cannot prepare or submit a job.
-    #[serde(default)]
-    pub control_helper: Option<ControlHelper>,
     pub runtimes: BTreeMap<String, Runtime>,
     #[serde(default)]
     pub data_helper_config: Option<String>,
     #[serde(default)]
     pub script_preparation: bool,
-}
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ControlHelper {
-    pub helper_path: String,
-    pub helper_config_path: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -59,8 +49,7 @@ pub struct Ssh {
 impl Settings {
     pub fn from_slice(bytes: &[u8]) -> Result<Self, Error> {
         // The shared parser rejects duplicate keys before typed deserialization.
-        let value = crate::experiments::parse_mapping(bytes, crate::experiments::Format::Json)
-            .map_err(why!(Error::Configuration))?;
+        let value = ml_exp_core::json::mapping(bytes).map_err(why!(Error::Configuration))?;
         let settings: Self = serde_json::from_value(serde_json::Value::Object(value))
             .map_err(why!(Error::Configuration))?;
         if settings.schema_version != 1
@@ -86,7 +75,6 @@ impl Settings {
                     return Err(Error::Configuration);
                 }
                 let backend = Backend {
-                    control_helper: definition.control_helper,
                     ssh: SshConfig {
                         target: definition.profile.target.clone(),
                         ssh_binary: ssh.binary,

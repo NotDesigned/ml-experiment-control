@@ -88,13 +88,8 @@ impl Service {
         )
     }
     pub fn publisher_store(&self) -> Result<crate::records::Store> {
-        crate::records::Store::open(
-            &self.settings.registry_root,
-            self.workspace
-                .strip_prefix("rust-preview-")
-                .ok_or(Error::Authority)?,
-        )
-        .map_err(why!(Error::ObservationConflict))
+        crate::records::Store::open(&self.settings.registry_root, &self.workspace)
+            .map_err(why!(Error::ObservationConflict))
     }
     pub fn tracking_journal(&self, project: &str, run: &str) -> Result<crate::records::Store> {
         self.validate_workspace(project, run)?;
@@ -112,11 +107,7 @@ impl Service {
             .map_err(why_lock!(Error::Busy, Error::Authority))
     }
     pub(super) fn journal(&self, prepared: &Prepared) -> Result<crate::records::Store> {
-        let seed = self
-            .workspace
-            .strip_prefix("rust-preview-")
-            .ok_or(Error::Authority)?;
-        let records = crate::records::Store::open(&self.settings.registry_root, seed)
+        let records = crate::records::Store::open(&self.settings.registry_root, &self.workspace)
             .map_err(why!(Error::ObservationConflict))?;
         let guard = records
             .guard(&prepared.binding.project, &prepared.binding.run_id)
@@ -124,7 +115,7 @@ impl Service {
         if records
             .workspace_id(&guard)
             .map_err(why!(Error::Authority))?
-            != seed
+            != self.workspace
         {
             return Err(Error::Authority);
         }
@@ -139,7 +130,7 @@ impl Service {
             .is_none()
         {
             let binding =
-                ml_exp_core::records::observed_binding(&facts.run, &facts.binding.run_sha256)
+                ml_exp_core::records::native_binding(&facts.run, &facts.binding.run_sha256)
                     .map_err(why!(Error::Authority))?;
             records
                 .bind(&guard, &binding["route"], &binding["config"])

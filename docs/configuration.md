@@ -18,7 +18,7 @@ neither command contacts the API. On POSIX systems give the token file's directo
 mode 0700 and the file mode 0600. Windows credential files must allow only the
 current user, SYSTEM and local Administrators.
 
-Settings are saved in `ml-expd-rust/client.json` under `$XDG_CONFIG_HOME`, or under
+Settings are saved in `ml-exp/client.json` under `$XDG_CONFIG_HOME`, or under
 `.config` in your home directory (`USERPROFILE` on Windows). Keep this file, token
 files, client state and downloads outside uploaded source.
 
@@ -38,11 +38,11 @@ not retry requests automatically.
 `ml-exp update --check` looks for a newer stable native release. `ml-exp update`
 installs the highest one after checking hash, platform and version, and refuses an
 automatic downgrade. `ml-exp update --version X.Y.Z` selects an exact version. An
-update never changes connection defaults or a server installation. Clients through
-0.1.15 need the new installer once; see the
+update never changes connection defaults or a server installation. A client from an
+earlier release cannot update itself to this one, so use the installer once; see the
 [native usage guide](../rust/README.md#client-configuration).
 
-`ml-exp check` validates the authenticated protocol handshake and returns the
+`ml-exp check` validates the authenticated connection and returns the
 server's version, capabilities and source limits. `ml-exp backend` lists executors.
 For per-backend submission availability read `ml-exp get /api/readiness`. It makes
 no provider request and starts no job. `training=INCOMPLETE` there is acceptance
@@ -72,7 +72,7 @@ tokens, signed URLs or raw TLS or network exceptions.
 | `cannot read or write private client configuration` | Check the path, ownership and permissions of the settings or token file |
 | `saved credentials belong to a different API URL` | Run `config set` for this URL, or supply explicit environment credentials |
 | `HTTP request failed` | Check the address, DNS, certificate, routing and service with the operator. TLS, DNS, refused and timed-out connections all report this |
-| `daemon did not provide a supported protocol-2 handshake` | The address is not a compatible ML-Expd API, or a proxy altered it |
+| `daemon did not provide a valid health document` | The address is not an ML-Expd API of this release, or a proxy altered it |
 
 The client trusts the public WebPKI roots built into it. A certificate from a
 private CA is not accepted, and there is no option to disable verification; give
@@ -108,8 +108,9 @@ Omitted backends stay disabled, and the examples start with `enabled`,
 both in one cloud file's `backends` list. Executor IDs must be unique across Slurm
 and cloud; they are operator-chosen names, not built-in cluster names. Removing an
 entry stops offering it for new work, and existing frozen Runs and Attempts keep
-their original definition. Credential file shapes and permissions are in the
-[native deployment guide](../rust/README.md#deploying-a-native-service).
+their original definition. A cloud file that sets `allow_run_creation` must also set
+`exchange`; `--check` refuses it otherwise. Credential file shapes and permissions
+are in the [native deployment guide](../rust/README.md#deploying-a-native-service).
 
 `ml-exp backend` shows what the service publishes without contacting a provider.
 Capacity and quota do not guarantee an allocation.

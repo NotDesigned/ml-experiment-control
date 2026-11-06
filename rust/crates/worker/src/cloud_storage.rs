@@ -21,10 +21,8 @@ fn descendant(anchor: &Directory, mount: &Path, path: &Path) -> Result<()> {
 }
 
 pub(crate) fn prepare(package: &Package) -> Result<()> {
-    let Some(storage) = &package.storage else {
-        return Ok(());
-    };
     package.validate().map_err(|_| Error::Configuration)?;
+    let storage = &package.storage;
     let mount = Directory::open(&storage.mount, false).map_err(|_| Error::Storage)?;
     descendant(&mount, &storage.mount, &storage.runs)?;
     // The dataset store creates and atomically publishes its own marker-bearing
@@ -54,7 +52,7 @@ mod tests {
 
     fn package(mount: &Path) -> Package {
         let root = mount.join("native/runs");
-        let mut value = launch::compile(launch::Input {
+        launch::compile(launch::Input {
             root: root.to_str().unwrap(),
             project: "demo",
             run: "first",
@@ -63,14 +61,18 @@ mod tests {
             argv: &["/bin/true".into()],
             timeout_seconds: 3,
             worker_sha256: &format!("sha256:{}", "a".repeat(64)),
+            storage: StorageLayout {
+                mount: mount.into(),
+                runs: root.clone(),
+                datasets: mount.join("native/data/cache"),
+            },
+            // Nothing listens here, so delivery defers without leaving this host.
+            channel: ml_exp_core::cloud::exchange::Channel {
+                url: "https://127.0.0.1:1/api/worker-exchange/demo/first/attempt-001".into(),
+                token: "b".repeat(64),
+            },
         })
-        .unwrap();
-        value.storage = Some(StorageLayout {
-            mount: mount.into(),
-            runs: root,
-            datasets: mount.join("native/data/cache"),
-        });
-        value
+        .unwrap()
     }
 
     #[test]
@@ -82,7 +84,7 @@ mod tests {
         assert_eq!(receipt.phase, crate::managed::Phase::Finished);
         assert!(value.root.is_dir());
         assert!(temp.path().join("native/data").is_dir());
-        assert!(!value.storage.as_ref().unwrap().datasets.exists());
+        assert!(!value.storage.datasets.exists());
         assert_eq!(
             fs::metadata(temp.path()).unwrap().permissions().mode(),
             original
@@ -106,22 +108,16 @@ mod tests {
     }
 
     #[test]
-    fn old_package_keeps_existing_root_requirement_and_has_no_storage_field() {
+    fn a_package_without_a_valid_storage_plan_never_decodes_or_validates() {
         let temp = tempfile::tempdir().unwrap();
-        let mut value = package(temp.path());
-        value.storage = None;
-        assert!(
-            serde_json::to_value(&value)
-                .unwrap()
-                .get("storage")
-                .is_none()
-        );
-        assert!(crate::cloud::prepare(&value, &BTreeMap::new()).is_err());
-        assert!(!value.root.exists());
+        let mut bare = serde_json::to_value(package(temp.path())).unwrap();
+        bare.as_object_mut().unwrap().remove("storage");
+        assert!(crate::cloud::decode(&serde_json::to_vec(&bare).unwrap()).is_err());
+        assert!(!temp.path().join("native").exists());
         let mut invalid = package(temp.path());
-        invalid.storage.as_mut().unwrap().datasets = invalid.root.join("data");
+        invalid.storage.datasets = invalid.root.join("data");
         assert!(invalid.validate().is_err());
-        invalid.storage.as_mut().unwrap().datasets = temp.path().join("../escape");
+        invalid.storage.datasets = temp.path().join("../escape");
         assert!(invalid.validate().is_err());
     }
 }

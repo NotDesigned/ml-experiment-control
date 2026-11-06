@@ -4,6 +4,19 @@ use ml_exp_core::{
     managed::evidence::Phase,
 };
 use std::{collections::BTreeMap, sync::Mutex};
+fn storage(mount: &Path, runs: &Path) -> launch::StorageLayout {
+    launch::StorageLayout {
+        mount: mount.into(),
+        runs: runs.into(),
+        datasets: mount.join("datasets"),
+    }
+}
+fn channel() -> exchange::Channel {
+    exchange::Channel {
+        url: "https://api.example/ml-expd/api/worker-exchange/demo/train/attempt-001".into(),
+        token: "b".repeat(64),
+    }
+}
 struct Sender {
     calls: Mutex<Vec<(u64, String)>>,
     lose_first: bool,
@@ -16,7 +29,7 @@ fn one_pending_prepared_packet_cannot_stand_in_for_a_fresh_process_observation()
     let work = temp.path().join("code");
     std::fs::create_dir(&root).unwrap();
     std::fs::create_dir(&work).unwrap();
-    let mut package = launch::compile(Input {
+    let package = launch::compile(Input {
         root: root.to_str().unwrap(),
         project: "demo",
         run: "train",
@@ -25,12 +38,10 @@ fn one_pending_prepared_packet_cannot_stand_in_for_a_fresh_process_observation()
         argv: &["/bin/true".into()],
         timeout_seconds: 3,
         worker_sha256: &format!("sha256:{}", "a".repeat(64)),
+        storage: storage(temp.path(), &root),
+        channel: channel(),
     })
     .unwrap();
-    package.channel = Some(exchange::Channel {
-        url: "https://api.example/ml-expd/api/worker-exchange/demo/train/attempt-001".into(),
-        token: "b".repeat(64),
-    });
     crate::cloud::prepare(&package, &BTreeMap::new()).unwrap();
     let sender = Sender {
         calls: Mutex::new(Vec::new()),
@@ -87,12 +98,10 @@ fn lost_ack_replays_only_the_exact_packet_and_a_corrupt_checkpoint_does_not_bloc
         argv: &command,
         timeout_seconds: 3,
         worker_sha256: &format!("sha256:{}", "a".repeat(64)),
+        storage: storage(temp.path(), &root),
+        channel: channel(),
     })
     .unwrap();
-    package.channel = Some(exchange::Channel {
-        url: "https://api.example/ml-expd/api/worker-exchange/demo/train/attempt-001".into(),
-        token: "b".repeat(64),
-    });
     package.checkpoint_context = Some(ml_exp_core::checkpoints::Context {
         project: "demo".into(),
         run_id: "train".into(),

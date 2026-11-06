@@ -9,7 +9,6 @@ pub fn document(value: Value, source: ManifestSource) -> Document {
         source,
         metadata: value.as_object().unwrap().clone(),
         raw_sha256: format!("sha256:{}", "a".repeat(64)),
-        legacy_observation_only: false,
     }
 }
 pub fn evidence(id: &str, name: &str, mut value: Value) -> EvidenceDocument {
@@ -40,20 +39,16 @@ pub fn attempt(id: &str) -> AttemptSnapshot {
     AttemptSnapshot {
         attempt_id: id.into(),
         manifest: document(
-            json!({"identity_version":2,"project":"demo","run_id":"trial","attempt_id":id}),
-            ManifestSource::AttemptYaml,
+            json!({"schema_version":1,"project":"demo","run_id":"trial","attempt_id":id}),
+            ManifestSource::AttemptJson,
         ),
         provenance: Provenance {
             compared_fields_complete: false,
             compared_fields: vec![],
             missing_fields: vec![],
-            project_inherited_from_json_run: false,
         },
         status: EvidenceDocument::Missing,
-        backend: EvidenceDocument::Missing,
         collection: EvidenceDocument::Missing,
-        decision: EvidenceDocument::Missing,
-        submission: EvidenceDocument::Missing,
         stdout: empty_log(),
         stderr: empty_log(),
         metrics: MetricTail {
@@ -78,12 +73,10 @@ pub fn snapshot() -> Snapshot {
         project: "demo".into(),
         run_id: "trial".into(),
         run: document(
-            json!({"identity_version":2,"project":"demo","run_id":"trial"}),
+            json!({"schema_version":1,"project":"demo","run_id":"trial"}),
             ManifestSource::RunJson,
         ),
         current_status,
-        current_collection: EvidenceDocument::Missing,
-        current_decision: EvidenceDocument::Missing,
         current_attempt_id: Some("attempt-001".into()),
         current_selection_source: Some("status.json".into()),
         attempts: vec![attempt("attempt-001")],

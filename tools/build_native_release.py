@@ -120,7 +120,7 @@ def build(binary_dir, output, version, client_dir=None):
         (output / name).chmod(0o755)
         assets.append({"name": name, "target": target, "executable": "ml-exp",
                        "bytes": path.stat().st_size, "sha256": digest(path)})
-    manifest = {"schema_version": 1, "version": version, "protocol_version": 2, "assets": assets}
+    manifest = {"schema_version": 1, "version": version, "assets": assets}
     (output / "native-release.json").write_text(json.dumps(manifest, indent=2) + "\n")
     shutil.copyfile(ROOT / "rust/install.sh", output / "install-native.sh")
     (output / "install-native.sh").chmod(0o755)
@@ -146,7 +146,7 @@ def build(binary_dir, output, version, client_dir=None):
         for name in BINARIES:
             tar.add(output / f"{name}-{TARGET}", arcname=f"bin/{name}", filter=metadata)
         for source, target in [(ROOT / "rust/README.md", "README.md"),
-                               (ROOT / "docs/rust-rewrite.md", "MIGRATION.md"),
+                               (ROOT / "docs/acceptance-status.md", "ACCEPTANCE-STATUS.md"),
                                (output / "native-release.json", "native-release.json"),
                                (release_info, "release-info.json")]:
             tar.add(source, arcname=target, filter=metadata)

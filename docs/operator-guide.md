@@ -21,15 +21,19 @@ copying them alone does not produce a runnable GPU service.
 Keep one daemon writer per registry. The examples use this layout:
 
 ```text
-/etc/ml-expd/native/          private deployment file, reads, backends, credentials
-/var/lib/ml-expd-native/      registry root
-/srv/ml-expd-native/          approved Project files and Run roots
+/opt/ml-exp/          ROOT: bin/, deployment.json, the builder's Python environment
+/etc/ml-exp/          private server, reads, backend and builder configuration, credentials
+/var/lib/ml-exp/      registry/ and builder/
+/srv/ml-exp/          approved Project files and Run roots
+/run/ml-exp-builder/  the builder's private socket
 ```
 
 Adjust the [API](../rust/deploy/ml-expd.service) and
 [builder](../rust/deploy/ml-expd-builder.service) systemd examples so their binary,
-writable and read-only paths match. They install nothing by themselves. Do not relocate
-backend datasets or checkpoints when rearranging program files.
+writable and read-only paths match. They install nothing by themselves. The API runs
+as the service account. The builder runs as root, because the daemon only accepts a
+socket owned by `builds.peer_uid`, which is 0 in the examples. Do not relocate backend
+datasets or checkpoints when rearranging program files.
 
 ## Install a native release
 
@@ -37,7 +41,7 @@ From the [latest release](https://github.com/NotDesigned/ml-experiment-control/r
 download `SHA256SUMS` and `ml-expd-native-X.Y.Z-x86_64-unknown-linux-gnu.tar.gz`,
 verify the archive's hash, and extract it. The bundle contains `bin/` (`ml-exp`,
 `ml-expd-rs`, `ml-exp-worker-rs`), `deploy/` examples and
-the upgrade tool, `python/` (the image bridge sources), `README.md`, `MIGRATION.md`,
+the install tool, `python/` (the image bridge sources), `README.md`, `ACCEPTANCE-STATUS.md`,
 `native-release.json` and `release-info.json` (source commit and bridge hashes). It
 contains no secrets and creates no service. No compiler or Python is needed to run
 these binaries.
@@ -58,19 +62,18 @@ credential, builder or object store.
 Create the API token as a regular file owned by the service account, mode 0600 or
 0400, with at least 32 non-whitespace random characters, without printing it to
 shared output. Distribute it privately. There is no per-user or per-project RBAC.
-All native credential files follow the same ownership and mode rule; do not relax
-it for files copied from an older deployment.
+All native credential files follow the same ownership and mode rule.
 
 The daemon binds loopback only and refuses anything else. Terminate TLS in a
-reverse proxy that preserves `Authorization`, protocol headers and the API prefix,
+reverse proxy that preserves `Authorization` and the API prefix,
 using a certificate the [client trusts](configuration.md#connection-errors).
 
 Run these as the service account that will own the stores:
 
 ```sh
-ml-expd-rs --config /etc/ml-expd/native/server.json --check
-ml-expd-rs --config /etc/ml-expd/native/server.json --initialize
-ml-expd-rs --config /etc/ml-expd/native/server.json
+ml-expd-rs --config /etc/ml-exp/server.json --check
+ml-expd-rs --config /etc/ml-exp/server.json --initialize
+ml-expd-rs --config /etc/ml-exp/server.json
 ```
 
 `--check` reads local configuration, credentials and Project definitions. It sends
@@ -80,33 +83,68 @@ provider jobs. It refuses an existing or partial registry and never repairs, res
 or deletes one. **Never initialize a registry over existing state.** Ordinary
 startup does not initialize missing stores.
 
+`--initialize` also refuses a Project run root that is not empty, with
+`project_run_root_not_empty`, because a new registry would discover what it holds.
+
+## First install
+
+On a new host, `deploy/deploy_native.py --first-install` does the commands above for
+you. Create what it cannot, as above: the service account, its directories, the
+configuration files, the API token, the Run directory and the installed API unit.
+Then write `ROOT/deployment.json` ([example](../rust/deploy/deployment.example.json)).
+`cloud_config` must name an existing file, because the tool pins the worker there.
+
+An API-only host can use a `cloud_config` holding `{}`. With no `builds` block the tool
+needs no builder: it neither runs `python` nor touches `builder_unit`, so those two
+settings may name things that do not exist yet. It still copies the bridge sources to
+`python_site_packages`. To add builds later, follow [Image builder](#image-builder).
+With a `builds` block, set up the builder's interpreter and unit first, because the
+tool imports the bridge with `python` and refuses if that fails.
+
+```sh
+python3 deploy/deploy_native.py --root /opt/ml-exp --version X.Y.Z --first-install          # verify only
+python3 deploy/deploy_native.py --root /opt/ml-exp --version X.Y.Z --first-install --apply
+```
+
+It refuses unless ROOT has no `bin/ml-expd-rs`, `previous/` or `DEPLOYED.json`. It
+verifies every hash in the bundle, runs `--check`, and with `--apply` runs
+`--initialize`, installs, sets `builds.worker_sha256` to the bundled worker, starts the
+API unit (and the builder unit when `builds` is configured), waits for `/api/health` to
+report the version and writes `ROOT/DEPLOYED.json`.
+Started as root, it runs the server as the API unit's `User=`, so the stores belong to
+the service account; it refuses if the unit names none.
+
+A refused `--check` or `--initialize` leaves ROOT empty, so correct the cause and
+repeat. There is nothing to roll back to, so a failed health check stops the units and
+leaves the release installed and the registry initialized. Correct the cause and start
+the units by hand, then run the ordinary `--apply` below to record the release.
+
 ## Upgrade a release
 
-`deploy/deploy_native.py` in the bundle upgrades an installed server. It needs only
+`deploy/deploy_native.py` in the bundle upgrades a server it installed. It needs only
 the system Python and reads `ROOT/deployment.json`
 ([example](../rust/deploy/deployment.example.json)), which names the units, private
 configuration files, builder state and publisher locks. It expects `ROOT/bin/` for
 the executables and installs the bridge into the builder's `python_site_packages`.
 
 ```sh
-python3 deploy/deploy_native.py --root /opt/ml-expd --version X.Y.Z          # verify only
-python3 deploy/deploy_native.py --root /opt/ml-expd --version X.Y.Z --apply
-python3 deploy/deploy_native.py --root /opt/ml-expd --rollback
+python3 deploy/deploy_native.py --root /opt/ml-exp --version X.Y.Z          # verify only
+python3 deploy/deploy_native.py --root /opt/ml-exp --version X.Y.Z --apply
+python3 deploy/deploy_native.py --root /opt/ml-exp --rollback
 ```
 
-Always run the copy from the bundle being installed: a copy from a release that
-still shipped `ml-expd-state-audit` refuses newer bundles, which no longer contain
-it. The retired executable left in `ROOT/bin/` is not touched and can be deleted.
+Always run the copy from the bundle being installed.
 
 Without `--apply` it changes nothing. It verifies every hash in the bundle, runs the
 new `ml-expd-rs --check` against the live configuration, imports the new bridge with
-the builder's interpreter, and refuses a downgrade or an active build (a builder
+the builder's interpreter when `builds` is configured, and refuses a downgrade or an
+active build (a builder
 holds `<identity>.lock` for the whole build). Also confirm that no transfer or
 submission you care about is mid-request; the tool does not inspect those.
 
 With `--apply` it keeps the installed files in `ROOT/previous/`, stops the API and
-requires exit status 0, stops the builder, takes the publisher locks, replaces the
-files, sets `builds.worker_sha256` to the new worker, and starts both services. If
+requires exit status 0, stops the builder, takes the publisher locks that exist (a
+missing one means no publisher has run, and is not created), replaces the files, sets `builds.worker_sha256` to the new worker, and starts both services. If
 the API does not report the new version on `/api/health`, it restores the previous
 files and worker hash and restarts them. On success it writes `ROOT/DEPLOYED.json`
 with the version, source commit and hashes; read that file to learn what is running.
@@ -139,8 +177,10 @@ experiment file.
    `slurm` materializer map. Verify that a bounded build reaches READY and that the
    selected backend can read its digest.
 4. **Enable training deliberately.** Set finite resource limits, then `enabled` and
-   `allow_run_creation`, and optionally `polling`. Run `--check` again, restart, and
-   read `ml-exp get /api/readiness` from a client.
+   `allow_run_creation`, and optionally `polling`. Cloud Run creation also needs
+   `exchange`, because every worker fetches its launch package through it; `--check`
+   refuses the combination without it. Run `--check` again, restart, and read
+   `ml-exp get /api/readiness` from a client.
 5. **Validate one bounded experiment.** The researcher uses the
    [experiment flow](api-quickstart.md#first-experiment), then checks progress, a
    checkpoint restore and downloaded result hashes with the operator. Expand to
@@ -156,7 +196,16 @@ interpreter and third-party dependencies are outside the bundle, and it is the o
 part of this deployment that needs them. It is started as
 `python -m ml_exp_server.image_builder --config CONFIG`; see the
 [unit example](../rust/deploy/ml-expd-builder.service) and the
-[bridge notes](rust-rewrite.md#latest-implementation-completion-pass).
+[bridge notes](acceptance-status.md#builder-and-worker-contracts).
+
+Create the interpreter that `python` in `deployment.json` names, from the pinned list in
+the bundle. The bridge cannot be imported without it. `python_site_packages` must be
+that interpreter's own directory, so match the version in the path.
+
+```sh
+python3.11 -m venv /opt/ml-exp/image-effects
+/opt/ml-exp/image-effects/bin/pip install -r deploy/image-bridge-requirements.txt
+```
 
 In the cloud configuration, `builds` sets the builder `socket`, its `peer_uid`, and
 the `worker_sha256` of the exact native worker. Configure the publisher itself
@@ -165,10 +214,8 @@ configured registry; local BuildKit is the alternative. The daemon has no Docker
 socket access. Build push credentials are separate from training pull credentials:
 a builder login does not authorize a backend to pull.
 
-After changing the worker or bridge, check the installed bridge with the builder's
-own interpreter using `tools/check_native_builder.py`, then exercise a real build
-through the running daemon. Updating a source checkout does not update what the
-service loads.
+After changing the worker or bridge, exercise a real build through the running
+daemon. Updating a source checkout does not update what the service loads.
 
 ## Optional W&B
 
@@ -181,7 +228,7 @@ work without it. See [W&B](wandb.md).
 
 Verify as the service account and through the public HTTPS endpoint:
 
-1. `--check`, then `ml-exp check` for health, protocol and authentication.
+1. `--check`, then `ml-exp check` for health and authentication.
 2. `ml-exp backend` for the published catalogue.
 3. A bounded source build through READY and its remote digest.
 4. Only with explicit resource authorization: a small real run, checkpoint restore
@@ -189,7 +236,7 @@ Verify as the service account and through the public HTTPS endpoint:
 
 A CPU run, successful submit or queue entry does not validate GPU training. Do not
 claim queue ETA or free cards without provider evidence. Current acceptance limits
-are in the [acceptance status](rust-rewrite.md).
+are in the [acceptance status](acceptance-status.md).
 
 `GET /api/readiness` reports `api`, `training`, `checks`, `backends`
 and `submission_available_backends`. It sends no provider request. Configuration
@@ -198,27 +245,51 @@ fields. `training=INCOMPLETE` remains until acceptance evidence exists; that doe
 not by itself block submission. `GET /api/observer` reports local background observer
 state.
 
-## Existing state
+## Clean start
 
-The server serves only its native namespace. Older namespaces are never read or
-changed. `history_config` in the deployment file and `historical_handoff` in the
-tracking file are no longer supported: `--check` and startup refuse a file that
-sets either, naming the key, so remove them before upgrading. `deploy_native.py`
-runs that check before stopping anything. Rolling back to an earlier release
-needs the keys restored.
+This release shares nothing with earlier ones. It reads no earlier registry, Run,
+image or client configuration, and it never deletes them: old files stay on disk
+unread. To move to it:
+
+1. **Stop what is still running first.** Stop old provider jobs, DSW builders, data
+   copies and debug machines through the old service while it can still reach them.
+   The new service does not know they exist and cannot stop them.
+2. **Use fresh roots everywhere.** A new ROOT for `--first-install`, a new
+   `registry_root` and Run roots, new provider `run_root` and `data_root` paths and
+   artifact `prefix`, a new Slurm helper root, and a new builder `state_root`.
+3. **Generate a new `exchange.signing_key_file`.** Workers launched by the old service
+   hold capabilities from the old key, and they must not reach the new one.
+4. **Convert Project files to JSON** before the first Run. A YAML Project file is not
+   read. A Project file holds exactly `schema_version` (1), `project`, `title` and
+   `run_roots`, so remove `controller`, `campaigns`, `metrics_schema` and `base_dir`.
+   Runs get new W&B IDs, so they start new W&B runs.
+5. **Rebuild Runtime images.** Every image needs the new worker, whose hash
+   `--first-install` writes to `builds.worker_sha256`. Pin the same hash wherever you
+   configure a Runtime by hand, such as a cloud backend's `worker_sha256`. A Slurm
+   `runtimes` entry has no such field: it names the rebuilt image and SIF, and
+   `worker.program` is the worker's path inside that image.
+6. **Have users run the installer once.** An earlier client cannot read this release's
+   manifest, so `ml-exp update` fails closed. Its configuration file is not read either,
+   so they run `ml-exp config set` again, with a token file.
+
+A `registry_root` holding the retired `.rust-preview-workspace.json` marker refuses
+every command with `registry_predates_clean_restart`, and nothing in it is read or
+changed. A deployment or tracking file with a key the release does not know is refused
+by `--check` and at startup.
 
 ## Project registration and lifecycle
 
 This is the operator registry for indexing and polling, not a prerequisite
 research workflow. The daemon's workspace-local registry selects projects to index
-and poll. Each record binds a stable identity to an absolute Project file on the
+and poll. Each record binds a stable identity to an absolute JSON Project file on the
 daemon host (see the [example](../rust/deploy/project.example.json)), lifecycle,
 source, timestamps and operator reason. A research question is not required or
 loaded. Use `ml-exp project` to register and change state; `project register` takes
 a daemon-host path and uploads nothing. Source import uploads to an approved Project.
 
-The authored file owns title, Run roots and optional Campaign catalogue. Registry removal does not delete that file, source, Runs, Attempts,
-datasets or artifacts, and never stops scheduler jobs.
+The authored file holds exactly `schema_version` (1), `project`, `title` and `run_roots`;
+any other key is refused. Registry removal does not delete that file, source, Runs,
+Attempts, datasets or artifacts, and never stops scheduler jobs.
 
 ### States
 
@@ -236,7 +307,7 @@ controller designed for it.
 
 ### Routes
 
-Send normal auth/protocol headers and use the installed OpenAPI request bodies:
+Send the normal auth header and use the installed OpenAPI request bodies:
 
 ```text
 GET  /api/project-lifecycle

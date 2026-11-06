@@ -80,7 +80,6 @@ struct Saved {
     stop_requested: bool,
     delete_requested: bool,
     terminal: bool,
-    #[serde(default)]
     network_clean: bool,
     deleted: bool,
     connection: Option<Value>,

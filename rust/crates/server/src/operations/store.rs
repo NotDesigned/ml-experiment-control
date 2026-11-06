@@ -1,32 +1,15 @@
 use super::{Database, Error, Result};
-use ml_exp_core::{
-    canonical::python_json_bytes,
-    operations::{
-        self, Claim, Dispatch, Evidence, FrozenFiles, Policy, Reconcile, Scope, Transition,
-    },
-};
+use ml_exp_core::operations::{self, Claim, FrozenFiles, Scope, Transition};
 use ml_exp_io::directory::{Directory, FileLock, LockOptions, Wait, effective_uid};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{ffi::OsStr, path::PathBuf};
 
-#[derive(Clone, Copy, Debug)]
-pub enum CommandPhase {
-    Authorize,
-    Execute,
-}
-impl CommandPhase {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Authorize => "authorize",
-            Self::Execute => "execute",
-        }
-    }
-}
 #[derive(Debug)]
 pub struct Claimed {
     pub snapshot: Value,
-    pub dispatch: Option<Dispatch>,
+    /// Whether this call took the claim and so must make the one provider call.
+    pub execute: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -100,16 +83,6 @@ impl Store {
                     error.into()
                 }
             })
-    }
-    fn subdirectory(
-        &self,
-        action_id: &str,
-        name: &str,
-        create: bool,
-        lock: &Lock,
-    ) -> Result<Directory> {
-        let action = self.action_directory(action_id, false, lock)?;
-        Ok(action.child(OsStr::new(name), create)?)
     }
     fn lock(&self) -> Result<Lock> {
         Ok(self.directory.lock(
@@ -374,7 +347,6 @@ impl Store {
         &self,
         action_id: &str,
         confirmation: &str,
-        policy: &Policy,
         files: &FrozenFiles,
         context: ClaimContext<'_>,
     ) -> Result<Claimed> {
@@ -389,18 +361,14 @@ impl Store {
             &snapshot,
             &snapshot["execution"],
             confirmation,
-            policy,
             files,
             now,
         )? {
             Claim::AlreadyVerified => Ok(Claimed {
                 snapshot,
-                dispatch: None,
+                execute: false,
             }),
-            Claim::Execute {
-                transition,
-                dispatch,
-            } => {
+            Claim::Execute { transition } => {
                 self.apply(action_id, &transition, transition_id,lock)?;
                 // Auxiliary evidence only: failure here cannot undo or replay
                 // the authoritative SQLite execution claim and audit event.
@@ -409,7 +377,7 @@ impl Store {
                 let _ = self.action_directory(action_id,false,lock)?.replace_regular(OsStr::new("execution.claim"), &serde_json::to_vec_pretty(&claim)?);
                 Ok(Claimed {
                     snapshot: self.snapshot_unlocked(action_id, now, transition_id,lock)?,
-                    dispatch: Some(dispatch),
+                    execute: true,
                 })
             }
         }
@@ -427,29 +395,6 @@ impl Store {
         self.locked(|lock| {
             self.apply(action_id, transition, transition_id, lock)?;
             self.snapshot_unlocked(action_id, now, transition_id, lock)
-        })
-    }
-    pub fn reconcile(
-        &self,
-        action_id: &str,
-        policy: &Policy,
-        evidence: &Evidence,
-        now: &str,
-        transition_id: &str,
-    ) -> Result<(Value, Option<Dispatch>)> {
-        self.locked(|lock| {
-            let snapshot = self.snapshot_unlocked(action_id, now, transition_id, lock)?;
-            match operations::reconcile(&snapshot, &snapshot["execution"], policy, evidence, now)? {
-                Reconcile::Unchanged => Ok((snapshot, None)),
-                Reconcile::Commit(transition) => {
-                    self.apply(action_id, &transition, transition_id, lock)?;
-                    Ok((
-                        self.snapshot_unlocked(action_id, now, transition_id, lock)?,
-                        None,
-                    ))
-                }
-                Reconcile::RecoverTransaction(dispatch) => Ok((snapshot, Some(dispatch))),
-            }
         })
     }
     fn list_unlocked(
@@ -543,135 +488,6 @@ impl Store {
                 }
             }
             Ok(recovered)
-        })
-    }
-    pub fn append_journal(
-        &self,
-        action_id: &str,
-        event: &str,
-        payload: &Value,
-        event_id: &str,
-        now: &str,
-    ) -> Result<()> {
-        self.locked(|_lock| {
-            self.database.append_event(
-                action_id,
-                &json!({"timestamp":now,"event":event,"payload":payload}),
-                event_id,
-            )
-        })
-    }
-    /// Sensitive notes and confirmation commands stay outside immutable plans.
-    pub fn write_command(
-        &self,
-        action_id: &str,
-        phase: CommandPhase,
-        payload: &Value,
-        event_id: &str,
-        now: &str,
-    ) -> Result<Value> {
-        if !payload.is_object() {
-            return Err(Error::Invalid("command payload"));
-        }
-        self.locked(|lock| {
-            let directory = self.subdirectory(action_id, "commands", true, lock)?;
-            let name = format!("{}.json", phase.name());
-            let record = if let Some(existing) = Self::read_json(&directory, OsStr::new(&name))? {
-                // Free-form command replay follows the old Python dictionary
-                // equality. Frozen intent/digest identities remain byte-bound.
-                if !existing.get("payload").is_some_and(|previous| {
-                    ml_exp_core::observation::python_equal(previous, payload)
-                }) {
-                    return Err(Error::CommandConflict);
-                }
-                existing
-            } else {
-                let record = json!({
-                    "action_id": action_id,
-                    "phase": phase.name(),
-                    "payload": payload,
-                    "created_at": now,
-                    "journal_event_id": event_id,
-                });
-                directory.publish_new(OsStr::new(&name), &serde_json::to_vec_pretty(&record)?)?;
-                record
-            };
-            let event_id = match record
-                .get("journal_event_id")
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-            {
-                Some(id) => id.to_owned(),
-                None => format!(
-                    "{:x}",
-                    Sha256::digest(
-                        python_json_bytes(&record)
-                            .map_err(why!(Error::Invalid("legacy command encoding")))?
-                    )
-                ),
-            };
-            let event = json!({
-                "timestamp": now,
-                "event": format!("{}_command_recorded", phase.name()),
-                "payload": {},
-            });
-            self.database.append_event(action_id, &event, &event_id)?;
-            Ok(record)
-        })
-    }
-    pub fn read_command(&self, action_id: &str, phase: CommandPhase) -> Result<Value> {
-        self.locked(|lock| {
-            let directory = self.subdirectory(action_id, "commands", false, lock)?;
-            let record =
-                Self::read_json(&directory, OsStr::new(&format!("{}.json", phase.name())))?
-                    .ok_or(Error::NotFound)?;
-            Ok(record
-                .get("payload")
-                .filter(|v| v.is_object())
-                .cloned()
-                .unwrap_or_else(|| json!({})))
-        })
-    }
-    pub fn write_activity_error(
-        &self,
-        action_id: &str,
-        phase: &str,
-        message: &str,
-        category: &str,
-        now: &str,
-    ) -> Result<()> {
-        if !matches!(phase, "prepare" | "authorize" | "execute" | "reconcile") {
-            return Err(Error::Invalid("activity phase"));
-        }
-        self.locked(|lock| {
-        let directory = self.subdirectory(action_id,"activity_errors",true,lock)?;
-        let message: String = message.chars().take(1000).collect();
-        directory.replace_regular(
-            OsStr::new(&format!("{phase}.json")),
-            &serde_json::to_vec_pretty(
-                &json!({"action_id":action_id,"phase":phase,"message":message,"category":category,"created_at":now}),
-            )?,
-        )?;
-        Ok(())
-        })
-    }
-    pub fn activity_error(&self, action_id: &str, phase: &str) -> Result<Value> {
-        if !matches!(phase, "prepare" | "authorize" | "execute" | "reconcile") {
-            return Err(Error::Invalid("activity phase"));
-        }
-        self.locked(|lock| {
-            let directory = match self.subdirectory(action_id, "activity_errors", false, lock) {
-                Ok(directory) => directory,
-                Err(Error::NotFound) => return Ok(json!({})),
-                Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-                    return Ok(json!({}));
-                }
-                Err(error) => return Err(error),
-            };
-            Ok(
-                Self::read_json(&directory, OsStr::new(&format!("{phase}.json")))?
-                    .unwrap_or_else(|| json!({})),
-            )
         })
     }
 }

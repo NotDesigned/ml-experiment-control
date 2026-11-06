@@ -42,7 +42,7 @@ fn follow(
 #[test]
 fn a_selection_without_saved_state_needs_no_read() {
     let expected = literal(
-        r#"{"server":"https://example.invalid/ml-expd","project":"p","run_id":"r","attempt_id":null,"state_kind":null,"saved":{},"submission":null,"action":null,"preparation":null}"#,
+        r#"{"server":"https://example.invalid/ml-expd","project":"p","run_id":"r","attempt_id":null,"saved":{},"submission":null,"preparation":null}"#,
     );
     let (result, requests) = follow(None, run_selection(), &json!({}));
     assert_eq!(result.unwrap(), expected);
@@ -50,16 +50,13 @@ fn a_selection_without_saved_state_needs_no_read() {
 }
 
 #[test]
-fn saved_state_reads_only_its_own_submission_preparation_or_action() {
+fn saved_state_reads_only_its_own_submission_or_preparation() {
     for case in [
         literal(
-            r#"{"saved":{"server":"https://example.invalid/ml-expd","project":"p","run_id":"r","config_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","submission":{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"PREPARED"}},"responses":{"/api/submissions/action-aaaaaaaaaaaaaaaa":{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"PREPARED"}},"requests":["/api/submissions/action-aaaaaaaaaaaaaaaa"],"hints":{"server":"https://example.invalid/ml-expd","project":"p","run_id":"r","attempt_id":"attempt-001","state_kind":"experiment","saved":{"server":"https://example.invalid/ml-expd","project":"p","run_id":"r","config_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","submission":{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"PREPARED"}}},"expected":{"server":"https://example.invalid/ml-expd","project":"p","run_id":"r","attempt_id":"attempt-001","state_kind":"experiment","saved":{"server":"https://example.invalid/ml-expd","project":"p","run_id":"r","config_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","submission":{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"PREPARED"}},"submission":{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"PREPARED"},"action":null,"preparation":null}}"#,
+            r#"{"saved":{"server":"https://example.invalid/ml-expd","project":"p","run_id":"r","config_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","submission":{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"PREPARED"}},"responses":{"/api/submissions/action-aaaaaaaaaaaaaaaa":{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"PREPARED"}},"requests":["/api/submissions/action-aaaaaaaaaaaaaaaa"],"hints":{"server":"https://example.invalid/ml-expd","project":"p","run_id":"r","attempt_id":"attempt-001","saved":{"server":"https://example.invalid/ml-expd","project":"p","run_id":"r","config_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","submission":{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"PREPARED"}}},"expected":{"server":"https://example.invalid/ml-expd","project":"p","run_id":"r","attempt_id":"attempt-001","saved":{"server":"https://example.invalid/ml-expd","project":"p","run_id":"r","config_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","submission":{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"PREPARED"}},"submission":{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"PREPARED"},"preparation":null}}"#,
         ),
         literal(
-            r#"{"saved":{"config_sha256":"x","project":"p","run_id":"r","preparation":{"preparation_id":"preparation-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","project":"p","run_id":"r"}},"responses":{"/api/projects/p/experiment-preparations/preparation-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb":{"project":"p","run_id":"r","preparation_id":"preparation-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}},"requests":["/api/projects/p/experiment-preparations/preparation-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],"hints":{"server":null,"project":"p","run_id":"r","attempt_id":null,"state_kind":"experiment","saved":{"config_sha256":"x","project":"p","run_id":"r","preparation":{"preparation_id":"preparation-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","project":"p","run_id":"r"}}},"expected":{"server":"https://example.invalid/ml-expd","project":"p","run_id":"r","attempt_id":null,"state_kind":"experiment","saved":{"config_sha256":"x","project":"p","run_id":"r","preparation":{"preparation_id":"preparation-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","project":"p","run_id":"r"}},"submission":null,"action":null,"preparation":{"project":"p","run_id":"r","preparation_id":"preparation-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}}"#,
-        ),
-        literal(
-            r#"{"saved":{"contract":"training-operation.v1","server":"https://example.invalid/ml-expd","project":"p","run_id":"r","operation":"retry","source_attempt_id":"attempt-001","plan":{"action_id":"action-aaaaaaaaaaaaaaaa","operation":"RETRY_ATTEMPT","run_id":"r","attempt_id":"attempt-002","scope":{"project":"p","scope_type":"attempt","object_id":"r::attempt-001"},"execution":{"status":"PREPARED"},"intent_digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","gate_bundle_digest":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"},"request":{"new_attempt_id":"attempt-002"}},"responses":{"/api/actions/action-aaaaaaaaaaaaaaaa":{"action_id":"action-aaaaaaaaaaaaaaaa","operation":"RETRY_ATTEMPT","run_id":"r","attempt_id":"attempt-002","scope":{"project":"p","scope_type":"attempt","object_id":"r::attempt-001"},"execution":{"status":"PREPARED"},"intent_digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","gate_bundle_digest":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}},"requests":["/api/actions/action-aaaaaaaaaaaaaaaa"],"hints":{"server":"https://example.invalid/ml-expd","project":"p","run_id":"r","attempt_id":"attempt-002","state_kind":"training-operation","saved":{"contract":"training-operation.v1","server":"https://example.invalid/ml-expd","project":"p","run_id":"r","operation":"retry","source_attempt_id":"attempt-001","plan":{"action_id":"action-aaaaaaaaaaaaaaaa","operation":"RETRY_ATTEMPT","run_id":"r","attempt_id":"attempt-002","scope":{"project":"p","scope_type":"attempt","object_id":"r::attempt-001"},"execution":{"status":"PREPARED"},"intent_digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","gate_bundle_digest":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"},"request":{"new_attempt_id":"attempt-002"}}},"expected":{"server":"https://example.invalid/ml-expd","project":"p","run_id":"r","attempt_id":"attempt-002","state_kind":"training-operation","saved":{"contract":"training-operation.v1","server":"https://example.invalid/ml-expd","project":"p","run_id":"r","operation":"retry","source_attempt_id":"attempt-001","plan":{"action_id":"action-aaaaaaaaaaaaaaaa","operation":"RETRY_ATTEMPT","run_id":"r","attempt_id":"attempt-002","scope":{"project":"p","scope_type":"attempt","object_id":"r::attempt-001"},"execution":{"status":"PREPARED"},"intent_digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","gate_bundle_digest":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"},"request":{"new_attempt_id":"attempt-002"}},"submission":null,"action":{"action_id":"action-aaaaaaaaaaaaaaaa","operation":"RETRY_ATTEMPT","run_id":"r","attempt_id":"attempt-002","scope":{"project":"p","scope_type":"attempt","object_id":"r::attempt-001"},"execution":{"status":"PREPARED"},"intent_digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","gate_bundle_digest":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"},"preparation":null}}"#,
+            r#"{"saved":{"config_sha256":"x","project":"p","run_id":"r","preparation":{"preparation_id":"preparation-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","project":"p","run_id":"r"}},"responses":{"/api/projects/p/experiment-preparations/preparation-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb":{"project":"p","run_id":"r","preparation_id":"preparation-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}},"requests":["/api/projects/p/experiment-preparations/preparation-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],"hints":{"server":null,"project":"p","run_id":"r","attempt_id":null,"saved":{"config_sha256":"x","project":"p","run_id":"r","preparation":{"preparation_id":"preparation-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","project":"p","run_id":"r"}}},"expected":{"server":"https://example.invalid/ml-expd","project":"p","run_id":"r","attempt_id":null,"saved":{"config_sha256":"x","project":"p","run_id":"r","preparation":{"preparation_id":"preparation-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","project":"p","run_id":"r"}},"submission":null,"preparation":{"project":"p","run_id":"r","preparation_id":"preparation-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}}"#,
         ),
     ] {
         let hints = observation::reference(&case["saved"]).unwrap();
@@ -80,10 +77,7 @@ fn foreign_or_incomplete_saved_state_is_refused_without_guessing_an_attempt() {
             r#"{"saved":{"server":"https://example.invalid/ml-expd","project":null,"run_id":"r","config_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","submission":{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"PREPARED"}},"responses":{},"requests":[],"error":"invalid saved server or Run identity"}"#,
         ),
         literal(
-            r#"{"saved":{},"responses":{},"requests":[],"error":"observation requires an experiment state or training-operation.v1 plan"}"#,
-        ),
-        literal(
-            r#"{"saved":{"contract":"training-operation.v1","operation":"retry"},"responses":{},"requests":[],"error":"training preparation reply is unknown; inspect its recovery URL and attach the original Action; no Attempt was guessed"}"#,
+            r#"{"saved":{},"responses":{},"requests":[],"error":"observation requires an experiment state"}"#,
         ),
         literal(
             r#"{"saved":{"server":"https://example.invalid/ml-expd","project":"p","run_id":"r","config_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","submission":{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"PREPARED"}},"responses":{"/api/submissions/action-aaaaaaaaaaaaaaaa":{"project":"p","run_id":"r","attempt_id":"attempt-003","submission_id":"action-aaaaaaaaaaaaaaaa","status":"PREPARED"}},"requests":["/api/submissions/action-aaaaaaaaaaaaaaaa"],"error":"Submission identity differs from the saved exact Attempt"}"#,
@@ -167,11 +161,6 @@ fn effect_shell_follows_only_the_original_preparation_and_submission_over_get() 
                 }
                 let headers = String::from_utf8(headers).unwrap();
                 assert!(headers.starts_with(&expected));
-                assert!(
-                    headers
-                        .to_lowercase()
-                        .contains("x-ml-expd-client-protocol: 2\r\n")
-                );
                 let body = serde_json::to_vec(&reply).unwrap();
                 write!(
                     stream,
@@ -197,64 +186,34 @@ fn effect_shell_follows_only_the_original_preparation_and_submission_over_get() 
     }
 }
 
-fn retry_state() -> Value {
-    let digest = |hex: &str| format!("sha256:{}", hex.repeat(64));
-    json!({"contract":"training-operation.v1","server":BASE,"project":"p","run_id":"r",
-        "operation":"retry","source_attempt_id":"attempt-001",
-        "plan":{"action_id":"action-aaaaaaaaaaaaaaaa","operation":"RETRY_ATTEMPT","run_id":"r",
-            "attempt_id":"attempt-002",
-            "scope":{"project":"p","scope_type":"attempt","object_id":"r::attempt-001"},
-            "execution":{"status":"PREPARED"},"intent_digest":digest("c"),
-            "gate_bundle_digest":digest("d")},
-        "request":{"new_attempt_id":"attempt-002"}})
-}
-
 #[test]
-fn an_action_reply_with_another_identity_is_refused() {
-    let path = "/api/actions/action-aaaaaaaaaaaaaaaa";
-    let saved = retry_state();
-    let (result, requests) = follow(
-        Some(&saved),
-        run_selection(),
-        &json!({"/api/actions/action-aaaaaaaaaaaaaaaa":saved["plan"]}),
-    );
-    assert_eq!(result.unwrap()["action"], saved["plan"]);
-    assert_eq!(requests, [path]);
+fn a_submission_reply_with_another_identity_is_refused() {
+    let path = format!("/api/submissions/action-{}", "a".repeat(16));
+    let submission = json!({"project":"p","run_id":"r","attempt_id":"attempt-001",
+        "submission_id":format!("action-{}", "a".repeat(16))});
+    let saved = json!({"server":BASE,"project":"p","run_id":"r","config_sha256":"x",
+        "submission":submission});
+    let mut responses = json!({});
+    responses[path.as_str()] = submission.clone();
+    let (result, requests) = follow(Some(&saved), run_selection(), &responses);
+    assert_eq!(result.unwrap()["submission"], submission);
+    assert_eq!(requests, [path.as_str()]);
     for (key, value) in [
-        ("intent_digest", json!(format!("sha256:{}", "e".repeat(64)))),
-        (
-            "gate_bundle_digest",
-            json!(format!("sha256:{}", "e".repeat(64))),
-        ),
-        ("operation", json!("CANCEL_RUN")),
-        ("attempt_id", json!("attempt-003")),
+        ("project", json!("other")),
         ("run_id", json!("other")),
+        ("attempt_id", json!("attempt-002")),
+        ("submission_id", json!(format!("action-{}", "b".repeat(16)))),
     ] {
-        let mut action = saved["plan"].clone();
-        action[key] = value;
-        let (result, requests) = follow(
-            Some(&saved),
-            run_selection(),
-            &json!({"/api/actions/action-aaaaaaaaaaaaaaaa":action}),
-        );
+        let mut reply = submission.clone();
+        reply[key] = value;
+        responses[path.as_str()] = reply;
+        let (result, requests) = follow(Some(&saved), run_selection(), &responses);
         assert_eq!(
             result.unwrap_err(),
-            "Action identity differs from the saved exact training operation"
+            "Submission identity differs from the saved exact Attempt"
         );
-        assert_eq!(requests, [path]);
+        assert_eq!(requests, [path.as_str()]);
     }
-}
-
-#[test]
-fn a_saved_retry_target_that_differs_from_its_plan_is_refused_without_a_read() {
-    let mut saved = retry_state();
-    saved["request"]["new_attempt_id"] = json!("attempt-003");
-    let (result, requests) = follow(Some(&saved), run_selection(), &json!({}));
-    assert_eq!(
-        result.unwrap_err(),
-        "Action target differs from the saved retry request"
-    );
-    assert!(requests.is_empty());
 }
 
 #[test]

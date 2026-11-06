@@ -1,5 +1,5 @@
 //! Native Action binding and outcome reduction. No clocks, files or RPC calls.
-//! Legacy plans cannot acquire this execution protocol by interpretation.
+//! No other plan can acquire this execution protocol by interpretation.
 use super::helper::{self, OperationTag, Reply, ReplyOutcome, Request};
 use crate::{
     canonical,
@@ -50,11 +50,6 @@ fn scope(plan: &Value, request: &Request) -> Result<Scope> {
         if !helper::valid_digest(text(plan, key)?) {
             return Err(Error);
         }
-    }
-    if !plan["authored_campaign_sha256"].is_null()
-        && !helper::valid_digest(text(plan, "authored_campaign_sha256")?)
-    {
-        return Err(Error);
     }
     let created = OffsetDateTime::parse(text(plan, "created_at")?, &Rfc3339).map_err(|_| Error)?;
     let expires =

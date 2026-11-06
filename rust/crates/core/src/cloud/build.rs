@@ -1,4 +1,4 @@
-//! Native-image identity is distinct from the published legacy Python recipe.
+//! Native-image identity: a frozen recipe, source, base and worker.
 use super::*;
 pub const CONTRACT: &str = "native-image-recipe.v1";
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]

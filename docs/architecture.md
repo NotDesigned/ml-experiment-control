@@ -6,7 +6,7 @@ metrics, checkpoint contents and model selection. The platform does not interpre
 weights, choose hyperparameters or decide whether a scientific result is correct.
 
 The default implementation is the Rust workspace in `rust/`. What has passed on
-real providers is recorded separately in [acceptance status](rust-rewrite.md).
+real providers is recorded separately in [acceptance status](acceptance-status.md).
 
 ## Crates
 
@@ -109,10 +109,11 @@ plugin loader or second scheduler.
 | Checkpoint | Complete generation, file hashes and backend storage scope |
 | Result receipt | Published archive and file hashes; download ACK is a separate record |
 
-One registry root holds a daemon's control state. It carries a native marker
-(`.rust-preview-workspace.json`), so a native daemon cannot adopt an existing
-Python registry and ordinary startup never creates one. Actions use transactional
-SQLite under `actions/` ([storage notes](action-storage.md)). The canonical
+One registry root holds a daemon's control state. It carries a marker
+(`.ml-expd-workspace.json`), so a daemon cannot adopt a directory it did not
+initialize and ordinary startup never creates one. A registry holding the retired
+marker `.rust-preview-workspace.json` is refused by name and is never read. Actions
+use transactional SQLite under `actions/` ([storage notes](action-storage.md)). The canonical
 records journal is `tracking/outbox.sqlite`; optional W&B cursors do not create
 another copy of experiment history. File-backed resources use cross-process
 locks, revision checks and atomic transitions.
@@ -133,35 +134,32 @@ keep it, and neither is needed for basic API or client reads:
 
 | Effect | Code | Boundary |
 | --- | --- | --- |
-| Image build and copy | `server/src/ml_exp_server/builds/` (`native_image.py`, `native_data.py`, `native_worker.py`), which also imports other modules of that package; it also needs `worker/src/ml_exp_worker/` and `src/experiment_control/` on its import path | Separate process behind a private socket. Rust owns recipes, frozen Runtime identity and durable dispatch intent |
+| Image build and copy | `server/src/ml_exp_server/builds/` (`native_image.py`, `native_data.py`), which also imports other modules of that package; it also needs `worker/src/ml_exp_worker/` and `src/experiment_control/` on its import path | Separate process behind a private socket. Rust owns recipes, frozen Runtime identity and durable dispatch intent |
 | W&B publication | `rust/crates/server/src/tracking/sdk.py`, run with the configured interpreter and the official SDK | Effect shell only. Rust compares identities and advances cursors |
 
 Neither is an install path for the client or API. Two short launchers embedded in
 native jobs also use Python, inside the training image and only when those jobs
 run: `core/src/cloud/materialize.py` (PAI data materialization) and
 `server/src/cloud_runs/service/sync_diagnostic.py` (read-only diagnostics). Release
-and CI scripts and the `deploy_native.py` upgrade tool are operator tooling. Tag
-`v1.5.1` preserves the retired Python service.
+and CI scripts and the `deploy_native.py` install tool are operator tooling.
 
-## Compatibility and upgrades
+## Upgrades
 
-Existing Run/Attempt/source identities, routes, immutable image references,
-review digests, publication routes and saved client operation IDs remain frozen.
-The server reads only its native namespace; older namespaces stay on disk
-untouched and are not served. Unknown submissions
-and uncertain W&B sends stay reserved and are reconciled under their original
-identity, never replayed.
+This release starts from an empty registry and reads nothing older; see
+[clean start](operator-guide.md#clean-start). From there on, Run, Attempt and source
+identities, immutable image references, review digests, publication routes and
+saved client operation IDs stay frozen across upgrades. Unknown submissions and
+uncertain W&B sends stay reserved and are reconciled under their original identity,
+never replayed.
 
-Capabilities are both server- and image-specific. A Runtime receipt freezes the
-exact worker's declared features, so updating the API cannot add features to an
-immutable old image. New builds obtain current workers; old Attempts keep their
-original dispatch behavior and command contract. READY Runtime receipts keep
-their published identity. A not-yet-published Runtime whose frozen recipe differs
-from the installed builder may need fresh preparation; inspect diagnostics and
-reconcile effects first. Do not mutate that record, reuse an old confirmation or
-replay an uncertain build.
+A Runtime receipt freezes the exact worker hash, so updating the API cannot change
+what an immutable image does. New builds obtain the current worker; a started Attempt
+keeps its original command. READY Runtime receipts keep their published identity. A
+not-yet-published Runtime whose frozen recipe differs from the installed builder may
+need fresh preparation; inspect diagnostics and reconcile effects first. Do not
+mutate that record, reuse an old confirmation or replay an uncertain build.
 
-The HTTP protocol is negotiated independently of the package version; see the
-[HTTP contract](http_contract.md). An upgrade does not imply database restoration,
+Client and server come from one release; see the [HTTP contract](http_contract.md).
+An upgrade does not imply database restoration,
 automatic rollback, resource cleanup or a GPU run. Operators follow the
 [operator guide](operator-guide.md).

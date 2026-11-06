@@ -15,7 +15,7 @@ use ml_exp_core::{
         run,
     },
     first_submission::native::{self, Approval, Binding, creation},
-    operations::{FrozenFiles, Policy},
+    operations::FrozenFiles,
     slurm::helper,
 };
 use ml_exp_io::directory::{Directory, FileLock, LockOptions};
@@ -455,7 +455,7 @@ pub(crate) fn failure(error: cloud::Error) -> read_api::Error {
             ("LAUNCH_METADATA_TOO_LARGE", _) => (
                 422,
                 "LAUNCH_METADATA_TOO_LARGE",
-                "launch metadata exceeds the worker transport budget; legacy inline commands allow 64 KiB: use a Runtime supporting package-download.v1 or publish the dataset first",
+                "the worker launch package exceeds its 8 MiB download budget; reduce its input or restore metadata",
             ),
             ("DEBUG_MACHINE_LIMIT", _) => (
                 409,

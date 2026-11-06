@@ -1,5 +1,5 @@
 //! Read-only authoritative metadata. Files are observations, not scheduler
-//! authorization; raw SHA binds file bytes, not the legacy scientific digest.
+//! authorization; raw SHA binds file bytes, not a scientific digest.
 //! No index, workspace bootstrap, mutation, provider or latest-Attempt lookup.
 #![forbid(unsafe_code)]
 mod domain;
@@ -8,8 +8,8 @@ pub mod snapshot;
 mod store;
 
 pub use domain::{
-    Document, DocumentError, Format, ManifestSource, Provenance, parse_mapping, validate_attempt,
-    validate_project, validate_run,
+    Document, DocumentError, ManifestSource, Provenance, validate_attempt, validate_project,
+    validate_run,
 };
 pub use scanner::{Discovery, DiscoveryError, LocatedRun};
 pub use snapshot::{

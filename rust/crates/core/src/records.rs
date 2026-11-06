@@ -5,7 +5,7 @@ use serde_json::{Map, Value, json};
 
 use crate::{canonical, metrics};
 
-mod python_json;
+mod metric_line;
 
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum Error {
@@ -22,7 +22,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub struct Scope {
     pub project: String,
     pub run: String,
-    /// Legacy observation scopes were not restricted to managed Attempt IDs.
+    /// Observation scopes are not restricted to managed Attempt IDs.
     pub attempt: Value,
 }
 impl Scope {
@@ -60,8 +60,7 @@ impl Scope {
 }
 
 pub fn encoded(value: &Value) -> Result<String> {
-    String::from_utf8(canonical::python_json_bytes(value)?)
-        .map_err(|_| Error::Invalid("encoded JSON UTF-8"))
+    Ok(canonical::text(value)?)
 }
 pub fn digest(value: &Value) -> Result<String> {
     Ok(canonical::digest(value)?)
@@ -104,29 +103,6 @@ pub fn fence_names(run: &str, frozen_config: &Value) -> Result<Vec<String>> {
     Ok(names)
 }
 
-/// A verified archive can be imported for an historical Run without opting it
-/// into cloud publication. An already bound Run must always retain its route.
-pub fn historical_binding(manifest: &Value) -> Result<Value> {
-    let manifest = manifest
-        .as_object()
-        .ok_or(Error::Invalid("import manifest object"))?;
-    let definition = manifest.get("resolved_config").unwrap_or(&Value::Null);
-    let definition = if manifest.contains_key("resolved_config") {
-        definition
-            .as_object()
-            .ok_or(Error::Invalid("resolved import config object"))?
-    } else {
-        manifest
-    };
-    let evaluation = definition
-        .get("evaluation")
-        .cloned()
-        .unwrap_or_else(|| json!({}));
-    Ok(
-        json!({"route":{"enabled":false,"reason":"HISTORICAL_RUN_NOT_BOUND"},"config":{"ml_expd":{"evaluation":evaluation}}}),
-    )
-}
-
 /// Native local ingestion freezes the entire Run document identity. It cannot
 /// turn an absent W&B configuration into cloud publication authorization.
 pub fn native_binding(run: &Value, raw_sha256: &str) -> Result<Value> {
@@ -146,33 +122,6 @@ pub fn native_binding(run: &Value, raw_sha256: &str) -> Result<Value> {
     )
 }
 
-/// Previously authored managed Runs can be collected into a local journal.
-/// Their lack of a native creation record never authorizes a cloud route.
-pub fn observed_binding(run: &Value, raw_sha256: &str) -> Result<Value> {
-    if matches!(
-        run["native_creation"]["format"].as_str(),
-        Some("native-run-creation.v1" | "native-cloud-run.v1" | "native-local-run.v1")
-    ) {
-        return native_binding(run, raw_sha256);
-    }
-    let mut definition = run
-        .as_object()
-        .cloned()
-        .ok_or(Error::Invalid("Run mapping"))?;
-    if let Some(resolved) = run.get("resolved_config") {
-        definition.extend(
-            resolved
-                .as_object()
-                .ok_or(Error::Invalid("resolved Run mapping"))?
-                .clone(),
-        );
-    }
-    frozen_binding(
-        &Value::Object(definition),
-        raw_sha256,
-        json!({"enabled":false,"reason":"OBSERVED_LEGACY_LOCAL_ONLY"}),
-    )
-}
 fn frozen_binding(run: &Value, raw_sha256: &str, route: Value) -> Result<Value> {
     if !crate::slurm::helper::valid_digest(raw_sha256) {
         return Err(Error::Invalid("Run raw identity"));
@@ -346,7 +295,7 @@ impl JsonlImporter {
             canonical_only: false,
         })
     }
-    /// Local attachment takes explicit named observations. Wide legacy logs
+    /// Local attachment takes explicit named observations. Wide logs
     /// need a caller-authored mapping; never guess units or turn global_step
     /// into a scientific result.
     pub fn canonical_metrics(config: Value) -> Result<Self> {
@@ -362,10 +311,10 @@ impl JsonlImporter {
     fn line(&mut self, bytes: &[u8], oversized: bool) -> Result<Event> {
         self.number += 1;
         if self.canonical_only && !oversized {
-            if let Some(parsed) = python_json::parse(bytes) {
+            if let Some(parsed) = metric_line::parse(bytes) {
                 if ["name", "value", "unit"]
                     .iter()
-                    .any(|key| parsed.get(key).is_none())
+                    .any(|key| !parsed.has_field(key))
                 {
                     return Err(Error::Invalid(
                         "local JSONL requires explicit name, value and unit",
@@ -376,7 +325,7 @@ impl JsonlImporter {
         let record = if oversized {
             None
         } else {
-            python_json::parse(bytes).and_then(|record| record.observation())
+            metric_line::parse(bytes).and_then(|record| record.observation())
         };
         if let Some(record) = record {
             self.counts.records += 1;
@@ -526,7 +475,8 @@ pub fn confirmation_plan(
     }
     match (proof.display_version, proof.display_through) {
         (None, None) => {}
-        (Some(2..=4), Some(through)) if through == proof.through && error.is_none() => {}
+        (Some(crate::tracking::DISPLAY_VERSION), Some(through))
+            if through == proof.through && error.is_none() => {}
         _ => return Err(Error::Invalid("remote display acknowledgement")),
     }
     Ok(CursorAdvance {

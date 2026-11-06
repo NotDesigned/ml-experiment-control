@@ -1,9 +1,11 @@
 //! Pure Action decisions. All clocks, identities and observations are caller inputs.
-//! Unknown historical fields survive every transition; no function dispatches I/O.
+//! Fields a transition does not name survive it; no function dispatches I/O.
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+
+const SUBMIT_RUN: &str = "SUBMIT_RUN";
 
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum Error {
@@ -15,8 +17,6 @@ pub enum Error {
     Expired,
     #[error("Action frozen identity changed: {0}")]
     Identity(&'static str),
-    #[error("Action operation is disabled by policy")]
-    Disabled,
     #[error("Action revision changed")]
     RevisionConflict,
     #[error("Action status changed")]
@@ -26,19 +26,13 @@ pub enum Error {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ScopeType {
-    Project,
-    Campaign,
     Run,
-    Attempt,
 }
 
 impl ScopeType {
     pub(crate) fn name(&self) -> &'static str {
         match self {
-            Self::Project => "project",
-            Self::Campaign => "campaign",
             Self::Run => "run",
-            Self::Attempt => "attempt",
         }
     }
 }
@@ -60,21 +54,9 @@ pub fn action_id(scope: &Scope, intent_key: &str) -> String {
     format!("action-{:x}", Sha256::digest(raw.as_bytes()))[..23].to_owned()
 }
 
-/// Match the historical directory validator without accepting path separators.
-/// The stricter HTTP request identity remains action-[a-f0-9]{16}.
+/// Exactly what `action_id` generates, action-[a-f0-9]{16}, wherever an Action ID
+/// is read: a request, a directory name or a database key.
 pub fn validate_action_id(value: &str) -> Result<(), Error> {
-    if !value
-        .strip_prefix("action-")
-        .is_some_and(|suffix| !suffix.is_empty() && suffix.chars().all(char::is_alphanumeric))
-    {
-        return Err(Error::Invalid("action_id"));
-    }
-    Ok(())
-}
-
-/// The public Submission protocol uses the deterministic 16-hex Action ID;
-/// the historical on-disk Action validator deliberately remains broader.
-pub fn validate_submission_id(value: &str) -> Result<(), Error> {
     if value.strip_prefix("action-").is_some_and(|suffix| {
         suffix.len() == 16
             && suffix
@@ -83,7 +65,7 @@ pub fn validate_submission_id(value: &str) -> Result<(), Error> {
     }) {
         Ok(())
     } else {
-        Err(Error::Identity("action_id"))
+        Err(Error::Invalid("action_id"))
     }
 }
 
@@ -169,7 +151,7 @@ pub fn initial_execution(plan: &Value) -> Value {
 pub fn submission_view(action: &Value, now: &str) -> Result<Value, Error> {
     let now = timestamp(now)?;
     let id = field(action, "action_id")?;
-    validate_submission_id(id)?;
+    validate_action_id(id)?;
     let project = field(&action["scope"], "project")?;
     let run = field(action, "run_id")?;
     let attempt = field(action, "attempt_id")?;
@@ -177,7 +159,7 @@ pub fn submission_view(action: &Value, now: &str) -> Result<Value, Error> {
     crate::identity::validate_observation_id(run).map_err(|_| Error::Identity("run_id"))?;
     crate::identity::validate_attempt(attempt).map_err(|_| Error::Identity("attempt_id"))?;
     let operation = field(action, "operation")?;
-    if !matches!(operation, "SUBMIT_RUN" | "RETRY_ATTEMPT" | "RUN_EVALUATION") {
+    if operation != SUBMIT_RUN {
         return Err(Error::Invalid("Action is not a Submission"));
     }
     let execution = action
@@ -267,43 +249,12 @@ pub fn commit_transition(
     Ok((Value::Object(execution), Value::Object(event)))
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Policy {
-    pub allow_project_writes: bool,
-    pub allow_scheduler_mutations: bool,
-    pub allow_local_evidence_rebuild: bool,
-    pub allow_resource_deletions: bool,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum Dispatch {
-    ProjectWrite,
-    LocalEvidenceRebuild,
-    ResourceDeletion,
-    Scheduler,
-}
-
-fn dispatch(operation: &str, policy: &Policy) -> Result<Dispatch, Error> {
-    let (dispatch, allowed) = match operation {
-        "WRITE_CAMPAIGN"
-        | "WRITE_CAMPAIGN_ARCHIVE"
-        | "WRITE_RUN_ARCHIVE"
-        | "WRITE_ATTEMPT_ARCHIVE" => (Dispatch::ProjectWrite, policy.allow_project_writes),
-        "REBUILD_LOCAL_EVIDENCE" => (
-            Dispatch::LocalEvidenceRebuild,
-            policy.allow_local_evidence_rebuild,
-        ),
-        "DELETE_RUN_RESOURCES" => (Dispatch::ResourceDeletion, policy.allow_resource_deletions),
-        "SUBMIT_RUN" | "RETRY_ATTEMPT" | "RUN_EVALUATION" | "CANCEL_RUN" => {
-            (Dispatch::Scheduler, policy.allow_scheduler_mutations)
-        }
-        _ => return Err(Error::State("historical operation is read-only")),
-    };
-    if allowed {
-        Ok(dispatch)
+/// Every Action is a Submission; a plan naming anything else cannot be approved.
+fn require_submission(plan: &Value) -> Result<(), Error> {
+    if field(plan, "operation")? == SUBMIT_RUN {
+        Ok(())
     } else {
-        Err(Error::Disabled)
+        Err(Error::State("operation cannot be dispatched"))
     }
 }
 
@@ -314,17 +265,7 @@ pub fn authorize(
     note: &str,
     now: &str,
 ) -> Result<Transition, Error> {
-    // Approval may precede enabling an executor, but an unsupported historical
-    // operation is a read-only record and must not acquire new authorization.
-    dispatch(
-        field(plan, "operation")?,
-        &Policy {
-            allow_project_writes: true,
-            allow_scheduler_mutations: true,
-            allow_local_evidence_rebuild: true,
-            allow_resource_deletions: true,
-        },
-    )?;
+    require_submission(plan)?;
     if plan.get("ready") != Some(&Value::Bool(true))
         || execution.get("status").and_then(Value::as_str) != Some("PREPARED")
     {
@@ -356,25 +297,18 @@ pub fn authorize(
 #[derive(Clone, Debug, Default)]
 pub struct FrozenFiles {
     pub execution_campaign_sha256: Option<String>,
-    pub authored_campaign_sha256: Option<String>,
     pub execution_manifest_sha256: Option<String>,
-    pub collection_sha256: Option<String>,
-    pub controller_snapshot_verified: bool,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Claim {
     AlreadyVerified,
-    Execute {
-        transition: Transition,
-        dispatch: Dispatch,
-    },
+    Execute { transition: Transition },
 }
 
 pub fn claim(
     plan: &Value,
     execution: &Value,
     confirmation: &str,
-    policy: &Policy,
     files: &FrozenFiles,
     now: &str,
 ) -> Result<Claim, Error> {
@@ -413,40 +347,20 @@ pub fn claim(
     {
         return Err(Error::Identity("authorized gates"));
     }
-    let operation = field(plan, "operation")?;
-    let dispatch = dispatch(operation, policy)?;
-    if matches!(operation, "SUBMIT_RUN" | "RETRY_ATTEMPT" | "RUN_EVALUATION") {
-        for (key, observed) in [
-            (
-                "execution_campaign_sha256",
-                &files.execution_campaign_sha256,
-            ),
-            (
-                "execution_manifest_sha256",
-                &files.execution_manifest_sha256,
-            ),
-        ] {
-            if observed.as_deref() != Some(digest(plan, key)?) {
-                return Err(Error::Identity(key));
-            }
+    require_submission(plan)?;
+    for (key, observed) in [
+        (
+            "execution_campaign_sha256",
+            &files.execution_campaign_sha256,
+        ),
+        (
+            "execution_manifest_sha256",
+            &files.execution_manifest_sha256,
+        ),
+    ] {
+        if observed.as_deref() != Some(digest(plan, key)?) {
+            return Err(Error::Identity(key));
         }
-        if !plan
-            .get("authored_campaign_sha256")
-            .unwrap_or(&Value::Null)
-            .is_null()
-            && files.authored_campaign_sha256.as_deref()
-                != Some(digest(plan, "authored_campaign_sha256")?)
-        {
-            return Err(Error::Identity("authored campaign"));
-        }
-    }
-    if dispatch == Dispatch::LocalEvidenceRebuild
-        && (files.collection_sha256.as_deref() != Some(digest(plan, "expected_collection_sha256")?)
-            || !files.controller_snapshot_verified)
-    {
-        return Err(Error::Identity(
-            "local collection or approved controller snapshot",
-        ));
     }
     Ok(Claim::Execute {
         transition: transition(
@@ -457,7 +371,6 @@ pub fn claim(
             Some("AUTHORIZED"),
             json!({"intent_digest":plan["intent_digest"]}),
         )?,
-        dispatch,
     })
 }
 
@@ -480,283 +393,6 @@ pub fn interrupted(execution: &Value, now: &str) -> Result<Option<Transition>, E
     )?))
 }
 
-/// A successful status observation must come from the exact frozen command/cwd.
-/// No provider call or submit command is executed by the reconciliation planner.
-#[derive(Clone, Debug, Default)]
-pub struct Observation {
-    pub command: Vec<String>,
-    pub cwd: String,
-    pub timed_out: bool,
-    pub return_code: Option<i32>,
-    pub payload: Value,
-}
-#[derive(Clone, Debug, Default)]
-pub struct Evidence {
-    pub observation: Observation,
-    pub collection_sha256: Option<String>,
-}
-#[derive(Clone, Debug, PartialEq)]
-pub enum Reconcile {
-    Unchanged,
-    Commit(Transition),
-    /// Recovery of an approved idempotent transaction; never a scheduler submit.
-    RecoverTransaction(Dispatch),
-}
-fn single(payload: &Value) -> Option<&Value> {
-    if payload.is_object() {
-        Some(payload)
-    } else {
-        payload
-            .as_array()
-            .filter(|a| a.len() == 1)
-            .and_then(|a| a.first())
-            .filter(|v| v.is_object())
-    }
-}
-
-/// Historical SQLite/worker observations may represent a scheduler ID as an
-/// integer. Preserve its exact decimal identity; an unsupported non-null value
-/// is unknown evidence, never proof that no scheduler mutation occurred.
-fn scheduler_identity(value: Option<&Value>) -> Result<Option<String>, ()> {
-    match value {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::String(value)) if value.is_empty() => Ok(None),
-        Some(Value::String(value)) => Ok(Some(value.clone())),
-        Some(Value::Number(value)) => {
-            let text = value.to_string();
-            if text.bytes().all(|c| c.is_ascii_digit()) {
-                Ok(Some(text))
-            } else {
-                Err(())
-            }
-        }
-        Some(_) => Err(()),
-    }
-}
-fn bound_observation<'a>(
-    plan: &Value,
-    evidence: &'a Observation,
-) -> Result<&'a Value, &'static str> {
-    let expected = plan
-        .get("verification_command_preview")
-        .and_then(Value::as_array);
-    let command: Vec<Value> = evidence.command.iter().map(|s| json!(s)).collect();
-    let expected_cwd = plan
-        .get("verification_cwd")
-        .and_then(Value::as_str)
-        .or_else(|| plan.get("cwd").and_then(Value::as_str));
-    if expected.is_none_or(|a| a.is_empty() || a != &command)
-        || expected_cwd != Some(evidence.cwd.as_str())
-    {
-        return Err("status observation is not bound to the immutable verification command");
-    }
-    if evidence.timed_out {
-        return Err("exact Attempt status verification timed out");
-    }
-    if evidence.return_code != Some(0) {
-        return Err("exact Attempt status verification failed");
-    }
-    let observed =
-        single(&evidence.payload).ok_or("status did not return exactly one Attempt record")?;
-    for key in ["run_id", "attempt_id"] {
-        if let (Some(actual), Some(expected)) = (
-            observed.get(key).and_then(Value::as_str),
-            plan.get(key).and_then(Value::as_str),
-        ) {
-            if !actual.is_empty() && !expected.is_empty() && actual != expected {
-                return Err("status identity differs from the frozen Attempt");
-            }
-        }
-    }
-    Ok(observed)
-}
-
-pub fn reconcile(
-    plan: &Value,
-    execution: &Value,
-    policy: &Policy,
-    evidence: &Evidence,
-    now: &str,
-) -> Result<Reconcile, Error> {
-    let status = execution.get("status").and_then(Value::as_str);
-    if matches!(status, Some("VERIFIED" | "EXECUTING")) {
-        return Ok(Reconcile::Unchanged);
-    }
-    if status != Some("RECONCILE_REQUIRED") {
-        return Err(Error::State("action is not awaiting reconciliation"));
-    }
-    let operation = field(plan, "operation")?;
-    if matches!(
-        operation,
-        "DELETE_RUN_RESOURCES"
-            | "WRITE_CAMPAIGN"
-            | "WRITE_CAMPAIGN_ARCHIVE"
-            | "WRITE_RUN_ARCHIVE"
-            | "WRITE_ATTEMPT_ARCHIVE"
-    ) {
-        return Ok(Reconcile::RecoverTransaction(dispatch(operation, policy)?));
-    }
-    if operation == "REBUILD_LOCAL_EVIDENCE" {
-        dispatch(operation, policy)?;
-        let actual = evidence.collection_sha256.as_deref();
-        let new = digest(plan, "expected_new_collection_sha256")?;
-        let old = digest(plan, "expected_collection_sha256")?;
-        let previous = execution
-            .get("result")
-            .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_default();
-        let mut result = previous;
-        result.extend(object(&json!({"observed_collection_sha256":actual,"expected_new_collection_sha256":new,"reviewed_old_collection_sha256":old,"reconciled_read_only":true}))?.clone());
-        let applied = actual == Some(new);
-        let absent = actual == Some(old)
-            && plan.get("atomic_collection_replace") == Some(&Value::Bool(true))
-            && plan.get("write_protocol").and_then(Value::as_str) == Some("dirfd-fsync-rename-v1");
-        let (status, event, error, resolution, next) = if applied {
-            (
-                "VERIFIED",
-                "local_evidence_rebuild_reconciled",
-                Value::Null,
-                "APPLIED",
-                "OBSERVE_RESULT",
-            )
-        } else if absent {
-            (
-                "FAILED",
-                "local_evidence_rebuild_not_executed",
-                json!(
-                    "collection remains at the reviewed old digest; the atomic local evidence write did not execute"
-                ),
-                "NOT_APPLIED_SAFE_TO_RETRY",
-                "PREPARE_NEW_ACTION",
-            )
-        } else {
-            (
-                "RECONCILE_REQUIRED",
-                "local_evidence_rebuild_reconcile_blocked",
-                json!(
-                    "collection digest is neither the reviewed old digest nor the frozen expected new digest; manual investigation is required"
-                ),
-                "UNKNOWN_DO_NOT_RETRY",
-                "RECONCILE",
-            )
-        };
-        let mut update = json!({"status":status,"last_reconciled_at":now,"error":error,"result":result,"resolution":resolution,"safe_to_retry":absent,"next_action":next});
-        if applied || absent {
-            update["finished_at"] = json!(now);
-        }
-        return Ok(Reconcile::Commit(transition(
-            execution,
-            update,
-            now,
-            event,
-            Some("RECONCILE_REQUIRED"),
-            json!({}),
-        )?));
-    }
-    if !matches!(
-        operation,
-        "SUBMIT_RUN" | "RETRY_ATTEMPT" | "RUN_EVALUATION" | "CANCEL_RUN"
-    ) {
-        return Err(Error::State("historical operation is read-only"));
-    }
-    // Observation remains allowed when mutation policy is disabled.
-    let observed = bound_observation(plan, &evidence.observation);
-    let previous = execution
-        .get("result")
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-    let result_shape_valid = execution
-        .get("result")
-        .is_none_or(|value| value.is_null() || value.is_object());
-    let expected_job = match previous.get("submission") {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::Object(submission)) => scheduler_identity(submission.get("backend_job_id")),
-        Some(_) => Err(()),
-    };
-    let record = observed.as_ref().ok().copied();
-    let job = scheduler_identity(record.and_then(|r| r.get("backend_job_id")));
-    let observed_state = record
-        .and_then(|r| r.get("state"))
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_uppercase();
-    let cancelled = operation == "CANCEL_RUN";
-    let exact_job = if cancelled {
-        let frozen_job = scheduler_identity(plan.get("backend_job_id"));
-        matches!((&frozen_job, &job), (Ok(Some(expected)), Ok(Some(actual))) if expected == actual)
-    } else {
-        matches!(&job, Ok(Some(_)))
-            && match &expected_job {
-                Ok(None) => true,
-                Ok(Some(expected)) => job == Ok(Some(expected.clone())),
-                Err(()) => false,
-            }
-    };
-    let terminal = matches!(
-        observed_state.as_str(),
-        "CANCELLED" | "CANCELED" | "COMPLETED" | "FAILED" | "SUCCEEDED"
-    );
-    let verified = result_shape_valid && observed.is_ok() && exact_job && (!cancelled || terminal);
-    // Absence is positive evidence only for the exact Run/Attempt and a clean
-    // bound status response; unavailable, foreign and duplicate replies stay unknown.
-    let exact_attempt = record.is_some_and(|r| {
-        ["run_id", "attempt_id"].iter().all(|key| {
-            plan.get(*key)
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-                .is_some_and(|expected| r.get(*key).and_then(Value::as_str) == Some(expected))
-        })
-    });
-    let absent = !cancelled
-        && observed.is_ok()
-        && result_shape_valid
-        && expected_job == Ok(None)
-        && observed_state == "NOT_SUBMITTED"
-        && exact_attempt
-        && job == Ok(None);
-    let mut result = previous;
-    result.insert("observation".into(), record.cloned().unwrap_or(Value::Null));
-    result.insert("verification_command".into(),json!({"returncode":evidence.observation.return_code,"timeout":evidence.observation.timed_out,"payload":evidence.observation.payload}));
-    let error = if verified {
-        Value::Null
-    } else if absent {
-        json!("scheduler confirms that submission did not occur")
-    } else {
-        json!(observed.err().unwrap_or(if cancelled {
-            "cancellation is not yet terminal"
-        } else {
-            "exact Attempt has no matching unique backend job identity"
-        }))
-    };
-    let mut update = json!({"status":if verified {"VERIFIED"} else if absent {"FAILED"} else {"RECONCILE_REQUIRED"},"last_reconciled_at":now,"error":error,"result":result,
-        "resolution":if verified {if cancelled {"APPLIED"}else{"SUBMITTED"}} else if absent {"NOT_SUBMITTED_SAFE_TO_RETRY"}else{"UNKNOWN_DO_NOT_RETRY"},
-        "safe_to_retry":absent,"next_action":if verified {if cancelled {"OBSERVE_RESULT"} else {"MONITOR_RUN"}} else if absent {"PREPARE_NEW_ACTION"}else{"RECONCILE"}});
-    if verified || absent {
-        update["finished_at"] = json!(now);
-    }
-    let event = if cancelled {
-        if verified {
-            "cancellation_verified"
-        } else {
-            "cancellation_reconcile_pending"
-        }
-    } else if verified {
-        "submission_reconciled"
-    } else {
-        "submission_reconcile_pending"
-    };
-    Ok(Reconcile::Commit(transition(
-        execution,
-        update,
-        now,
-        event,
-        Some("RECONCILE_REQUIRED"),
-        json!({}),
-    )?))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -767,57 +403,15 @@ mod tests {
     fn plan(operation: &str) -> Value {
         json!({"action_id":"action-0123456789abcdef","ready":true,"operation":operation,"gate_expires_at":"2026-10-27T00:30:00Z",
             "intent_digest":hash('a'),"gate_bundle_digest":hash('b'),"execution_campaign_sha256":hash('c'),"execution_manifest_sha256":hash('d'),
-            "run_id":"train","attempt_id":"attempt-001","verification_command_preview":["status","train","attempt-001"],"verification_cwd":"/reviewed",
+            "run_id":"train","attempt_id":"attempt-001",
             "frozen_unknown":{"resume_from":"checkpoint.immutable","budget":2,"submission_token":"frozen"}})
-    }
-    fn policy() -> Policy {
-        Policy {
-            allow_project_writes: true,
-            allow_scheduler_mutations: true,
-            allow_local_evidence_rebuild: true,
-            allow_resource_deletions: true,
-        }
     }
     fn files() -> FrozenFiles {
         FrozenFiles {
             execution_campaign_sha256: Some(hash('c')),
             execution_manifest_sha256: Some(hash('d')),
-            ..Default::default()
         }
     }
-    fn authorized(plan: &Value) -> Value {
-        authorize(
-            plan,
-            &initial_execution(plan),
-            "actor:test",
-            "approved",
-            NOW,
-        )
-        .unwrap()
-        .execution
-    }
-    fn uncertain() -> Value {
-        json!({"revision":3,"status":"RECONCILE_REQUIRED","result":null,"finished_at":null,"private_extension":{"keep":true}})
-    }
-    fn observation(payload: Value) -> Evidence {
-        Evidence {
-            observation: Observation {
-                command: vec!["status".into(), "train".into(), "attempt-001".into()],
-                cwd: "/reviewed".into(),
-                return_code: Some(0),
-                payload,
-                ..Default::default()
-            },
-            ..Default::default()
-        }
-    }
-    fn decided(value: Reconcile) -> Value {
-        match value {
-            Reconcile::Commit(t) => t.execution,
-            _ => panic!("expected committed decision"),
-        }
-    }
-
     #[test]
     fn authorization_and_claim_are_immutable_and_require_exact_frozen_inputs() {
         let plan = plan("SUBMIT_RUN");
@@ -827,14 +421,7 @@ mod tests {
         assert_eq!(initial, original);
         assert_eq!(authorized.execution["authorization_actor"], "actor:test");
         assert!(matches!(
-            claim(
-                &plan,
-                &authorized.execution,
-                "wrong",
-                &policy(),
-                &files(),
-                NOW
-            ),
+            claim(&plan, &authorized.execution, "wrong", &files(), NOW),
             Err(Error::Invalid(_))
         ));
         assert!(matches!(
@@ -842,39 +429,21 @@ mod tests {
                 &plan,
                 &authorized.execution,
                 "EXECUTE action-0123456789abcdef",
-                &Policy::default(),
-                &files(),
-                NOW
-            ),
-            Err(Error::Disabled)
-        ));
-        assert!(matches!(
-            claim(
-                &plan,
-                &authorized.execution,
-                "EXECUTE action-0123456789abcdef",
-                &policy(),
                 &FrozenFiles::default(),
                 NOW
             ),
             Err(Error::Identity(_))
         ));
-        let Claim::Execute {
-            transition,
-            dispatch,
-        } = claim(
+        let Claim::Execute { transition } = claim(
             &plan,
             &authorized.execution,
             "EXECUTE action-0123456789abcdef",
-            &policy(),
             &files(),
             NOW,
         )
-        .unwrap()
-        else {
+        .unwrap() else {
             panic!()
         };
-        assert_eq!(dispatch, Dispatch::Scheduler);
         assert_eq!(transition.expected_status.as_deref(), Some("AUTHORIZED"));
         assert_eq!(transition.execution["status"], "EXECUTING");
         assert_eq!(transition.execution["safe_to_retry"], false);
@@ -887,7 +456,6 @@ mod tests {
                 &plan,
                 &transition.execution,
                 "EXECUTE action-0123456789abcdef",
-                &policy(),
                 &files(),
                 NOW
             ),
@@ -900,7 +468,6 @@ mod tests {
                 &plan,
                 &changed,
                 "EXECUTE action-0123456789abcdef",
-                &policy(),
                 &files(),
                 NOW
             ),
@@ -972,258 +539,56 @@ mod tests {
         assert!(interrupted(&restarted.execution, NOW).unwrap().is_none());
     }
     #[test]
-    fn submission_absence_needs_clean_exact_bound_evidence_and_no_previous_job() {
-        let plan = plan("SUBMIT_RUN");
-        let record = json!({"run_id":"train","attempt_id":"attempt-001","state":"NOT_SUBMITTED"});
-        let absent = decided(
-            reconcile(
-                &plan,
-                &uncertain(),
-                &Policy::default(),
-                &observation(record.clone()),
-                NOW,
-            )
-            .unwrap(),
-        );
-        assert_eq!(absent["status"], "FAILED");
-        assert_eq!(absent["safe_to_retry"], true);
-        assert_eq!(absent["next_action"], "PREPARE_NEW_ACTION");
-        let mut foreign_record = record.clone();
-        foreign_record["run_id"] = json!("foreign");
-        let mut unknowns = vec![
-            observation(json!([record.clone(), record.clone()])),
-            observation(foreign_record),
-        ];
-        let mut timedout = observation(record.clone());
-        timedout.observation.timed_out = true;
-        unknowns.push(timedout);
-        let mut foreign = observation(record.clone());
-        foreign.observation.command = vec!["other-command".into()];
-        unknowns.push(foreign);
-        unknowns.push(observation(json!({"state":"NOT_SUBMITTED"})));
-        for evidence in unknowns {
-            let unknown =
-                decided(reconcile(&plan, &uncertain(), &policy(), &evidence, NOW).unwrap());
-            assert_eq!(unknown["status"], "RECONCILE_REQUIRED");
-            assert_eq!(unknown["safe_to_retry"], false);
-        }
-        let mut previous = uncertain();
-        previous["result"] = json!({"submission":{"backend_job_id":"job-1"}});
-        let unknown =
-            decided(reconcile(&plan, &previous, &policy(), &observation(record), NOW).unwrap());
-        assert_eq!(unknown["safe_to_retry"], false);
-        let visible = json!({"run_id":"train","attempt_id":"attempt-001","backend_job_id":"job-1","state":"RUNNING"});
-        let verified = decided(
-            reconcile(
-                &plan,
-                &previous,
-                &Policy::default(),
-                &observation(visible),
-                NOW,
-            )
-            .unwrap(),
-        );
-        assert_eq!(verified["status"], "VERIFIED");
-        assert_eq!(verified["next_action"], "MONITOR_RUN");
-        assert_eq!(verified["private_extension"]["keep"], true);
-    }
-    #[test]
-    fn legacy_numeric_job_ids_and_malformed_evidence_never_authorize_replay() {
-        let plan = plan("SUBMIT_RUN");
-        let absent = json!({"run_id":"train","attempt_id":"attempt-001","state":"NOT_SUBMITTED"});
-        for value in [
-            json!(24827),
-            json!(true),
-            json!(false),
-            json!(1.5),
-            json!({"id":24827}),
-            json!([]),
-            json!(0),
+    fn an_action_id_is_exactly_what_the_generator_produces() {
+        let scope = Scope {
+            project: "demo".into(),
+            scope_type: ScopeType::Run,
+            object_id: "train".into(),
+        };
+        assert!(validate_action_id(&action_id(&scope, "submit")).is_ok());
+        assert!(validate_action_id("action-0123456789abcdef").is_ok());
+        for refused in [
+            "",
+            "action-",
+            "action-a",
+            "action-0123456789abcde",
+            "action-0123456789abcdef0",
+            "action-0123456789ABCDEF",
+            "action-0123456789abcdeg",
+            "action-é",
+            "action-0123456789abcdé",
+            "action-../../../etc",
+            "0123456789abcdef",
         ] {
-            let mut previous = uncertain();
-            previous["result"] = json!({"submission":{"backend_job_id":value}});
-            let result = decided(
-                reconcile(
-                    &plan,
-                    &previous,
-                    &policy(),
-                    &observation(absent.clone()),
-                    NOW,
-                )
-                .unwrap(),
-            );
-            assert_eq!(result["status"], "RECONCILE_REQUIRED");
-            assert_eq!(result["safe_to_retry"], false);
-        }
-        for malformed in [
-            json!({"submission":24827}),
-            json!({"submission":true}),
-            json!("unknown prior result"),
-        ] {
-            let mut previous = uncertain();
-            previous["result"] = malformed;
-            let result = decided(
-                reconcile(
-                    &plan,
-                    &previous,
-                    &policy(),
-                    &observation(absent.clone()),
-                    NOW,
-                )
-                .unwrap(),
-            );
-            assert_eq!(result["safe_to_retry"], false);
-        }
-        for identity in [
-            "24827",
-            "9007199254740993",
-            "123456789012345678901234567890",
-        ] {
-            let mut previous = uncertain();
-            let numeric: Value = serde_json::from_str(identity).unwrap();
-            previous["result"] = json!({"submission":{"backend_job_id":numeric}});
-            for value in [json!(identity), numeric] {
-                let visible = json!({"run_id":"train","attempt_id":"attempt-001","backend_job_id":value,"state":"RUNNING"});
-                let result = decided(
-                    reconcile(&plan, &previous, &policy(), &observation(visible), NOW).unwrap(),
-                );
-                assert_eq!(result["status"], "VERIFIED");
-                assert_eq!(result["safe_to_retry"], false);
-            }
-            let foreign = json!({"run_id":"train","attempt_id":"attempt-001","backend_job_id":"9007199254740992","state":"RUNNING"});
             assert_eq!(
-                decided(
-                    reconcile(&plan, &previous, &policy(), &observation(foreign), NOW).unwrap()
-                )["status"],
-                "RECONCILE_REQUIRED"
+                validate_action_id(refused),
+                Err(Error::Invalid("action_id")),
+                "{refused}"
             );
         }
-        let mut corrupt_absence = absent.clone();
-        corrupt_absence["backend_job_id"] = json!(true);
-        assert_eq!(
-            decided(
-                reconcile(
-                    &plan,
-                    &uncertain(),
-                    &policy(),
-                    &observation(corrupt_absence),
-                    NOW
-                )
-                .unwrap()
-            )["safe_to_retry"],
-            false
-        );
-        let mut cancel = plan.clone();
-        cancel["operation"] = json!("CANCEL_RUN");
-        cancel["backend_job_id"] = json!(24827);
-        let terminal = json!({"run_id":"train","attempt_id":"attempt-001","backend_job_id":"24827","state":"CANCELLED"});
-        assert_eq!(
-            decided(
-                reconcile(
-                    &cancel,
-                    &uncertain(),
-                    &policy(),
-                    &observation(terminal),
-                    NOW
-                )
-                .unwrap()
-            )["status"],
-            "VERIFIED"
-        );
     }
     #[test]
-    fn local_atomic_recovery_distinguishes_applied_safe_absent_and_unknown() {
-        let mut plan = plan("REBUILD_LOCAL_EVIDENCE");
-        plan["expected_collection_sha256"] = json!(hash('c'));
-        plan["expected_new_collection_sha256"] = json!(hash('d'));
-        plan["atomic_collection_replace"] = json!(true);
-        plan["write_protocol"] = json!("dirfd-fsync-rename-v1");
-        for (actual, status, safe) in [
-            (Some(hash('d')), "VERIFIED", false),
-            (Some(hash('c')), "FAILED", true),
-            (Some(hash('e')), "RECONCILE_REQUIRED", false),
-            (None, "RECONCILE_REQUIRED", false),
-        ] {
-            let evidence = Evidence {
-                collection_sha256: actual,
-                ..Default::default()
-            };
-            let result =
-                decided(reconcile(&plan, &uncertain(), &policy(), &evidence, NOW).unwrap());
-            assert_eq!(result["status"], status);
-            assert_eq!(result["safe_to_retry"], safe);
-        }
-        plan["atomic_collection_replace"] = json!(false);
-        let result = decided(
-            reconcile(
-                &plan,
-                &uncertain(),
-                &policy(),
-                &Evidence {
-                    collection_sha256: Some(hash('c')),
-                    ..Default::default()
-                },
-                NOW,
-            )
-            .unwrap(),
-        );
-        assert_eq!(result["safe_to_retry"], false);
-        assert!(matches!(
-            reconcile(
-                &plan,
-                &uncertain(),
-                &Policy::default(),
-                &Evidence::default(),
-                NOW
-            ),
-            Err(Error::Disabled)
-        ));
-    }
-    #[test]
-    fn cancellation_and_transaction_recovery_never_schedule_a_new_submission() {
-        let mut cancel = plan("CANCEL_RUN");
-        cancel["backend_job_id"] = json!("job-1");
-        for (job, state, status) in [
-            ("job-1", "CANCELLED", "VERIFIED"),
-            ("job-2", "CANCELLED", "RECONCILE_REQUIRED"),
-            ("job-1", "RUNNING", "RECONCILE_REQUIRED"),
-        ] {
-            let result=decided(reconcile(&cancel,&uncertain(),&Policy::default(),&observation(json!({"run_id":"train","attempt_id":"attempt-001","backend_job_id":job,"state":state})),NOW).unwrap());
-            assert_eq!(result["status"], status);
-            assert_eq!(result["safe_to_retry"], false);
-        }
+    fn only_a_submission_can_be_authorized_or_claimed() {
+        let mut other = plan("SUBMIT_RUN");
+        let approved = authorize(&other, &initial_execution(&other), "actor:test", "ok", NOW)
+            .unwrap()
+            .execution;
+        other["operation"] = json!("CANCEL_RUN");
+        let refused = Error::State("operation cannot be dispatched");
         assert_eq!(
-            reconcile(
-                &plan("WRITE_CAMPAIGN"),
-                &uncertain(),
-                &policy(),
-                &Evidence::default(),
-                NOW
-            )
-            .unwrap(),
-            Reconcile::RecoverTransaction(Dispatch::ProjectWrite)
+            authorize(&other, &initial_execution(&other), "actor:test", "ok", NOW).unwrap_err(),
+            refused
         );
         assert_eq!(
-            reconcile(
-                &plan("DELETE_RUN_RESOURCES"),
-                &uncertain(),
-                &policy(),
-                &Evidence::default(),
-                NOW
-            )
-            .unwrap(),
-            Reconcile::RecoverTransaction(Dispatch::ResourceDeletion)
-        );
-        assert!(matches!(
             claim(
-                &plan("REMOVED_HISTORICAL_OPERATION"),
-                &authorized(&plan("SUBMIT_RUN")),
+                &other,
+                &approved,
                 "EXECUTE action-0123456789abcdef",
-                &policy(),
                 &files(),
                 NOW
-            ),
-            Err(Error::State(_))
-        ));
+            )
+            .unwrap_err(),
+            refused
+        );
     }
 }

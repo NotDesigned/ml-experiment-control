@@ -4,7 +4,7 @@ use crate::{
     deletion::RunFence,
     experiments::{self, RunRef, Snapshot, Store},
     read_config,
-    read_model::{self, LiveMetrics, LogQuery, MetricFormat, MetricQuery},
+    read_model::{self, LiveMetrics, LogQuery, MetricQuery},
 };
 use ml_exp_core::identity::{validate_attempt, validate_id, validate_observation_id};
 use ml_exp_io::directory::Directory;
@@ -50,11 +50,6 @@ impl From<crate::projects::Error> for Error {
                 409,
                 "PROJECT_SOURCE_BINDING_MISMATCH",
                 "registered Project identity differs from approved source configuration",
-            ),
-            E::UnsupportedDefinition => error(
-                422,
-                "PROJECT_DEFINITION_UNSUPPORTED",
-                "native registration requires empty campaigns; Campaign loading is unavailable",
             ),
             E::Transition(ml_exp_core::projects::Error::UnknownProject) => {
                 error(404, "UNKNOWN_PROJECT", "registered Project is unavailable")
@@ -206,15 +201,7 @@ pub fn metric_query(raw: Option<&str>) -> Result<MetricQuery, Error> {
             return Err(invalid_query());
         }
         match key.as_str() {
-            "format" => {
-                query.format = match value.as_str() {
-                    "records" => MetricFormat::Records,
-                    "legacy" => MetricFormat::Legacy,
-                    _ => return Err(invalid_query()),
-                }
-            }
             "max_points" => query.max_points = value.parse().map_err(|_| invalid_query())?,
-            "keys" => query.keys = Some(value),
             "name" => names.push(value),
             _ => return Err(invalid_query()),
         }
@@ -455,9 +442,6 @@ impl Api {
     pub fn workspace_id(&self) -> &str {
         &self.workspace_id
     }
-    pub fn project_count(&self) -> usize {
-        self.projects.len()
-    }
     /// Retained progress evidence for an exact Submission; never contacts a provider.
     pub fn submission_progress(&self, id: &str, now_unix: f64) -> Result<Value, Error> {
         let submission = self.submission(id, now_unix)?;
@@ -490,7 +474,7 @@ impl Api {
         Ok(serde_json::json!({"project":project,"run_id":run,"submissions":submissions}))
     }
     pub fn submission(&self, id: &str, now_unix: f64) -> Result<Value, Error> {
-        if ml_exp_core::operations::validate_submission_id(id).is_err() {
+        if ml_exp_core::operations::validate_action_id(id).is_err() {
             return Err(invalid_query());
         }
         let actions = self.actions.as_ref().ok_or_else(|| {
@@ -688,7 +672,6 @@ impl Api {
         {
             return Ok(Vec::new());
         }
-        let expected_workspace = self.workspace_id.strip_prefix("rust-preview-");
         let records = crate::records::Store::read_only(&self.registry_root);
         let guard = records.guard(project, run).map_err(why!({
             error(
@@ -703,13 +686,8 @@ impl Api {
                 "JOURNAL_IDENTITY_UNAVAILABLE",
                 "canonical journal identity is unavailable",
             )
-        }))? != expected_workspace.ok_or_else(|| {
-            error(
-                409,
-                "READ_WORKSPACE_CHANGED",
-                "isolated workspace identity changed",
-            )
-        })? {
+        }))? != self.workspace_id
+        {
             return Err(error(
                 409,
                 "JOURNAL_IDENTITY_MISMATCH",
@@ -963,14 +941,7 @@ pub fn journal_binding_matches(snapshot: &Snapshot, binding: Option<&Value>) -> 
     {
         return false;
     }
-    let mut definition = snapshot.run.metadata.clone();
-    if let Some(resolved) = definition
-        .get("resolved_config")
-        .and_then(Value::as_object)
-        .cloned()
-    {
-        definition.extend(resolved);
-    }
+    let definition = &snapshot.run.metadata;
     let same = |left: &Value, right: Option<&Value>| {
         right.is_some_and(|right| {
             match (
@@ -1049,7 +1020,7 @@ mod tests {
     #[test]
     fn query_decoding_preserves_unicode_and_rejects_ambiguous_or_lossy_inputs() {
         let q = metric_query(Some(
-            "format=records&name=%E8%AE%AD%E7%BB%83%2Floss&name=token&max_points=2",
+            "name=%E8%AE%AD%E7%BB%83%2Floss&name=token&max_points=2",
         ))
         .unwrap();
         assert_eq!(q.names.unwrap(), vec!["训练/loss", "token"]);
@@ -1058,8 +1029,8 @@ mod tests {
             "name=%GG",
             "name=%",
             "max_points=1&max_points=2",
-            "format=records&keys=loss",
-            "format=legacy&name=loss",
+            "format=records",
+            "keys=loss",
             "unknown=x",
             "max_points=0",
         ] {

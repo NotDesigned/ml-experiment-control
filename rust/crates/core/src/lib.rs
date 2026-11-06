@@ -16,7 +16,6 @@ pub mod failures;
 pub mod first_submission;
 pub mod identity;
 pub mod input_progress;
-pub mod intent;
 pub mod json;
 pub mod launch;
 pub mod local;
@@ -33,9 +32,6 @@ pub mod sources;
 pub mod state;
 pub mod submission;
 pub mod tracking;
-
-pub const API_PROTOCOL_VERSION: u32 = 2;
-pub const CLIENT_PROTOCOL_HEADER: &str = "X-ML-Expd-Client-Protocol";
 
 pub mod capacity;
 pub mod maintenance;

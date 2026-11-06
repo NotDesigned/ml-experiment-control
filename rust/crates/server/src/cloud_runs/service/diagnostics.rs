@@ -428,7 +428,7 @@ mod tests {
             json!({"project":"demo","run_id":"train","attempt_id":"attempt-001",
             "submission_token":"a".repeat(32),"source_id":format!("source.{}","b".repeat(64)),
             "image":format!("registry.example/team/image@sha256:{}","c".repeat(64)),
-            "command":["/worker","cloud-launch","--package-json","{}","--sync"],
+            "command":["/worker","cloud-launch","--package-url","https://api.example/package","--sync"],
             "gpus":1,"cpus":8,"memory_gb":64,"max_time_seconds":900,"priority":5}),
         )
         .unwrap()

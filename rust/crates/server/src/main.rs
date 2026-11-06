@@ -33,7 +33,7 @@ struct Args {
     #[arg(long)]
     #[arg(required_unless_present_any = ["config", "initialize_registry", "initialize_project_lifecycle", "initialize_source_archives", "initialize_submissions", "initialize_cloud_submissions", "initialize_administration"])]
     token_file: Option<PathBuf>,
-    /// Private approved source configuration for an isolated Rust preview.
+    /// Private approved source configuration.
     #[arg(long, conflicts_with = "initialize_registry")]
     read_config: Option<PathBuf>,
     /// Explicitly initialize a fresh registry; existing targets are refused.
@@ -48,7 +48,7 @@ struct Args {
     /// Explicitly create immutable source storage from the approved policy.
     #[arg(long, requires = "read_config", conflicts_with_all = ["initialize_registry", "token_file", "project_lifecycle", "source_archives"])]
     initialize_source_archives: bool,
-    /// Enable immutable source archive storage for this isolated preview.
+    /// Enable immutable source archive storage.
     #[arg(long, requires = "read_config", conflicts_with = "initialize_registry")]
     source_archives: bool,
     /// Explicit offline initialization of a fresh native submission namespace.
@@ -73,10 +73,6 @@ async fn main() -> std::process::ExitCode {
     if let Some(path) = args.config.take() {
         let settings = match ml_exp_server::deployment::Settings::load(&path) {
             Ok(value) => value,
-            Err(error @ ml_exp_server::deployment::LoadError::RetiredKey(_)) => {
-                eprintln!("{error}");
-                return std::process::ExitCode::FAILURE;
-            }
             Err(_) => {
                 eprintln!("private deployment configuration is invalid or unavailable");
                 return std::process::ExitCode::FAILURE;
@@ -130,6 +126,14 @@ async fn main() -> std::process::ExitCode {
         args.project_lifecycle = settings.project_lifecycle;
         args.source_archives = settings.source_archives;
         args.administration = settings.administration;
+    } else if let Some(path) = args.read_config.as_deref() {
+        // An unusable file is reported by whichever command goes on to load it.
+        if ml_exp_server::read_config::load(path)
+            .is_ok_and(|reads| ml_exp_server::read_config::predates_restart(&reads.registry_root))
+        {
+            eprintln!("{}", ml_exp_server::read_config::PREDATES_RESTART);
+            return std::process::ExitCode::FAILURE;
+        }
     }
     if let Some(path) = &args.initialize_registry {
         return match ml_exp_server::read_config::initialize(path) {
@@ -225,7 +229,7 @@ async fn main() -> std::process::ExitCode {
         };
     }
     if !args.bind.ip().is_loopback() {
-        eprintln!("Rust preview requires loopback binding; native TLS has not been ported");
+        eprintln!("the server binds loopback only; terminate TLS in a reverse proxy");
         return std::process::ExitCode::FAILURE;
     }
     let auth = match ml_exp_server::Auth::load(
@@ -334,7 +338,7 @@ async fn main() -> std::process::ExitCode {
     let listener = match tokio::net::TcpListener::bind(args.bind).await {
         Ok(listener) => listener,
         Err(_) => {
-            eprintln!("cannot bind Rust preview address");
+            eprintln!("cannot bind the server address");
             return std::process::ExitCode::FAILURE;
         }
     };
@@ -404,7 +408,7 @@ async fn main() -> std::process::ExitCode {
         })
         .await;
     if result.is_err() {
-        eprintln!("Rust preview server stopped with an I/O failure");
+        eprintln!("server stopped with an I/O failure");
         return std::process::ExitCode::FAILURE;
     }
     std::process::ExitCode::SUCCESS

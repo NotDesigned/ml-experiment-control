@@ -1,4 +1,4 @@
-//! New display contract, independent of frozen v2 Python parity fixtures.
+//! The metric-display.v4 contract: W&B keys are the caller's exact metric names.
 use ml_exp_core::tracking::{self, Projection};
 use serde_json::{Value, json};
 
@@ -6,12 +6,16 @@ fn point(protocol: &str, name: &str, variant: Value, step: i64) -> Value {
     json!({"name":name,"unit":"nats/token","protocol_id":protocol,"dataset_id":"train",
         "variant_id":variant,"value":4.0,"step":step,"status":"VALID"})
 }
-fn document(items: &[Value]) -> tracking::Result<Value> {
+fn document(items: &[Value]) -> Value {
     let mut projection = Projection::new();
     for (index, item) in items.iter().enumerate() {
-        projection = projection.add(item, index as i64 + 1)?;
+        projection = projection.add(item, index as i64 + 1).unwrap();
     }
-    projection.at(items.len() as i64)?.stable_document()
+    projection
+        .at(items.len() as i64)
+        .unwrap()
+        .client_document()
+        .unwrap()
 }
 fn row(display: &Value) -> &Value {
     display["series"]
@@ -21,17 +25,40 @@ fn row(display: &Value) -> &Value {
         .next()
         .unwrap()
 }
+fn metrics(observations: &[&Value]) -> Value {
+    json!({"payload":{"kind":"metrics","observations":observations}})
+}
+
+#[test]
+fn only_the_v4_display_contract_is_accepted() {
+    let event = metrics(&[]);
+    let current = json!({"contract":"metric-display.v4","through":0,"series":{}});
+    assert_eq!(tracking::curve_record(&event, &current).unwrap(), json!({}));
+    assert_eq!(tracking::definition_specs(&current).unwrap().len(), 1);
+    assert!(tracking::summary_patch(&current, &[], "fixture").is_ok());
+    for display in [
+        json!({"contract":"metric-display.v2","through":0,"series":{}}),
+        json!({"contract":"metric-display.v3","through":0,"series":{}}),
+        json!({"contract":"metric-display.v5","through":0,"series":{}}),
+        json!({"contract":4,"through":0,"series":{}}),
+        json!({"through":0,"series":{}}),
+    ] {
+        assert!(tracking::curve_record(&event, &display).is_err());
+        assert!(tracking::definition_specs(&display).is_err());
+        assert!(tracking::summary_patch(&display, &[], "fixture").is_err());
+    }
+}
 
 #[test]
 fn cross_run_protocol_and_dataset_differences_do_not_rename_metrics() {
     let first = point("source-seed-lr-a", "train_loss", Value::Null, 1);
     let mut second = point("source-seed-lr-b", "train_loss", Value::Null, 1);
     second["dataset_id"] = json!("another-version");
-    let a = document(&[first]).unwrap();
-    let b = document(&[second]).unwrap();
-    assert_eq!(row(&a)["curve"], "curves/train_loss");
+    let a = document(&[first]);
+    let b = document(&[second]);
+    assert_eq!(row(&a)["curve"], "train_loss");
     assert_eq!(row(&a)["curve"], row(&b)["curve"]);
-    assert_eq!(row(&a)["result"], "results/train_loss");
+    assert_eq!(row(&a)["result"], "train_loss");
     assert_ne!(row(&a)["context"], row(&b)["context"]);
     assert!(row(&a).get("shadow").is_none());
 }
@@ -39,125 +66,182 @@ fn cross_run_protocol_and_dataset_differences_do_not_rename_metrics() {
 #[test]
 fn original_names_keep_unicode_slashes_and_more_than_64_characters() {
     for name in ["验证/loss".to_owned(), "x".repeat(100), "a b".to_owned()] {
-        let display = document(&[point("p", &name, Value::Null, 1)]).unwrap();
-        assert_eq!(row(&display)["curve"], format!("curves/{name}"));
+        let display = document(&[point("p", &name, Value::Null, 1)]);
+        assert_eq!(row(&display)["curve"], json!(name));
+        assert_eq!(row(&display)["result"], json!(name));
     }
 }
 
 #[test]
-fn readable_variant_names_are_stable_before_and_after_other_variants_arrive() {
+fn a_variant_never_renames_a_metric_before_or_after_other_variants_arrive() {
     let a = point("p", "loss", json!("fast/a%"), 1);
     let b = point("p", "loss", json!("slow"), 2);
-    let before = document(std::slice::from_ref(&a)).unwrap();
-    let after = document(&[a.clone(), b.clone()]).unwrap();
-    let key = tracking::identity(&a, true).unwrap();
-    assert_eq!(
-        before["series"][&key]["curve"],
-        "curves/loss/variants/fast%2Fa%25"
-    );
+    let before = document(std::slice::from_ref(&a));
+    let after = document(&[a.clone(), b.clone()]);
+    let key = tracking::identity(&a).unwrap();
+    assert_eq!(before["series"][&key]["curve"], "loss");
     assert_eq!(
         before["series"][&key]["curve"],
         after["series"][&key]["curve"]
     );
-    let record = tracking::curve_record(
-        &json!({"payload":{"kind":"metrics","observations":[a,b]}}),
-        &after,
-    )
-    .unwrap();
-    assert_eq!(record["curves/loss/variants/fast%2Fa%25"], 4.0);
-    assert_eq!(record["curves/loss/variants/slow"], 4.0);
-    assert!(record.get("curves/loss").is_none());
+    assert_eq!(after["series"].as_object().unwrap().len(), 2);
+    let record = tracking::curve_record(&metrics(&[&a]), &after).unwrap();
+    assert_eq!(record["loss"], 4.0);
+    assert_eq!(
+        record.as_object().unwrap().len(),
+        2,
+        "the value and its step axis, with no variant keys"
+    );
 }
 
 #[test]
-fn ambiguous_contexts_and_generated_field_collisions_fail_without_overwriting() {
+fn contexts_sharing_a_name_share_one_metric_but_cannot_collide_inside_one_row() {
     let a = point("p", "loss", Value::Null, 1);
-    let mut candidates = vec![
-        point("another-protocol", "loss", Value::Null, 2),
-        point("p", "loss/by_epoch", Value::Null, 2),
-    ];
     let mut unit = a.clone();
     unit["unit"] = json!("bits/byte");
-    candidates.push(unit);
-    for b in candidates {
+    for b in [point("another-protocol", "loss", Value::Null, 2), unit] {
+        let display = document(&[a.clone(), b.clone()]);
+        assert_eq!(display["series"].as_object().unwrap().len(), 2);
+        assert_eq!(
+            tracking::curve_record(&metrics(&[&b]), &display).unwrap()["loss"],
+            4.0
+        );
         assert!(matches!(
-            document(&[a.clone(), b]),
+            tracking::curve_record(&metrics(&[&a, &b]), &display),
             Err(tracking::Error::Display("DISPLAY_NAME_CONFLICT"))
         ));
     }
-    assert!(
-        document(&[
-            point("p", "loss", json!("a"), 1),
-            point("p", "loss/variants/a", Value::Null, 2)
-        ])
-        .is_err()
-    );
-    // Percent escapes are injective, not a lossy replacement.
-    assert!(
-        document(&[
-            point("p", "loss", json!("a/b"), 1),
-            point("p", "loss", json!("a%2Fb"), 2)
-        ])
-        .is_ok()
-    );
+    // A name the caller chose can look like a generated field without colliding.
+    let display = document(&[
+        point("p", "loss", Value::Null, 1),
+        point("p", "loss/by_epoch", Value::Null, 2),
+    ]);
+    assert_eq!(display["series"].as_object().unwrap().len(), 2);
 }
 
 #[test]
-fn stable_definitions_have_one_visible_curve_and_use_scientific_axes() {
+fn definitions_have_one_visible_curve_and_use_scientific_axes() {
     let display = document(&[
         point("p", "loss", Value::Null, 1),
         point("p", "loss", Value::Null, 2),
-    ])
-    .unwrap();
+    ]);
     let specs = tracking::definition_specs(&display).unwrap();
-    let curves: Vec<_> = specs.iter().filter(|s| s.name == "curves/loss").collect();
+    let curves: Vec<_> = specs.iter().filter(|s| s.name == "loss").collect();
     assert_eq!(curves.len(), 1);
     assert_eq!(curves[0].options["hidden"], false);
-    assert_eq!(curves[0].options["step_metric"], "axes/loss/step");
-    let patch = tracking::summary_patch(&display, &[], false, "fixture").unwrap();
-    assert_eq!(patch.set["ml_expd/display_version"], 3);
-    assert!(!patch.set.contains_key("results/loss"));
+    assert_eq!(curves[0].options["step_metric"], "ml_expd/axes/loss/step");
+    let patch = tracking::summary_patch(&display, &[], "fixture").unwrap();
+    assert_eq!(patch.set["ml_expd/display_version"], 4);
+    assert_eq!(patch.set["loss"], 4.0);
 }
 
 #[test]
-fn stable_summary_preserves_explicit_failure_and_does_not_create_zero() {
+fn summary_preserves_explicit_failure_and_does_not_create_zero() {
     let mut failed = point("p", "loss", Value::Null, 2);
     failed["summary"] = json!(true);
     failed["status"] = json!("FAILED");
     failed["value"] = Value::Null;
     failed["error"] = json!("NON_FINITE_VALUE");
-    let display = document(&[point("p", "loss", Value::Null, 1), failed]).unwrap();
-    let patch = tracking::summary_patch(&display, &[], true, "fixture").unwrap();
-    assert!(!patch.set.contains_key("results/loss"));
+    let display = document(&[point("p", "loss", Value::Null, 1), failed]);
+    let patch = tracking::summary_patch(&display, &[], "fixture").unwrap();
+    assert!(!patch.set.contains_key("loss"));
     let metadata: Value = serde_json::from_str(
         patch.set["ml_expd/display_definitions_json"]
             .as_str()
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(metadata["results/loss"]["error"], "NON_FINITE_VALUE");
+    assert_eq!(metadata["loss"]["error"], "NON_FINITE_VALUE");
 }
+
 #[test]
-fn stable_display_history_definitions_and_final_results_are_pinned() {
-    let case: Value = serde_json::from_str(r#"{"events":[{"seq":1,"event_id":"fixture-a-1","payload":{"kind":"metrics","observations":[{"name":"train_loss","unit":"nats/token","protocol_id":"protocol-a","dataset_id":"dataset-a","variant_id":null,"value":3.5,"step":1,"status":"VALID"}]}},{"seq":2,"event_id":"fixture-a-2","payload":{"kind":"metrics","observations":[{"name":"train_loss","unit":"nats/token","protocol_id":"protocol-a","dataset_id":"dataset-a","variant_id":null,"value":3.0,"step":2,"status":"VALID"}]}},{"seq":3,"event_id":"fixture-a-3","payload":{"kind":"metrics","observations":[{"name":"val_loss","unit":"nats/token","protocol_id":"protocol-a","dataset_id":"validation-a","variant_id":null,"value":3.75,"epoch":1,"status":"VALID"}]}},{"seq":4,"event_id":"fixture-a-4","payload":{"kind":"metrics","observations":[{"name":"val_loss","unit":"nats/token","protocol_id":"protocol-a","dataset_id":"validation-a","variant_id":null,"value":3.5,"epoch":2,"status":"VALID"}]}},{"seq":5,"event_id":"fixture-a-5","payload":{"kind":"metrics","observations":[{"name":"train_loss","unit":"nats/token","protocol_id":"protocol-a","dataset_id":"dataset-a","variant_id":null,"value":3.0,"step":2,"status":"VALID","summary":true,"checkpoint_id":"checkpoint-a","numerator":30,"denominator":10}]}}],"history":[{"ml_expd/sequence":1,"ml_expd/event_id":"fixture-a-1","ml_expd/kind":"metrics","ml_expd/record":"{\"kind\":\"metrics\",\"observations\":[{\"dataset_id\":\"dataset-a\",\"name\":\"train_loss\",\"protocol_id\":\"protocol-a\",\"status\":\"VALID\",\"step\":1,\"unit\":\"nats/token\",\"value\":3.5,\"variant_id\":null}]}","curves/train_loss":3.5,"axes/train_loss/step":1},{"ml_expd/sequence":2,"ml_expd/event_id":"fixture-a-2","ml_expd/kind":"metrics","ml_expd/record":"{\"kind\":\"metrics\",\"observations\":[{\"dataset_id\":\"dataset-a\",\"name\":\"train_loss\",\"protocol_id\":\"protocol-a\",\"status\":\"VALID\",\"step\":2,\"unit\":\"nats/token\",\"value\":3.0,\"variant_id\":null}]}","curves/train_loss":3.0,"axes/train_loss/step":2},{"ml_expd/sequence":3,"ml_expd/event_id":"fixture-a-3","ml_expd/kind":"metrics","ml_expd/record":"{\"kind\":\"metrics\",\"observations\":[{\"dataset_id\":\"validation-a\",\"epoch\":1,\"name\":\"val_loss\",\"protocol_id\":\"protocol-a\",\"status\":\"VALID\",\"unit\":\"nats/token\",\"value\":3.75,\"variant_id\":null}]}","curves/val_loss/by_epoch":3.75,"axes/val_loss/by_epoch/epoch":1},{"ml_expd/sequence":4,"ml_expd/event_id":"fixture-a-4","ml_expd/kind":"metrics","ml_expd/record":"{\"kind\":\"metrics\",\"observations\":[{\"dataset_id\":\"validation-a\",\"epoch\":2,\"name\":\"val_loss\",\"protocol_id\":\"protocol-a\",\"status\":\"VALID\",\"unit\":\"nats/token\",\"value\":3.5,\"variant_id\":null}]}","curves/val_loss/by_epoch":3.5,"axes/val_loss/by_epoch/epoch":2},{"ml_expd/sequence":5,"ml_expd/event_id":"fixture-a-5","ml_expd/kind":"metrics","ml_expd/record":"{\"kind\":\"metrics\",\"observations\":[{\"checkpoint_id\":\"checkpoint-a\",\"dataset_id\":\"dataset-a\",\"denominator\":10,\"name\":\"train_loss\",\"numerator\":30,\"protocol_id\":\"protocol-a\",\"status\":\"VALID\",\"step\":2,\"summary\":true,\"unit\":\"nats/token\",\"value\":3.0,\"variant_id\":null}]}"}],"definitions":[{"name":"metrics/*","options":{"hidden":true,"summary":"none","overwrite":true}},{"name":"axes/*","options":{"hidden":true,"summary":"none","overwrite":true}},{"name":"ml_expd/*","options":{"hidden":true}},{"name":"axes/train_loss/step","options":{"hidden":true,"summary":"none","overwrite":true}},{"name":"curves/train_loss","options":{"step_metric":"axes/train_loss/step","step_sync":false,"hidden":false,"summary":"none","overwrite":true}},{"name":"axes/train_loss/by_epoch/epoch","options":{"hidden":true,"summary":"none","overwrite":true}},{"name":"curves/train_loss/by_epoch","options":{"step_metric":"axes/train_loss/by_epoch/epoch","step_sync":false,"hidden":true,"summary":"none","overwrite":true}},{"name":"results/train_loss","options":{"hidden":false,"overwrite":true}},{"name":"axes/val_loss/step","options":{"hidden":true,"summary":"none","overwrite":true}},{"name":"curves/val_loss","options":{"step_metric":"axes/val_loss/step","step_sync":false,"hidden":true,"summary":"none","overwrite":true}},{"name":"axes/val_loss/by_epoch/epoch","options":{"hidden":true,"summary":"none","overwrite":true}},{"name":"curves/val_loss/by_epoch","options":{"step_metric":"axes/val_loss/by_epoch/epoch","step_sync":false,"hidden":false,"summary":"none","overwrite":true}},{"name":"results/val_loss","options":{"hidden":false,"overwrite":true}}],"summary":{"results/train_loss":3.0,"results/val_loss":3.5,"ml_expd/display_definitions_json":"{\"results/train_loss\": {\"checkpoint_id\": \"checkpoint-a\", \"dataset_id\": \"dataset-a\", \"denominator\": 10, \"epoch\": null, \"error\": null, \"name\": \"train_loss\", \"numerator\": 30, \"protocol_id\": \"protocol-a\", \"selection\": \"explicit_summary\", \"status\": \"VALID\", \"step\": 2, \"unit\": \"nats/token\", \"variant_id\": null}, \"results/val_loss\": {\"checkpoint_id\": null, \"dataset_id\": \"validation-a\", \"denominator\": null, \"epoch\": 2, \"error\": null, \"name\": \"val_loss\", \"numerator\": null, \"protocol_id\": \"protocol-a\", \"selection\": \"latest_observation\", \"status\": \"VALID\", \"step\": null, \"unit\": \"nats/token\", \"variant_id\": null}}","ml_expd/display_coverage":"fixture","ml_expd/display_through":5,"ml_expd/display_version":3}}"#).unwrap();
-    let events = case["events"].as_array().unwrap();
-    let items: Vec<_> = events
-        .iter()
-        .flat_map(|e| e["payload"]["observations"].as_array().unwrap())
-        .cloned()
-        .collect();
-    let display = document(&items).unwrap();
-    let records: Vec<_> = events
-        .iter()
-        .map(|e| tracking::history_record(e, &display).unwrap())
-        .collect();
-    assert_eq!(json!(records), case["history"]);
+fn display_history_definitions_and_final_results_are_pinned() {
+    let observation = |name: &str, dataset: &str, axis: &str, position: i64, value: f64| {
+        json!({"name":name,"unit":"nats/token","protocol_id":"protocol-a","dataset_id":dataset,
+            "variant_id":null,"value":value,axis:position,"status":"VALID"})
+    };
+    let mut summary = observation("train_loss", "dataset-a", "step", 2, 3.0);
+    summary["summary"] = json!(true);
+    summary["checkpoint_id"] = json!("checkpoint-a");
+    summary["numerator"] = json!(30);
+    summary["denominator"] = json!(10);
+    let items = [
+        observation("train_loss", "dataset-a", "step", 1, 3.5),
+        observation("train_loss", "dataset-a", "step", 2, 3.0),
+        observation("val_loss", "validation-a", "epoch", 1, 3.75),
+        observation("val_loss", "validation-a", "epoch", 2, 3.5),
+        summary,
+    ];
+    let display = document(&items);
+    let expected = [
+        json!({"train_loss":3.5,"ml_expd/axes/train_loss/step":1}),
+        json!({"train_loss":3.0,"ml_expd/axes/train_loss/step":2}),
+        json!({"val_loss":3.75,"ml_expd/axes/val_loss/epoch":1}),
+        json!({"val_loss":3.5,"ml_expd/axes/val_loss/epoch":2}),
+        json!({}),
+    ];
+    for (index, (item, curves)) in items.iter().zip(expected).enumerate() {
+        let sequence = index as i64 + 1;
+        let payload = json!({"kind":"metrics","observations":[item]});
+        let event_id = format!("fixture-a-{sequence}");
+        let mut record = tracking::history_record(
+            &json!({"seq":sequence,"event_id":event_id,"payload":payload}),
+            &display,
+        )
+        .unwrap();
+        let audit = record
+            .as_object_mut()
+            .unwrap()
+            .remove("ml_expd/record")
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(audit.as_str().unwrap()).unwrap(),
+            payload
+        );
+        let mut whole = curves;
+        whole["ml_expd/sequence"] = json!(sequence);
+        whole["ml_expd/event_id"] = json!(event_id);
+        whole["ml_expd/kind"] = json!("metrics");
+        assert_eq!(record, whole);
+    }
+    let hidden = json!({"hidden":true,"summary":"none","overwrite":true});
+    let curve = |axis: &str| json!({"hidden":false,"summary":"none","overwrite":true,"step_metric":axis,"step_sync":false});
     assert_eq!(
         json!(tracking::definition_specs(&display).unwrap()),
-        case["definitions"]
+        json!([
+            {"name":"ml_expd/*","options":hidden},
+            {"name":"ml_expd/axes/train_loss/step","options":hidden},
+            {"name":"train_loss","options":curve("ml_expd/axes/train_loss/step")},
+            {"name":"ml_expd/axes/val_loss/epoch","options":hidden},
+            {"name":"val_loss","options":curve("ml_expd/axes/val_loss/epoch")},
+        ])
     );
-    let patch = tracking::summary_patch(&display, &[], true, "fixture").unwrap();
-    assert_eq!(patch.set, case["summary"].as_object().unwrap().clone());
+    let patch = tracking::summary_patch(&display, &[], "fixture").unwrap();
+    assert!(patch.delete.is_empty());
+    let definitions: Value = serde_json::from_str(
+        patch.set["ml_expd/display_definitions_json"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        definitions,
+        json!({
+            "train_loss":{"checkpoint_id":"checkpoint-a","dataset_id":"dataset-a","denominator":10,
+                "epoch":null,"error":null,"name":"train_loss","numerator":30,"protocol_id":"protocol-a",
+                "selection":"explicit_summary","status":"VALID","step":2,"unit":"nats/token","variant_id":null},
+            "val_loss":{"checkpoint_id":null,"dataset_id":"validation-a","denominator":null,
+                "epoch":2,"error":null,"name":"val_loss","numerator":null,"protocol_id":"protocol-a",
+                "selection":"latest_observation","status":"VALID","step":null,"unit":"nats/token","variant_id":null},
+        })
+    );
+    let mut set = patch.set.clone();
+    set.remove("ml_expd/display_definitions_json");
+    assert_eq!(
+        Value::Object(set),
+        json!({"train_loss":3.0,"val_loss":3.5,"ml_expd/display_coverage":"fixture",
+            "ml_expd/display_through":5,"ml_expd/display_version":4})
+    );
 }
 
 fn varied(key: &str, value: Value) -> Value {
@@ -171,14 +255,6 @@ fn without_axis(value: f64, checkpoint: &str) -> Value {
     item.as_object_mut().unwrap().remove("step");
     item
 }
-fn client_display(items: &[Value]) -> Value {
-    let mut projection = Projection::new();
-    for (index, item) in items.iter().enumerate() {
-        projection = projection.add(item, index as i64 + 1).unwrap();
-    }
-    projection.client_document().unwrap()
-}
-
 #[test]
 fn a_changed_observation_at_one_position_conflicts_and_publishes_no_value() {
     let same_position = "CONFLICTING_LATEST_OBSERVATIONS";
@@ -221,13 +297,12 @@ fn a_changed_observation_at_one_position_conflicts_and_publishes_no_value() {
             "UNORDERED_CHECKPOINTS",
         ),
     ] {
-        let display = client_display(&items);
+        let display = document(&items);
         let latest = &row(&display)["latest"];
         assert_eq!(latest["status"], "CONFLICTING");
         assert_eq!(latest["value"], Value::Null);
         assert_eq!(latest["error"], error);
-        let patch =
-            tracking::summary_patch(&display, &["loss".to_owned()], true, "fixture").unwrap();
+        let patch = tracking::summary_patch(&display, &["loss".to_owned()], "fixture").unwrap();
         assert!(!patch.set.contains_key("loss"));
         assert_eq!(patch.delete, ["loss"]);
     }
@@ -240,11 +315,11 @@ fn a_changed_explicit_summary_at_one_position_also_conflicts() {
         item["summary"] = json!(true);
         item
     };
-    let display = client_display(&[summary(4.0), summary(3.0)]);
+    let display = document(&[summary(4.0), summary(3.0)]);
     assert_eq!(row(&display)["selection"], "explicit_summary");
     assert_eq!(row(&display)["latest"]["status"], "CONFLICTING");
     assert_eq!(row(&display)["latest"]["value"], Value::Null);
-    let patch = tracking::summary_patch(&display, &[], true, "fixture").unwrap();
+    let patch = tracking::summary_patch(&display, &[], "fixture").unwrap();
     assert!(!patch.set.contains_key("loss"));
 }
 
@@ -257,10 +332,10 @@ fn identical_repeats_stay_valid() {
         ],
         [without_axis(4.0, "a"), without_axis(4.0, "a")],
     ] {
-        let display = client_display(&items);
+        let display = document(&items);
         assert_eq!(row(&display)["latest"]["status"], "VALID");
         assert_eq!(row(&display)["latest"]["sequence"], 2);
-        let patch = tracking::summary_patch(&display, &[], true, "fixture").unwrap();
+        let patch = tracking::summary_patch(&display, &[], "fixture").unwrap();
         assert_eq!(patch.set["loss"], 4.0);
     }
 }
@@ -272,13 +347,13 @@ fn a_late_lower_step_never_replaces_the_latest_value() {
         item["value"] = json!(value);
         item
     };
-    let display = client_display(&[at(3, 2.0), at(1, 4.0), at(2, 3.0)]);
+    let display = document(&[at(3, 2.0), at(1, 4.0), at(2, 3.0)]);
     let latest = &row(&display)["latest"];
     assert_eq!(latest["status"], "VALID");
     assert_eq!(latest["value"], 2.0);
     assert_eq!(latest["step"], 3);
     assert_eq!(latest["sequence"], 1);
     assert_eq!(row(&display)["positions"]["step"], json!([3, 1]));
-    let patch = tracking::summary_patch(&display, &[], true, "fixture").unwrap();
+    let patch = tracking::summary_patch(&display, &[], "fixture").unwrap();
     assert_eq!(patch.set["loss"], 2.0);
 }

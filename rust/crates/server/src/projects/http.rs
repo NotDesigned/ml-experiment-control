@@ -2,9 +2,7 @@
 //! configuration by Service; requests cannot import arbitrary files or code.
 use super::{Operation, Service, transition_context};
 use crate::{
-    AppState,
-    experiments::{Format, parse_mapping},
-    read_api,
+    AppState, read_api,
     read_http::{self, Access},
 };
 use axum::{
@@ -45,7 +43,7 @@ fn service(api: &read_api::Api) -> Result<Arc<Service>, read_api::Error> {
     api.lifecycle().ok_or(read_api::Error {
         status: 501,
         code: "PROJECT_LIFECYCLE_NOT_CONFIGURED",
-        detail: "project lifecycle is not enabled in this isolated preview",
+        detail: "project lifecycle is not enabled",
     })
 }
 fn request<T: serde::de::DeserializeOwned>(
@@ -67,7 +65,7 @@ fn request<T: serde::de::DeserializeOwned>(
             detail: "project lifecycle body exceeds 64 KiB",
         });
     }
-    let value = parse_mapping(&bytes, Format::Json).map_err(|_| invalid())?;
+    let value = ml_exp_core::json::mapping(&bytes).map_err(|_| invalid())?;
     serde_json::from_value(Value::Object(value)).map_err(|_| invalid())
 }
 #[derive(Deserialize)]
@@ -309,9 +307,9 @@ mod tests {
             let temp = tempfile::tempdir().unwrap();
             let registry = temp.path().join("registry");
             crate::read_config::initialize(&registry).unwrap();
-            let project = temp.path().join("demo/research_project.yaml");
+            let project = temp.path().join("demo/project.json");
             fs::create_dir_all(temp.path().join("demo/runs")).unwrap();
-            ml_exp_io::write_atomic(&project,&serde_json::to_vec(&json!({"schema_version":1,"project":"demo","title":"Synthetic lifecycle","run_roots":["runs"],"campaigns":[]})).unwrap(),true).unwrap();
+            ml_exp_io::write_atomic(&project,&serde_json::to_vec(&json!({"schema_version":1,"project":"demo","title":"Synthetic lifecycle","run_roots":["runs"]})).unwrap(),true).unwrap();
             let settings=crate::read_config::Settings::from_json(&serde_json::to_vec(&json!({"schema_version":1,"registry_root":registry,"projects":[{"project":"demo","project_file":project,"run_roots":[temp.path().join("demo/runs")]}]})).unwrap()).unwrap();
             Service::initialize(&settings, "2026-10-27T00:00:00Z", &"1".repeat(32)).unwrap();
             let service = Arc::new(Service::open(&settings).unwrap());
@@ -338,7 +336,6 @@ mod tests {
             path: &str,
             bytes: Vec<u8>,
             auth: bool,
-            protocol: bool,
         ) -> (StatusCode, Value) {
             let mut request = Request::builder()
                 .method(method)
@@ -346,9 +343,6 @@ mod tests {
                 .header("content-type", "application/json");
             if auth {
                 request = request.header("authorization", format!("Bearer {TOKEN}"));
-            }
-            if protocol {
-                request = request.header(ml_exp_core::CLIENT_PROTOCOL_HEADER, "2");
             }
             let response = self
                 .router
@@ -370,12 +364,11 @@ mod tests {
                 path,
                 serde_json::to_vec(&value).unwrap(),
                 true,
-                true,
             )
             .await
         }
         async fn get(&self, path: &str) -> Value {
-            let (status, value) = self.raw(Method::GET, path, Vec::new(), true, true).await;
+            let (status, value) = self.raw(Method::GET, path, Vec::new(), true).await;
             assert_eq!(status, StatusCode::OK, "{value}");
             value
         }
@@ -392,7 +385,6 @@ mod tests {
         let initial = fixture.files();
         let health = fixture.get("/api/health").await;
         assert_eq!(health["projects"], 1);
-        assert_eq!(health["project_writes"], false);
         assert_eq!(health["scheduler_mutations"], false);
         assert!(
             health["capabilities"]
@@ -461,21 +453,15 @@ mod tests {
     async fn rejected_http_bodies_auth_queries_and_paths_do_not_mutate_or_echo() {
         let fixture = Fixture::new();
         let initial = fixture.files();
-        for (auth, protocol, expected) in [
-            (false, true, StatusCode::UNAUTHORIZED),
-            (true, false, StatusCode::UPGRADE_REQUIRED),
-        ] {
-            let response = fixture
-                .raw(
-                    Method::POST,
-                    "/api/project-lifecycle/demo/pause",
-                    b"{}".to_vec(),
-                    auth,
-                    protocol,
-                )
-                .await;
-            assert_eq!(response.0, expected);
-        }
+        let response = fixture
+            .raw(
+                Method::POST,
+                "/api/project-lifecycle/demo/pause",
+                b"{}".to_vec(),
+                false,
+            )
+            .await;
+        assert_eq!(response.0, StatusCode::UNAUTHORIZED);
         for (path, value, expected) in [
             (
                 "/api/project-lifecycle/demo/pause",
@@ -517,7 +503,6 @@ mod tests {
                     Method::POST,
                     "/api/project-lifecycle/demo/pause",
                     vec![b'x'; MAX_BODY + 1],
-                    true,
                     true
                 )
                 .await
@@ -530,7 +515,6 @@ mod tests {
                     Method::POST,
                     "/api/project-lifecycle/demo/pause",
                     b"{\"reason\":\"one\",\"reason\":\"two\"}".to_vec(),
-                    true,
                     true
                 )
                 .await

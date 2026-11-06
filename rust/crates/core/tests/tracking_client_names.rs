@@ -45,18 +45,15 @@ fn names_are_exact_in_history_and_live_and_final_summary_without_auto_suffixes()
                 .keys()
                 .all(|key| key == &name || key.starts_with("ml_expd/"))
         );
-        for terminal in [false, true] {
-            let summary = tracking::summary_patch(
-                &display,
-                &["curves/unrelated".into(), "results/unrelated".into()],
-                terminal,
-                "fixture",
-            )
-            .unwrap();
-            assert_eq!(summary.set[&name], 4.2);
-            assert_eq!(summary.set["ml_expd/display_version"], 4);
-            assert!(summary.delete.is_empty());
-        }
+        let summary = tracking::summary_patch(
+            &display,
+            &["curves/unrelated".into(), "results/unrelated".into()],
+            "fixture",
+        )
+        .unwrap();
+        assert_eq!(summary.set[&name], 4.2);
+        assert_eq!(summary.set["ml_expd/display_version"], 4);
+        assert!(summary.delete.is_empty());
         let specs = tracking::definition_specs(&display).unwrap();
         let visible: Vec<_> = specs
             .iter()
@@ -81,7 +78,7 @@ fn client_controls_shared_names_and_explicit_variant_names() {
     let display = document(&[a.clone(), b.clone()]);
     assert_eq!(history(a, &display)["loss"], 4.2);
     assert_eq!(history(b, &display)["loss"], 3.0);
-    let summary = tracking::summary_patch(&display, &[], true, "fixture").unwrap();
+    let summary = tracking::summary_patch(&display, &[], "fixture").unwrap();
     assert_eq!(
         summary.set["loss"], 3.0,
         "one client name means one W&B summary"
@@ -138,7 +135,6 @@ fn epoch_only_and_scalar_values_keep_the_same_name_and_failures_remove_only_owne
     let patch = tracking::summary_patch(
         &display,
         &["loss".into(), "curves/client-owned".into()],
-        true,
         "fixture",
     )
     .unwrap();

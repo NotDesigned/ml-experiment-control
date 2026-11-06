@@ -199,6 +199,69 @@ fn sealed_training_executes_once_with_explicit_environment_and_durable_receipt()
     assert!(!outward.contains(fixture.config.workdir.to_str().unwrap()));
 }
 
+/// Raw UTF-8 is the sealed form: only its exact bytes satisfy a binding.
+#[test]
+fn a_non_ascii_manifest_is_sealed_as_raw_utf8_and_only_those_bytes_bind() {
+    let label = "基础\u{2028}模型😀";
+    let argument = "--名称=模型😀";
+    let root = "/srv/ml-expd-agreement";
+    let document = json!({"contract":launch::CONTRACT,
+        "identity":{"project":"demo","run_id":"train","attempt_id":"attempt-001"},
+        "environment":{"OUTPUT_DIR":format!("{root}/outputs"),"LABEL":label},
+        "argv":["python","训练.py",argument],"workdir":format!("{root}/代码"),"timeout_seconds":5});
+    let bytes = launch::encode(&document).unwrap();
+    let text = format!(
+        r#"{{"argv":["python","训练.py","{argument}"],"contract":"launcher-manifest.v1","environment":{{"LABEL":"{label}","OUTPUT_DIR":"{root}/outputs"}},"identity":{{"attempt_id":"attempt-001","project":"demo","run_id":"train"}},"timeout_seconds":5,"workdir":"{root}/代码"}}"#
+    );
+    assert_eq!(std::str::from_utf8(&bytes).unwrap(), text);
+    let sha256 = format!("{:x}", Sha256::digest(&bytes));
+    assert_eq!(
+        sha256,
+        "07fcd31bbe571ee13231732db9056fd547ed3c757cd182fab7e7285be844b6ae"
+    );
+    let binding = |sha256: String| launch::Binding {
+        identity: launch::Identity {
+            project: "demo".into(),
+            run_id: "train".into(),
+            attempt_id: "attempt-001".into(),
+        },
+        sha256,
+    };
+    assert_eq!(
+        launch::verify_binding(&bytes, &binding(sha256))
+            .unwrap()
+            .environment["LABEL"],
+        label
+    );
+    let mut escaped = String::new();
+    for c in text.chars() {
+        if c.is_ascii() {
+            escaped.push(c);
+        } else {
+            for unit in c.encode_utf16(&mut [0; 2]).iter() {
+                escaped.push_str(&format!("\\u{unit:04x}"));
+            }
+        }
+    }
+    let escaped_sha256 = format!("{:x}", Sha256::digest(escaped.as_bytes()));
+    assert!(launch::verify_binding(escaped.as_bytes(), &binding(escaped_sha256)).is_err());
+
+    let mut fixture = Fixture::new("normal");
+    fixture.document["environment"]["LABEL"] = json!(label);
+    fixture.document["argv"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!(argument));
+    fixture.seal();
+    let sealed = fs::read(&fixture.config.manifest_path).unwrap();
+    assert!(std::str::from_utf8(&sealed).unwrap().contains(label));
+    fixture.initialize();
+    assert_eq!(
+        managed::inspect(&fixture.config).unwrap().manifest_sha256,
+        format!("{:x}", Sha256::digest(&sealed))
+    );
+}
+
 #[test]
 fn real_process_exit_and_timeout_do_not_become_publication_success() {
     for (mode, training) in [("fail", Training::Failed), ("timeout", Training::TimedOut)] {
@@ -525,7 +588,8 @@ fn staged_config_digest_and_existing_external_outputs_fail_before_payload_execut
 }
 
 #[test]
-fn local_and_endpoint_bindings_are_exclusive_and_legacy_configuration_bytes_are_preserved() {
+fn local_and_endpoint_bindings_are_exclusive_and_unset_fields_stay_out_of_the_configuration_bytes()
+{
     let f = Fixture::new("complete");
     let old = json!({"manifest_path":f.config.manifest_path,"endpoint":f.config.endpoint,"attempt_root":f.config.attempt_root,
         "workdir":f.config.workdir,"maximum_timeout_seconds":5,"base_environment":{}});

@@ -1,12 +1,12 @@
 //! Pure preflight decisions for a read-only session, with explicit saved-state
-//! and handshake evidence. The final file-read function is the only I/O here.
+//! and health evidence. The final file-read function is the only I/O here.
 
 use crate::{ConnectionPlan, Error, Settings, observation};
 use serde_json::Value;
 use std::path::Path;
 
 /// Validate the saved server and exact selection before loading a credential
-/// file or sending even a handshake. A downloaded state cannot select the
+/// file or sending even a health request. A downloaded state cannot select the
 /// destination for an ambient credential.
 pub fn connection(
     settings: &Settings,
@@ -42,25 +42,22 @@ pub fn connection(
     Ok(plan)
 }
 
-/// Accept protocol evidence only after a successful authenticated GET. This
+/// Accept health only after a successful authenticated GET: a bounded capability
+/// list is required, so an unrelated JSON reply is not taken for a daemon. This
 /// does not claim any training/provider capability is available.
 pub fn validate_health(value: &Value) -> Result<(), Error> {
-    let min = value
-        .get("min_client_protocol_version")
-        .and_then(Value::as_u64);
-    let max = value.get("api_protocol_version").and_then(Value::as_u64);
-    if !matches!((min,max), (Some(min),Some(max)) if min > 0 && min <= 2 && max >= 2)
-        || value.get("capabilities").is_some_and(|values| {
-            !values.as_array().is_some_and(|values| {
-                values.len() <= 512
-                    && values.iter().all(|v| {
-                        v.as_str().is_some_and(|s| {
-                            !s.is_empty() && s.len() <= 256 && !s.chars().any(char::is_control)
-                        })
+    let valid = value
+        .get("capabilities")
+        .and_then(Value::as_array)
+        .is_some_and(|values| {
+            values.len() <= 512
+                && values.iter().all(|v| {
+                    v.as_str().is_some_and(|s| {
+                        !s.is_empty() && s.len() <= 256 && !s.chars().any(char::is_control)
                     })
-            })
-        })
-    {
+                })
+        });
+    if !valid {
         return Err(Error::Protocol);
     }
     Ok(())
@@ -148,8 +145,7 @@ mod tests {
             )
             .is_err()
         );
-        let malformed =
-            json!({"server":"https://trusted.invalid","contract":"training-operation.v1"});
+        let malformed = json!({"server":"https://trusted.invalid"});
         assert!(
             connection(
                 &settings,
@@ -164,49 +160,21 @@ mod tests {
     }
 
     #[test]
-    fn handshake_is_explicit_and_does_not_infer_training_readiness() {
+    fn health_needs_a_bounded_capability_list_and_does_not_infer_training_readiness() {
         for (value, valid) in [
+            (json!({"capabilities":[]}), true),
             (
-                json!({"min_client_protocol_version":2,"api_protocol_version":2}),
-                true,
-            ),
-            (
-                json!({"min_client_protocol_version":1,"api_protocol_version":3,"capabilities":[]}),
-                true,
-            ),
-            (
-                json!({"min_client_protocol_version":2,"api_protocol_version":2,"deployment":{"training":"INCOMPLETE"}}),
+                json!({"capabilities":[],"deployment":{"training":"INCOMPLETE"}}),
                 true,
             ),
             (json!({"ok":true}), false),
-            (
-                json!({"min_client_protocol_version":true,"api_protocol_version":2}),
-                false,
-            ),
-            (
-                json!({"min_client_protocol_version":2,"api_protocol_version":1}),
-                false,
-            ),
-            (
-                json!({"min_client_protocol_version":3,"api_protocol_version":3}),
-                false,
-            ),
-            (
-                json!({"min_client_protocol_version":0,"api_protocol_version":2}),
-                false,
-            ),
-            (
-                json!({"min_client_protocol_version":2.0,"api_protocol_version":2}),
-                false,
-            ),
-            (
-                json!({"min_client_protocol_version":2,"api_protocol_version":2,"capabilities":"all"}),
-                false,
-            ),
-            (
-                json!({"min_client_protocol_version":2,"api_protocol_version":2,"capabilities":[false]}),
-                false,
-            ),
+            (json!({"capabilities":null}), false),
+            (json!({"capabilities":"all"}), false),
+            (json!({"capabilities":[false]}), false),
+            (json!({"capabilities":[""]}), false),
+            (json!({"capabilities":["a\nb"]}), false),
+            (json!({"capabilities":["a".repeat(257)]}), false),
+            (json!({"capabilities":vec!["a"; 513]}), false),
         ] {
             assert_eq!(validate_health(&value).is_ok(), valid, "{value}");
         }

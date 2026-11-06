@@ -1,6 +1,6 @@
 //! Logs and metrics as a consumed read-only continuation. Saved state follows
-//! its exact Preparation/Submission/Action; only an unsaved request may resolve
-//! the current Attempt once. No continuation can switch to another Attempt.
+//! its exact Preparation/Submission; only an unsaved request may resolve the
+//! current Attempt once. No continuation can switch to another Attempt.
 use crate::{
     Client, Error,
     observation::{self, Reference, Selection},
@@ -20,7 +20,6 @@ pub enum View {
     },
     Metrics {
         max_points: i64,
-        keys: Option<String>,
         names: Option<Vec<String>>,
     },
 }
@@ -37,7 +36,6 @@ enum Pending {
     Identity {
         read: Box<observation::Read>,
         view: View,
-        records: bool,
         saved: bool,
     },
     Current {
@@ -58,9 +56,8 @@ fn fail(message: &'static str) -> Error {
     Error::Observation(message)
 }
 
-// Python urllib.parse.urlencode uses quote_plus with RFC3986 unreserved bytes:
-// unlike the WHATWG form encoder it escapes '*' and preserves '~'. Existing
-// legacy keys and arbitrary Unicode metric names retain that wire spelling.
+// Form encoding over RFC3986 unreserved bytes: '*' is escaped and '~' is kept.
+// Arbitrary Unicode metric names reach the server exactly once encoded.
 fn quote_plus(value: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut encoded = String::new();
@@ -77,7 +74,7 @@ fn quote_plus(value: &str) -> String {
     }
     encoded
 }
-fn query(view: View, records: bool) -> Result<Query, Error> {
+fn query(view: View) -> Result<Query, Error> {
     let (view, pairs) = match view {
         View::Logs { stream, lines } => {
             if !matches!(stream.as_str(), "both" | "stdout" | "stderr")
@@ -90,43 +87,22 @@ fn query(view: View, records: bool) -> Result<Query, Error> {
                 vec![("stream", stream), ("lines", lines.to_string())],
             )
         }
-        View::Metrics {
-            max_points,
-            keys,
-            names,
-        } => {
+        View::Metrics { max_points, names } => {
             if max_points <= 0 {
                 return Err(fail("max-points must be positive"));
             }
-            let mut pairs = vec![("max_points", max_points.to_string())];
-            if records {
-                let mut selected = names.unwrap_or_default();
-                if let Some(keys) = keys {
-                    selected.extend(
-                        keys.split(',')
-                            .map(str::trim)
-                            .filter(|name| !name.is_empty())
-                            .map(str::to_owned),
-                    );
-                }
-                if selected.len() > 256
-                    || selected.iter().any(|name| {
-                        name.trim().is_empty()
-                            || name.chars().count() > 128
-                            || name.chars().any(|c| u32::from(c) < 32)
-                    })
-                {
-                    return Err(fail("name filters must be valid metric names"));
-                }
-                pairs.push(("format", "records".into()));
-                pairs.extend(selected.into_iter().map(|name| ("name", name)));
-            } else if names.is_some() {
-                return Err(fail(
-                    "server lacks metric-records.v1; --keys retains the legacy field-filter behavior",
-                ));
-            } else if let Some(keys) = keys {
-                pairs.push(("keys", keys));
+            let selected = names.unwrap_or_default();
+            if selected.len() > 256
+                || selected.iter().any(|name| {
+                    name.trim().is_empty()
+                        || name.chars().count() > 128
+                        || name.chars().any(|c| u32::from(c) < 32)
+                })
+            {
+                return Err(fail("name filters must be valid metric names"));
             }
+            let mut pairs = vec![("max_points", max_points.to_string())];
+            pairs.extend(selected.into_iter().map(|name| ("name", name)));
             ("metrics", pairs)
         }
     };
@@ -157,19 +133,13 @@ fn attempt_read(reference: Reference, attempt: String, query: Query) -> Result<S
         },
     }))
 }
-fn identified(
-    step: observation::Step,
-    view: View,
-    records: bool,
-    saved: bool,
-) -> Result<Step, Error> {
+fn identified(step: observation::Step, view: View, saved: bool) -> Result<Step, Error> {
     match step {
         observation::Step::Read(read) => Ok(Step::Read(Read {
             path: read.path().into(),
             pending: Pending::Identity {
                 read: Box::new(read),
                 view,
-                records,
                 saved,
             },
         })),
@@ -179,7 +149,7 @@ fn identified(
                     "saved state has no bound Attempt yet; use run status --state to inspect preparation",
                 ));
             }
-            let query = query(view, records)?;
+            let query = query(view)?;
             if let Some(attempt) = reference.attempt_id.clone() {
                 attempt_read(reference, attempt, query)
             } else {
@@ -203,23 +173,13 @@ fn identified(
 /// Attempt; an unsaved selection resolves current once and then pins its ID.
 pub fn begin(
     base: &str,
-    health: &Value,
     saved: Option<&Value>,
     selection: Selection<'_>,
     view: View,
 ) -> Result<Step, Error> {
-    let records = health
-        .get("capabilities")
-        .and_then(Value::as_array)
-        .is_some_and(|values| {
-            values
-                .iter()
-                .any(|v| v.as_str() == Some("metric-records.v1"))
-        });
     identified(
         observation::begin(base, saved, selection)?,
         view,
-        records,
         saved.is_some(),
     )
 }
@@ -232,12 +192,7 @@ impl Read {
     pub fn accept(self, response: Result<Value, Error>) -> Result<Step, Error> {
         let value = response?;
         match self.pending {
-            Pending::Identity {
-                read,
-                view,
-                records,
-                saved,
-            } => identified(read.accept(value)?, view, records, saved),
+            Pending::Identity { read, view, saved } => identified(read.accept(value)?, view, saved),
             Pending::Current { reference, query } => {
                 observation::bound_response(
                     &value,
@@ -336,12 +291,11 @@ pub fn provider_diagnostics(
 }
 pub fn observe(
     client: &Client,
-    health: &Value,
     saved: Option<&Value>,
     selection: Selection<'_>,
     view: View,
 ) -> Result<Value, Error> {
-    let mut step = begin(client.base_url(), health, saved, selection, view)?;
+    let mut step = begin(client.base_url(), saved, selection, view)?;
     loop {
         match step {
             Step::Complete(value) => return Ok(value),

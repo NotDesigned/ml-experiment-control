@@ -2,7 +2,7 @@
 
 ML-Expd publishes accepted experiment records to W&B official Cloud from the
 server. The training container needs no W&B SDK/key or W&B network access;
-offline Slurm workers use the platform's configured relay. Metrics remain stored
+Slurm workers write to shared storage and the server reads them. Metrics remain stored
 and queryable in ML-Expd without W&B.
 
 ## Enable the integration
@@ -13,7 +13,7 @@ The operator points `tracking_config` in the deployment file at a private JSON f
 {
   "schema_version": 1,
   "python": "/absolute/path/to/interpreter-with-wandb-sdk",
-  "api_key_file": "/etc/ml-expd/native/wandb.key"
+  "api_key_file": "/etc/ml-exp/wandb.key"
 }
 ```
 
@@ -48,8 +48,7 @@ In an experiment JSON or `POST /api/projects/P/runs` request:
 | Entity omitted | Use configured/resolved default entity |
 
 Training and preparation switches are independent, subject to the same server
-master switch and credentials. The per-experiment option requires
-`wandb-preparation-sync.v1`.
+master switch and credentials.
 
 Without credentials, a usable entity, or an enabled server, the effective route
 is disabled with a reason and training continues. With a configured route but no
@@ -78,7 +77,7 @@ write [metric records](metrics.md#record-and-query) to `OUTPUT_DIR/metrics.jsonl
 - `summary:true` declares the result selected by experiment code. It does not add a curve point or select the best checkpoint.
 
 Each Attempt has a stable W&B run grouped by ML-Expd project/Run.
-For new publications (native 0.1.25+), **the client owns metric names**:
+**The client owns metric names**:
 
 | W&B field | Content |
 |---|---|
@@ -109,10 +108,9 @@ summary value instead of falling back to unrelated history. Unrelated
 client-owned summary keys are not removed. Failed Attempts can retain valid
 measurements; filter `ml_expd/state` when comparing successful runs.
 
-Already-started publications keep their frozen v2/v3 mapping, including old
-prefixes or hashes. Finished W&B Runs are not reopened. Upgrading does not rename
-or replay historical points, reset confirmation cursors, or resend uncertain
-events. New publications use exact names. Checkpoint changes remain per-point
+Finished W&B Runs are not reopened. Publication does not rename or replay accepted
+points, reset confirmation cursors, or resend uncertain events. Publications use
+exact names. Checkpoint changes remain per-point
 provenance. Numerator/denominator are metadata, not extra result metrics.
 
 ## What reaches W&B
@@ -124,9 +122,8 @@ weights, datasets, recovery state or raw logs. Private commands, SSH settings,
 transfer credentials, signed URLs and object keys are excluded. The SDK disables
 host/git/code telemetry so API-server hardware is not reported as training usage.
 
-Older immutable workers keep their behavior. Saved JSONL can fill gaps; sampled
-stdout observations remain labelled incomplete. Missing history is not invented
-and historical Runs are not automatically opted in.
+Saved JSONL can fill gaps; sampled stdout observations remain labelled incomplete.
+Missing history is not invented.
 
 ## Inspect and recover publication
 
@@ -152,12 +149,12 @@ latency; error backoff reaches five minutes. W&B's green session indicator track
 the server publisher session and can lag during outages; it is not direct proof
 that GPU training is alive. Use platform state, logs and steps together.
 
-The native API has no backfill route for historical or disabled Runs, and
+The native API has no backfill route for disabled Runs, and
 publication cannot recreate observations that were never saved. Publication cursors
 live in the registry's `tracking/` directory; keep it with service state.
 
 
-## Reserved history gaps (native 0.1.21+)
+## Reserved history gaps
 
 Normal publication stops at an unacknowledged send and flushes SDK sessions on
 orderly API shutdown. An uncertain send is never automatically replayed.
@@ -178,12 +175,11 @@ uncertain repair only observes; it does not send again or clear reservations.
 Restart the API to resume incremental publication. Existing W&B panels are not
 recreated. Keep the pre-repair event list and actual remote confirmation evidence.
 
-A saved repair adds `history_repair` to publication state. Older servers cannot
-read that field; after a repair use a forward fix rather than a program downgrade
-or a database restore. This operation does not restart training or recover
+A saved repair adds `history_repair` to publication state. After a repair use a
+forward fix rather than a program downgrade or a database restore. This operation does not restart training or recover
 records that are missing from the canonical journal.
 
-Remote SDK pages may repeat the same physical row. Native 0.1.22 compares the
+Remote SDK pages may repeat the same physical row. The service compares the
 complete row (including values and axes) before collapsing such page repeats;
 conflicting content or the same sequence at different physical rows is rejected.
 This does not resubmit history or relax the exact-prefix acknowledgement.

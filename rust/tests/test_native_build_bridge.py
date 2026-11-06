@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from ml_exp_server.builds import native_data, native_image, native_worker
+from ml_exp_server.builds import native_data, native_image
 from ml_exp_server.data import registry_transport
 from ml_exp_server.dockerfile_build import inspect_dockerfile
 from ml_exp_server.projects.source_revisions import _tree_digest
@@ -56,18 +56,17 @@ class NativeBridge(unittest.TestCase):
             self.assertEqual(registry.host, 'registry-1.docker.io')
             self.assertEqual(registry_transport.registry_auth({'docker.io': login}, 'registry-1.docker.io'), login)
             calls = []
-            manifest = {'schemaVersion': 2, 'mediaType': registry_transport.MANIFEST, 'layers': []}
-            raw = registry_transport.encoded(manifest)
             def exchange(method, path, headers, body, maximum, **kwargs):
-                calls.append((method, path, kwargs.get('host', registry.host)))
+                calls.append(kwargs.get('host', registry.host))
                 if len(calls) == 1:
                     return 401, {'www-authenticate': 'Bearer realm="https://auth.docker.io/token",service="registry.docker.io"'}, b''
                 if kwargs.get('host') == 'auth.docker.io':
                     return 200, {}, b'{"token":"fixture-token"}'
-                return (201 if method == 'PUT' else 200), {}, raw
+                return 200, {}, b'manifest'
             with patch.object(registry, '_exchange', side_effect=exchange):
-                self.assertEqual(registry.publish('data-' + 'a' * 64, manifest), 'docker.io/team/runtime@' + registry_transport.digest(raw))
-            self.assertEqual([host for _, _, host in calls], ['registry-1.docker.io', 'auth.docker.io', 'registry-1.docker.io', 'registry-1.docker.io'])
+                self.assertEqual(registry.request('GET', registry.prefix + '/manifests/bundle-' + 'a' * 64)[2], b'manifest')
+            self.assertEqual(calls, ['registry-1.docker.io', 'auth.docker.io', 'registry-1.docker.io'])
+            self.assertEqual(registry.reference, 'docker.io/team/runtime')
 
     def test_registry_change_keeps_original_publication_targets_without_mutating_default(self):
         from ml_exp_server.builds.build_recovery import publication_builder
@@ -83,26 +82,6 @@ class NativeBridge(unittest.TestCase):
                 self.assertEqual(path.read_bytes(), before)
             self.assertIs(publication_builder(builder, 'c' * 64), builder)
             self.assertEqual(builder.config['repository'], 'docker.io/team/runtime')
-
-    def test_acr_fallback_for_old_repository_never_redirects_new_docker_hub_build(self):
-        from ml_exp_server.builds import acr_fallback
-        from ml_exp_server.builds.builder_client import BuildTransportError
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            receipt = {'bundle_id': 'a' * 64}
-            builder = SimpleNamespace(root=root, config={'repository': 'docker.io/team/runtime',
-                'acr_fallback': {'prefer': True, 'repository': 'old.example/team/build'}})
-            with patch.object(acr_fallback, 'publish') as acr, \
-                    patch('ml_exp_server.builds.pai_dsw.DswPublisher') as dsw, \
-                    patch('ml_exp_server.builds.pai_build_recovery.observe_dsw_absence') as absence:
-                dsw.return_value.publish.return_value = 'docker.io/team/runtime@sha256:' + 'b' * 64
-                self.assertEqual(acr_fallback.publish_runtime(builder, 'tag', root, receipt), dsw.return_value.publish.return_value)
-                (root / ('a' * 64 + '.dsw.json')).write_text('{"phase":"DELETE_REQUESTED"}')
-                dsw.return_value.publish.side_effect = BuildTransportError('FAILED', {})
-                with self.assertRaises(BuildTransportError):
-                    acr_fallback.publish_runtime(builder, 'tag', root, receipt)
-                acr.assert_not_called()
-                absence.assert_not_called()
 
     def test_preferred_acr_skips_dsw_but_never_overlaps_an_unknown_primary(self):
         from ml_exp_server.builds import acr_fallback
@@ -174,36 +153,64 @@ class NativeBridge(unittest.TestCase):
     def test_buildkit_uses_local_engine_even_with_remote_docker_environment(self):
         from ml_exp_server.image_builder import ImageBuilder
         with tempfile.TemporaryDirectory() as directory:
-            builder = ImageBuilder({"state_root": directory})
+            builder = ImageBuilder({"state_root": directory, "native_worker_bin": "/worker", "native_source_root": "/sources"})
             with patch.dict("os.environ", {"DOCKER_HOST": "tcp://remote.example:2375"}), \
                     patch.object(builder, "_command", return_value="ok") as command:
                 self.assertEqual(builder._docker(["version"], capture=True), "ok")
                 self.assertEqual(command.call_args.args[0], [
                     "/usr/bin/docker", "--host", "unix:///var/run/docker.sock", "version"])
 
-    def test_removed_remote_docker_configuration_does_not_build_locally(self):
+    def test_builder_configuration_is_an_allowlist_and_names_its_required_keys(self):
         from ml_exp_server.image_builder import ImageBuilder
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(subprocess, "run", side_effect=AssertionError("must not start a builder")):
-            with self.assertRaisesRegex(ValueError, "remote Docker publishing was removed"):
-                ImageBuilder({"state_root": directory, "docker_host": "unix:///old-desktop.sock"})
+            root = Path(directory) / "state"
+            valid = {"state_root": str(root), "native_worker_bin": "/worker", "native_source_root": "/sources"}
+            with self.assertRaisesRegex(ValueError, "unknown builder configuration: unknown_key"):
+                ImageBuilder({**valid, "unknown_key": "x"})
+            for key in ("native_worker_bin", "native_source_root"):
+                with self.assertRaisesRegex(ValueError, "lacks " + key):
+                    ImageBuilder({k: v for k, v in valid.items() if k != key})
+            self.assertFalse(root.exists())
+            ImageBuilder(valid)
+            self.assertTrue(root.is_dir())
 
-    def test_removed_data_staging_route_never_dispatches_a_build(self):
+    def test_shipped_builder_examples_are_accepted(self):
+        from ml_exp_server.image_builder import ImageBuilder
+        repository = Path(__file__).resolve().parents[2]
+        for example in ("rust/deploy/builder.example.json", "server/examples/image-builder.json"):
+            with self.subTest(example=example), tempfile.TemporaryDirectory() as directory:
+                config = json.loads((repository / example).read_text())
+                self.assertEqual(config["socket"], "/run/ml-exp-builder/builder.sock")
+                ImageBuilder({**config, "state_root": directory})
+        for example in ("pai", "sensecore"):
+            config = json.loads((repository / f"rust/deploy/{example}.example.json").read_text())
+            self.assertEqual(config["builds"]["socket"], "/run/ml-exp-builder/builder.sock")
+
+    def test_only_the_root_path_reaches_the_builder(self):
+        import http.client
         import os
+        import socket
         import threading
         from ml_exp_server.image_builder import BuilderServer, Handler
-        from ml_exp_server.builds.builder_client import UnixConnection
+
+        class UnixConnection(http.client.HTTPConnection):
+            def connect(self):
+                self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                self.sock.settimeout(self.timeout)
+                self.sock.connect(self.host)
+
         with tempfile.TemporaryDirectory() as directory:
             path = str(Path(directory) / "builder.sock")
             with BuilderServer(path, Handler) as server:
                 server.builder = SimpleNamespace(config={"client_uid": os.getuid()},
-                    request=lambda _: self.fail("removed data route dispatched a build"))
+                    request=lambda _: self.fail("another path dispatched a build"))
                 thread = threading.Thread(target=server.serve_forever, daemon=True)
                 thread.start()
                 connection = UnixConnection(path, timeout=5)
                 try:
-                    # The removed route rejects headers immediately; no body is needed.
-                    connection.request("POST", "/data-stage/create")
+                    # Refused on the path alone, so the body is never read.
+                    connection.request("POST", "/data-stage/create", body=b"{}")
                     self.assertEqual(connection.getresponse().status, 409)
                 finally:
                     connection.close()
@@ -211,51 +218,47 @@ class NativeBridge(unittest.TestCase):
                     thread.join()
 
     def test_multistage_registry_origins_are_unrestricted_but_frozen_base_is_checked(self):
-        for old_filter in [None, ["unrelated.example/"]]:
-            for wrong_base in [False, True]:
-                with self.subTest(old_filter=old_filter, wrong_base=wrong_base), tempfile.TemporaryDirectory() as directory:
-                    root = Path(directory)
-                    tree = root / "sources/demo/pending/tree"
-                    tree.mkdir(parents=True)
-                    base = "docker.io/library/python@sha256:" + "2" * 64
-                    text = "FROM ghcr.io/astral-sh/uv@sha256:" + "3" * 64 + " AS uv\nFROM " + base + "\nCOPY --from=uv /uv /usr/local/bin/uv\n"
-                    (tree / "Dockerfile").write_text(text)
-                    digest = _tree_digest(tree)
-                    source_id = "source." + digest[7:]
-                    source = tree.parent.with_name(source_id)
-                    tree.parent.rename(source)
-                    (source / "source.json").write_text(json.dumps({"project": "demo", "tree_digest": digest}))
-                    for path in source.rglob("*"):
-                        path.chmod(0o555 if path.is_dir() else 0o444)
-                    source.chmod(0o555)
-                    worker = root / "worker"
-                    worker.write_bytes(b"owned fixture; never execute")
-                    config = {"native_worker_bin": str(worker), "native_source_root": str(root / "sources"),
-                              "allow_dockerfile_builds": True, "publisher": "buildkit", "repository": "registry.example/build"}
-                    if old_filter is not None:
-                        config["base_image_prefixes"] = old_filter
-                    calls = []
-                    def publish(tag, context):
-                        self.assertIn(text, (context / "Dockerfile").read_text())
-                        self.assertEqual((context / "ml-expd-build-internal/worker-rs").read_bytes(), worker.read_bytes())
-                        calls.append(tag)
-                        return "registry.example/build@sha256:" + "4" * 64
-                    builder = SimpleNamespace(root=root, config=config, _publish_buildkit=publish)
-                    value = {"operation": "native-build", "runtime_id": "runtime." + "1" * 64,
-                             "project": "demo", "source_id": source_id, "base_image": base if not wrong_base else "other.example/base@sha256:" + "5" * 64,
-                             "dockerfile": "Dockerfile", "worker_sha256": "sha256:" + hashlib.sha256(worker.read_bytes()).hexdigest(), "mirror": False}
-                    with patch.object(native_worker, "freeze_features", return_value=[]), \
-                            patch.object(subprocess, "run", side_effect=AssertionError("test must not contact a provider")):
-                        if wrong_base:
-                            with self.assertRaisesRegex(ValueError, "base differs from the frozen request"):
-                                native_image.request(builder, value)
-                            self.assertEqual(calls, [])
-                            self.assertFalse((root / ("1" * 64 + ".native-definition.json")).exists())
-                        else:
-                            result = native_image.request(builder, value)
-                            self.assertEqual(result["runtime"]["source_id"], source_id)
-                            self.assertEqual(native_image.request(builder, value), result)
-                            self.assertEqual(len(calls), 1)
+        for wrong_base in [False, True]:
+            with self.subTest(wrong_base=wrong_base), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                tree = root / "sources/demo/pending/tree"
+                tree.mkdir(parents=True)
+                base = "docker.io/library/python@sha256:" + "2" * 64
+                text = "FROM ghcr.io/astral-sh/uv@sha256:" + "3" * 64 + " AS uv\nFROM " + base + "\nCOPY --from=uv /uv /usr/local/bin/uv\n"
+                (tree / "Dockerfile").write_text(text)
+                digest = _tree_digest(tree)
+                source_id = "source." + digest[7:]
+                source = tree.parent.with_name(source_id)
+                tree.parent.rename(source)
+                (source / "source.json").write_text(json.dumps({"project": "demo", "tree_digest": digest}))
+                for path in source.rglob("*"):
+                    path.chmod(0o555 if path.is_dir() else 0o444)
+                source.chmod(0o555)
+                worker = root / "worker"
+                worker.write_bytes(b"owned fixture; never execute")
+                config = {"native_worker_bin": str(worker), "native_source_root": str(root / "sources"),
+                          "allow_dockerfile_builds": True, "publisher": "buildkit", "repository": "registry.example/build"}
+                calls = []
+                def publish(tag, context):
+                    self.assertIn(text, (context / "Dockerfile").read_text())
+                    self.assertEqual((context / "ml-expd-build-internal/worker-rs").read_bytes(), worker.read_bytes())
+                    calls.append(tag)
+                    return "registry.example/build@sha256:" + "4" * 64
+                builder = SimpleNamespace(root=root, config=config, _publish_buildkit=publish)
+                value = {"operation": "native-build", "runtime_id": "runtime." + "1" * 64,
+                         "project": "demo", "source_id": source_id, "base_image": base if not wrong_base else "other.example/base@sha256:" + "5" * 64,
+                         "dockerfile": "Dockerfile", "worker_sha256": "sha256:" + hashlib.sha256(worker.read_bytes()).hexdigest(), "mirror": False}
+                with patch.object(subprocess, "run", side_effect=AssertionError("test must not contact a provider")):
+                    if wrong_base:
+                        with self.assertRaisesRegex(ValueError, "base differs from the frozen request"):
+                            native_image.request(builder, value)
+                        self.assertEqual(calls, [])
+                        self.assertFalse((root / ("1" * 64 + ".native-definition.json")).exists())
+                    else:
+                        result = native_image.request(builder, value)
+                        self.assertEqual(result["runtime"]["source_id"], source_id)
+                        self.assertEqual(native_image.request(builder, value), result)
+                        self.assertEqual(len(calls), 1)
 
     def test_standard_dockerfile_instructions_and_literal_shift_text(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -290,7 +293,7 @@ class NativeBridge(unittest.TestCase):
             value = {"operation": "native-data-get", "data_image_id": "data-image." + key,
                      "recipe": recipe, "download": {"project": "demo", "definition": recipe["definition"],
                         "target": {"backend_id": "sensecore-test"}, "source": {"kind": "dataset_parts"}}}
-            builder = SimpleNamespace(root=root, config={"repository": source, "native_worker_bin": str(worker), "base_image_prefixes": ["unrelated.example/"],
+            builder = SimpleNamespace(root=root, config={"repository": source, "native_worker_bin": str(worker),
                 "sensecore_mirror": {"source_repository": source, "target_repository": target}})
             (root / (key + ".native-data-definition.json")).write_text(json.dumps(recipe))
             calls = []
@@ -353,40 +356,6 @@ class NativeBridge(unittest.TestCase):
                         self.assertEqual(result["runtime"]["image"], builder.config["repository"] + "@sha256:" + hashlib.sha256(raw).hexdigest())
                         self.assertEqual(native_image.request(builder, value), result)
                         self.assertEqual(result["request"], frozen)
-
-    def test_worker_features_are_frozen_against_exact_binary_and_never_reprobed_on_read(self):
-        for declared in [None, ["storage-layout.v1"], ["storage-layout.v1", "shared-cache-identity.v2"], ["storage-layout.v1", "package-download.v1"]]:
-            supported = declared is not None
-            with self.subTest(declared=declared), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                binary = root / "worker"
-                response = {"contract": "native-worker-capabilities.v1", "features": declared or []}
-                binary.write_text("#!/bin/sh\n" + ("printf '%s' '" + json.dumps(response) + "'\n" if supported else "exit 2\n"))
-                binary.chmod(0o500)
-                expected = "sha256:" + hashlib.sha256(binary.read_bytes()).hexdigest()
-                marker = root / "features.json"
-                features = native_worker.freeze_features(binary, expected, marker)
-                self.assertEqual(features, response["features"] if supported else [])
-                binary.unlink()
-                with patch.object(subprocess, "run", side_effect=AssertionError("read must not execute worker")):
-                    self.assertEqual(native_worker.freeze_features(binary, expected, marker), features)
-                    self.assertEqual(native_worker.load_features(marker, expected), features)
-                    with self.assertRaisesRegex(ValueError, "binding differs"):
-                        native_worker.load_features(marker, "sha256:" + "0" * 64)
-                self.assertEqual(native_worker.load_features(root / "old-missing.json", expected), [])
-
-    def test_late_publication_carries_only_original_worker_features(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            builder = SimpleNamespace(root=root, config={"repository": "registry.example/team/build"})
-            value = {"runtime_id": "runtime." + "1" * 64, "project": "demo",
-                     "source_id": "source." + "2" * 64, "worker_sha256": "sha256:" + "3" * 64, "mirror": False}
-            (root / ("1" * 64 + ".native-worker.json")).write_text(json.dumps({
-                "worker_sha256": value["worker_sha256"], "features": ["storage-layout.v1"]}))
-            with patch.object(subprocess, "run", side_effect=AssertionError("reconciliation must not probe replacement")):
-                result = native_image._finish(builder, value, "registry.example/team/build@sha256:" + "4" * 64,
-                                              value, root / "receipt.json")
-            self.assertEqual(result["runtime"]["worker_features"], ["storage-layout.v1"])
 
     def test_absent_publication_never_dispatches_a_replacement(self):
         builder = SimpleNamespace(config={"repository": "registry.example/team/build"})

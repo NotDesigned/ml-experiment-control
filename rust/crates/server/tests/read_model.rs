@@ -1,6 +1,6 @@
 use ml_exp_server::{
-    experiments::{Diagnostic, EvidenceDocument, EvidenceProblem, LogTail, ManifestSource},
-    read_model::{self, LiveMetrics, LogQuery, LogStream, MetricFormat, MetricQuery},
+    experiments::{Diagnostic, EvidenceDocument, EvidenceProblem, LogTail},
+    read_model::{self, LiveMetrics, LogQuery, LogStream, MetricQuery},
 };
 use serde_json::{Value, json};
 #[path = "common/read_model.rs"]
@@ -25,11 +25,6 @@ fn exact_current_and_live_receive_order_never_choose_the_largest_scientific_step
     other.status = evidence("attempt-002", "status", json!({"state":"SUCCEEDED"}));
     other.metrics.records = vec![metric("loss", json!(999), 99999)];
     snapshot.attempts.push(other);
-    snapshot.attempts[0].submission = evidence(
-        "attempt-001",
-        "submission",
-        json!({"backend":"slurm","backend_job_id":"123"}),
-    );
     let records = live(&[metric("loss", json!(4), 1000), metric("loss", json!(0), 0)]);
     let result = read_model::run_detail(
         &snapshot,
@@ -54,8 +49,6 @@ fn exact_current_and_live_receive_order_never_choose_the_largest_scientific_step
     assert_eq!(result["evidence"]["model"]["not_a_heartbeat"], true);
     let listing = read_model::run_attempts(&snapshot).unwrap();
     assert_eq!(listing["attempts"][0]["current"], true);
-    assert_eq!(listing["attempts"][0]["has_submission"], true);
-    assert_eq!(listing["attempts"][1]["has_submission"], false);
     assert!(matches!(
         read_model::run_detail(
             &snapshot,
@@ -155,7 +148,6 @@ fn training_process_scheduler_and_unmigrated_publication_remain_independent() {
         read_model::attempt_collection(&snapshot, "attempt-001", 0.0).unwrap()["training"]["status"],
         "UNKNOWN"
     );
-    snapshot.attempts[0].manifest.source = ManifestSource::AttemptJson;
     snapshot.attempts[0]
         .manifest
         .metadata
@@ -178,18 +170,9 @@ fn raw_metadata_uses_shared_redaction_and_only_daemon_assessments_may_publish_cl
         .run
         .metadata
         .insert("failure_class".into(), json!("producer-claim"));
-    snapshot.attempts[0].decision = evidence(
-        "attempt-001",
-        "decision",
-        json!({"action":"REVIEW_RETRY","failure_class":"producer-only",
-        "resume_checkpoint":{"failure_class":"nested-producer-claim","password":"hidden"}}),
-    );
-    let result = read_model::attempt_show(&snapshot, "attempt-001", 0.0).unwrap();
-    assert!(result["attempt"]["decision"]["failure_class"].is_null());
-    assert!(result["attempt"]["decision"]["resume_checkpoint"]["failure_class"].is_null());
-    assert_eq!(
-        result["attempt"]["decision"]["resume_checkpoint"]["password"],
-        "<redacted>"
+    snapshot.run.metadata.insert(
+        "resume_checkpoint".into(),
+        json!({"failure_class":"nested-producer-claim","password":"hidden"}),
     );
     let mut detail = read_model::run_detail(&snapshot, 0.0, None).unwrap();
     assert!(detail["failure_assessment"]["failure_summary"].is_null());
@@ -203,8 +186,8 @@ fn raw_metadata_uses_shared_redaction_and_only_daemon_assessments_may_publish_cl
         "user:pass",
         "abcdef",
         "producer-claim",
-        "producer-only",
         "nested-producer-claim",
+        "hidden",
     ] {
         assert!(!text.contains(secret), "{secret}");
     }
@@ -240,13 +223,6 @@ fn unavailable_and_foreign_evidence_cannot_turn_into_a_successful_snapshot() {
         result["evidence"]["scheduler"]["evidence_availability"]["availability"],
         "UNAVAILABLE"
     );
-    snapshot.attempts[0].submission = EvidenceDocument::Unavailable {
-        source: "attempts/attempt-001/submission.json".into(),
-        code: EvidenceProblem::Io,
-    };
-    assert!(
-        read_model::run_attempts(&snapshot).unwrap()["attempts"][0]["has_submission"].is_null()
-    );
     snapshot.attempts[0].collection = evidence(
         "attempt-002",
         "collection",
@@ -279,25 +255,17 @@ fn scientific_metric_names_units_and_contexts_survive_metadata_redaction() {
         json!({"step":0,"token":0,"password":1,"api_key":2}),
         json!({"name":"password","unit":"bits/raw byte","value":3,"variant_id":"α","dataset_id":"d","checkpoint_id":"c","protocol_id":"p","summary":true}),
     ];
-    let query = MetricQuery {
-        format: MetricFormat::Records,
-        ..MetricQuery::default()
-    };
-    let result = read_model::attempt_metrics(&snapshot, "attempt-001", &query, None).unwrap();
+    let result =
+        read_model::attempt_metrics(&snapshot, "attempt-001", &MetricQuery::default(), None)
+            .unwrap();
     assert_eq!(result["records"][0]["name"], "token");
     assert_eq!(result["records"][0]["value"], 0);
     assert_eq!(result["records"][1]["name"], "password");
     assert_eq!(result["records"][1]["value"], 1);
     assert_eq!(result["records"][3]["variant_id"], "α");
     assert_eq!(result["records"][3]["summary"], true);
-    let legacy =
-        read_model::attempt_metrics(&snapshot, "attempt-001", &MetricQuery::default(), None)
-            .unwrap();
-    assert_eq!(legacy["points"][0]["token"], 0);
-    assert_eq!(legacy["points"][0]["password"], 1);
-    assert_eq!(legacy["evaluation"], contract);
     assert!(
-        !serde_json::to_string(&legacy)
+        !serde_json::to_string(&result)
             .unwrap()
             .contains("secret-env")
     );
@@ -329,16 +297,9 @@ fn scientific_assignment_spellings_are_preserved_in_all_four_read_views() {
         assert_eq!(detail["checkpoint_id"], "token=checkpoint");
         assert_eq!(detail["summary"], false);
     }
-    let metrics = read_model::attempt_metrics(
-        &snapshot,
-        "attempt-001",
-        &MetricQuery {
-            format: MetricFormat::Records,
-            ..MetricQuery::default()
-        },
-        None,
-    )
-    .unwrap();
+    let metrics =
+        read_model::attempt_metrics(&snapshot, "attempt-001", &MetricQuery::default(), None)
+            .unwrap();
     assert_eq!(metrics["records"][0]["name"], "token=entropy");
     assert_eq!(metrics["records"][0]["unit"], "secret=joule");
     snapshot.attempts[0].metrics.records =
@@ -451,10 +412,7 @@ fn canonical_failure_undeclared_and_conflict_records_remain_diagnostics_without_
         assert_eq!(canonical, before);
         let projected = read_model::metric_payload(
             &canonical,
-            &MetricQuery {
-                format: MetricFormat::Records,
-                ..MetricQuery::default()
-            },
+            &MetricQuery::default(),
             &json!({}),
             None,
             None,
@@ -476,10 +434,7 @@ fn canonical_failure_undeclared_and_conflict_records_remain_diagnostics_without_
     read_model::validate_journal_observations(records, &json!({})).unwrap();
     let projected = read_model::metric_payload(
         records,
-        &MetricQuery {
-            format: MetricFormat::Records,
-            ..MetricQuery::default()
-        },
+        &MetricQuery::default(),
         &json!({}),
         None,
         None,
@@ -523,14 +478,10 @@ fn bounded_tails_never_claim_complete_history_even_with_a_complete_live_journal(
     snapshot.attempts[0].metrics.records = vec![metric("loss", json!(3), 1)];
     snapshot.attempts[0].metrics.truncated = true;
     let records = live(&[metric("loss", json!(2), 2)]);
-    let query = MetricQuery {
-        format: MetricFormat::Records,
-        ..MetricQuery::default()
-    };
     let result = read_model::attempt_metrics(
         &snapshot,
         "attempt-001",
-        &query,
+        &MetricQuery::default(),
         Some(LiveMetrics {
             attempt_id: "attempt-001",
             records: &records,
@@ -546,7 +497,7 @@ fn bounded_tails_never_claim_complete_history_even_with_a_complete_live_journal(
         count: 1,
     }];
     assert!(matches!(
-        read_model::attempt_metrics(&snapshot, "attempt-001", &query, None),
+        read_model::attempt_metrics(&snapshot, "attempt-001", &MetricQuery::default(), None),
         Err(read_model::Error::Evidence)
     ));
 }
@@ -595,7 +546,7 @@ fn logs_are_exact_bounded_redacted_and_never_contact_a_provider() {
     );
     assert_eq!(
         result["streams"]["stderr"]["lines"],
-        json!(["{'x': 1}", "last"])
+        json!([r#"{"x":1}"#, "last"])
     );
     assert_eq!(result["streams"]["stderr"]["mode"], "collected_tail");
     assert_eq!(result["follow_supported"], false);

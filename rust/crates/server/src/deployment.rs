@@ -16,20 +16,6 @@ fn at(stage: &'static str) -> Error {
     Error { stage }
 }
 
-/// The history bridge is gone. A deployment that still names it is refused rather
-/// than started without those Runs, so the operator decides. Nothing on disk is read.
-const RETIRED_HISTORY_KEY: &str = "history_config";
-
-#[derive(Debug, thiserror::Error)]
-pub enum LoadError {
-    #[error(
-        "deployment key {0} is no longer supported; remove it from the file and restart (historical data on disk is not touched)"
-    )]
-    RetiredKey(&'static str),
-    #[error(transparent)]
-    Invalid(#[from] crate::read_config::Error),
-}
-
 /// Safe local configuration facts. No credentials or private paths are returned.
 #[derive(serde::Serialize)]
 pub struct Check {
@@ -87,20 +73,17 @@ impl Settings {
         }
         Ok(())
     }
-    pub fn from_json(bytes: &[u8]) -> Result<Self, LoadError> {
+    pub fn from_json(bytes: &[u8]) -> Result<Self, crate::read_config::Error> {
         if bytes.len() > 64 * 1024 {
-            return Err(crate::read_config::Error.into());
+            return Err(crate::read_config::Error);
         }
         let mapping = ml_exp_core::json::mapping(bytes).map_err(why!(crate::read_config::Error))?;
-        if mapping.contains_key(RETIRED_HISTORY_KEY) {
-            return Err(LoadError::RetiredKey(RETIRED_HISTORY_KEY));
-        }
         let value: Self = serde_json::from_value(serde_json::Value::Object(mapping))
             .map_err(why!(crate::read_config::Error))?;
         value.validate()?;
         Ok(value)
     }
-    pub fn load(path: &Path) -> Result<Self, LoadError> {
+    pub fn load(path: &Path) -> Result<Self, crate::read_config::Error> {
         Self::from_json(
             &ml_exp_io::read_private(path, 64 * 1024, true)
                 .map_err(why!(crate::read_config::Error))?,
@@ -111,12 +94,15 @@ impl Settings {
     /// effects. Passing this check makes no claim about a remote connection.
     pub fn check(&self) -> Result<Check, Error> {
         self.validate().map_err(why!(at("deployment")))?;
+        let reads = crate::read_config::load(&self.read_config).map_err(why!(at("read_config")))?;
+        if crate::read_config::predates_restart(&reads.registry_root) {
+            return Err(at(crate::read_config::PREDATES_RESTART));
+        }
         if !self.bind.ip().is_loopback() {
             return Err(at("loopback_bind"));
         }
         crate::Auth::load(&self.token_file)
             .map_err(why!(at("api_token"), "daemon token invalid"))?;
-        let reads = crate::read_config::load(&self.read_config).map_err(why!(at("read_config")))?;
         for project in &reads.projects {
             let parent = ml_exp_io::directory::Directory::open(
                 project
@@ -136,15 +122,12 @@ impl Settings {
                 )
                 .map_err(why!(at("project_definition")))?;
             let mapping =
-                crate::experiments::parse_mapping(&bytes, crate::experiments::Format::Yaml)
-                    .map_err(why!(at("project_definition")))?;
+                ml_exp_core::json::mapping(&bytes).map_err(why!(at("project_definition")))?;
             let definition = ml_exp_core::projects::ProjectDefinition::from_value(
                 &serde_json::Value::Object(mapping),
             )
             .map_err(why!(at("project_definition")))?;
-            if definition.project() != project.project
-                || self.project_lifecycle && definition.campaign_files().next().is_some()
-            {
+            if definition.project() != project.project {
                 return Err(at("project_definition"));
             }
             for root in &project.run_roots {
@@ -166,8 +149,16 @@ impl Settings {
             }
         }
         if let Some(path) = &self.cloud_config {
-            let cloud =
-                crate::cloud_runs::Settings::load(path).map_err(why!(at("cloud_config")))?;
+            let cloud = crate::cloud_runs::Settings::load(path).map_err(|error| {
+                crate::why::record(file!(), line!(), &error);
+                at(
+                    if error.code == crate::cloud_runs::RUN_CREATION_REQUIRES_EXCHANGE {
+                        "cloud_run_creation_requires_exchange"
+                    } else {
+                        "cloud_config"
+                    },
+                )
+            })?;
             for backend in &cloud.backends {
                 if !executors.insert(backend.executor.clone()) {
                     return Err(at("duplicate_executor"));
@@ -188,14 +179,7 @@ impl Settings {
         if let Some(path) = &self.tracking_config {
             crate::tracking::Config::load(path)
                 .and_then(|c| c.check_references())
-                .map_err(|error| {
-                    at(match error {
-                        crate::tracking::Error::RetiredKey(_) => {
-                            "tracking_config: remove retired key historical_handoff"
-                        }
-                        _ => "tracking_config",
-                    })
-                })?;
+                .map_err(why!(at("tracking_config")))?;
         }
         let parent = ml_exp_io::directory::Directory::open(
             reads
@@ -236,6 +220,15 @@ impl Settings {
             return Err(at("registry_already_exists"));
         }
         let reads = crate::read_config::load(&self.read_config).map_err(why!(at("read_config")))?;
+        // A new registry would discover whatever Runs an old root holds. Names only.
+        for root in reads.projects.iter().flat_map(|p| &p.run_roots) {
+            let names = ml_exp_io::directory::Directory::open(root, false)
+                .and_then(|directory| directory.entry_names())
+                .map_err(why!(at("project_run_root")))?;
+            if !names.is_empty() {
+                return Err(at("project_run_root_not_empty"));
+            }
+        }
         let workspace = crate::read_config::initialize(&reads.registry_root)
             .map_err(why!(at("registry_creation")))?;
         let mut stores = vec!["registry"];
@@ -292,11 +285,6 @@ mod tests {
             v[field] = value;
             assert!(parse(&v).is_err(), "{field}");
         }
-        let mut v = base.clone();
-        v["history_config"] = json!("/private/history.json");
-        let refused = parse(&v).err().unwrap();
-        assert!(matches!(refused, LoadError::RetiredKey("history_config")));
-        assert!(refused.to_string().contains("history_config"));
         let mut v = base;
         v["source_archives"] = json!(true);
         v["cloud_config"] = json!("/private/cloud.json");

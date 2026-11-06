@@ -14,18 +14,16 @@ const NAME: &str = ".cloud-input-progress.json";
 #[cfg(test)]
 mod tests;
 /// Copy jobs may initialize only their frozen dataset cache's parent beneath
-/// an existing mount. Old jobs omit the plan and retain their original behavior.
+/// an existing mount.
 pub fn scoped_cache(
     config: &ml_exp_core::datasets::import::Config,
-    storage: Option<&ml_exp_core::cloud::launch::StorageLayout>,
+    storage: &ml_exp_core::cloud::launch::StorageLayout,
 ) -> Result<()> {
     config.validate().map_err(|_| Error::Configuration)?;
-    if let Some(storage) = storage {
-        if std::path::Path::new(&config.root) != storage.datasets {
-            return Err(Error::Binding);
-        }
-        crate::cloud_storage::prepare_data(storage)?;
+    if std::path::Path::new(&config.root) != storage.datasets {
+        return Err(Error::Binding);
     }
+    crate::cloud_storage::prepare_data(storage)?;
     cache(config)
 }
 pub fn cache(config: &ml_exp_core::datasets::import::Config) -> Result<()> {

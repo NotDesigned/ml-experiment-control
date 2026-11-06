@@ -3,10 +3,7 @@ use ml_exp_client::{
     Client, artifacts, config, credentials, datasets, observation, presentation, projects, read,
     session, sources, status, submissions, watch,
 };
-use std::{
-    io::{self, Read},
-    path::PathBuf,
-};
+use std::{io::Read, path::PathBuf};
 
 #[derive(Parser)]
 #[command(
@@ -44,7 +41,7 @@ enum Command {
         command: ml_exp_client::debug::Command,
     },
     /// Build, inspect and reconcile a reusable Dockerfile environment.
-    #[command(name = "env", alias = "runtime")]
+    #[command(name = "env")]
     Environment {
         #[command(subcommand)]
         command: ml_exp_client::runtime::Command,
@@ -62,9 +59,9 @@ enum Command {
         #[command(subcommand)]
         command: Data,
     },
-    /// Validate the authenticated protocol handshake (no job submission).
+    /// Validate the authenticated connection (no job submission).
     Check,
-    /// Read a protocol-2 JSON endpoint under /api/.
+    /// Read a JSON endpoint under /api/.
     Get { path: String },
     /// Create, submit or observe an experiment through explicit native operations.
     Run {
@@ -85,11 +82,6 @@ enum Command {
     Config {
         #[command(subcommand)]
         command: Config,
-    },
-    /// Run a pure native contract validator without credentials or HTTP.
-    Contract {
-        #[command(subcommand)]
-        command: Contract,
     },
 }
 #[derive(Subcommand)]
@@ -177,13 +169,6 @@ enum Data {
     },
 }
 
-#[derive(Subcommand)]
-enum Contract {
-    /// Validate one JSON OperationIntent read from standard input.
-    IntentValidate,
-    /// Parse one Slurm allocation snapshot from standard input.
-    SlurmAllocationValidate,
-}
 #[derive(Subcommand)]
 enum Source {
     /// Pack local code without running it, then upload once to an approved Project.
@@ -313,7 +298,7 @@ enum Config {
 }
 #[derive(clap::Args)]
 struct Target {
-    /// Original private experiment or training-operation JSON state.
+    /// Original private experiment JSON state.
     #[arg(long)]
     state: Option<PathBuf>,
     #[arg(long)]
@@ -447,9 +432,6 @@ enum Run {
         /// Restart from the beginning after the parent job is terminal.
         #[arg(long)]
         from_start: bool,
-        /// Legacy CPU synchronization reference; optional.
-        #[arg(long, requires = "from_start")]
-        sync_request: Option<String>,
         #[arg(long, default_value_t = 0.)]
         max_gpu_hours: f64,
         #[arg(long, default_value = "")]
@@ -582,8 +564,6 @@ enum Run {
         target: Target,
         #[arg(long, default_value_t = 2000)]
         max_points: i64,
-        #[arg(long)]
-        keys: Option<String>,
         #[arg(long = "name")]
         names: Vec<String>,
     },
@@ -818,51 +798,11 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             | Run::Download { submission, .. },
     } = &args.command
     {
-        ml_exp_core::operations::validate_submission_id(submission).map_err(|_| {
+        ml_exp_core::operations::validate_action_id(submission).map_err(|_| {
             ml_exp_client::Error::Observation("invalid submission identity; no request sent")
         })?;
     }
 
-    if let Command::Contract {
-        command: Contract::IntentValidate,
-    } = &args.command
-    {
-        let mut input = String::new();
-        io::stdin()
-            .take(8 * 1024 * 1024 + 1)
-            .read_to_string(&mut input)?;
-        if input.len() > 8 * 1024 * 1024 {
-            return Err("contract input exceeds 8 MiB".into());
-        }
-        let value: serde_json::Value = serde_json::from_str(&input)?;
-        let intent = ml_exp_core::intent::OperationIntent::from_value(&value)
-            .map_err(|error| format!("invalid operation intent: {error}"))?;
-        println!("{}", serde_json::to_string_pretty(&intent)?);
-        return Ok(());
-    }
-    if let Command::Contract {
-        command: Contract::SlurmAllocationValidate,
-    } = &args.command
-    {
-        #[derive(serde::Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Input {
-            output: String,
-            partition: String,
-        }
-        let mut input = String::new();
-        io::stdin()
-            .take(8 * 1024 * 1024 + 1)
-            .read_to_string(&mut input)?;
-        if input.len() > 8 * 1024 * 1024 {
-            return Err("contract input exceeds 8 MiB".into());
-        }
-        let request: Input = serde_json::from_str(&input)?;
-        let snapshot = ml_exp_core::slurm::parse_allocation(&request.output, &request.partition)
-            .map_err(|error| format!("invalid Slurm allocation: {error}"))?;
-        println!("{}", serde_json::to_string_pretty(&snapshot)?);
-        return Ok(());
-    }
     let project_plan = match &args.command {
         Command::Project { command } => Some(command.plan()?),
         _ => None,
@@ -892,7 +832,6 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     attempt,
                     checkpoint,
                     from_start,
-                    sync_request,
                     max_gpu_hours,
                     reason,
                 },
@@ -910,7 +849,6 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     Some(ml_exp_core::first_submission::native::retry::StartFrom {
                         run_id: run.clone(),
                         attempt_id: attempt.clone(),
-                        sync_request_id: sync_request.clone().unwrap_or_default(),
                     })
                 } else {
                     None
@@ -989,14 +927,14 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             )?;
             if let Some(target) = target {
                 // Reject incomplete or conflicting local identities before even
-                // reading the credential or sending the handshake.
+                // reading the credential or sending the health request.
                 observation::begin(&plan.base_url, saved.as_ref(), target.selection())?;
             }
             let token = credentials::load_token(plan.token_source)?;
             let client = Client::new(&plan.base_url, token)?;
             match command {
                 Command::Backend { executor, refresh } => {
-                    client.negotiate()?;
+                    client.health()?;
                     Output::Json(if let Some(executor) = executor {
                         let path = format!("/api/backends/{executor}/capacity");
                         if refresh {
@@ -1009,7 +947,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     })
                 }
                 Command::Admin { .. } => {
-                    let health = client.negotiate()?;
+                    let health = client.health()?;
                     Output::Json(ml_exp_client::administration::execute(
                         &client,
                         admin_plan.ok_or("admin plan unavailable")?,
@@ -1017,7 +955,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     )?)
                 }
                 Command::Debug { .. } => {
-                    let health = client.negotiate()?;
+                    let health = client.health()?;
                     Output::Json(ml_exp_client::debug::execute(
                         &client,
                         debug_plan.ok_or("debug plan unavailable")?,
@@ -1025,7 +963,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     )?)
                 }
                 Command::Environment { .. } => {
-                    let health = client.negotiate()?;
+                    let health = client.health()?;
                     Output::Json(ml_exp_client::runtime::execute(
                         &client,
                         runtime_plan.ok_or("runtime plan unavailable")?,
@@ -1033,7 +971,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     )?)
                 }
                 Command::Data { command } => {
-                    let health = client.negotiate()?;
+                    let health = client.health()?;
                     Output::Json(match command {
                         Data::Diagnose { project,executor,asset,request_id,provider:true,lines,.. } => {
                             if !(1..=2000).contains(&lines) {
@@ -1063,10 +1001,10 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                         } => datasets::show(&client, &project, &executor, &asset, &health)?,
                     })
                 }
-                Command::Check => Output::Json(client.negotiate()?),
+                Command::Check => Output::Json(client.health()?),
                 Command::Get { path } => Output::Json(client.get(&path)?),
                 Command::Project { .. } => {
-                    let health = client.negotiate()?;
+                    let health = client.health()?;
                     Output::Json(projects::execute(
                         &client,
                         project_plan.as_ref().expect("validated project plan"),
@@ -1074,7 +1012,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     )?)
                 }
                 Command::Source { command } => {
-                    let health = client.negotiate()?;
+                    let health = client.health()?;
                     Output::Json(match command {
                         Source::Import { project, directory } => {
                             sources::import_directory(&client, &project, &directory, &health)?
@@ -1125,11 +1063,11 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 Command::Run {
                     command: Run::LocalStatus { project, run },
                 } => {
-                    client.negotiate()?;
+                    client.health()?;
                     Output::Json(ml_exp_client::local::status(&client, &project, &run)?)
                 }
                 Command::Run { command } => {
-                    let health = client.negotiate()?;
+                    let health = client.health()?;
                     match command {
                         Run::Batch {
                             project, state_dir, ..
@@ -1282,7 +1220,6 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                             lines,
                         } => Output::Json(read::observe(
                             &client,
-                            &health,
                             saved.as_ref(),
                             target.selection(),
                             read::View::Logs { stream, lines },
@@ -1303,16 +1240,13 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                         Run::Metrics {
                             target,
                             max_points,
-                            keys,
                             names,
                         } => Output::Json(read::observe(
                             &client,
-                            &health,
                             saved.as_ref(),
                             target.selection(),
                             read::View::Metrics {
                                 max_points,
-                                keys,
                                 names: (!names.is_empty()).then_some(names),
                             },
                         )?),

@@ -1,5 +1,5 @@
 use super::*;
-use ml_exp_core::operations::{self, Dispatch, Policy, Scope};
+use ml_exp_core::operations::{self, FrozenFiles, Scope};
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -63,8 +63,8 @@ fn observation_never_bootstraps_or_recovers_action_state() {
         writer.database().journal(id, 100).unwrap().len(),
         events.len() + 1
     );
-    // Missing rows and legacy execution files remain untouched, even though
-    // the authoritative database already exists for a different Action.
+    // A plan with no committed row stays incomplete evidence, even though the
+    // authoritative database already exists for a different Action.
     let orphan_id = "action-1111111111111111";
     let orphan = writer.directory(orphan_id).unwrap();
     fs::create_dir(&orphan).unwrap();
@@ -79,20 +79,6 @@ fn observation_never_bootstraps_or_recovers_action_state() {
     .unwrap();
     assert!(reader.observe(orphan_id).is_err());
     assert_eq!(writer.database().read(orphan_id).unwrap(), json!({}));
-    ml_exp_io::write_atomic(
-        &orphan.join("execution.json"),
-        b"{\"status\":\"EXECUTING\"}",
-        true,
-    )
-    .unwrap();
-    assert!(matches!(
-        reader.observe(orphan_id),
-        Err(Error::LegacyMigration)
-    ));
-    assert_eq!(
-        fs::read(orphan.join("execution.json")).unwrap(),
-        b"{\"status\":\"EXECUTING\"}"
-    );
     fs::remove_file(root.path().join(".actions.lock")).unwrap();
     assert!(reader.observe(id).is_err());
     assert!(Store::open_existing(root.path()).is_err());
@@ -105,20 +91,22 @@ fn action_plan() -> Value {
     json!({
         "action_id": "action-0123456789abcdef",
         "ready": true,
-        "operation": "WRITE_CAMPAIGN",
+        "operation": "SUBMIT_RUN",
         "request_digest": format!("sha256:{}", "a".repeat(64)),
         "intent_digest": format!("sha256:{}", "b".repeat(64)),
         "gate_bundle_digest": format!("sha256:{}", "c".repeat(64)),
+        "execution_campaign_sha256": format!("sha256:{}", "d".repeat(64)),
+        "execution_manifest_sha256": format!("sha256:{}", "e".repeat(64)),
         "gate_expires_at": "2100-01-01T00:00:00Z",
         "scope": {"project": "demo", "scope_type": "run", "object_id": "train"},
-        "historical_extra": {"preserve": true},
+        "unnamed_extra": {"preserve": true},
         "run_id": "train"
     })
 }
-fn policy() -> Policy {
-    Policy {
-        allow_project_writes: true,
-        ..Default::default()
+fn files() -> FrozenFiles {
+    FrozenFiles {
+        execution_campaign_sha256: Some(format!("sha256:{}", "d".repeat(64))),
+        execution_manifest_sha256: Some(format!("sha256:{}", "e".repeat(64))),
     }
 }
 
@@ -131,7 +119,7 @@ fn prepared_authorized_and_claimed_snapshots_keep_the_plan_and_the_idempotency_k
     let prepared = store.save_plan(plan, NOW, &uid(1)).unwrap();
     assert_eq!(prepared["execution"]["status"], "PREPARED");
     assert_eq!(prepared["execution"]["revision"], 1);
-    assert_eq!(prepared["historical_extra"], json!({"preserve": true}));
+    assert_eq!(prepared["unnamed_extra"], json!({"preserve": true}));
     let authorized = store
         .authorize(id, "actor:test", "approved explicitly", NOW, &uid(2))
         .unwrap();
@@ -146,8 +134,7 @@ fn prepared_authorized_and_claimed_snapshots_keep_the_plan_and_the_idempotency_k
         .claim(
             id,
             &format!("EXECUTE {id}"),
-            &policy(),
-            &Default::default(),
+            &files(),
             ClaimContext {
                 now: NOW,
                 transition_id: &uid(3),
@@ -155,7 +142,7 @@ fn prepared_authorized_and_claimed_snapshots_keep_the_plan_and_the_idempotency_k
             },
         )
         .unwrap();
-    assert_eq!(claimed.dispatch, Some(Dispatch::ProjectWrite));
+    assert!(claimed.execute);
     assert_eq!(claimed.snapshot["execution"]["next_action"], "WAIT");
     assert_eq!(
         claimed.snapshot["execution"]["resolution"],
@@ -183,9 +170,9 @@ fn action_id_digest_stays_frozen() {
             "action-32d525de0f7b4323",
         ),
         (
-            json!({"project": "\u{5b9e}\u{9a8c}", "scope_type": "attempt", "object_id": "run::attempt-001"}),
+            json!({"project": "\u{5b9e}\u{9a8c}", "scope_type": "run", "object_id": "run::attempt-001"}),
             "\u{56fa}\u{5b9a}\u{8bf7}\u{6c42}",
-            "action-98dabcdf2abbc705",
+            "action-027b4c09aea0aa69",
         ),
     ] {
         let scope: Scope = serde_json::from_value(scope).unwrap();
@@ -215,8 +202,7 @@ fn competing_claims_dispatch_exactly_once_and_restart_only_reconciles() {
             store.claim(
                 &id,
                 &format!("EXECUTE {id}"),
-                &policy(),
-                &Default::default(),
+                &files(),
                 ClaimContext {
                     now: NOW,
                     transition_id: &uid(index + 3),
@@ -243,8 +229,7 @@ fn competing_claims_dispatch_exactly_once_and_restart_only_reconciles() {
         reopened.claim(
             id,
             &format!("EXECUTE {id}"),
-            &policy(),
-            &Default::default(),
+            &files(),
             ClaimContext {
                 now: NOW,
                 transition_id: &uid(8),
@@ -328,8 +313,7 @@ fn missing_action_lock_is_never_recreated_after_bootstrap_or_on_reopen() {
             .claim(
                 id,
                 &format!("EXECUTE {id}"),
-                &policy(),
-                &Default::default(),
+                &files(),
                 ClaimContext {
                     now: NOW,
                     transition_id: &uid(3),
@@ -343,138 +327,7 @@ fn missing_action_lock_is_never_recreated_after_bootstrap_or_on_reopen() {
 }
 
 #[test]
-fn journal_deduplicates_and_commands_never_modify_immutable_plan() {
-    let root = tempfile::tempdir().unwrap();
-    let store = Store::open(root.path()).unwrap();
-    let plan = &action_plan();
-    let id = plan["action_id"].as_str().unwrap();
-    store.save_plan(plan, NOW, &uid(1)).unwrap();
-    let original = fs::read(store.directory(id).unwrap().join("plan.json")).unwrap();
-    let payload = json!({"note":"private freeform note"});
-    let command = store
-        .write_command(id, CommandPhase::Authorize, &payload, "command-1", NOW)
-        .unwrap();
-    assert_eq!(
-        store
-            .write_command(id, CommandPhase::Authorize, &payload, "ignored-new-id", NOW)
-            .unwrap(),
-        command
-    );
-    assert_eq!(
-        store.read_command(id, CommandPhase::Authorize).unwrap(),
-        payload
-    );
-    assert!(matches!(
-        store.write_command(
-            id,
-            CommandPhase::Authorize,
-            &json!({"note":"changed"}),
-            "command-2",
-            NOW
-        ),
-        Err(Error::CommandConflict)
-    ));
-    assert_eq!(store.database().journal(id, 100).unwrap().len(), 2);
-    assert_eq!(
-        fs::read(store.directory(id).unwrap().join("plan.json")).unwrap(),
-        original
-    );
-    assert!(
-        !String::from_utf8(original)
-            .unwrap()
-            .contains("private freeform note")
-    );
-    store
-        .append_journal(
-            id,
-            "progress",
-            &json!({"phase":"STAGING"}),
-            "progress-1",
-            NOW,
-        )
-        .unwrap();
-    store
-        .append_journal(
-            id,
-            "progress",
-            &json!({"phase":"different retry"}),
-            "progress-1",
-            NOW,
-        )
-        .unwrap();
-    let journal = store.database().journal(id, 1).unwrap();
-    assert_eq!(journal.len(), 1);
-    assert_eq!(journal[0]["payload"]["phase"], "STAGING");
-    store
-        .write_activity_error(id, "execute", &"x".repeat(2000), "TRANSPORT", NOW)
-        .unwrap();
-    assert_eq!(
-        store.activity_error(id, "execute").unwrap()["message"]
-            .as_str()
-            .unwrap()
-            .len(),
-        1000
-    );
-    assert!(store.activity_error(id, "../leak").is_err());
-}
-
-#[test]
-fn command_replays_follow_python_numeric_equality_without_rewriting_frozen_bytes() {
-    for (original, equivalent) in [
-        (json!({"value":1}), json!({"value":1.0})),
-        (
-            json!({"value":true,"nested":[false,{"x":1}]}),
-            json!({"nested":[0.0,{"x":true}],"value":1.0}),
-        ),
-    ] {
-        let root = tempfile::tempdir().unwrap();
-        let store = Store::open(root.path()).unwrap();
-        let plan = action_plan();
-        let id = plan["action_id"].as_str().unwrap();
-        store.save_plan(&plan, NOW, &uid(1)).unwrap();
-        let plan_path = store.directory(id).unwrap().join("plan.json");
-        let frozen_plan = fs::read(&plan_path).unwrap();
-        let first = store
-            .write_command(id, CommandPhase::Authorize, &original, "first-command", NOW)
-            .unwrap();
-        let command_path = store.directory(id).unwrap().join("commands/authorize.json");
-        let frozen_command = fs::read(&command_path).unwrap();
-        assert_eq!(
-            store
-                .write_command(
-                    id,
-                    CommandPhase::Authorize,
-                    &equivalent,
-                    "ignored-replay-id",
-                    "2026-10-27T00:01:00Z"
-                )
-                .unwrap(),
-            first,
-        );
-        assert_eq!(
-            store.read_command(id, CommandPhase::Authorize).unwrap(),
-            original
-        );
-        let mut different = equivalent;
-        different["value"] = json!(2);
-        assert!(matches!(
-            store.write_command(
-                id,
-                CommandPhase::Authorize,
-                &different,
-                "different-command",
-                NOW
-            ),
-            Err(Error::CommandConflict),
-        ));
-        assert_eq!(store.database().journal(id, 100).unwrap().len(), 2);
-        assert_eq!(fs::read(&command_path).unwrap(), frozen_command);
-        assert_eq!(fs::read(&plan_path).unwrap(), frozen_plan);
-    }
-}
-
-#[test]
-fn marker_missing_database_legacy_state_and_schema_drift_fail_closed() {
+fn marker_missing_database_and_schema_drift_fail_closed() {
     let root = tempfile::tempdir().unwrap();
     let store = Store::open(root.path()).unwrap();
     let id = "action-0123456789abcdef";
@@ -487,16 +340,7 @@ fn marker_missing_database_legacy_state_and_schema_drift_fail_closed() {
     assert!(!store.database().path().exists());
     let other = tempfile::tempdir().unwrap();
     let store = Store::open(other.path()).unwrap();
-    fs::create_dir(store.directory(id).unwrap()).unwrap();
-    fs::write(
-        store.directory(id).unwrap().join("execution.json"),
-        "{\"status\":\"AUTHORIZED\"}",
-    )
-    .unwrap();
-    assert!(matches!(
-        store.database().read(id),
-        Err(Error::LegacyMigration)
-    ));
+    store.database().read(id).unwrap();
     let dbpath = store.database().path();
     let connection = rusqlite::Connection::open(dbpath).unwrap();
     connection.execute_batch("PRAGMA user_version=9;").unwrap();

@@ -14,7 +14,7 @@ impl Service {
         ))
     }
     pub(super) fn saved(&self, project: &str, run: &str) -> Result<Option<Prepared>> {
-        // A legacy/non-native Run has no slot; do not impose native admission
+        // A Run with no slot was not created here; do not impose native admission
         // while serving unrelated approved read-only Runs.
         let original = Self::slot_name(project, run, "attempt-001")?;
         if !self

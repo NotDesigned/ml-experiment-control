@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 pub struct Manifest {
     pub schema_version: u32,
     pub version: String,
-    pub protocol_version: u32,
     pub assets: Vec<Asset>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -107,7 +106,6 @@ impl Manifest {
         if self.schema_version != 1
             || self.version != requested
             || !version(&self.version)
-            || self.protocol_version != crate::API_PROTOCOL_VERSION
             || self.assets.is_empty()
             || self.assets.len() > 32
         {

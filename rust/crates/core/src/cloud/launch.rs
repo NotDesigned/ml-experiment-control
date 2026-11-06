@@ -4,22 +4,18 @@ use super::*;
 use crate::{launch, managed};
 use std::path::PathBuf;
 
-pub const MAX_INLINE_BYTES: usize = 64 * 1024;
 pub const MAX_PACKAGE_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Package {
     pub root: PathBuf,
-    /// New Runs may provision only descendants of this approved mounted root.
-    /// Absence retains the existing-root contract for older frozen packages.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub storage: Option<StorageLayout>,
+    /// A Run may provision only descendants of this approved mounted root.
+    pub storage: StorageLayout,
     pub manifest: launch::Manifest,
     pub config: managed::Config,
     pub worker_sha256: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub channel: Option<super::exchange::Channel>,
+    pub channel: super::exchange::Channel,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint_context: Option<crate::checkpoints::Context>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -117,16 +113,14 @@ impl Package {
         self.validate()
     }
     pub fn validate(&self) -> Result<()> {
-        if let Some(storage) = &self.storage {
-            storage.validate()?;
-            if storage.runs != self.root
-                || self
-                    .imports
-                    .iter()
-                    .any(|i| PathBuf::from(&i.root) != storage.datasets)
-            {
-                return Err(Error("cloud storage binding"));
-            }
+        self.storage.validate()?;
+        if self.storage.runs != self.root
+            || self
+                .imports
+                .iter()
+                .any(|i| PathBuf::from(&i.root) != self.storage.datasets)
+        {
+            return Err(Error("cloud storage binding"));
         }
         if let Some(policy) = &self.artifacts {
             policy.validate().map_err(|_| Error("artifact policy"))?;
@@ -146,7 +140,7 @@ impl Package {
         for import in &self.imports {
             import.validate().map_err(|_| Error("cloud import"))?;
             if let crate::datasets::import::Source::ExchangeParts { channel } = &import.source {
-                if self.channel.as_ref() != Some(channel) {
+                if self.channel != *channel {
                     return Err(Error("dataset exchange scope"));
                 }
             }
@@ -168,9 +162,7 @@ impl Package {
                 return Err(Error("cloud import scope"));
             }
         }
-        if let Some(channel) = &self.channel {
-            channel.validate(identity)?;
-        }
+        self.channel.validate(identity)?;
         if let Some(context) = &self.checkpoint_context {
             crate::checkpoints::context(
                 &serde_json::to_value(context).map_err(|_| Error("checkpoint context"))?,
@@ -214,35 +206,17 @@ impl Package {
         }
         Ok(())
     }
-    pub fn command(&self, worker: &str) -> Result<Vec<String>> {
-        self.validate()?;
-        absolute_path(worker)?;
-        let json = serde_json::to_string(self).map_err(|_| Error("cloud package encoding"))?;
-        if json.len() > MAX_INLINE_BYTES {
-            return Err(Error("cloud inline package size"));
-        }
-        Ok(vec![
-            worker.into(),
-            "cloud-launch".into(),
-            "--package-json".into(),
-            json,
-        ])
-    }
     /// Read this same frozen JSON through the existing Attempt exchange.
     pub fn download_command(&self, worker: &str) -> Result<Vec<String>> {
         self.validate()?;
         absolute_path(worker)?;
-        let channel = self
-            .channel
-            .as_ref()
-            .ok_or(Error("package exchange required"))?;
         Ok(vec![
             worker.into(),
             "cloud-launch".into(),
             "--package-url".into(),
-            format!("{}/package", channel.url),
+            format!("{}/package", self.channel.url),
             "--package-token".into(),
-            channel.token.clone(),
+            self.channel.token.clone(),
             "--package-sha256".into(),
             helper::sha256_bytes(
                 &serde_json::to_vec(
@@ -262,6 +236,8 @@ pub struct Input<'a> {
     pub argv: &'a [String],
     pub timeout_seconds: u64,
     pub worker_sha256: &'a str,
+    pub storage: StorageLayout,
+    pub channel: super::exchange::Channel,
 }
 pub fn compile(input: Input<'_>) -> Result<Package> {
     let identity = launch::Identity {
@@ -335,11 +311,11 @@ pub fn compile(input: Input<'_>) -> Result<Package> {
     };
     let package = Package {
         root,
-        storage: None,
+        storage: input.storage,
         manifest,
         config,
         worker_sha256: input.worker_sha256.into(),
-        channel: None,
+        channel: input.channel,
         checkpoint_context: None,
         imports: Vec::new(),
         artifacts: None,

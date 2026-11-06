@@ -63,6 +63,52 @@ fn sense() -> sensecore::Profile {
     }
 }
 #[test]
+fn sync_child_and_retry_tokens_are_deterministic_and_pinned() {
+    let action = "action-0123456789abcdef";
+    let request_id = "0123456789abcdef0123456789abcdef";
+    let sync = exchange::Sync {
+        request_id: request_id.into(),
+        confirmation: format!("SYNC {action}"),
+    };
+    let child = sync.job(&job()).unwrap();
+    assert_eq!(
+        child.submission_token,
+        sync.job(&job()).unwrap().submission_token
+    );
+    assert_eq!(child.submission_token, "d2f7b62b1d29c703c19418947d77d91f");
+    let retry = exchange::SyncRetry {
+        expected_failed_job_id: "dlc-failed-1".into(),
+        confirmation: format!("RETRY SYNC {action} {request_id} dlc-failed-1"),
+    };
+    let again = retry.job(action, request_id, &job()).unwrap();
+    assert_eq!(
+        again.submission_token,
+        retry
+            .job(action, request_id, &job())
+            .unwrap()
+            .submission_token
+    );
+    assert_eq!(again.submission_token, "73fc8327354413352ef45f6c7bae564c");
+    // A request id is 32 hex at the entry points. These pin the same two identity
+    // inputs with non-ASCII text, which the encoder must also keep stable.
+    let parent = "a".repeat(32);
+    assert_eq!(
+        canonical::digest(&json!(["native-cloud-sync.v1", parent, "模型😀"])).unwrap()[..32],
+        *"d9db8ef910d65d7fc7d6fed308204c58"
+    );
+    assert_eq!(
+        canonical::digest(&json!([
+            "native-cloud-sync-retry.v1",
+            action,
+            "模型😀",
+            "dlc-failed-1",
+            parent
+        ]))
+        .unwrap()[..32],
+        *"f2ed566dcc42a106065ca7985994c1e1"
+    );
+}
+#[test]
 fn cloud_run_authorship_launch_and_approval_preserve_science_and_exact_attempt() {
     let runtime = run::Runtime {
         runtime_id: format!("runtime.{}", "1".repeat(64)),
@@ -71,13 +117,12 @@ fn cloud_run_authorship_launch_and_approval_preserve_science_and_exact_attempt()
         source_dir: "/workspace".into(),
         worker_path: "/opt/ml-expd/worker".into(),
         worker_sha256: format!("sha256:{}", "d".repeat(64)),
-        worker_features: Default::default(),
     };
     let request:run::Create=serde_json::from_value(json!({"run_id":"train","runtime_id":runtime.runtime_id,"executor":"pai-h200","command":["python","train.py","'$(not-a-shell)'","中文"],"resources":{"gpus":1,"cpus":8,"memory_gb":64},"walltime_seconds":3600,"seed":42})).unwrap();
     let p = format!("sha256:{}", "a".repeat(64));
     let s = format!("sha256:{}", "b".repeat(64));
     let profile = pai().scope().unwrap();
-    let docs = run::documents(
+    let mut docs = run::documents(
         "demo",
         &request,
         &runtime,
@@ -105,29 +150,56 @@ fn cloud_run_authorship_launch_and_approval_preserve_science_and_exact_attempt()
         "2026-10-29T00:00:00Z",
     )
     .unwrap();
-    let binding = crate::first_submission::native::Binding {
+    let storage = json!({"mount":"/mnt/workspace","runs":"/mnt/workspace/ml-expd/runs",
+        "datasets":"/mnt/workspace/ml-expd/datasets"});
+    docs.run["native_cloud"]["storage"] = storage.clone();
+    docs.attempt["native_cloud"]["storage"] = storage;
+    let bound = |run: &Value, attempt: &Value| crate::first_submission::native::Binding {
         project: "demo".into(),
         run_id: "train".into(),
         attempt_id: "attempt-001".into(),
-        project_sha256: p,
-        run_sha256: helper::sha256_bytes(&serde_json::to_vec(&docs.run).unwrap()),
-        attempt_sha256: helper::sha256_bytes(&serde_json::to_vec(&docs.attempt).unwrap()),
-        source_receipt_sha256: s,
-        backend_config_sha256: profile,
+        project_sha256: p.clone(),
+        run_sha256: helper::sha256_bytes(&serde_json::to_vec(run).unwrap()),
+        attempt_sha256: helper::sha256_bytes(&serde_json::to_vec(attempt).unwrap()),
+        source_receipt_sha256: s.clone(),
+        backend_config_sha256: profile.clone(),
     };
-    let execution = run::execution(
-        &docs.run,
-        &docs.attempt,
-        binding.clone(),
-        &runtime,
-        "/mnt/workspace/ml-expd/runs",
-        &"0".repeat(32),
-        pai::Allocation::AllowIdle,
-        None,
-    )
-    .unwrap();
-    assert_eq!(execution.job.command[1], "cloud-launch");
-    let package: launch::Package = serde_json::from_str(&execution.job.command[3]).unwrap();
+    let binding = bound(&docs.run, &docs.attempt);
+    let channel = exchange::Channel {
+        url: "https://api.example/api/worker-exchange/demo/train/attempt-001".into(),
+        token: "e".repeat(64),
+    };
+    let compile = |run: &Value, attempt: &Value, binding, channel| {
+        run::execution(
+            run,
+            attempt,
+            binding,
+            &runtime,
+            "/mnt/workspace/ml-expd/runs",
+            &"0".repeat(32),
+            pai::Allocation::AllowIdle,
+            channel,
+        )
+    };
+    let execution = compile(&docs.run, &docs.attempt, binding.clone(), channel.clone()).unwrap();
+    // The same logical request always compiles to the same Action identity.
+    assert_eq!(
+        compile(&docs.run, &docs.attempt, binding.clone(), channel.clone())
+            .unwrap()
+            .digest()
+            .unwrap(),
+        execution.digest().unwrap()
+    );
+    assert_eq!(
+        &execution.job.command[..3],
+        ["/opt/ml-expd/worker", "cloud-launch", "--package-url"]
+    );
+    let package = execution.package().unwrap();
+    assert!(package.channel == channel);
+    assert_eq!(
+        package.storage.mount,
+        std::path::Path::new("/mnt/workspace")
+    );
     assert_eq!(package.manifest.argv, request.command);
     assert_eq!(package.manifest.identity.attempt_id, "attempt-001");
     assert!(
@@ -151,18 +223,45 @@ fn cloud_run_authorship_launch_and_approval_preserve_science_and_exact_attempt()
     action::validate(&plan, &execution).unwrap();
     let mut mixed = docs.attempt.clone();
     mixed["seed"] = json!(43);
-    assert!(
-        run::execution(
-            &docs.run,
-            &mixed,
-            binding,
-            &runtime,
-            "/mnt/workspace/ml-expd/runs",
-            &"0".repeat(32),
-            pai::Allocation::AllowIdle,
-            None,
+    assert!(compile(&docs.run, &mixed, binding.clone(), channel.clone()).is_err());
+    // A channel for another Attempt never seals into this package.
+    let foreign = exchange::Channel {
+        url: "https://api.example/api/worker-exchange/demo/other/attempt-001".into(),
+        token: "e".repeat(64),
+    };
+    assert!(compile(&docs.run, &docs.attempt, binding, foreign).is_err());
+    // A Run authored without a storage plan has no package at all.
+    let mut bare = docs.run.clone();
+    bare["native_cloud"]
+        .as_object_mut()
+        .unwrap()
+        .remove("storage");
+    let mut bare_attempt = bare.clone();
+    bare_attempt["attempt_id"] = json!("attempt-001");
+    assert_eq!(
+        compile(
+            &bare,
+            &bare_attempt,
+            bound(&bare, &bare_attempt),
+            channel.clone()
         )
-        .is_err()
+        .err(),
+        Some(Error("frozen cloud storage"))
+    );
+    // The storage plan stays bound to the Run root it was frozen with.
+    let mut moved = docs.run.clone();
+    moved["native_cloud"]["storage"]["runs"] = json!("/mnt/workspace/elsewhere/runs");
+    let mut moved_attempt = moved.clone();
+    moved_attempt["attempt_id"] = json!("attempt-001");
+    assert_eq!(
+        compile(
+            &moved,
+            &moved_attempt,
+            bound(&moved, &moved_attempt),
+            channel
+        )
+        .err(),
+        Some(Error("cloud storage binding"))
     );
 }
 #[test]
@@ -279,11 +378,12 @@ fn sensecore_training_copy_and_quota_selection_preserve_boundaries() {
     assert!(p.validate_job(&row, &job, Some("uid2")).is_err());
 }
 #[test]
-fn sensecore_workspace_zone_does_not_change_pool_or_mount_zone_and_legacy_hashes_remain() {
+fn sensecore_workspace_zone_does_not_change_pool_or_mount_zone_and_an_absent_zone_keeps_the_digest()
+{
     let mut p = sense();
-    let legacy = serde_json::to_value(&p).unwrap();
-    assert!(legacy["scope"].get("workspace_zone").is_none());
-    let restored: sensecore::Profile = serde_json::from_value(legacy).unwrap();
+    let unzoned = serde_json::to_value(&p).unwrap();
+    assert!(unzoned["scope"].get("workspace_zone").is_none());
+    let restored: sensecore::Profile = serde_json::from_value(unzoned).unwrap();
     assert_eq!(restored.digest().unwrap(), p.digest().unwrap());
     p.scope.workspace_zone = Some("cn-east-1z".into());
     assert!(
@@ -447,9 +547,9 @@ fn offline_requests_use_exact_workspace_uuid_and_workspace_telemetry_zone() {
 }
 
 #[test]
-fn readonly_diagnostic_mounts_do_not_change_legacy_job_serialization() {
+fn readonly_diagnostic_mounts_do_not_change_plain_job_serialization() {
     let original = job();
-    let legacy = json!({
+    let plain = json!({
         "project":"demo", "run_id":"train", "attempt_id":"attempt-001",
         "submission_token":"a".repeat(32), "source_id":format!("source.{}", "b".repeat(64)),
         "image":format!("registry.example/team/image@sha256:{}", "c".repeat(64)),
@@ -457,12 +557,12 @@ fn readonly_diagnostic_mounts_do_not_change_legacy_job_serialization() {
         "gpus":1, "cpus":8, "memory_gb":64, "max_time_seconds":86400, "priority":5
     });
     let value = serde_json::to_value(&original).unwrap();
-    assert_eq!(value, legacy);
+    assert_eq!(value, plain);
     assert_eq!(
         canonical::protocol_identity(&value),
-        canonical::protocol_identity(&legacy)
+        canonical::protocol_identity(&plain)
     );
-    let restored: Job = serde_json::from_value(legacy).unwrap();
+    let restored: Job = serde_json::from_value(plain).unwrap();
     assert!(!restored.read_only_storage);
     assert!(
         serde_json::to_value(&restored)

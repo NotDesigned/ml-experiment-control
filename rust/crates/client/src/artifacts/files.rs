@@ -84,7 +84,7 @@ pub fn download(
     output: &Path,
     health: &Value,
 ) -> Result<Value, Error> {
-    validate_submission_id(action).map_err(|_| invalid())?;
+    validate_action_id(action).map_err(|_| invalid())?;
     if !artifacts::publication::export_path(path) {
         return Err(invalid());
     }

@@ -59,7 +59,7 @@ pub(crate) fn link(
     request: &ml_exp_core::renewal::Request,
 ) -> io::Result<()> {
     request.validate(original).map_err(why!(invalid()))?;
-    ml_exp_core::operations::validate_submission_id(replacement).map_err(why!(invalid()))?;
+    ml_exp_core::operations::validate_action_id(replacement).map_err(why!(invalid()))?;
     let value = Link {
         original: original.into(),
         replacement: replacement.into(),
@@ -76,7 +76,7 @@ pub(crate) fn decorate(
         .as_str()
         .ok_or_else(invalid)?
         .to_owned();
-    ml_exp_core::operations::validate_submission_id(&action).map_err(why!(invalid()))?;
+    ml_exp_core::operations::validate_action_id(&action).map_err(why!(invalid()))?;
     for (side, key) in [
         ("origin", "renewed_from"),
         ("next", "replacement_submission_id"),
@@ -88,7 +88,7 @@ pub(crate) fn decorate(
             }
             .validate(&link.original)
             .map_err(why!(invalid()))?;
-            ml_exp_core::operations::validate_submission_id(&link.replacement)
+            ml_exp_core::operations::validate_action_id(&link.replacement)
                 .map_err(why!(invalid()))?;
             if side == "origin" && link.replacement != action
                 || side == "next" && link.original != action

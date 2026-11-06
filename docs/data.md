@@ -50,8 +50,9 @@ For PAI, an archive-verified asset can be used directly in the Run's `data`
 field even when the API has no READY receipt yet. The worker imports and
 verifies it on CPFS before starting training, or reuses an exact verified cache.
 This inline preparation consumes the allocated job's running time and resources.
-The full worker package, including dataset and checkpoint manifests, must fit
-64 KiB. `ready:null` alone does not prove that a physical cache is absent.
+A Run's dataset manifests must fit 256 KiB together, and the full worker package,
+including checkpoint metadata, must fit 8 MiB. `ready:null` alone does not prove
+that a physical cache is absent.
 
 A separate CPU publication avoids doing that work on allocated training GPUs.
 It is optional for this inline path:
@@ -78,7 +79,7 @@ automatically replaced. `data show` reads cached evidence without querying the
 provider. Only a complete verified READY receipt allows later training to reuse
 the cache without another download.
 
-## Read-only diagnostics (native 0.1.27+)
+## Read-only diagnostics
 
 For an existing terminal PAI copy, retain its asset and publication request:
 
@@ -101,14 +102,13 @@ The report contains current available bytes/inodes, marker/state identity and
 metadata hashes, modes/ownership, recorded part counts, part sizes, and an
 existing-lock nonblocking check. Part contents are not read. Up to 128 part
 entries are included with an explicit truncation flag. A missing lock is never
-created. `statvfs` does not prove user-quota availability, and current diagnostics
-cannot reconstruct an errno discarded by a historical worker. Missing offline
+created. `statvfs` does not prove user-quota availability. Missing offline
 logs stay `AWAITING_OFFLINE_LOGS`; a later explicit observation can retrieve them.
 
 To read what the provider recorded for the copy and its diagnostic, add `--provider`
 (with optional `--lines`, up to 2000). This returns each job's reason, pods, events
-and a redacted log tail, creates nothing, and stores nothing. Images built with worker
-0.1.30 or later log `ML_EXPD_DATA_IO_ERROR` with the failing check.
+and a redacted log tail, creates nothing, and stores nothing. The worker logs
+`ML_EXPD_DATA_IO_ERROR` with the failing check.
 
 ## Existing OSS dataset objects
 

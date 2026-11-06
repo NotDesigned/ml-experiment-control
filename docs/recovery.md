@@ -59,9 +59,9 @@ GET /api/actions/ACTION_ID/diagnostics?refresh=true
 
 The bounded redacted response can include staging stdout/stderr, exit code,
 timeout and image phases. Slurm refresh reads the frozen preparation receipt;
-it never reruns conversion, the Action or a project controller. A late remote
+it never reruns conversion or the Action. A late remote
 READY event is separate evidence and does not rewrite the Action's saved failure.
-A new Action still rechecks the actual SIF. Old/missing receipts remain UNKNOWN.
+A new Action still rechecks the actual SIF. A missing receipt remains UNKNOWN.
 
 Slurm image preparation occurs before scheduler submission. It distinguishes lock
 wait, cache verification, OCI pull/conversion, SIF verification and publication.
@@ -216,22 +216,19 @@ There is no automatic preemption recovery. ACP uses `backoff_limit: 0`; the
 collector never launches replacement training. Worker restore, inside-job data,
 training and result return share one worker duration. A hard kill can interrupt
 publication; offline recovery can only return bytes that were actually persisted.
-Detailed diagnostics require the corresponding frozen image capabilities.
 
 Interrupted server preparations become RECONCILE_REQUIRED at startup. Observe
 the original Runtime/copy/script dependencies, then explicitly continue once
 verified READY. Continuation advances preparation, never GPU authorization.
 Changing the selected executor configuration blocks the old frozen selection.
 
-New `launch-diagnostics.v1` images report FETCH_MANIFEST, CREATE_OUTPUT,
-START_WORKER and child exit using exact-Attempt capability before writable NAS
-is required. Missing best-effort reports prove no particular cause. Exit 78 can
-be launcher setup, filesystem failure or a child result. For errno 28, check the
+A job that fails during launch can leave no report, and that absence proves no
+particular cause. For errno 28, check the
 actual mounted path, inode/file-count and quota; freeing API archives is not
 proof that NAS or CPFS writes work.
 
 
-## Read-only collector diagnostics (native 0.1.27+)
+## Read-only collector diagnostics
 
 For an existing terminal PAI synchronization job:
 

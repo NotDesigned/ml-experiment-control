@@ -11,7 +11,7 @@ pub struct Request {
 }
 impl Request {
     pub fn validate(&self, action: &str) -> Result<(), &'static str> {
-        crate::operations::validate_submission_id(action).map_err(|_| "renewal action")?;
+        crate::operations::validate_action_id(action).map_err(|_| "renewal action")?;
         crate::submission::validate_submission_token(&self.request_id)
             .map_err(|_| "renewal request")?;
         if self.confirmation != format!("RENEW {action}") {
@@ -29,7 +29,7 @@ impl Request {
     }
 }
 pub fn archive(action: &str) -> Result<String, &'static str> {
-    crate::operations::validate_submission_id(action).map_err(|_| "renewal action")?;
+    crate::operations::validate_action_id(action).map_err(|_| "renewal action")?;
     Ok(format!("prepared-{action}.json"))
 }
 pub fn eligible(snapshot: &Value, now: &str) -> Result<(), &'static str> {

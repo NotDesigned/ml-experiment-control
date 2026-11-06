@@ -153,11 +153,6 @@ impl Service {
                 {
                     return Err(cloud::Error::evidence());
                 }
-                for name in ["submission.json", "backend.json", "collection.json"] {
-                    if directory.entry_exists(OsStr::new(name)).map_err(io)? {
-                        return Err(cloud::Error::evidence());
-                    }
-                }
             }
         }
         let guard = self
@@ -166,14 +161,9 @@ impl Service {
             .map_err(why!(cloud::Error::evidence()))?;
         self.check(&prepared)?;
         let check = || self.still_live(&guard, &execution.job.project, &execution.job.run_id);
-        let policy = Policy {
-            allow_scheduler_mutations: true,
-            ..Default::default()
-        };
         let files = FrozenFiles {
             execution_campaign_sha256: Some(execution.binding.run_sha256.clone()),
             execution_manifest_sha256: Some(execution.binding.attempt_sha256.clone()),
-            ..Default::default()
         };
         let snapshot = Runner {
             actions: &self.actions,
@@ -185,7 +175,6 @@ impl Service {
             Execute {
                 action_id: action,
                 confirmation,
-                policy: &policy,
                 files: &files,
                 claim: ClaimContext {
                     now,

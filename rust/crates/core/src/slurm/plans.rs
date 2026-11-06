@@ -7,7 +7,8 @@ use crate::identity::{submission_marker, validate_attempt, validate_id};
 
 use super::{Error, JobId, Resources, SlurmConfig, Storage, absolute_path, component, printable};
 
-/// POSIX shell quoting compatible with Python shlex.quote for UTF-8 strings.
+/// POSIX shell quoting: a word of safe characters stays bare, anything else is
+/// single-quoted.
 /// NUL is not representable in a process argument and is always refused.
 pub fn shell_quote(value: &str) -> Result<String, Error> {
     if value.contains('\0') {

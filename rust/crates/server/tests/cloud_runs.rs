@@ -72,7 +72,6 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         source_dir: "/workspace".into(),
         worker_path: "/opt/ml-expd/worker".into(),
         worker_sha256: format!("sha256:{}", "3".repeat(64)),
-        worker_features: ["storage-layout.v1".into(), "package-download.v1".into()].into(),
     };
     let credentials = temp.path().join("credentials.json");
     private(
@@ -209,8 +208,7 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         value
     );
     assert!(!runs.join("setup-only").exists());
-    // CPU Runs use the same durable preparation path. Storage provisioning is
-    // frozen only for new authorship; legacy absence remains absent on replay.
+    // CPU Runs use the same durable preparation path, with the storage plan frozen.
     let mut cpu = request.clone();
     cpu.run_id = "cpu-only".into();
     cpu.resources.gpus = 0;
@@ -220,25 +218,13 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         .create_run("demo", cpu.clone(), "2026-10-29T00:00:00Z")
         .unwrap();
     let cpu_manifest = runs.join("cpu-only/manifest.json");
-    let mut frozen: Value = serde_json::from_slice(&fs::read(&cpu_manifest).unwrap()).unwrap();
+    let frozen: Value = serde_json::from_slice(&fs::read(&cpu_manifest).unwrap()).unwrap();
     assert_eq!(frozen["env"]["EXPERIMENT_LABEL"], "frozen literal $(text)");
     assert_eq!(
         frozen["evaluation"]["protocol"]["env"],
         serde_json::json!(cpu.env)
     );
     assert_eq!(frozen["native_cloud"]["storage"]["mount"], "/mnt/workspace");
-    frozen["native_cloud"]
-        .as_object_mut()
-        .unwrap()
-        .remove("storage");
-    fs::write(&cpu_manifest, serde_json::to_vec(&frozen).unwrap()).unwrap();
-    let mut old_attempt = frozen.clone();
-    old_attempt["attempt_id"] = json!("attempt-001");
-    fs::write(
-        runs.join("cpu-only/attempts/attempt-001/attempt.json"),
-        serde_json::to_vec(&old_attempt).unwrap(),
-    )
-    .unwrap();
     assert_eq!(
         service
             .create_run("demo", cpu.clone(), "2026-10-29T00:01:00Z")
@@ -298,7 +284,7 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         .join(name);
     private(
         &dataset_file,
-        &json!({"state":dataset,"archive_verified":false}),
+        &json!({"state":dataset,"archive_verified":false,"image_recipe":null,"image_started":false,"image":null,"copy_request_id":null,"copy_status":null,"diagnostic":null}),
     );
     let dataset_bytes = fs::read(&dataset_file).unwrap();
     let catalog = service.dataset_list("demo", "pai-h200").unwrap();
@@ -347,7 +333,10 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         "dataset-{}.json",
         ml_exp_core::canonical::digest(&json!(["demo", "pai-h200", ready.asset_id])).unwrap()
     ));
-    private(&ready_file, &json!({"state":ready,"archive_verified":true}));
+    private(
+        &ready_file,
+        &json!({"state":ready,"archive_verified":true,"image_recipe":null,"image_started":false,"image":null,"copy_request_id":null,"copy_status":null,"diagnostic":null}),
+    );
     let mut large = request.clone();
     large.run_id = "full-inventory".into();
     large.data = vec![ml_exp_core::datasets::Input {
@@ -385,15 +374,14 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     let package = execution.package().unwrap();
     assert_eq!(package.config.datasets[0].receipt.definition, definition);
     assert!(package.imports.is_empty());
-    assert!(serde_json::to_vec(&package).unwrap().len() <= 65536);
     let ready_bytes = fs::read(&ready_file).unwrap();
-    // A verified upload with no backend READY receipt needs the full import
-    // inventory too. This was the real 304-file >64KiB failure.
+    // A verified upload with no backend READY receipt carries the full import
+    // inventory too, which is why the provider command only names the package.
     let mut staging = ready.clone();
     staging.ready = None;
     fs::write(
         &ready_file,
-        serde_json::to_vec(&json!({"state":staging,"archive_verified":true})).unwrap(),
+        serde_json::to_vec(&json!({"state":staging,"archive_verified":true,"image_recipe":null,"image_started":false,"image":null,"copy_request_id":null,"copy_status":null,"diagnostic":null})).unwrap(),
     )
     .unwrap();
     let mut download_run = request.clone();
@@ -403,7 +391,7 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         name: "data".into(),
     }];
     service
-        .create_run("demo", download_run.clone(), "2026-10-29T00:00:00Z")
+        .create_run("demo", download_run, "2026-10-29T00:00:00Z")
         .unwrap();
     let prepare_download = || {
         service
@@ -456,37 +444,6 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         download_execution.job.command[7],
         ml_exp_core::slurm::helper::sha256_bytes(&download_bytes)
     );
-    assert!(download_package.command(&runtime.worker_path).is_err());
-    let mut legacy_config = config.clone();
-    legacy_config["backends"][0]["runtimes"][&runtime.runtime_id]["worker_features"] =
-        json!(["storage-layout.v1"]);
-    let legacy = Service::open(
-        settings.clone(),
-        Settings::from_slice(&serde_json::to_vec(&legacy_config).unwrap()).unwrap(),
-        sources.clone(),
-        None,
-        Default::default(),
-    )
-    .unwrap();
-    download_run.run_id = "legacy-inventory".into();
-    legacy
-        .create_run("demo", download_run, "2026-10-29T00:00:00Z")
-        .unwrap();
-    let error = legacy
-        .prepare(
-            "demo",
-            "legacy-inventory",
-            Approval {
-                max_gpu_hours: 1.,
-                reason: String::new(),
-            },
-            "2026-10-29T00:01:00Z",
-            "2026-10-29T01:01:00Z",
-            &"5".repeat(32),
-        )
-        .unwrap_err();
-    assert_eq!(error.code, "LAUNCH_METADATA_TOO_LARGE");
-    assert_eq!(error.http_status, Some(422));
     fs::write(&ready_file, &ready_bytes).unwrap();
     // Simulate a stop after the complete copy intent was saved but before its
     // outbox entry. A later API URL or launcher must not rebuild this command.
@@ -521,7 +478,7 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     )
     .unwrap();
     copy.command[3] = "# original frozen launcher\n".to_owned() + &copy.command[3];
-    let frozen_copy = json!({"state":ready,"archive_verified":true,"copy_runtime":runtime,"copy_storage":storage,"copy_request_id":"7".repeat(32),"copy_intent":copy});
+    let frozen_copy = json!({"state":ready,"archive_verified":true,"image_recipe":null,"image_started":false,"image":null,"copy_status":null,"diagnostic":null,"copy_runtime":runtime,"copy_storage":storage,"copy_request_id":"7".repeat(32),"copy_intent":copy});
     fs::write(&ready_file, serde_json::to_vec(&frozen_copy).unwrap()).unwrap();
     let intent_bytes = fs::read(&ready_file).unwrap();
     let restarted = open();
@@ -569,11 +526,10 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     absent.ready = None;
     fs::write(
         &ready_file,
-        serde_json::to_vec(&json!({"state":absent,"archive_verified":true})).unwrap(),
+        serde_json::to_vec(&json!({"state":absent,"archive_verified":true,"image_recipe":null,"image_started":false,"image":null,"copy_request_id":null,"copy_status":null,"diagnostic":null})).unwrap(),
     )
     .unwrap();
-    // A download-capable plan no longer fails on the inline size of the
-    // recomputed inventory; reading returns the same frozen Submission.
+    // Reading returns the same frozen Submission after the inventory is recomputed.
     assert_eq!(
         service
             .for_run("demo", "full-inventory", "2026-10-29T00:02:00Z")
@@ -584,7 +540,7 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     partial.parts.clear();
     fs::write(
         &ready_file,
-        serde_json::to_vec(&json!({"state":partial,"archive_verified":true})).unwrap(),
+        serde_json::to_vec(&json!({"state":partial,"archive_verified":true,"image_recipe":null,"image_started":false,"image":null,"copy_request_id":null,"copy_status":null,"diagnostic":null})).unwrap(),
     )
     .unwrap();
     // Reading stays with the frozen Submission; only a first spend looks at the
@@ -627,10 +583,10 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     let listed = service.run_submissions("demo", "full-inventory").unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0]["submission_id"], action);
-    assert!(
+    assert_eq!(
         serde_json::from_slice::<Value>(&fs::read(&cpu_manifest).unwrap()).unwrap()["native_cloud"]
-            .get("storage")
-            .is_none()
+            ["storage"],
+        frozen["native_cloud"]["storage"]
     );
     let first = service
         .create_run("demo", request.clone(), "2026-10-29T00:00:00Z")
@@ -752,11 +708,11 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         .recv_timeout(std::time::Duration::from_secs(10))
         .expect("native cloud startup");
     let client = ml_exp_client::Client::new(&format!("http://{address}"), token.into()).unwrap();
-    let health = client.negotiate().unwrap();
-    let policy = client.get("/api/actions/policy").unwrap();
-    assert_eq!(policy["allow_source_imports"], true);
-    assert_eq!(policy["allow_scheduler_mutations"], false);
-    assert_eq!(policy["allow_resource_deletions"], false);
+    let health = client.health().unwrap();
+    assert_eq!(health["scheduler_mutations"], false);
+    let capabilities = health["capabilities"].as_array().unwrap();
+    assert!(capabilities.iter().any(|v| v == "source-archive.v1"));
+    assert!(!capabilities.iter().any(|v| v == "native-administration.v1"));
     assert_eq!(
         client.get("/api/readiness").unwrap()["training"],
         "INCOMPLETE"
@@ -839,7 +795,6 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         let response = http
             .get(format!("http://{address}{path}"))
             .bearer_auth(token)
-            .header(ml_exp_core::CLIENT_PROTOCOL_HEADER, "2")
             .send()
             .unwrap();
         assert_eq!(response.status().as_u16(), 503);
@@ -893,14 +848,13 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         "history":{"contract":ml_exp_core::managed::history::CONTRACT,"config_sha256":config_sha256,"start":null,"next":{"device":1,"inode":2,"offset_bytes":bytes.len(),"prefix_sha256":sha(&bytes)},"bytes":bytes,"total_bytes":bytes.len(),"process_finished":false},"checkpoint":null})).unwrap();
     let payload = serde_json::to_vec(&packet).unwrap();
     let http = reqwest::blocking::Client::new();
-    let channel = package.channel.as_ref().unwrap();
-    let download_channel = download_package.channel.as_ref().unwrap();
+    let channel = &package.channel;
+    let download_channel = &download_package.channel;
     let download_path = "/api/worker-exchange/demo/download-inventory/attempt-001/package";
     for _ in 0..2 {
         let response = http
             .get(format!("http://{address}{download_path}"))
             .bearer_auth(&download_channel.token)
-            .header(ml_exp_core::CLIENT_PROTOCOL_HEADER, "2")
             .send()
             .unwrap();
         assert_eq!(response.status().as_u16(), 200);
@@ -913,26 +867,22 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
             304
         );
     }
-    for (credential, path, protocol, status) in [
-        ("wrong", download_path, "2", 401),
+    for (credential, path) in [
+        ("wrong", download_path),
         (
             download_channel.token.as_str(),
             "/api/worker-exchange/demo/download-inventory/attempt-002/package",
-            "2",
-            401,
         ),
-        (download_channel.token.as_str(), "/api/health", "2", 401),
-        (download_channel.token.as_str(), download_path, "1", 426),
+        (download_channel.token.as_str(), "/api/health"),
     ] {
         assert_eq!(
             http.get(format!("http://{address}{path}"))
                 .bearer_auth(credential)
-                .header(ml_exp_core::CLIENT_PROTOCOL_HEADER, protocol)
                 .send()
                 .unwrap()
                 .status()
                 .as_u16(),
-            status
+            401
         );
     }
     assert_eq!(
@@ -942,7 +892,6 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     let post = |token: &str, path: &str, body: Vec<u8>| {
         http.post(format!("http://{address}{path}"))
             .bearer_auth(token)
-            .header(ml_exp_core::CLIENT_PROTOCOL_HEADER, "2")
             .header("content-type", "application/json")
             .body(body)
             .send()
@@ -986,15 +935,14 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     // The diagnostic capability reads only its exact Attempt, without a global
     // API token or a mutation packet. It grants no ordinary API access.
     let status_path = format!("{path}/status");
-    let get_status = |token: &str, path: &str, protocol: &str| {
+    let get_status = |token: &str, path: &str| {
         http.get(format!("http://{address}{path}"))
             .bearer_auth(token)
-            .header(ml_exp_core::CLIENT_PROTOCOL_HEADER, protocol)
             .send()
             .unwrap()
     };
     for _ in 0..2 {
-        let response = get_status(&channel.token, &status_path, "2");
+        let response = get_status(&channel.token, &status_path);
         assert_eq!(response.status().as_u16(), 200);
         let value: Value = serde_json::from_slice(&response.bytes().unwrap()).unwrap();
         assert_eq!(value["contract"], "sync-diagnostic-status.v1");
@@ -1004,35 +952,26 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
         assert!(!value.to_string().contains(&channel.token));
     }
     assert_eq!(
-        get_status("wrong-worker-token", &status_path, "2")
+        get_status("wrong-worker-token", &status_path)
             .status()
             .as_u16(),
         401
     );
     assert_eq!(
-        get_status(&channel.token, &status_path, "1")
-            .status()
-            .as_u16(),
-        426
-    );
-    assert_eq!(
         get_status(
             &channel.token,
-            "/api/worker-exchange/demo/train/attempt-002/status",
-            "2"
+            "/api/worker-exchange/demo/train/attempt-002/status"
         )
         .status()
         .as_u16(),
         401
     );
     assert_eq!(
-        get_status(&channel.token, "/api/health", "2")
-            .status()
-            .as_u16(),
+        get_status(&channel.token, "/api/health").status().as_u16(),
         401
     );
     assert_eq!(
-        get_status(&channel.token, &format!("{status_path}?refresh=true"), "2")
+        get_status(&channel.token, &format!("{status_path}?refresh=true"))
             .status()
             .as_u16(),
         422
@@ -1040,11 +979,11 @@ fn create_reuse_authorize_restart_and_frozen_guard_without_provider_effects() {
     assert!(
         ml_exp_client::Client::new(&format!("http://{address}"), channel.token.clone())
             .unwrap()
-            .negotiate()
+            .health()
             .is_err()
     );
     let records = client
-        .get("/api/attempts/demo/train::attempt-001/metrics?format=records")
+        .get("/api/attempts/demo/train::attempt-001/metrics")
         .unwrap();
     assert_eq!(records["records"].as_array().unwrap().len(), 2, "{records}");
     let logs = client
@@ -1468,7 +1407,6 @@ fn check_running_attempt_after_project_edit(
         restart_from: Some(ml_exp_core::first_submission::native::retry::StartFrom {
             run_id: "train".into(),
             attempt_id: "attempt-001".into(),
-            sync_request_id: String::new(),
         }),
         max_gpu_hours: 1.,
         reason: String::new(),

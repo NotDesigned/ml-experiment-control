@@ -157,9 +157,6 @@ pub fn plan(
         &profile.data_root,
     )
     .map_err(|_| Error("dataset receipt scope"))?;
-    if !datasets.is_empty() && runtime.worker.is_none() {
-        return Err(Error("datasets require managed worker"));
-    }
     let spec = slurm::JobSpec {
         run_id: request.run_id.clone(),
         attempt_id: "attempt-001".into(),
@@ -193,8 +190,8 @@ pub fn plan(
         },
         resources: request.resources.clone(),
         execution: slurm::ExecutionConfig {
-            source_mount: runtime.source_dir.as_deref().unwrap_or("/workspace").into(),
-            workdir: runtime.source_dir.as_deref().unwrap_or("/workspace").into(),
+            source_mount: runtime.source_dir.clone(),
+            workdir: runtime.source_dir.clone(),
             managed_io: true,
             env: request.env.clone(),
         },
@@ -222,15 +219,12 @@ pub fn plan(
                 &profile.run_root,
             )
             .map_err(|_| Error("checkpoint scope or identity"))?;
-            if runtime.worker.is_none() {
-                return Err(Error("checkpoint restore requires managed worker"));
-            }
             protocol["resume_from"] = json!(reference);
         }
         (None, None) => {}
         _ => return Err(Error("checkpoint evidence")),
     }
-    let mut run = json!({"schema_version":1,"identity_version":2,"project":project,"run_id":request.run_id,
+    let mut run = json!({"schema_version":1,"project":project,"run_id":request.run_id,
         "created_at":now,"source_id":runtime.source_id,"image_id":runtime.image_id,
         "config_path":"request.json","seed":request.seed,"campaign":format!("run-{}",request.run_id),
         "parameters":request.parameters,"backend":spec.backend,"storage":spec.storage,
@@ -249,9 +243,6 @@ pub fn plan(
         run["artifacts"] = json!(policy);
     }
     if let Some(preparation) = &request.data_preparation {
-        if runtime.worker.is_none() {
-            return Err(Error("data preparation requires a managed worker"));
-        }
         run["data_preparation"] = json!(preparation);
     }
     if !datasets.is_empty() {
@@ -301,6 +292,8 @@ pub fn plan(
     })
 }
 /// Compare immutable authorship only; later scheduler/worker state is separate.
+/// Canonical bytes decide, as they do for the request identity: a repeat that
+/// respells a number has the same digest and is the same creation.
 pub fn same_creation(expected: &Documents, run: &Value, attempt: &Value, request: &Value) -> bool {
     let without_time = |value: &Value| {
         let mut v = value.clone();
@@ -312,9 +305,9 @@ pub fn same_creation(expected: &Documents, run: &Value, attempt: &Value, request
     run["created_at"]
         .as_str()
         .is_some_and(|s| OffsetDateTime::parse(s, &Rfc3339).is_ok())
-        && without_time(&expected.run) == without_time(run)
-        && without_time(&expected.attempt) == without_time(attempt)
-        && expected.request == *request
+        && canonical::equal(&without_time(&expected.run), &without_time(run))
+        && canonical::equal(&without_time(&expected.attempt), &without_time(attempt))
+        && canonical::equal(&expected.request, request)
         && run["created_at"] == attempt["created_at"]
 }
 pub fn receipt(
@@ -392,6 +385,56 @@ mod tests {
         assert_ne!(one.identity("demo").unwrap(), two.identity("demo").unwrap());
         alternate["metrics_schema"]["definitions"]["loss"]["unit"] = json!("");
         assert!(Request::from_slice(&serde_json::to_vec(&alternate).unwrap()).is_err());
+    }
+    #[test]
+    fn a_respelled_repeat_is_the_same_creation_and_a_changed_value_is_not() {
+        let parse = |text: String| serde_json::from_str::<Value>(&text).unwrap();
+        let document = |lr: &str| {
+            parse(format!(
+                r#"{{"created_at":"2026-01-01T00:00:00Z","parameters":{{"lr":{lr}}}}}"#
+            ))
+        };
+        let original = |lr: &str| parse(format!(r#"{{"parameters":{{"lr":{lr}}}}}"#));
+        let expected = Documents {
+            run: document("1.5"),
+            attempt: document("1.5"),
+            status: json!({}),
+            request: original("1.5"),
+        };
+        let same = |lr: &str| same_creation(&expected, &document(lr), &document(lr), &original(lr));
+        assert_ne!(expected.run, document("1.50"));
+        assert!(same("1.5"));
+        assert!(same("1.50"));
+        assert!(same("15e-1"));
+        assert!(!same("1.6"));
+        // A float stays a float, because canonical bytes are also delivered.
+        let whole = Documents {
+            run: document("2.0"),
+            attempt: document("2.0"),
+            status: json!({}),
+            request: original("2.0"),
+        };
+        assert!(!same_creation(
+            &whole,
+            &document("2"),
+            &document("2"),
+            &original("2")
+        ));
+
+        let spelled = |lr: &str| {
+            let mut request = request();
+            request["parameters"] = json!({});
+            let text = request.to_string().replacen(
+                r#""parameters":{}"#,
+                &format!(r#""parameters":{{"lr":{lr}}}"#),
+                1,
+            );
+            Request::from_slice(text.as_bytes())
+                .unwrap()
+                .identity("demo")
+                .unwrap()
+        };
+        assert_eq!(spelled("1.5"), spelled("1.50"));
     }
     #[test]
     fn optional_cloud_policy_is_identity_bound_and_omission_preserves_original_bytes() {

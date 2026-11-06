@@ -7,7 +7,7 @@ commands do not require SSH, Docker or cloud credentials.
 | Group | Purpose |
 | --- | --- |
 | `config` | Save or inspect the API connection |
-| `check` | Validate the protocol handshake and read API capabilities |
+| `check` | Validate the connection and read API capabilities |
 | `backend` | List executors, read cached capacity or request a refresh |
 | `source` | Upload immutable source or inspect its identity |
 | `project` | Register and manage Project tracking |
@@ -16,11 +16,10 @@ commands do not require SSH, Docker or cloud credentials.
 | `data` | Upload, inspect, publish or download dataset assets |
 | `debug` | Create, inspect and stop a leased SSH debug machine |
 | `admin` | Plan and execute administrative removal or Run retirement |
-| `contract` | Run a pure contract validator without credentials or HTTP |
 | `update` | Discover and install the latest stable native client |
 | `get` | Read a supported exact API resource |
 
-Examples for recovery introduced in 0.1.24:
+Recovery examples:
 
 ```bash
 # Discover the retained preparation even before a Run/Submission exists.

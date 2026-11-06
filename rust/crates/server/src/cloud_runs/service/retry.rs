@@ -108,7 +108,6 @@ impl Service {
                     .checked_mul(parent.execution.job.max_time_seconds)
                     .ok_or_else(cloud::Error::evidence)?,
                 created_at: now.into(),
-                startup_failure: None,
             };
             let attempt = retry::plan(&manifest, receipt, &checkpoint)
                 .map_err(why!(cloud::Error::evidence()))?;

@@ -35,7 +35,7 @@ fn send(
     package: &Package,
     operation: ArtifactOperation,
 ) -> Result<Value> {
-    let channel = package.channel.as_ref().ok_or(Error::Configuration)?;
+    let channel = &package.channel;
     let request = ArtifactRequest {
         package_sha256: cloud::package_sha(package)?,
         operation,
@@ -47,7 +47,6 @@ fn send(
     let response = http
         .post(format!("{}/artifacts", channel.url))
         .bearer_auth(&channel.token)
-        .header(ml_exp_core::CLIENT_PROTOCOL_HEADER, "2")
         .header("content-type", "application/json")
         .body(body)
         .send()

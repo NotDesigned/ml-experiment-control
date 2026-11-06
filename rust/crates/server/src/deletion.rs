@@ -170,7 +170,7 @@ impl RunFence {
         guard.require_observed_live(project, run)?;
         Ok(guard)
     }
-    /// Compatibility observation without initializing any filesystem object.
+    /// Observe an existing Run without initializing any filesystem object.
     /// A missing lock is unavailable evidence and is never silently rebuilt.
     pub fn existing_observation_guard(&self, project: &str, run: &str) -> Result<Guard<'_>> {
         let guard = self.shared_existing()?;
@@ -284,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    fn historical_unsafe_ids_do_not_construct_paths_and_companion_ids_are_fenced() {
+    fn unsafe_ids_do_not_construct_paths_and_companion_ids_are_fenced() {
         let temp = tempfile::tempdir().unwrap();
         let fence = RunFence::new(temp.path());
         for id in ["../x", "x/y", "", ".dot", "a\n", "模型"] {
@@ -412,7 +412,7 @@ mod tests {
         assert!(fence.existing_observation_guard("p", "r").is_err());
         assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
 
-        // A historical workspace can have a lock but no tombstone directory.
+        // A workspace can have a lock but no tombstone directory.
         // Reading it must not manufacture an empty deleted-runs hierarchy.
         fs::write(temp.path().join(LOCK), b"unchanged-lock").unwrap();
         let before = fs::metadata(temp.path().join(LOCK))

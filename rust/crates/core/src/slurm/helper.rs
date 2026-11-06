@@ -393,7 +393,7 @@ pub struct RequestIdentity {
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum UnknownReason {
     MissingLedger,
-    LegacyClaim,
+    IncompleteClaim,
     MalformedLedger,
     SubmitStarted,
     UncertainProcessResult,

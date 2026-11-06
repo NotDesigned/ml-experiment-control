@@ -7,7 +7,7 @@ use crate::{
 };
 use ml_exp_core::{
     first_submission::native::{self, Approval, Prepared, Profile, Runtime},
-    operations::{FrozenFiles, Policy},
+    operations::FrozenFiles,
     slurm::{ExecutionConfig, JobSpec, Resources, SlurmConfig, Storage},
 };
 use serde_json::{Value, json};
@@ -72,8 +72,12 @@ impl Fixture {
         )
         .unwrap();
         let runtime = Runtime {
-            worker: None,
-            source_dir: None,
+            worker: ml_exp_core::slurm::managed::Runtime {
+                program: "/opt/ml-expd/bin/ml-exp-worker-rs".into(),
+                base_environment: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
+                runtime_environment: Vec::new(),
+            },
+            source_dir: "/workspace".into(),
             runtime_id: format!("runtime.{}", "2".repeat(64)),
             source_id: source_id.clone(),
             image_id: image.clone(),
@@ -136,13 +140,13 @@ impl Fixture {
             },
             command: vec!["python".into(), "-u".into(), "/workspace/train.py".into()],
         };
-        let manifest = json!({"schema_version":1,"identity_version":2,"project":"demo","run_id":"train","source_id":source_id,"image_id":image,"config_path":"config.json","seed":42,"campaign":"fixture",
-            "backend":spec.backend,"storage":spec.storage,"resources":spec.resources,"execution":spec.execution,"command":spec.command,"container":{"runtime_id":runtime.runtime_id},"evaluation":{"protocol_id":"fixture"},"parameters":{},"inputs":[]});
-        write(&project.join("runs/train/manifest.yaml"), &manifest);
+        let manifest = json!({"schema_version":1,"project":"demo","run_id":"train","source_id":source_id,"image_id":image,"config_path":"config.json","seed":42,"campaign":"fixture",
+            "backend":spec.backend,"storage":spec.storage,"resources":spec.resources,"execution":spec.execution,"command":spec.command,"container":{"runtime_id":runtime.runtime_id},"evaluation":{"protocol_id":"fixture"},"parameters":{},"inputs":[],"native_creation":{"format":"native-run-creation.v1"}});
+        write(&project.join("runs/train/manifest.json"), &manifest);
         let mut attempt = manifest;
         attempt["attempt_id"] = json!("attempt-001");
         write(
-            &project.join("runs/train/attempts/attempt-001/attempt.yaml"),
+            &project.join("runs/train/attempts/attempt-001/attempt.json"),
             &attempt,
         );
         let status = json!({"project":"demo","run_id":"train","attempt_id":"attempt-001","state":"NOT_SUBMITTED"});
@@ -161,14 +165,6 @@ impl Fixture {
         }
     }
     fn service(&self, mode: &str, enabled: bool) -> Service {
-        self.service_with_control(mode, enabled, None)
-    }
-    fn service_with_control(
-        &self,
-        mode: &str,
-        enabled: bool,
-        control_helper: Option<crate::submissions::config::ControlHelper>,
-    ) -> Service {
         let ssh = config(self.root.path(), mode);
         for name in ["ssh-config", "known-hosts"] {
             fs::set_permissions(
@@ -184,7 +180,6 @@ impl Fixture {
             vec![Backend {
                 profile: self.profile.clone(),
                 ssh,
-                control_helper,
                 runtimes: BTreeMap::from([(self.runtime.runtime_id.clone(), self.runtime.clone())]),
                 data_helper_config: None,
                 script_preparation: false,
@@ -353,14 +348,7 @@ fn service_claims_only_reviewed_frozen_run_and_native_helper_submits_once() {
 #[test]
 fn lost_response_reopens_same_slot_and_reconciles_without_second_sbatch() {
     let f = Fixture::new();
-    let service = f.service_with_control(
-        "ledger-lost-submit",
-        true,
-        Some(crate::submissions::config::ControlHelper {
-            helper_path: "/opt/ml-expd/bin/previous-control-helper".into(),
-            helper_config_path: "/etc/ml-expd/previous-control.json".into(),
-        }),
-    );
+    let service = f.service("ledger-lost-submit", true);
     let p = service
         .prepare("demo", "train", approval(), context(1))
         .unwrap();
@@ -383,14 +371,7 @@ fn lost_response_reopens_same_slot_and_reconciles_without_second_sbatch() {
     let original_argv = fs::read_to_string(f.root.path().join("argv")).unwrap();
     assert!(original_argv.contains("/opt/ml-expd/bin/ml-exp-worker-rs"));
     drop(service);
-    let reopened = f.service_with_control(
-        "ledger",
-        true,
-        Some(crate::submissions::config::ControlHelper {
-            helper_path: "/opt/ml-expd/bin/upgraded-control-helper".into(),
-            helper_config_path: "/etc/ml-expd/upgraded-control.json".into(),
-        }),
-    );
+    let reopened = f.service("ledger", true);
     assert_eq!(
         reopened
             .prepare("demo", "train", approval(), context(3))
@@ -402,9 +383,6 @@ fn lost_response_reopens_same_slot_and_reconciles_without_second_sbatch() {
         .unwrap();
     assert_eq!(done["status"], "VERIFIED");
     assert_eq!(fs::read(f.slot()).unwrap(), frozen_slot);
-    let control_argv = fs::read_to_string(f.root.path().join("argv")).unwrap();
-    assert!(control_argv.contains("/opt/ml-expd/bin/upgraded-control-helper"));
-    assert!(control_argv.contains("/etc/ml-expd/upgraded-control.json"));
     assert_eq!(
         fs::read_to_string(f.root.path().join("sbatch-calls")).unwrap(),
         "call\n"
@@ -459,7 +437,8 @@ fn unapproved_resources_runtime_inputs_and_attempt_mismatches_fail_before_prepar
         "cache_directory",
         "attempt_resources",
         "attempt_running",
-        "legacy",
+        "authored",
+        "foreign_format",
     ] {
         let f = Fixture::new();
         let service = f.service("ledger", true);
@@ -470,7 +449,7 @@ fn unapproved_resources_runtime_inputs_and_attempt_mismatches_fail_before_prepar
         if change == "nan" {
             request.max_gpu_hours = f64::NAN;
         }
-        for filename in ["manifest.yaml", "attempts/attempt-001/attempt.yaml"] {
+        for filename in ["manifest.json", "attempts/attempt-001/attempt.json"] {
             let path = f.root.path().join("project/runs/train").join(filename);
             let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
             match change {
@@ -499,7 +478,12 @@ fn unapproved_resources_runtime_inputs_and_attempt_mismatches_fail_before_prepar
                 "attempt_resources" if filename.starts_with("attempts/") => {
                     value["resources"]["cpus"] = json!(16)
                 }
-                "legacy" => value["identity_version"] = json!(1),
+                "authored" => {
+                    value.as_object_mut().unwrap().remove("native_creation");
+                }
+                "foreign_format" => {
+                    value["native_creation"]["format"] = json!("native-cloud-run.v1")
+                }
                 _ => {}
             }
             write(&path, &value);
@@ -574,7 +558,7 @@ fn generated_native_script_checks_actual_sif_bytes_before_starting_payload() {
     f.profile.data_root = format!("{mount}/data");
     f.runtime.sif_path = format!("{mount}/image.sif");
     let sif = PathBuf::from(&f.runtime.sif_path);
-    for filename in ["manifest.yaml", "attempts/attempt-001/attempt.yaml"] {
+    for filename in ["manifest.json", "attempts/attempt-001/attempt.json"] {
         let path = f.root.path().join("project/runs/train").join(filename);
         let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         value["backend"]["mount_root"] = json!(mount);
@@ -680,13 +664,13 @@ fn storage_corruption_and_frozen_authority_changes_prevent_dispatch() {
         let root = f.root.path();
         match change {
             "run" => {
-                let path = root.join("project/runs/train/manifest.yaml");
+                let path = root.join("project/runs/train/manifest.json");
                 let mut v: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
                 v["command"] = json!(["altered"]);
                 write(&path, &v);
             }
             "attempt" => {
-                let path = root.join("project/runs/train/attempts/attempt-001/attempt.yaml");
+                let path = root.join("project/runs/train/attempts/attempt-001/attempt.json");
                 let mut v: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
                 v["parameters"]["changed"] = json!(true);
                 write(&path, &v);
@@ -776,12 +760,8 @@ fn prepared_submission_is_not_reused_or_authorized_after_a_project_edit() {
 fn project_edit_leaves_a_running_attempt_observable_and_cancellable() {
     let mut f = Fixture::new();
     let workdir = f.root.path().join("code");
-    f.runtime.worker = Some(ml_exp_core::slurm::managed::Runtime {
-        program: "/opt/ml-expd/bin/ml-exp-worker-rs".into(),
-        base_environment: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
-        runtime_environment: Vec::new(),
-    });
-    for filename in ["manifest.yaml", "attempts/attempt-001/attempt.yaml"] {
+    f.runtime.source_dir = workdir.to_str().unwrap().into();
+    for filename in ["manifest.json", "attempts/attempt-001/attempt.json"] {
         let path = f.root.path().join("project/runs/train").join(filename);
         let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         value["execution"]["workdir"] = json!(workdir);
@@ -887,14 +867,9 @@ fn interrupted_claim_recovery_is_explicit_and_never_submits_before_reconcile() {
         .claim(
             id,
             &format!("EXECUTE {id}"),
-            &Policy {
-                allow_scheduler_mutations: true,
-                ..Default::default()
-            },
             &FrozenFiles {
                 execution_campaign_sha256: Some(private.binding.run_sha256.clone()),
                 execution_manifest_sha256: Some(private.request.intent().manifest_sha256.clone()),
-                ..Default::default()
             },
             crate::operations::ClaimContext {
                 now: NOW,
@@ -940,7 +915,6 @@ async fn http_request(app: axum::Router, method: &str, path: &str, body: &str) -
                     "authorization",
                     "Bearer synthetic-native-submission-http-token-00000000",
                 )
-                .header("x-ml-expd-client-protocol", "2")
                 .header("content-type", "application/json")
                 .body(axum::body::Body::from(body.to_owned()))
                 .unwrap(),
@@ -964,7 +938,7 @@ async fn native_http_preparation_restart_execute_and_reconcile_keep_one_submissi
         health["capabilities"]
             .as_array()
             .unwrap()
-            .contains(&json!("native-slurm-submissions.v1"))
+            .contains(&json!("native-submissions.v1"))
     );
     assert_eq!(
         http_request(app.clone(), "GET", "/api/runs/demo/train/submission", "")
@@ -1189,14 +1163,9 @@ fn explicit_reconcile_recovers_a_dead_claim_without_replaying_submit() {
         .claim(
             id,
             &format!("EXECUTE {id}"),
-            &Policy {
-                allow_scheduler_mutations: true,
-                ..Default::default()
-            },
             &FrozenFiles {
                 execution_campaign_sha256: Some(saved.binding.run_sha256.clone()),
                 execution_manifest_sha256: Some(saved.request.intent().manifest_sha256.clone()),
-                ..Default::default()
             },
             crate::operations::ClaimContext {
                 now: NOW,
@@ -1283,17 +1252,16 @@ fn immutable_run_creation_reuses_exact_metadata_and_admits_first_submission_afte
 fn newly_materialized_image_keeps_its_source_directory_through_the_launch_package() {
     let mut f = Fixture::new();
     let original = serde_json::to_value(&f.runtime).unwrap();
-    assert!(original.get("source_dir").is_none());
     assert_eq!(
         serde_json::to_value(serde_json::from_value::<Runtime>(original.clone()).unwrap()).unwrap(),
         original
     );
-    f.runtime.source_dir = Some("/ml-expd/source".into());
-    f.runtime.worker = Some(ml_exp_core::slurm::managed::Runtime {
-        program: "/usr/local/bin/ml-exp-worker-rs".into(),
-        base_environment: BTreeMap::new(),
-        runtime_environment: Vec::new(),
-    });
+    for field in ["worker", "source_dir"] {
+        let mut partial = original.clone();
+        partial.as_object_mut().unwrap().remove(field);
+        assert!(serde_json::from_value::<Runtime>(partial).is_err());
+    }
+    f.runtime.source_dir = "/ml-expd/source".into();
     let mut request = creation_request(&f);
     request.command = vec!["/usr/local/bin/python".into(), "train.py".into()];
     let service = f.service("ledger", true).with_run_creation(true).unwrap();
@@ -1512,17 +1480,11 @@ fn competing_run_creators_and_deletion_fence_cannot_replace_an_identity() {
 #[test]
 fn trusted_image_worker_changes_only_launch_entry_and_keeps_scientific_command_frozen() {
     let mut f = Fixture::new();
-    assert!(
-        serde_json::to_value(&f.runtime)
-            .unwrap()
-            .get("worker")
-            .is_none()
-    );
-    f.runtime.worker = Some(ml_exp_core::slurm::managed::Runtime {
+    f.runtime.worker = ml_exp_core::slurm::managed::Runtime {
         program: "/opt/ml-expd/bin/ml-exp-worker-rs".into(),
         base_environment: BTreeMap::from([("PATH".into(), "/opt/venv/bin:/usr/bin:/bin".into())]),
         runtime_environment: vec!["CUDA_VISIBLE_DEVICES".into()],
-    });
+    };
     let service = f.service("ledger", true);
     service
         .prepare("demo", "train", approval(), context(1))
@@ -1558,13 +1520,9 @@ fn trusted_image_worker_changes_only_launch_entry_and_keeps_scientific_command_f
 fn backend_checkpoint_registration_and_explicit_new_run_restore_are_scoped_and_immutable() {
     let mut f = Fixture::new();
     let workdir = f.root.path().join("code");
-    f.runtime.worker = Some(ml_exp_core::slurm::managed::Runtime {
-        program: "/opt/ml-expd/bin/ml-exp-worker-rs".into(),
-        base_environment: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
-        runtime_environment: Vec::new(),
-    });
+    f.runtime.source_dir = workdir.to_str().unwrap().into();
     let ready = json!({"step":4,"files":[{"path":"checkpoints/step-4/state.bin","bytes":7,"sha256":"9a129038d9a00aed0cf6a7ea059ca50a813449061ab87848cf1a13eafdf33b2c"}]});
-    for filename in ["manifest.yaml", "attempts/attempt-001/attempt.yaml"] {
+    for filename in ["manifest.json", "attempts/attempt-001/attempt.json"] {
         let path = f.root.path().join("project/runs/train").join(filename);
         let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         value["execution"]["workdir"] = json!(workdir);
@@ -1641,7 +1599,7 @@ fn backend_checkpoint_registration_and_explicit_new_run_restore_are_scoped_and_i
     let original = fs::read(
         f.root
             .path()
-            .join("project/runs/train/attempts/attempt-001/attempt.yaml"),
+            .join("project/runs/train/attempts/attempt-001/attempt.json"),
     )
     .unwrap();
     let mut request = creation_request(&f);
@@ -1683,11 +1641,11 @@ fn backend_checkpoint_registration_and_explicit_new_run_restore_are_scoped_and_i
             attempt_id: "attempt-001".into(),
         },
         &spec,
-        f.runtime.worker.as_ref().unwrap(),
+        &f.runtime.worker,
         Some(&document),
     )
     .unwrap();
-    let encoded = ml_exp_core::canonical::python_json_bytes(&document).unwrap();
+    let encoded = ml_exp_core::canonical::bytes(&document).unwrap();
     let reordered: Value = serde_json::from_slice(&encoded).unwrap();
     let other = ml_exp_core::slurm::managed::plan_restoring(
         &helper::Scope {
@@ -1696,7 +1654,7 @@ fn backend_checkpoint_registration_and_explicit_new_run_restore_are_scoped_and_i
             attempt_id: "attempt-001".into(),
         },
         &spec,
-        f.runtime.worker.as_ref().unwrap(),
+        &f.runtime.worker,
         Some(&reordered),
     )
     .unwrap();
@@ -1771,7 +1729,7 @@ fn backend_checkpoint_registration_and_explicit_new_run_restore_are_scoped_and_i
         fs::read(
             f.root
                 .path()
-                .join("project/runs/train/attempts/attempt-001/attempt.yaml")
+                .join("project/runs/train/attempts/attempt-001/attempt.json")
         )
         .unwrap(),
         original
@@ -1782,12 +1740,8 @@ fn backend_checkpoint_registration_and_explicit_new_run_restore_are_scoped_and_i
 fn exact_worker_refresh_survives_restart_and_never_changes_submission_or_retrains() {
     let mut f = Fixture::new();
     let workdir = f.root.path().join("code");
-    f.runtime.worker = Some(ml_exp_core::slurm::managed::Runtime {
-        program: "/opt/ml-expd/bin/ml-exp-worker-rs".into(),
-        base_environment: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
-        runtime_environment: Vec::new(),
-    });
-    for filename in ["manifest.yaml", "attempts/attempt-001/attempt.yaml"] {
+    f.runtime.source_dir = workdir.to_str().unwrap().into();
+    for filename in ["manifest.json", "attempts/attempt-001/attempt.json"] {
         let path = f.root.path().join("project/runs/train").join(filename);
         let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         value["execution"]["workdir"] = json!(workdir);
@@ -1818,7 +1772,7 @@ fn exact_worker_refresh_survives_restart_and_never_changes_submission_or_retrain
     let bytes = fs::read(
         f.root
             .path()
-            .join("project/runs/train/attempts/attempt-001/attempt.yaml"),
+            .join("project/runs/train/attempts/attempt-001/attempt.json"),
     )
     .unwrap();
     let plan = ml_exp_core::slurm::staging::plan(
@@ -1892,7 +1846,7 @@ fn exact_worker_refresh_survives_restart_and_never_changes_submission_or_retrain
         fs::read(
             f.root
                 .path()
-                .join("project/runs/train/attempts/attempt-001/attempt.yaml")
+                .join("project/runs/train/attempts/attempt-001/attempt.json")
         )
         .unwrap(),
         bytes

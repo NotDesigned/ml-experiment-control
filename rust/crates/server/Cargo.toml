@@ -22,14 +22,11 @@ clap.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 rusqlite.workspace = true
-fs2.workspace = true
 sha2.workspace = true
 libc.workspace = true
 axum = "0.8"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
 subtle = "2"
-yaml-rust2 = "0.13"
-regex.workspace = true
 tar.workspace = true
 flate2.workspace = true
 http-body-util = "0.1"
@@ -43,6 +40,7 @@ base64 = "0.22"
 sha1 = "0.10"
 
 [dev-dependencies]
+fs2.workspace = true
 ml-exp-client = { path = "../client" }
 ml-exp-worker = { path = "../worker" }
 tower = { version = "0.5", features = ["util"] }

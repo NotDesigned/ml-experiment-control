@@ -26,7 +26,7 @@ ml-exp project list
 The installer places `ml-exp` in `~/.local/bin` unless you pass `--prefix`.
 Later commands reuse the saved URL and token; see [configuration](configuration.md).
 
-`check` validates the authenticated protocol handshake and prints the server's
+`check` validates the authenticated connection and prints the server's
 version, capabilities and source limits. `backend` lists configured executors;
 `backend EXECUTOR` reads cached capacity. Neither allocates a GPU or promises
 immediate resources. `ml-exp get /api/readiness` reports per-backend submission

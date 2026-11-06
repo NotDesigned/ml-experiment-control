@@ -2,6 +2,5 @@
   "schema_version": 1,
   "project": "demo",
   "title": "Example research project",
-  "run_roots": ["runs"],
-  "campaigns": []
+  "run_roots": ["runs"]
 }

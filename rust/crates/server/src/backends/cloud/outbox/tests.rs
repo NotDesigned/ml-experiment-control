@@ -276,7 +276,7 @@ fn cloud_runner_uses_existing_action_authorization_private_request_and_restart_r
     use ml_exp_core::{
         cloud::action,
         first_submission::native::{Approval, Binding},
-        operations::{FrozenFiles, Policy},
+        operations::FrozenFiles,
     };
     let temp = tempfile::tempdir().unwrap();
     let effects = temp.path().join("effects");
@@ -286,8 +286,29 @@ fn cloud_runner_uses_existing_action_authorization_private_request_and_restart_r
     Outbox::initialize(&effects).unwrap();
     let outbox = Outbox::open(&effects).unwrap();
     let actions = Store::open(temp.path().join("actions")).unwrap();
-    let (job, profile, row) = setup();
+    let (mut job, profile, row) = setup();
     let digest = format!("sha256:{}", "d".repeat(64));
+    let package = ml_exp_core::cloud::launch::compile(ml_exp_core::cloud::launch::Input {
+        root: "/mnt/workspace/runs",
+        project: "demo",
+        run: "train",
+        attempt: "attempt-001",
+        workdir: "/workspace",
+        argv: &["train".into()],
+        timeout_seconds: 300,
+        worker_sha256: &format!("sha256:{}", "e".repeat(64)),
+        storage: ml_exp_core::cloud::launch::StorageLayout {
+            mount: "/mnt/workspace".into(),
+            runs: "/mnt/workspace/runs".into(),
+            datasets: "/mnt/workspace/datasets".into(),
+        },
+        channel: ml_exp_core::cloud::exchange::Channel {
+            url: "https://api.example/api/worker-exchange/demo/train/attempt-001".into(),
+            token: "f".repeat(64),
+        },
+    })
+    .unwrap();
+    job.command = package.download_command("/worker").unwrap();
     let request = action::Execution {
         backend_id: "pai".into(),
         profile_sha256: profile.digest().unwrap(),
@@ -303,7 +324,7 @@ fn cloud_runner_uses_existing_action_authorization_private_request_and_restart_r
             backend_config_sha256: profile.digest().unwrap(),
         },
         job: job.clone(),
-        launch_package: None,
+        launch_package: Box::new(package),
     };
     let now = "2026-10-29T00:00:00Z";
     let expiry = "2026-10-29T01:00:00Z";
@@ -331,14 +352,9 @@ fn cloud_runner_uses_existing_action_authorization_private_request_and_restart_r
     )
     .unwrap();
     let flag = AtomicBool::new(false);
-    let policy = Policy {
-        allow_scheduler_mutations: true,
-        ..Default::default()
-    };
     let files = FrozenFiles {
         execution_campaign_sha256: Some(digest.clone()),
         execution_manifest_sha256: Some(digest),
-        ..Default::default()
     };
     let confirmation = format!("EXECUTE {id}");
     let guard = || Ok(());
@@ -348,7 +364,6 @@ fn cloud_runner_uses_existing_action_authorization_private_request_and_restart_r
             Execute {
                 action_id: id,
                 confirmation: &confirmation,
-                policy: &policy,
                 files: &files,
                 claim: ClaimContext {
                     now,

@@ -1,4 +1,4 @@
-//! Strict JSON remains JSON: YAML style and scalar resolution are irrelevant.
+//! Strict JSON with duplicate-key, depth and node refusal.
 pub const MAX_DEPTH: usize = 64;
 /// An edge bounds bytes, and parsing multiplies them: 8 MiB of `[0,0,...]` is four
 /// million values, reached before any token check on the exchange routes. This

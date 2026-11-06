@@ -11,14 +11,14 @@ fn path(raw: &str, canonical: &str) -> PathEvidence {
     }
 }
 fn record() -> Value {
-    json!({"project":"demo","project_file":"/approved/repo/experiments/project.yaml","source":"MANUAL","registered_at":"first","updated_at":"old","private_extra":{"retained":"only on no-op"}})
+    json!({"project":"demo","project_file":"/approved/repo/experiments/project.json","state":"ACTIVE","source":"MANUAL","registered_at":"first","updated_at":"old","state_reason":"","private_extra":{"retained":"only on no-op"}})
 }
 fn registry() -> Registry {
     Registry::from_value(
         &json!({"schema_version":1,"projects":[record()],"extra_top":{"keep":true}}),
         &[path(
-            "/approved/repo/experiments/project.yaml",
-            "/approved/repo/experiments/project.yaml",
+            "/approved/repo/experiments/project.json",
+            "/approved/repo/experiments/project.json",
         )],
     )
     .unwrap()
@@ -30,8 +30,8 @@ fn no_op_preserves_raw_authority_and_mutation_has_one_exact_event() {
         .register(
             "demo",
             &path(
-                "/approved/repo/experiments/project.yaml",
-                "/approved/repo/experiments/project.yaml",
+                "/approved/repo/experiments/project.json",
+                "/approved/repo/experiments/project.json",
             ),
             RegistrationSource::Onboarding,
             "new",
@@ -54,8 +54,8 @@ fn no_op_preserves_raw_authority_and_mutation_has_one_exact_event() {
     assert_eq!(commit.payload["extra_top"], json!({"keep":true}));
     assert!(commit.payload["projects"][0].get("private_extra").is_none());
     assert_eq!(
-        original.payload()["projects"][0].get("state"),
-        None,
+        original.payload()["projects"][0]["state"],
+        "ACTIVE",
         "reducers cannot mutate their input"
     );
 }
@@ -63,7 +63,7 @@ fn no_op_preserves_raw_authority_and_mutation_has_one_exact_event() {
 fn first_creation_is_explicit_and_existing_empty_registry_wins_over_seeds() {
     let seed = Seed {
         project: "demo".into(),
-        path: path("/approved/project.yaml", "/approved/project.yaml"),
+        path: path("/approved/project.json", "/approved/project.json"),
     };
     let empty = Registry::empty();
     let result = projects::bootstrap(Some(&empty), &[seed], "now").unwrap();
@@ -76,11 +76,11 @@ fn first_creation_is_explicit_and_existing_empty_registry_wins_over_seeds() {
 #[test]
 fn contradictory_or_missing_path_facts_fail_without_inventing_resolution() {
     assert!(Registry::from_value(&json!({"projects":[record()]}), &[]).is_err());
-    let raw = "/approved/repo/experiments/project.yaml";
+    let raw = "/approved/repo/experiments/project.json";
     assert!(
         Registry::from_value(
             &json!({"projects":[record()]}),
-            &[path(raw, raw), path(raw, "/other/project.yaml")]
+            &[path(raw, raw), path(raw, "/other/project.json")]
         )
         .is_err()
     );
@@ -94,32 +94,44 @@ fn contradictory_or_missing_path_facts_fail_without_inventing_resolution() {
     );
 }
 #[test]
-fn schema_values_are_not_scientific_or_execution_authority() {
-    let definition=ProjectDefinition::from_value(&json!({"project":"demo","title":"","run_roots":[],"campaigns":[{"name":"c","file":"campaign.yaml","current_revision":{"campaign":"c","project":"demo","revision_id":"arbitrary-authored-string","file":"not-yet-read"}}],"controller":{"python":"/untrusted/interpreter","experimentctl":"/untrusted/tool"},"metrics_schema":{"definitions":{"token":{"unit":"nats/token","required_when":null},"password":{"unit":"bits/raw byte"}}}})).unwrap();
-    assert_eq!(
-        definition.campaign_files().collect::<Vec<_>>(),
-        vec!["campaign.yaml"]
-    );
-    let value = definition.to_value();
-    assert_eq!(
-        value["metrics_schema"]["definitions"]["token"]["unit"],
-        "nats/token"
-    );
-    assert!(
-        value["metrics_schema"]["definitions"]["password"]
-            .get("required_when")
-            .is_none()
-    );
-    assert_eq!(
-        value["campaigns"][0]["current_revision"]["revision_id"],
-        "arbitrary-authored-string"
-    );
-    let raw:Value=serde_json::from_str(r#"{"project":"demo","title":"","run_roots":[],"campaigns":[{"name":"c","current_revision":{"campaign":"c","project":"demo","revision_id":"r","file":"f","memberships":[{"run_id":"r","replicate":-0}]}}]}"#).unwrap();
-    let normalized = ProjectDefinition::from_value(&raw).unwrap().to_value();
-    assert_eq!(
-        normalized["campaigns"][0]["current_revision"]["memberships"][0]["replicate"].to_string(),
-        "0"
-    );
+fn registry_schema_version_is_exactly_the_integer_one() {
+    assert!(Registry::from_value(&json!({"schema_version":1,"projects":[]}), &[]).is_ok());
+    for version in [json!(1.0), json!(true), json!("1"), json!(2), json!(null)] {
+        assert!(
+            Registry::from_value(&json!({"schema_version":version,"projects":[]}), &[]).is_err(),
+            "{version}"
+        );
+    }
+}
+#[test]
+fn a_project_file_holds_exactly_its_identity_title_and_run_roots() {
+    let good = json!({"schema_version":1,"project":"demo","title":"","run_roots":["runs"]});
+    let definition = ProjectDefinition::from_value(&good).unwrap();
+    assert_eq!(definition.project(), "demo");
+    assert_eq!(definition.run_roots, ["runs"]);
+    for (key, value) in [
+        ("controller", json!({"python":"/untrusted/interpreter"})),
+        ("campaigns", json!([])),
+        ("metrics_schema", json!({"definitions":{}})),
+        ("base_dir", json!(".")),
+    ] {
+        let mut extra = good.clone();
+        extra[key] = value;
+        assert!(ProjectDefinition::from_value(&extra).is_err(), "{key}");
+    }
+    for (key, value) in [
+        ("schema_version", json!(2)),
+        ("project", json!("../demo")),
+        ("title", json!(false)),
+        ("run_roots", json!("runs")),
+    ] {
+        let mut bad = good.clone();
+        bad[key] = value;
+        assert!(ProjectDefinition::from_value(&bad).is_err(), "{key}");
+    }
+    let mut missing = good;
+    missing.as_object_mut().unwrap().remove("schema_version");
+    assert!(ProjectDefinition::from_value(&missing).is_err());
 }
 #[test]
 fn archive_cannot_resume_directly_and_unregister_never_describes_resource_deletion() {
@@ -128,8 +140,8 @@ fn archive_cannot_resume_directly_and_unregister_never_describes_resource_deleti
     let archived = Registry::from_value(
         &archive.commit.unwrap().payload,
         &[path(
-            "/approved/repo/experiments/project.yaml",
-            "/approved/repo/experiments/project.yaml",
+            "/approved/repo/experiments/project.json",
+            "/approved/repo/experiments/project.json",
         )],
     )
     .unwrap();
@@ -154,4 +166,9 @@ fn archive_cannot_resume_directly_and_unregister_never_describes_resource_deleti
     let lifecycle = LifecycleRecord::from_value(&raw).unwrap();
     assert_eq!(lifecycle.state, LifecycleState::Active);
     assert_eq!(lifecycle.state_reason, "");
+    for required in ["state", "state_reason"] {
+        let mut missing = record();
+        missing.as_object_mut().unwrap().remove(required);
+        assert!(LifecycleRecord::from_value(&missing).is_err(), "{required}");
+    }
 }
