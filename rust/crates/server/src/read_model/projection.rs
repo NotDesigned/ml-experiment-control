@@ -261,7 +261,7 @@ fn summary(snapshot: &Snapshot, attempt: &AttemptSnapshot) -> Value {
     json!({"attempt_id":attempt.attempt_id,"state":state,"backend":field(status,"backend"),
         "backend_job_id":field(status,"backend_job_id")})
 }
-fn run_attempts(snapshot: &Snapshot) -> Result<Value> {
+pub fn run_attempts(snapshot: &Snapshot) -> Result<Value> {
     checked(snapshot)?;
     let attempts = snapshot.attempts.iter().map(|attempt| {
         let view = summary(snapshot, attempt);
