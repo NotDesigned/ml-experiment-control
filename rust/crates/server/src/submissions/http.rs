@@ -1,11 +1,11 @@
 //! Narrow submission HTTP effects. GET is local-only; reconcile observes the
 //! original provider identity, while only execute can submit a new scheduler job.
-use super::{Context, Error, Service};
+use super::{Error, Service};
 use crate::{
     AppState,
     http_effect::{self, OnTimeout},
     read_api,
-    runs::Owner,
+    runs::{self, Acknowledge, Context, Operation, Owner},
 };
 use axum::{
     Router,
@@ -20,7 +20,7 @@ use axum::{
 use ml_exp_core::{first_submission::native::Approval, operations::validate_action_id};
 use serde::Deserialize;
 use serde_json::Value;
-use std::sync::{Arc, atomic::AtomicBool};
+use std::sync::Arc;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 const MAX_BODY: usize = 8 * 1024 * 1024;
@@ -329,27 +329,6 @@ struct Empty {}
 struct Part {
     part: u64,
 }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Acknowledge {
-    proof: ml_exp_core::artifacts::DownloadProof,
-    release: bool,
-}
-enum Operation {
-    DownloadTicket(u64),
-    Sync(ml_exp_core::cloud::exchange::Sync),
-    Authorize(String),
-    Renew(ml_exp_core::renewal::Request),
-    Execute(String),
-    Cancel(String),
-    Retry(ml_exp_core::first_submission::native::retry::Request),
-    Reconcile,
-    Refresh,
-    History,
-    Checkpoint,
-    Collect,
-    Acknowledge(Acknowledge),
-}
 /// `NoEffect` tells the caller no provider action was sent. Cloud collect submits a
 /// synchronization job and acknowledge-with-release deletes the generated archive,
 /// so neither may say that once its deadline has passed.
@@ -443,58 +422,17 @@ async fn change(
             let now = clock(now)?;
             let (_, transition) =
                 crate::projects::transition_context().map_err(read_api::Error::from)?;
-            let expires=crate::renewal::expiry(&now)?;
-            let context = Context {
-                now: &now,
-                expires: &expires,
-                transition_id: &transition,
-            };
-            let service = match api.action_owner(&identity)? {
-                Owner::Cloud(cloud) => {
-                let cancelled=AtomicBool::new(false);
-                return match operation {
-                    Operation::Renew(request)=>cloud.renew(&identity,request,context),
-                    Operation::Authorize(reason)=>cloud.authorize(&identity,&reason,&now,&transition),
-                    Operation::Execute(confirmation)=>cloud.execute(&identity,&confirmation,&now,&transition,&cancelled),
-                    Operation::Reconcile=>cloud.reconcile(&identity,&now,&transition,&cancelled),
-                    Operation::Refresh=>cloud.refresh(&identity,&now,&cancelled),
-                    Operation::Cancel(confirmation)=>cloud.cancel(&identity,&confirmation,&now,&cancelled),
-                    Operation::Sync(request)=>cloud.synchronize(&identity,&request,&now,&cancelled),
-                    Operation::History=>cloud.history(&identity),
-                    Operation::Checkpoint=>cloud.latest_registered_checkpoint(&identity),
-                    Operation::Retry(request)=>cloud.retry(&identity,request,&now,&cancelled),
-                    Operation::Collect=>cloud.collect_artifacts(&identity,&now,&cancelled),
-                    Operation::Acknowledge(request)=>cloud.acknowledge_artifacts(&identity,request.proof,request.release,&now),
-                    Operation::DownloadTicket(part)=>cloud.download_ticket(&identity,part,&now),
-                }.map_err(Into::into);
-                }
-                Owner::Slurm(slurm) => slurm,
-            };
-            let refreshing = matches!(&operation,Operation::History | Operation::Refresh | Operation::Checkpoint | Operation::Collect | Operation::Acknowledge(_));
-            match operation {
-                Operation::DownloadTicket(_)=>return Err(read_api::Error{status:422,code:"DIRECT_DOWNLOAD_UNAVAILABLE",detail:"this backend streams downloads through its gateway"}),
-                Operation::Sync(_)=>return Err(read_api::Error{status:501,code:"CLOUD_SYNC_NOT_CONFIGURED",detail:"CPU cloud synchronization is not configured for this submission"}),
-                Operation::Renew(request)=>service.renew(&identity,request,context),
-                Operation::Retry(request)=>service.retry(&identity,request,&now,&AtomicBool::new(false)),
-                Operation::Cancel(confirmation)=>service.cancel(&identity,&confirmation,&now,&AtomicBool::new(false)),
-                Operation::Authorize(reason) => {
-                    service.authorize(&identity, "bearer-client", &reason, context)
-                }
-                Operation::Execute(confirmation) => {
-                    service.execute(&identity, &confirmation, context, &AtomicBool::new(false))
-                }
-                Operation::Reconcile => service.reconcile(&identity, &now, &AtomicBool::new(false)),
-                Operation::History=>service.ingest_history(&identity,&AtomicBool::new(false)),
-                Operation::Refresh => service.refresh(&identity, &now, &AtomicBool::new(false)),
-                Operation::Checkpoint => service.refresh_checkpoint(&identity,&now,&AtomicBool::new(false)),
-                Operation::Collect=>service.collect_artifacts(&identity,&AtomicBool::new(false)),
-                Operation::Acknowledge(request)=>service.acknowledge_artifacts(&identity,request.proof,request.release,&now,&AtomicBool::new(false)),
-            }
-            .map_err(|cause| {
-                if refreshing && matches!(cause,Error::Uncertain) {
-                    read_api::Error { status:503, code:"WORKER_OBSERVATION_CACHE_UNCERTAIN", detail:"the sample may have been saved; query it or repeat refresh; no scheduler effect was requested" }
-                } else { read_api::Error::from(cause) }
-            })
+            let expires = crate::renewal::expiry(&now)?;
+            runs::apply(
+                api.action_owner(&identity)?,
+                &identity,
+                operation,
+                Context {
+                    now: &now,
+                    expires: &expires,
+                    transition_id: &transition,
+                },
+            )
         },
     )
     .await

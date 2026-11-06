@@ -283,9 +283,9 @@ impl Service {
         id: &str,
         confirmation: &str,
         slurm: Option<Arc<crate::submissions::Service>>,
-        context: crate::submissions::Context<'_>,
+        context: crate::runs::Context<'_>,
     ) -> cloud::Result<Value> {
-        let crate::submissions::Context {
+        let crate::runs::Context {
             now,
             expires,
             transition_id: transition,
@@ -382,7 +382,7 @@ impl Service {
                     project,
                     &run.run_id,
                     saved.request.approval.clone(),
-                    crate::submissions::Context {
+                    crate::runs::Context {
                         now,
                         expires,
                         transition_id: transition,

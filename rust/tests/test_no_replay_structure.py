@@ -197,6 +197,7 @@ class Structure(unittest.TestCase):
         self.assertEqual(create_site_failures(ROOT), [])
 
     def test_runs_module_reaches_no_effect(self):
+        self.assertTrue((ROOT / RUNS_MODULE).is_dir(), "the rule must have a module to check")
         self.assertEqual(runs_module_failures(ROOT), [])
 
 

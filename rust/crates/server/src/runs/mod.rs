@@ -8,7 +8,9 @@ use crate::{
     submissions,
 };
 use ml_exp_core::records::{ActionKind, RunKind};
-use std::sync::Arc;
+use serde::Deserialize;
+use serde_json::Value;
+use std::sync::{Arc, atomic::AtomicBool};
 
 pub enum Owner {
     Slurm(Arc<submissions::Service>),
@@ -103,9 +105,155 @@ impl Api {
     }
 }
 
+/// The clock and identities of one operator request.
+#[derive(Clone, Copy)]
+pub struct Context<'a> {
+    pub now: &'a str,
+    pub expires: &'a str,
+    pub transition_id: &'a str,
+}
+pub enum Operation {
+    DownloadTicket(u64),
+    Sync(ml_exp_core::cloud::exchange::Sync),
+    Authorize(String),
+    Renew(ml_exp_core::renewal::Request),
+    Execute(String),
+    Cancel(String),
+    Retry(ml_exp_core::first_submission::native::retry::Request),
+    Reconcile,
+    Refresh,
+    History,
+    Checkpoint,
+    Collect,
+    Acknowledge(Acknowledge),
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Acknowledge {
+    pub proof: ml_exp_core::artifacts::DownloadProof,
+    pub release: bool,
+}
+/// One operator change to an existing Submission, on the backend that owns it.
+/// The two arms are written out on purpose: each operation keeps its own call and
+/// its own ordering rules inside that backend's service.
+pub fn apply(
+    owner: Owner,
+    action: &str,
+    operation: Operation,
+    context: Context<'_>,
+) -> Result<Value, Error> {
+    let cancelled = AtomicBool::new(false);
+    let Context {
+        now,
+        transition_id: transition,
+        ..
+    } = context;
+    match owner {
+        Owner::Cloud(cloud) => match operation {
+            Operation::DownloadTicket(part) => cloud.download_ticket(action, part, now),
+            Operation::Sync(request) => cloud.synchronize(action, &request, now, &cancelled),
+            Operation::Authorize(reason) => cloud.authorize(action, &reason, now, transition),
+            Operation::Renew(request) => cloud.renew(action, request, context),
+            Operation::Execute(confirmation) => {
+                cloud.execute(action, &confirmation, now, transition, &cancelled)
+            }
+            Operation::Cancel(confirmation) => cloud.cancel(action, &confirmation, now, &cancelled),
+            Operation::Retry(request) => cloud.retry(action, request, now, &cancelled),
+            Operation::Reconcile => cloud.reconcile(action, now, transition, &cancelled),
+            Operation::Refresh => cloud.refresh(action, now, &cancelled),
+            // Counts of what the worker already pushed. Nothing is fetched.
+            Operation::History => cloud.history(action),
+            // The newest checkpoint the worker registered. Nothing is fetched.
+            Operation::Checkpoint => cloud.latest_registered_checkpoint(action),
+            Operation::Collect => cloud.collect_artifacts(action, now, &cancelled),
+            Operation::Acknowledge(request) => {
+                cloud.acknowledge_artifacts(action, request.proof, request.release, now)
+            }
+        }
+        .map_err(Into::into),
+        Owner::Slurm(slurm) => {
+            let refreshing = matches!(
+                &operation,
+                Operation::History
+                    | Operation::Refresh
+                    | Operation::Checkpoint
+                    | Operation::Collect
+                    | Operation::Acknowledge(_)
+            );
+            match operation {
+                Operation::DownloadTicket(_) => {
+                    return Err(error(
+                        422,
+                        "DIRECT_DOWNLOAD_UNAVAILABLE",
+                        "this backend streams downloads through its gateway",
+                    ));
+                }
+                Operation::Sync(_) => {
+                    return Err(error(
+                        501,
+                        "CLOUD_SYNC_NOT_CONFIGURED",
+                        "CPU cloud synchronization is not configured for this submission",
+                    ));
+                }
+                Operation::Authorize(reason) => {
+                    slurm.authorize(action, "bearer-client", &reason, context)
+                }
+                Operation::Renew(request) => slurm.renew(action, request, context),
+                Operation::Execute(confirmation) => {
+                    slurm.execute(action, &confirmation, context, &cancelled)
+                }
+                Operation::Cancel(confirmation) => {
+                    slurm.cancel(action, &confirmation, now, &cancelled)
+                }
+                Operation::Retry(request) => slurm.retry(action, request, now, &cancelled),
+                Operation::Reconcile => slurm.reconcile(action, now, &cancelled),
+                Operation::Refresh => slurm.refresh(action, now, &cancelled),
+                // Pulls new metric lines over the gateway, because no worker pushes them.
+                Operation::History => slurm.ingest_history(action, &cancelled),
+                // Verifies the backend's ready marker before registering a checkpoint.
+                Operation::Checkpoint => slurm.refresh_checkpoint(action, now, &cancelled),
+                Operation::Collect => slurm.collect_artifacts(action, &cancelled),
+                Operation::Acknowledge(request) => slurm.acknowledge_artifacts(
+                    action,
+                    request.proof,
+                    request.release,
+                    now,
+                    &cancelled,
+                ),
+            }
+            .map_err(|cause| slurm_failure(refreshing, cause))
+        }
+    }
+}
+fn slurm_failure(refreshing: bool, cause: submissions::Error) -> Error {
+    if refreshing && matches!(cause, submissions::Error::Uncertain) {
+        error(
+            503,
+            "WORKER_OBSERVATION_CACHE_UNCERTAIN",
+            "the sample may have been saved; query it or repeat refresh; no scheduler effect was requested",
+        )
+    } else {
+        cause.into()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_slurm_refresh_reports_an_uncertain_sample_instead_of_an_uncertain_effect() {
+        let refreshed = slurm_failure(true, submissions::Error::Uncertain);
+        assert_eq!(
+            (refreshed.status, refreshed.code),
+            (503, "WORKER_OBSERVATION_CACHE_UNCERTAIN")
+        );
+        let effect = slurm_failure(false, submissions::Error::Uncertain);
+        let public = Error::from(submissions::Error::Uncertain);
+        assert_eq!((effect.status, effect.code), (public.status, public.code));
+        let other = slurm_failure(true, submissions::Error::Busy);
+        assert_eq!((other.status, other.code), (503, "SUBMISSION_BUSY"));
+    }
 
     fn answer(result: Result<Owner, Error>) -> (u16, &'static str) {
         let error = result.err().unwrap();

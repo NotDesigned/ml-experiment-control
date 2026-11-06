@@ -84,12 +84,7 @@ pub struct Backend {
     pub data_helper_config: Option<String>,
     pub script_preparation: bool,
 }
-#[derive(Clone, Copy)]
-pub struct Context<'a> {
-    pub now: &'a str,
-    pub expires: &'a str,
-    pub transition_id: &'a str,
-}
+pub use crate::runs::Context;
 pub struct Service {
     settings: read_config::Settings,
     workspace: String,

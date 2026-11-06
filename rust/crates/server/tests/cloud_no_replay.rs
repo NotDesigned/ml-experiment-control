@@ -30,7 +30,7 @@ use ml_exp_server::{
     operations::{ClaimContext, Store},
     read_api::{self, Api},
     read_config,
-    runs::Owner,
+    runs::{self, Operation, Owner},
     sources, submissions,
 };
 use serde_json::{Value, json};
@@ -2190,5 +2190,71 @@ fn administration_stops_when_it_cannot_tell_who_owns_an_action() {
         .unwrap_err();
     assert_eq!(error.code, "ADMINISTRATION_BLOCKED");
     assert!(f.provider.calls().is_empty());
+    assert!(!ssh_calls.exists());
+}
+
+#[test]
+fn a_lost_reply_keeps_one_create_through_the_one_dispatch() {
+    for kind in KINDS {
+        let f = Fixture::new(kind);
+        f.provider.world().lose_create_reply = true;
+        let service = Arc::new(f.open());
+        let (action, _) = f.authorized(&service, "train");
+        let apply = |operation| {
+            let transition = f.transition();
+            runs::apply(
+                Owner::Cloud(service.clone()),
+                &action,
+                operation,
+                submissions::Context {
+                    now: T_EXECUTE,
+                    expires: GATE_EXPIRES,
+                    transition_id: &transition,
+                },
+            )
+        };
+        let execute = || Operation::Execute(format!("EXECUTE {action}"));
+        let view = apply(execute()).unwrap();
+        assert_eq!(view["status"], "RECONCILE_REQUIRED");
+        assert_eq!(f.provider.creates(), 1);
+        assert!(apply(execute()).is_err());
+        assert_eq!(
+            apply(Operation::Reconcile).unwrap()["status"],
+            "RECONCILE_REQUIRED"
+        );
+        assert_eq!(f.provider.creates(), 1);
+        f.provider.world().exists = true;
+        assert_eq!(apply(Operation::Reconcile).unwrap()["status"], "VERIFIED");
+        assert_eq!(f.provider.creates(), 1);
+    }
+}
+
+#[test]
+fn sync_and_direct_download_stay_unsupported_in_the_slurm_arm() {
+    let f = Fixture::new(Kind::Pai);
+    let (slurm, action, ssh_calls) = slurm_side(&f);
+    let slurm = Arc::new(slurm);
+    let transition = f.transition();
+    let answer = |operation| {
+        let error = runs::apply(
+            Owner::Slurm(slurm.clone()),
+            &action,
+            operation,
+            open_gate(&transition),
+        )
+        .unwrap_err();
+        (error.status, error.code)
+    };
+    assert_eq!(
+        answer(Operation::DownloadTicket(0)),
+        (422, "DIRECT_DOWNLOAD_UNAVAILABLE")
+    );
+    assert_eq!(
+        answer(Operation::Sync(ml_exp_core::cloud::exchange::Sync {
+            request_id: REQUEST_A.into(),
+            confirmation: format!("SYNC {action}"),
+        })),
+        (501, "CLOUD_SYNC_NOT_CONFIGURED")
+    );
     assert!(!ssh_calls.exists());
 }
