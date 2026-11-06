@@ -118,10 +118,13 @@ def request(builder, value):
                 return _finish(builder, value, image, frozen, receipt)
         from .build_recovery import publication_absence
         proof = (publication_absence(builder, identifier)
-                 if value["operation"] == "native-reconcile" and definition.exists() else None)
+                 if value["operation"] == "native-reconcile" else None)
         raise BuildReceiptMissingError("native image has not been published", retry_proof=proof)
     if not builder.config.get("allow_dockerfile_builds"):
         raise ValueError("native image builds are disabled")
+    # Found out before the paid build rather than after it.
+    if value["mirror"] and "target_repository" not in builder.config.get(mirror_policy(value), {}):
+        raise ValueError(mirror_policy(value) + " is not configured")
     binary = Path(builder.config["native_worker_bin"])
     source = Path(builder.config["native_source_root"]) / value["project"] / value["source_id"]
     tree = source / "tree"
@@ -188,12 +191,16 @@ def request(builder, value):
         return _finish(builder, value, image, frozen, receipt)
 
 
+def mirror_policy(value):
+    return "slurm_mirror" if value["mirror"] == "slurm" else "sensecore_mirror"
+
+
 def _finish(builder, value, image, frozen, receipt):
     if not IMAGE.fullmatch(image):
         raise ValueError("native published image is not digest-pinned")
     if value["mirror"]:
         from .image_mirror import mirror
-        policy = "slurm_mirror" if value["mirror"] == "slurm" else "sensecore_mirror"
+        policy = mirror_policy(value)
         target = builder.config[policy]["target_repository"] + ":bundle-" + value["runtime_id"].removeprefix("runtime.")
         image = mirror(builder, {"source_image": image, "target_tag": target}, policy)["image"]
     result = {"runtime_id": value["runtime_id"], "project": value["project"], "source_id": value["source_id"], "recipe": RECIPE, "request": frozen,

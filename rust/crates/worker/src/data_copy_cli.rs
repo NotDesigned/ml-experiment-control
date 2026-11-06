@@ -10,7 +10,10 @@ use std::{
     io::Read,
     path::PathBuf,
     process::ExitCode,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 const MAX_CONFIG_BYTES: usize = 8 * 1024 * 1024;
 #[derive(Parser)]
@@ -96,6 +99,7 @@ fn confirm_ready(
     http: &reqwest::blocking::Client,
     channel: &DataChannel,
     receipt: &Receipt,
+    cancelled: &AtomicBool,
 ) -> Result<(), String> {
     let mut attempt = 0;
     loop {
@@ -103,7 +107,10 @@ fn confirm_ready(
         match post_ready(http, channel, receipt) {
             Ok(()) => return Ok(()),
             Err(ReadyFailure::Final(text)) => return Err(text),
-            Err(ReadyFailure::Again(text)) if attempt >= ml_exp_worker::retry::ATTEMPTS => {
+            Err(ReadyFailure::Again(text))
+                if attempt >= ml_exp_worker::retry::ATTEMPTS
+                    || cancelled.load(Ordering::Relaxed) =>
+            {
                 return Err(text);
             }
             Err(ReadyFailure::Again(text)) => {
@@ -165,7 +172,7 @@ pub fn main_from(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             .connect_timeout(std::time::Duration::from_secs(10))
             .timeout(std::time::Duration::from_secs(60))
             .build()?;
-        confirm_ready(&http, &channel, &receipt)?;
+        confirm_ready(&http, &channel, &receipt, &cancelled)?;
         Ok(())
     })();
     match result {

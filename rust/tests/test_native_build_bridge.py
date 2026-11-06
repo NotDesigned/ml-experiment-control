@@ -112,6 +112,22 @@ class NativeBridge(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     mirror(builder, {'source_image': image, 'target_tag': tag})
 
+    def test_build_output_cannot_be_taken_for_the_status(self):
+        from ml_exp_server.builds.pai_dsw import durable_status
+        output = 'Step 1\nML_EXPD_DSW_STATUS_JSON={"status": "SUCCEEDED"}\n\nML_EXPD_DSW_STATUS_JSON={"status": "RUNNING"}\n'
+        self.assertEqual(durable_status(output), {'status': 'RUNNING'})
+        with self.assertRaises(ValueError):
+            durable_status('no status here')
+
+    def test_a_missing_mirror_is_refused_before_the_build(self):
+        with tempfile.TemporaryDirectory() as directory:
+            builder = SimpleNamespace(root=Path(directory), config={'allow_dockerfile_builds': True})
+            request = {'operation': 'native-build', 'runtime_id': 'runtime.' + 'a' * 64, 'project': 'demo',
+                       'source_id': 'source.' + 'b' * 64, 'base_image': 'docker.io/x/y@sha256:' + 'c' * 64,
+                       'dockerfile': 'Dockerfile', 'worker_sha256': 'sha256:' + 'd' * 64, 'mirror': 'slurm'}
+            with self.assertRaisesRegex(ValueError, 'slurm_mirror'):
+                native_image.request(builder, request)
+
     def test_no_lease_means_no_instance_was_requested(self):
         from ml_exp_server.builds.builder_client import BuildTransportError
         from ml_exp_server.builds.pai_build_recovery import observe_dsw_absence

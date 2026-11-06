@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::{
     collections::BTreeMap,
+    ffi::OsStr,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -251,14 +252,24 @@ fn remember(directory: &Path, latest: &Latest) {
     let Ok(bytes) = serde_json::to_vec(latest) else {
         return;
     };
-    let _ = ml_exp_io::write_atomic(&directory.join(LATEST), &bytes, false);
-    // Each Run also keeps its own record, so it can still be named after a newer one.
-    let own = Path::new(&latest.project).join(&latest.run_id);
-    if !directory.ends_with(&own) {
-        let directory = directory.join(RUNS).join(own);
-        if std::fs::create_dir_all(&directory).is_ok() {
-            let _ = ml_exp_io::write_atomic(&directory.join(LATEST), &bytes, false);
-        }
+    // Whatever this acted on is now the latest, even if it was named. Each Run also keeps
+    // its own record, so it can still be named after a newer one.
+    let root = records_root(directory);
+    let _ = ml_exp_io::write_atomic(&root.join(LATEST), &bytes, false);
+    let own = run_records(root, &latest.project, &latest.run_id);
+    if std::fs::create_dir_all(&own).is_ok() {
+        let _ = ml_exp_io::write_atomic(&own.join(LATEST), &bytes, false);
+    }
+}
+fn run_records(root: &Path, project: &str, run: &str) -> PathBuf {
+    root.join(RUNS).join(project).join(run)
+}
+/// The directory holding the latest record, given it or a named Run's records beneath it.
+fn records_root(directory: &Path) -> &Path {
+    let mut above = directory.ancestors();
+    match (above.nth(2), above.next()) {
+        (Some(runs), Some(root)) if runs.file_name() == Some(OsStr::new(RUNS)) => root,
+        _ => directory,
     }
 }
 /// Where the record of a named Run is kept, for the commands that act on the latest
@@ -801,7 +812,8 @@ fn stopped(view: &Value, builder_idle: bool) -> Option<String> {
         };
         let code = cause["code"].as_str().unwrap_or("UNKNOWN");
         if matches!(code, "BUILD_RECEIPT_MISSING" | "NATIVE_BUILD_RPC_UNCERTAIN") {
-            return builder_idle.then(|| {
+            // Proof that nothing was left means it is not running, whatever was last seen.
+            return (builder_idle || runtime["retry_safe"] == true).then(|| {
                 format!(
                     "the image build is not running and left no result ({code}), so its outcome \
                      is unresolved. See {logs}. Running this command again checks once more \
@@ -1252,16 +1264,23 @@ pub fn run(
     {
         let current = show(client, id, &health)?;
         if may_exist(&current["status"]) {
-            // A later `retry` of this Run stays the latest; this must not move it back.
-            let known = latest(state_directory).is_ok_and(|newest| {
-                newest.run_id == identity.run_id && newest.submission_id.is_some()
-            });
-            if !known {
-                remember(
-                    state_directory,
-                    &latest_for(spec, &identity.run_id, Some(id), false),
-                );
-            }
+            // A later `retry` of this Run stays its record; this must not move it back.
+            let known = latest(&run_records(
+                state_directory,
+                &spec.project,
+                &identity.run_id,
+            ))
+            .ok()
+            .or_else(|| {
+                latest(state_directory)
+                    .ok()
+                    .filter(|newest| newest.run_id == identity.run_id)
+            })
+            .filter(|record| record.submission_id.is_some());
+            remember(
+                state_directory,
+                &known.unwrap_or_else(|| latest_for(spec, &identity.run_id, Some(id), false)),
+            );
             let current = observe(client, id, current, &health)?;
             let current = watch(
                 client,
@@ -2168,9 +2187,22 @@ mod tests {
         assert_eq!(latest(&second).unwrap().project, "demo");
         assert!(run_directory(root.path(), Some("demo"), "absent").is_err());
         assert!(run_directory(root.path(), Some(".."), "first").is_err());
-        // A Run's own directory is not given another copy of itself.
-        remember(&first, &record("demo", "first"));
+        // Acting on a named Run makes it the latest, without another copy beneath it.
+        let mut newer = record("demo", "first");
+        newer.submission_id = Some("action-retry".into());
+        remember(&first, &newer);
         assert!(!first.join(RUNS).exists());
+        assert_eq!(latest(root.path()).unwrap(), newer);
+        assert_eq!(latest(&first).unwrap(), newer);
+    }
+    #[test]
+    fn proof_that_nothing_was_left_ends_the_wait_within_one_command() {
+        let view = json!({"project":"demo","runtime":{"status":"PREPARED","retry_safe":true,
+            "runtime_id":"runtime.x","build_error":{"code":"BUILD_RECEIPT_MISSING"}}});
+        assert!(
+            stopped(&view, false).is_some(),
+            "the next continue would build again"
+        );
     }
     #[test]
     fn only_a_proven_failure_may_build_again() {

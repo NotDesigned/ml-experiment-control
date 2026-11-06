@@ -42,6 +42,15 @@ def file_sha(path):
     return value.hexdigest()
 
 
+def durable_status(output):
+    """The status is printed after the build's own output, which can contain anything."""
+    lines = [line.removeprefix("ML_EXPD_DSW_STATUS_JSON=") for line in output.splitlines()
+             if line.startswith("ML_EXPD_DSW_STATUS_JSON=")]
+    if not lines:
+        raise ValueError("DSW durable build status is unavailable")
+    return json.loads(lines[-1])
+
+
 class DswPublisher:
     def __init__(self, builder):
         self.builder, self.config = builder, builder.config["pai_dsw"]
@@ -126,11 +135,7 @@ class DswPublisher:
                                   quiet=True)
                 self.write_log("\n".join(line for line in output.splitlines()
                                          if not line.startswith("ML_EXPD_DSW_STATUS_JSON=")))
-                lines = [line.removeprefix("ML_EXPD_DSW_STATUS_JSON=") for line in output.splitlines()
-                         if line.startswith("ML_EXPD_DSW_STATUS_JSON=")]
-                if len(lines) != 1:
-                    raise ValueError("DSW durable build status is unavailable")
-                state = json.loads(lines[0])
+                state = durable_status(output)
                 if not isinstance(state, dict):
                     raise ValueError("DSW durable build status is not an object")
                 position = state["log_offset"]

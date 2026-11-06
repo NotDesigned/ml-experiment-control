@@ -1244,6 +1244,32 @@ fn retry_finishes_a_prepared_attempt_rather_than_starting_another() {
 }
 
 #[test]
+fn repeating_submit_keeps_a_retry_even_after_another_run_became_the_latest() {
+    let files = Files::new();
+    let fake = Fake::start(World::new());
+    submitted_train(&files, &fake);
+    let states = files.root.path().join("states");
+    submit::retry(&fake.client(), &states, None, quiet(&mut |_| Ok(true))).unwrap();
+    let retried = submit::latest(&states).unwrap();
+    assert!(retried.submission_id.is_some());
+    // Another Run is submitted from this machine.
+    std::fs::write(
+        states.join("latest.json"),
+        r#"{"project":"demo","run_id":"other","submission_id":"action-other","unsettled":false}"#,
+    )
+    .unwrap();
+    let mut asked = Vec::new();
+    files.run(&fake, true, &mut asked).unwrap();
+    assert_eq!(
+        submit::latest(&states).unwrap(),
+        retried,
+        "the newer attempt is kept"
+    );
+    let named = submit::run_directory(&states, None, &retried.run_id).unwrap();
+    assert_eq!(submit::latest(&named).unwrap(), retried);
+}
+
+#[test]
 fn repeating_submit_after_a_retry_keeps_the_newer_attempt_as_the_latest() {
     let files = Files::new();
     let fake = Fake::start(ended());
