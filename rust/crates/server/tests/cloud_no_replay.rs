@@ -63,6 +63,8 @@ struct World {
     exists: bool,
     foreign: bool,
     down: bool,
+    /// Job reads that still succeed before the read path goes down.
+    gets_left: Option<u32>,
     terminal: bool,
 }
 struct FakeProvider {
@@ -140,12 +142,16 @@ impl Transport for FakeProvider {
                 Profile::Sensecore(_) => json!({"name":world.row["name"]}),
             });
         }
-        if world.down {
+        let is_get = matches!(action, "GetJob" | "GetTrainingJob");
+        if world.down || is_get && world.gets_left == Some(0) {
             return Err(cloud::Error {
                 code: "PROVIDER_DOWN".into(),
                 http_status: Some(503),
                 uncertain: false,
             });
+        }
+        if is_get {
+            world.gets_left = world.gets_left.map(|left| left - 1);
         }
         let row = self.observed_row(&world);
         match action {
@@ -533,6 +539,38 @@ fn a_lost_reply_is_reconciled_after_reopen_with_one_create() {
         assert_eq!(view["status"], "VERIFIED");
         assert_eq!(view["cloud_observation"]["phase"], "OWNED");
         assert!(view["cloud_observation"]["handle"]["job_id"].is_string());
+        assert_eq!(f.execute(&service, &action).unwrap()["status"], "VERIFIED");
+        assert_eq!(f.provider.creates(), 1);
+    }
+}
+
+/// The create was confirmed and its handle saved, then the first observation
+/// failed. On SenseCore the recorded job name contains the submission token.
+#[test]
+fn a_failed_read_after_a_confirmed_create_recovers_with_one_create() {
+    for kind in KINDS {
+        let f = Fixture::new(kind);
+        // The create's own ownership read succeeds; the next read does not.
+        f.provider.world().gets_left = Some(1);
+        let service = f.open();
+        let (action, _) = f.authorized(&service, "train");
+        let view = f.execute(&service, &action).unwrap();
+        assert_eq!(view["status"], "RECONCILE_REQUIRED");
+        assert_eq!(view["cloud_observation"]["phase"], "OWNED");
+        assert_eq!(
+            view["cloud_observation"]["diagnostic"]["code"],
+            "PROVIDER_DOWN"
+        );
+        assert_eq!(f.provider.creates(), 1);
+        drop(service);
+        let service = f.open();
+        let view = f.reconcile(&service, &action);
+        assert_eq!(view["status"], "RECONCILE_REQUIRED");
+        assert_eq!(f.provider.creates(), 1);
+        f.provider.world().gets_left = None;
+        let view = f.reconcile(&service, &action);
+        assert_eq!(view["status"], "VERIFIED");
+        assert_eq!(view["cloud_observation"]["observation"]["state"], "RUNNING");
         assert_eq!(f.execute(&service, &action).unwrap()["status"], "VERIFIED");
         assert_eq!(f.provider.creates(), 1);
     }

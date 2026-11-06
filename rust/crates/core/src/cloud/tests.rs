@@ -221,6 +221,11 @@ fn cloud_run_authorship_launch_and_approval_preserve_science_and_exact_attempt()
     .unwrap();
     assert!(!plan.to_string().contains(&"0".repeat(32)));
     action::validate(&plan, &execution).unwrap();
+    // A SenseCore job is named after its token, so a recorded result may hold it.
+    let mut settled = plan.clone();
+    settled["execution"] = json!({"status":"VERIFIED","result":{"submission":{
+        "backend":"pai-h200","backend_job_id":format!("ml-exp-{}", "0".repeat(32))}}});
+    action::validate(&settled, &execution).unwrap();
     let mut mixed = docs.attempt.clone();
     mixed["seed"] = json!(43);
     assert!(compile(&docs.run, &mixed, binding.clone(), channel.clone()).is_err());
