@@ -319,7 +319,7 @@ fn state_preflight_rejects_misdirected_credentials_before_any_request() {
 
 #[test]
 fn real_status_cli_preserves_json_evidence_and_has_a_human_summary() {
-    use serde_json::{Value, json};
+    use serde_json::Value;
     use std::net::TcpListener;
     let fixture: Value = serde_json::from_str(r#"{"health":{"capabilities":["execution-progress.v1"]},"requests":["/api/runs/p/r","/api/runs/p/r/attempts","/api/experiments/p/r/submissions","/api/submissions/action-aaaaaaaaaaaaaaaa/progress","/api/runs/p/r/attempts/attempt-001/collection"],"responses":{"/api/runs/p/r":{"project":"p","run_id":"r","evidence":{"scheduler":{"attempt_id":"attempt-001","state":"RUNNING"}}},"/api/runs/p/r/attempts":{"project":"p","run_id":"r","current_attempt_id":"attempt-001","attempts":[{"attempt_id":"attempt-001","identity":"r::attempt-001","state":"RUNNING"}]},"/api/experiments/p/r/submissions":{"project":"p","run_id":"r","submissions":[{"project":"p","run_id":"r","attempt_id":"attempt-001","submission_id":"action-aaaaaaaaaaaaaaaa","status":"SUCCEEDED"}]},"/api/submissions/action-aaaaaaaaaaaaaaaa/progress":{"submission_id":"action-aaaaaaaaaaaaaaaa","run_id":"r","attempt_id":"attempt-001","phase":"TRAINING","availability":"AVAILABLE","last_metric":{"sequence":9,"event_id":"m9","source":"canonical-journal","observation":{"name":"loss","value":3.2,"unit":"nats/token","step":10,"variant_id":"v2"}}},"/api/runs/p/r/attempts/attempt-001/collection":{"project":"p","run_id":"r","attempt_id":"attempt-001","status":"AVAILABLE","verification":"SHA256_VERIFIED","download_available":true,"training":{"status":"COMPLETED","exit_code":0}}},"expected":{"project":"p","run_id":"r","attempt_id":"attempt-001","preparation":{"status":"NOT_OBSERVED","phase":null},"scheduler":{"state":"RUNNING","backend":null,"job_id":null,"native_state":null,"observed_at":null,"stale":true,"reason":null},"training":{"status":"COMPLETED","exit_code":0,"process_state":null,"observed_at":null,"stale":true},"publication":{"status":"AVAILABLE","phase":null,"download_available":true,"diagnostic":null,"error":null},"verification":{"status":"SHA256_VERIFIED"},"progress":{"availability":"AVAILABLE","phase":"TRAINING"},"queue":null,"worker":{"state":null,"observed_at":null,"stale":true},"model":{"state":"step 10","step":10,"last_metric":{"name":"loss","value":3.2,"unit":"nats/token","step":10,"variant_id":"v2"},"metric_record":{"sequence":9,"event_id":"m9","source":"canonical-journal"},"observed_at":null,"stale":true},"input_delivery":null,"worker_phase":null}}"#).unwrap();
     for (human, watch) in [(false, false), (true, false), (false, true)] {
@@ -327,7 +327,7 @@ fn real_status_cli_preserves_json_evidence_and_has_a_human_summary() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let base = format!("http://{}/ml-expd", listener.local_addr().unwrap());
-        let mut responses = vec![("/api/health".to_string(), { fixture["health"].clone() })];
+        let mut responses = vec![("/api/health".to_string(), fixture["health"].clone())];
         responses.extend(fixture["requests"].as_array().unwrap().iter().map(|p| {
             let path = p.as_str().unwrap();
             (path.to_owned(), fixture["responses"][path].clone())
@@ -394,8 +394,7 @@ fn real_logs_and_metrics_commands_follow_the_original_saved_attempt() {
         let mut saved = fixture["saved"].clone();
         saved["server"] = json!(&base);
         write_atomic(&state, &serde_json::to_vec(&saved).unwrap(), true).unwrap();
-        let mut health = fixture["health"].clone();
-        let mut responses = vec![("/api/health".to_string(), health)];
+        let mut responses = vec![("/api/health".to_string(), fixture["health"].clone())];
         responses.extend(fixture["requests"].as_array().unwrap().iter().map(|p| {
             let path = p.as_str().unwrap();
             (path.to_owned(), fixture["responses"][path].clone())
