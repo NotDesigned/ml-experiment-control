@@ -94,6 +94,24 @@ class NativeBridge(unittest.TestCase):
             self.assertIs(publication_builder(builder, 'c' * 64), builder)
             self.assertEqual(builder.config['repository'], 'docker.io/team/runtime')
 
+    def test_slurm_delivery_uses_its_own_mirror_policy(self):
+        from ml_exp_server.builds.image_mirror import mirror
+        source = 'docker.io/team/runtime'
+        image = source + '@sha256:' + 'a' * 64
+        tag = 'mirror.example/team/build:bundle-' + 'b' * 64
+        with tempfile.TemporaryDirectory() as directory:
+            builder = SimpleNamespace(root=Path(directory), config={
+                'repository': source, 'registry_auth_file': str(Path(directory) / 'auth.json'),
+                'slurm_mirror': {'target_repository': 'mirror.example/team/build'},
+                'sensecore_mirror': {'target_repository': 'other.example/team/runtime'}})
+            registry = SimpleNamespace(prefix='/v2/team/build', request=lambda *a, **k: (200, {}, b'manifest'))
+            with patch('ml_exp_server.builds.image_mirror.Registry.from_config', return_value=registry), \
+                    patch('ml_exp_server.builds.image_mirror.digest', return_value='sha256:' + 'a' * 64):
+                result = mirror(builder, {'source_image': image, 'target_tag': tag}, 'slurm_mirror')
+                self.assertEqual(result['image'], 'mirror.example/team/build@sha256:' + 'a' * 64)
+                with self.assertRaises(ValueError):
+                    mirror(builder, {'source_image': image, 'target_tag': tag})
+
     def test_no_lease_means_no_instance_was_requested(self):
         from ml_exp_server.builds.builder_client import BuildTransportError
         from ml_exp_server.builds.pai_build_recovery import observe_dsw_absence

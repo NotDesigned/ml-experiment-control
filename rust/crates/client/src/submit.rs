@@ -267,6 +267,7 @@ pub fn run_directory(directory: &Path, project: Option<&str>, run: &str) -> Resu
     let runs = directory.join(RUNS);
     let valid = |id: &str| {
         ml_exp_core::identity::validate_id(id)
+            .map(|_| ())
             .map_err(|_| Error::Submit(format!("{id} is not a valid name")))
     };
     valid(run)?;

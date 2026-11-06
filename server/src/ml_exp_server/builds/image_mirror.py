@@ -18,10 +18,10 @@ def target_image(delivery):
     return tag.rsplit(':', 1)[0] + '@' + source.split('@', 1)[1]
 
 
-def mirror(builder, request):
+def mirror(builder, request, policy_name='sensecore_mirror'):
     target = target_image(request)
     source, tag = request['source_image'], request['target_tag']
-    policy = builder.config.get('sensecore_mirror', {})
+    policy = builder.config.get(policy_name, {})
     source_repo, target_repo = source.split('@', 1)[0], tag.rsplit(':', 1)[0]
     if (source_repo not in {builder.config.get('repository'), policy.get('source_repository')}
             or target_repo != policy.get('target_repository')

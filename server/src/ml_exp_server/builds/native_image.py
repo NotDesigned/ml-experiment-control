@@ -80,7 +80,7 @@ def request(builder, value):
             or not PROJECT.fullmatch(value["project"])
             or not re.fullmatch(r"source\.[0-9a-f]{64}", value["source_id"])
             or not IMAGE.fullmatch(value["base_image"])
-            or type(value["mirror"]) is not bool):
+            or not (type(value["mirror"]) is bool or value["mirror"] == "slurm")):
         raise ValueError("invalid native build request")
     identifier = value["runtime_id"].removeprefix("runtime.")
     frozen = {k: v for k, v in value.items() if k != "operation"}
@@ -193,8 +193,9 @@ def _finish(builder, value, image, frozen, receipt):
         raise ValueError("native published image is not digest-pinned")
     if value["mirror"]:
         from .image_mirror import mirror
-        target = builder.config["sensecore_mirror"]["target_repository"] + ":bundle-" + value["runtime_id"].removeprefix("runtime.")
-        image = mirror(builder, {"source_image": image, "target_tag": target})["image"]
+        policy = "slurm_mirror" if value["mirror"] == "slurm" else "sensecore_mirror"
+        target = builder.config[policy]["target_repository"] + ":bundle-" + value["runtime_id"].removeprefix("runtime.")
+        image = mirror(builder, {"source_image": image, "target_tag": target}, policy)["image"]
     result = {"runtime_id": value["runtime_id"], "project": value["project"], "source_id": value["source_id"], "recipe": RECIPE, "request": frozen,
               "runtime": {"runtime_id": value["runtime_id"], "source_id": value["source_id"], "image": image, "source_dir": "/ml-expd/source", "worker_path": "/usr/local/bin/ml-exp-worker-rs", "worker_sha256": value["worker_sha256"]}}
     atomic_json(receipt, result)

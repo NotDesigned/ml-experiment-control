@@ -170,6 +170,10 @@ executor, so configure `sensecore_mirror` on the builder. Its fields are
 copies with Skopeo and verifies the digest; repeated requests reuse the copy. No API
 setting is involved, and image layers do not pass through the API disk.
 
+Runtimes for a Slurm executor work the same way through `slurm_mirror`, with the same
+fields, because a gateway may not reach the main registry. Point it at a registry the
+gateway can reach and whose login is in the helper's `registry_auth_file`.
+
 ## Local BuildKit storage
 
 The local publisher uses `"publisher": "buildkit"` with the same `repository`,
