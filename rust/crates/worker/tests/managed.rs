@@ -588,7 +588,8 @@ fn staged_config_digest_and_existing_external_outputs_fail_before_payload_execut
 }
 
 #[test]
-fn local_and_endpoint_bindings_are_exclusive_and_legacy_configuration_bytes_are_preserved() {
+fn local_and_endpoint_bindings_are_exclusive_and_unset_fields_stay_out_of_the_configuration_bytes()
+{
     let f = Fixture::new("complete");
     let old = json!({"manifest_path":f.config.manifest_path,"endpoint":f.config.endpoint,"attempt_root":f.config.attempt_root,
         "workdir":f.config.workdir,"maximum_timeout_seconds":5,"base_environment":{}});

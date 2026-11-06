@@ -1028,7 +1028,7 @@ mod tests {
         assert_eq!(verified["private_extension"]["keep"], true);
     }
     #[test]
-    fn legacy_numeric_job_ids_and_malformed_evidence_never_authorize_replay() {
+    fn numeric_job_ids_and_malformed_evidence_never_authorize_replay() {
         let plan = plan("SUBMIT_RUN");
         let absent = json!({"run_id":"train","attempt_id":"attempt-001","state":"NOT_SUBMITTED"});
         for value in [

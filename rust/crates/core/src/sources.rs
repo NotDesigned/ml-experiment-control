@@ -553,7 +553,7 @@ mod tests {
     }
 
     #[test]
-    fn streaming_tree_digest_matches_python_length_framed_identity() {
+    fn streaming_tree_digest_matches_its_length_framed_identity() {
         let policy = Policy::default();
         let plan = TreePlan::new(
             vec![

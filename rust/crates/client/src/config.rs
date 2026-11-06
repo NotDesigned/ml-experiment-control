@@ -306,7 +306,7 @@ mod tests {
     }
 
     #[test]
-    fn preview_default_is_separate_from_existing_python_client_configuration() {
+    fn default_configuration_path_is_under_the_rust_client_directory() {
         assert_eq!(
             default_config_path(None, Some(Path::new("/home/researcher"))),
             Path::new("/home/researcher/.config/ml-expd-rust/client.json")

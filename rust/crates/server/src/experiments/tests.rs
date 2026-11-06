@@ -545,7 +545,7 @@ fn tails_are_bounded_and_jsonl_partial_corrupt_and_foreign_rows_remain_diagnosti
 }
 
 #[test]
-fn log_tails_preserve_python_text_separators_without_changing_jsonl_framing() {
+fn log_tails_split_on_unicode_line_separators_without_changing_jsonl_framing() {
     let f = fixture();
     let path = run_path(f.root.path()).join("attempts/attempt-001");
     fs::write(

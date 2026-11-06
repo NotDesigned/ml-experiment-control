@@ -449,7 +449,7 @@ mod tests {
     }
 
     #[test]
-    fn python_checkpoint_identity_and_sorted_manifest_are_exact() {
+    fn checkpoint_identity_and_sorted_manifest_are_exact() {
         let context = context(&context_value()).unwrap();
         let value = document(&context, &ready()).unwrap();
         assert_eq!(

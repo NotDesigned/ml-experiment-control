@@ -89,7 +89,7 @@ fn observe(
 }
 
 #[test]
-fn normalized_scheduler_states_preserve_python_semantics() {
+fn normalized_scheduler_states_follow_the_case_table() {
     let f = fixture();
     assert_eq!(f["normalization_cases"].as_array().unwrap().len(), 100);
     for c in f["normalization_cases"].as_array().unwrap() {
@@ -110,7 +110,7 @@ fn normalized_scheduler_states_preserve_python_semantics() {
     );
 }
 #[test]
-fn shell_quotes_and_long_job_names_match_python() {
+fn shell_quotes_and_long_job_names_follow_the_case_table() {
     let f = fixture();
     assert_eq!(f["quote_cases"].as_array().unwrap().len(), 25);
     for c in f["quote_cases"].as_array().unwrap() {

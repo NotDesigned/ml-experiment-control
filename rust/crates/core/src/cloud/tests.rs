@@ -378,11 +378,12 @@ fn sensecore_training_copy_and_quota_selection_preserve_boundaries() {
     assert!(p.validate_job(&row, &job, Some("uid2")).is_err());
 }
 #[test]
-fn sensecore_workspace_zone_does_not_change_pool_or_mount_zone_and_legacy_hashes_remain() {
+fn sensecore_workspace_zone_does_not_change_pool_or_mount_zone_and_an_absent_zone_keeps_the_digest()
+{
     let mut p = sense();
-    let legacy = serde_json::to_value(&p).unwrap();
-    assert!(legacy["scope"].get("workspace_zone").is_none());
-    let restored: sensecore::Profile = serde_json::from_value(legacy).unwrap();
+    let unzoned = serde_json::to_value(&p).unwrap();
+    assert!(unzoned["scope"].get("workspace_zone").is_none());
+    let restored: sensecore::Profile = serde_json::from_value(unzoned).unwrap();
     assert_eq!(restored.digest().unwrap(), p.digest().unwrap());
     p.scope.workspace_zone = Some("cn-east-1z".into());
     assert!(
@@ -546,9 +547,9 @@ fn offline_requests_use_exact_workspace_uuid_and_workspace_telemetry_zone() {
 }
 
 #[test]
-fn readonly_diagnostic_mounts_do_not_change_legacy_job_serialization() {
+fn readonly_diagnostic_mounts_do_not_change_plain_job_serialization() {
     let original = job();
-    let legacy = json!({
+    let plain = json!({
         "project":"demo", "run_id":"train", "attempt_id":"attempt-001",
         "submission_token":"a".repeat(32), "source_id":format!("source.{}", "b".repeat(64)),
         "image":format!("registry.example/team/image@sha256:{}", "c".repeat(64)),
@@ -556,12 +557,12 @@ fn readonly_diagnostic_mounts_do_not_change_legacy_job_serialization() {
         "gpus":1, "cpus":8, "memory_gb":64, "max_time_seconds":86400, "priority":5
     });
     let value = serde_json::to_value(&original).unwrap();
-    assert_eq!(value, legacy);
+    assert_eq!(value, plain);
     assert_eq!(
         canonical::protocol_identity(&value),
-        canonical::protocol_identity(&legacy)
+        canonical::protocol_identity(&plain)
     );
-    let restored: Job = serde_json::from_value(legacy).unwrap();
+    let restored: Job = serde_json::from_value(plain).unwrap();
     assert!(!restored.read_only_storage);
     assert!(
         serde_json::to_value(&restored)

@@ -110,18 +110,21 @@ mod tests {
     }
 
     #[test]
-    fn explicit_legacy_private_json_is_supported_without_touching_other_files() {
+    fn explicit_private_json_is_supported_without_touching_other_files() {
         let temp = tempfile::tempdir().unwrap();
-        let legacy = temp.path().join("legacy-client.json");
+        let explicit = temp.path().join("explicit-client.json");
         let original =
-            br#"{"url":"https://example.invalid/ml-expd/","token":"legacy-test-secret"}"#;
-        write_atomic(&legacy, original, true).unwrap();
-        let settings = load_settings(&legacy).unwrap();
+            br#"{"url":"https://example.invalid/ml-expd/","token":"explicit-test-secret"}"#;
+        write_atomic(&explicit, original, true).unwrap();
+        let settings = load_settings(&explicit).unwrap();
         let plan = settings
             .resolve(Some("https://example.invalid/ml-expd"), None, None)
             .unwrap();
-        assert_eq!(load_token(plan.token_source).unwrap(), "legacy-test-secret");
-        assert_eq!(std::fs::read(&legacy).unwrap(), original);
+        assert_eq!(
+            load_token(plan.token_source).unwrap(),
+            "explicit-test-secret"
+        );
+        assert_eq!(std::fs::read(&explicit).unwrap(), original);
         assert_eq!(
             load_settings(&temp.path().join("absent")).unwrap().public()["token_configured"],
             false

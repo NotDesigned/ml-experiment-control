@@ -28,7 +28,7 @@ fn metric_payload(input: &Value) -> Result<Value, Error> {
 }
 
 #[test]
-fn metric_payload_reports_records_and_the_legacy_shape_with_coverage() {
+fn metric_payload_reports_records_and_the_points_shape_with_coverage() {
     for case in [
         literal(
             r#"{"operation":"metric_payload","input":{"records":[{"step":0,"timestamp":null,"loss":0,"accuracy":false,"tag":"α"}],"keys":null,"max_points":2,"source":null,"source_attempt_id":null,"contract":{},"format":"records","names":[]},"expected":{"records":[{"step":0,"name":"loss","value":0,"unit":null,"invalid_value":null,"variant_id":null,"protocol_id":null,"status":"UNDECLARED","error":"UNIT_NOT_DECLARED","errors":["UNIT_NOT_DECLARED"]}],"validation":{"coverage":"complete_history","total_records":1,"failed_records":0,"conflicting_records":0,"incomplete_contexts":1,"state":"PARTIAL","missing_metrics":[]},"total_records":1,"downsampled":false,"missing_names":[],"protocol_id":null,"source_attempt_id":null}}"#,
