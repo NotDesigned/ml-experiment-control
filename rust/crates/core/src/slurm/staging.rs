@@ -153,7 +153,7 @@ pub fn checkpoint_context(
     intent: &helper::FrozenIntent,
     manifest: &[u8],
 ) -> helper::Result<crate::checkpoints::Context> {
-    let package = admit(intent, manifest)?.managed;
+    let plan = admit(intent, manifest)?;
     let doc = Value::Object(crate::json::mapping(manifest).map_err(|_| helper::Error::Metadata)?);
     let context = crate::checkpoints::Context {
         project: intent.scope.project.clone(),
@@ -168,12 +168,7 @@ pub fn checkpoint_context(
             .ok_or(helper::Error::Metadata)?
             .into(),
         storage_scope: intent.target.storage_scope.clone(),
-        state_root: package
-            .config
-            .output_path()
-            .to_str()
-            .ok_or(helper::Error::Metadata)?
-            .into(),
+        state_root: format!("{}/state", plan.attempt_dir),
     };
     Ok(context)
 }

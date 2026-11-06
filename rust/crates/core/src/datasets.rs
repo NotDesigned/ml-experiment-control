@@ -348,6 +348,14 @@ pub fn mounts(values: &[Mount]) -> Result<()> {
     }
     Ok(())
 }
+/// `DATASETS_JSON` on every backend: each declared name maps to its receipt root.
+pub fn paths_json(values: &[Mount]) -> Result<String> {
+    let paths: BTreeMap<_, _> = values
+        .iter()
+        .map(|v| (v.name.as_str(), v.receipt.root.as_str()))
+        .collect();
+    serde_json::to_string(&paths).map_err(|_| Error)
+}
 pub fn select(
     inputs_: &[Input],
     receipts: &[Receipt],

@@ -1,5 +1,5 @@
 //! Result archive effects on backend storage. Constant-size payload buffers;
-//! checkpoints require explicit selection; no symlinks or unstable files.
+//! everything in OUTPUT_DIR is a result; no symlinks or unstable files.
 use crate::directory::Directory;
 use ml_exp_core::artifacts::{
     self, FileReceipt,
@@ -29,21 +29,11 @@ fn allowed(kind: Kind, path: &str) -> bool {
         Kind::Data => ml_exp_core::datasets::path(path),
     }
 }
-fn selected_paths(root: &Directory, policy: &Policy, kind: Kind) -> io::Result<Vec<String>> {
+fn selected_paths(root: &Directory, kind: Kind) -> io::Result<Vec<String>> {
     let mut paths = Vec::new();
     walk(root, "", &mut paths, &mut 0, kind)?;
-    if kind == Kind::Results {
-        for path in &policy.required_files {
-            if path.starts_with("checkpoints/") || path == "checkpoint.ready.json" {
-                open(root, path, kind)?;
-                paths.push(path.clone());
-            }
-        }
-    } else {
+    if kind == Kind::Data {
         paths.sort();
-    }
-    if paths.len() > artifacts::MAX_FILES {
-        return Err(invalid());
     }
     Ok(paths)
 }
@@ -65,12 +55,6 @@ pub(crate) fn walk(
             return Err(invalid());
         }
         let name = name.to_str().ok_or_else(invalid)?;
-        if kind == Kind::Results
-            && prefix.is_empty()
-            && matches!(name, "checkpoints" | "checkpoint.ready.json")
-        {
-            continue;
-        }
         let path = if prefix.is_empty() {
             name.to_owned()
         } else {
@@ -151,7 +135,7 @@ fn pack_kind(
     kind: Kind,
 ) -> io::Result<(String, u64, Vec<FileReceipt>)> {
     policy.validate().map_err(|_| invalid())?;
-    let paths = selected_paths(root, policy, kind)?;
+    let paths = selected_paths(root, kind)?;
     if paths.is_empty() {
         return Err(invalid());
     }
@@ -221,7 +205,7 @@ fn pack_kind(
     archive.finish()?;
     let writer = archive.into_inner()?;
     writer.inner.sync_all()?;
-    let after = selected_paths(root, policy, kind)?;
+    let after = selected_paths(root, kind)?;
     if paths != after {
         return Err(invalid());
     }
@@ -416,7 +400,7 @@ pub fn copy_result_file(
 
 pub fn estimate(root: &Directory, policy: &Policy) -> io::Result<u64> {
     policy.validate().map_err(|_| invalid())?;
-    let paths = selected_paths(root, policy, Kind::Results)?;
+    let paths = selected_paths(root, Kind::Results)?;
     let mut bytes = 16u64 * 1024 * 1024;
     for path in paths {
         let file = open(root, &path, Kind::Results)?;
@@ -547,20 +531,12 @@ mod tests {
         }
     }
     #[test]
-    fn streaming_roundtrip_verifies_every_file_and_leaves_checkpoints_out() {
+    fn streaming_roundtrip_verifies_every_file() {
         let root = tempfile::tempdir().unwrap();
         let directory = Directory::open(root.path(), false).unwrap();
         std::fs::create_dir(root.path().join("nested")).unwrap();
         std::fs::write(root.path().join("nested/weights.bin"), [0, 1, 2, 255]).unwrap();
         std::fs::write(root.path().join("empty.log"), []).unwrap();
-        std::fs::create_dir(root.path().join("checkpoints")).unwrap();
-        std::fs::write(root.path().join("checkpoints/state.pt"), b"explicit backup").unwrap();
-        symlink("/outside", root.path().join("checkpoints/private")).unwrap();
-        std::fs::write(
-            root.path().join("checkpoint.ready.json"),
-            b"reserved state marker",
-        )
-        .unwrap();
         let mut file = tempfile::tempfile().unwrap();
         let (sha, bytes, files) = pack(
             &directory,
@@ -577,23 +553,41 @@ mod tests {
         file.seek(SeekFrom::Start(600)).unwrap();
         file.write_all(&[42]).unwrap();
         assert!(verify(&mut file, &receipt).is_err());
-        assert!(root.path().join("checkpoints/private").is_symlink());
-        let policy = Policy {
+    }
+    #[test]
+    fn a_checkpoints_directory_in_outputs_is_an_ordinary_result() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = Directory::open(root.path(), false).unwrap();
+        std::fs::create_dir(root.path().join("checkpoints")).unwrap();
+        std::fs::write(root.path().join("checkpoints/state.pt"), b"kept").unwrap();
+        std::fs::write(root.path().join("checkpoint.ready.json"), b"{}").unwrap();
+        let mut file = tempfile::tempfile().unwrap();
+        let (sha, bytes, files) = pack(&directory, &mut file, &Policy::default()).unwrap();
+        let paths: Vec<_> = files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, ["checkpoint.ready.json", "checkpoints/state.pt"]);
+        let receipt = receipt(sha, bytes, files);
+        verify(&mut file, &receipt).unwrap();
+        // Naming a path adds nothing: it only requires what the walk already found.
+        let named = Policy {
             required_files: vec!["checkpoints/state.pt".into()],
         };
-        assert!(
-            estimate(&directory, &policy).unwrap()
-                > estimate(&directory, &Policy::default()).unwrap()
-        );
-        let mut selected = tempfile::tempfile().unwrap();
-        let (sha, bytes, files) = pack(&directory, &mut selected, &policy).unwrap();
-        assert_eq!(files.len(), 3);
-        assert!(files.iter().any(|f| f.path == "checkpoints/state.pt"));
-        let selected_receipt = self::receipt(sha, bytes, files);
-        verify(&mut selected, &selected_receipt).unwrap();
         assert_eq!(
-            std::fs::read(root.path().join("checkpoints/state.pt")).unwrap(),
-            b"explicit backup"
+            estimate(&directory, &named).unwrap(),
+            estimate(&directory, &Policy::default()).unwrap()
+        );
+        let absent = Policy {
+            required_files: vec!["checkpoints/absent.pt".into()],
+        };
+        assert!(pack(&directory, &mut tempfile::tempfile().unwrap(), &absent).is_err());
+        // Its contents follow the same rules as any other result.
+        symlink("/outside", root.path().join("checkpoints/private")).unwrap();
+        assert!(
+            pack(
+                &directory,
+                &mut tempfile::tempfile().unwrap(),
+                &Policy::default()
+            )
+            .is_err()
         );
     }
     #[test]

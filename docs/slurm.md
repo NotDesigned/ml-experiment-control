@@ -53,6 +53,23 @@ shared storage. The remote receiver verifies the complete archive and files
 before admitting a Run. Complete checkpoints stay on shared storage; the API
 registers their exact identity. Result collection reads the frozen output path.
 
+An Attempt lives at `profile.run_root/PROJECT/RUN/attempts/ATTEMPT`. Slurm uses the same path
+variables as every other backend, documented in
+[persistent checkpoints](persistent-checkpoints.md#enable-and-write):
+
+| Path below the Attempt | Variable | Created by |
+|---|---|---|
+| `state` | `STATE_DIR` | Gateway staging, before the job is queued |
+| `outputs` | `OUTPUT_DIR` | The worker, which refuses one that already exists |
+| `outputs/metrics.jsonl` | `METRICS_PATH` | Training code |
+| `worker` | None | The worker, for its own ledger and receipt |
+
+`DATASETS_JSON` holds each receipt root, and the job binds that root read-only at its
+own path over the read-write `mount_root` bind. The job script exports only Apptainer's
+cache and temporary paths: the worker replaces the environment before starting
+training, so anything else would stop there. Variables come from the sealed launch
+manifest.
+
 Compute nodes [need no Internet access](backends.md#slurm-compute-nodes-without-internet-access).
 The SSH gateway needs access to image and data sources. A pre-job download script
 runs there when `script_preparation` is on. Do not rely on an offline compute node

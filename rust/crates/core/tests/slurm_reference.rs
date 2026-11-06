@@ -34,10 +34,11 @@ fn user_environment_is_literal_and_bound_to_the_managed_launch() {
         package.manifest.environment["LABEL"],
         "two words; $(literal)"
     );
+    // The worker replaces its environment, so the value belongs in the manifest alone.
     assert!(
-        render_job_with_datasets(&spec, None, &[])
+        !render_job_with_datasets(&spec, None, &[])
             .unwrap()
-            .contains("'LABEL=two words; $(literal)'")
+            .contains("LABEL")
     );
     let binding = package.config.binding().unwrap();
     spec.execution

@@ -47,19 +47,13 @@ impl Helper {
         let attempts = run.child(OsStr::new("attempts"), create)?;
         // A missing marker/manifest is never permission to adopt an old path.
         let attempt = if create {
-            attempts.create_new_child(OsStr::new(&plan.scope.attempt_id))?
+            let attempt = attempts.create_new_child(OsStr::new(&plan.scope.attempt_id))?;
+            attempt.create_new_child(OsStr::new("state"))?;
+            attempt
         } else {
             attempts.child(OsStr::new(&plan.scope.attempt_id), false)?
         };
-        let inputs = attempt.child(OsStr::new("inputs"), create)?;
-        let outputs = attempt.child(OsStr::new("outputs"), create)?;
-        let mut named = Vec::new();
-        for dataset in &plan.managed.config.datasets {
-            named.push(inputs.child(OsStr::new(&dataset.name), create)?);
-        }
-        let mut directories = vec![project, run, attempts, attempt, inputs, outputs];
-        directories.extend(named);
-        Ok(directories)
+        Ok(vec![project, run, attempts, attempt])
     }
     pub(super) fn prepare_shared(
         &self,
@@ -212,7 +206,11 @@ impl Helper {
             )? != package.manifest_bytes()?
             || fresh
                 && (attempt.entry_exists(OsStr::new("worker"))?
-                    || directories[5].entry_exists(OsStr::new("payload"))?)
+                    || attempt.entry_exists(OsStr::new("outputs"))?
+                    || !attempt
+                        .child(OsStr::new("state"), false)?
+                        .entry_names_limited(1)?
+                        .is_empty())
         {
             return Err(Error::Bootstrap);
         }

@@ -1,6 +1,6 @@
 //! Descriptor-confined, resumable removal after explicit administration. The
-//! active managed-worker lock is held; exact target directories are quarantined
-//! before deleting regular leaves. Receipts survive alongside process metadata.
+//! active managed-worker lock is held and each target is deleted through its
+//! retained inode. Receipts survive alongside process metadata.
 use ml_exp_core::maintenance::Plan;
 use ml_exp_io::directory::{Directory, LockOptions};
 use serde::{Deserialize, Serialize};
@@ -109,11 +109,6 @@ pub fn run(plan: &Plan) -> io::Result<serde_json::Value> {
                     if parent.entry_exists(OsStr::new(&name))? {
                         let directory = parent.child(OsStr::new(&name), false)?;
                         inspect(&directory, 0, &mut 0)?;
-                        if matches!(plan.selection, ml_exp_core::maintenance::Selection::Outputs)
-                            && directory.entry_exists(OsStr::new("checkpoints"))?
-                        {
-                            return Err(io::Error::other("CHECKPOINTS_MUST_BE_REMOVED_SEPARATELY"));
-                        }
                         Some(directory.identity()?)
                     } else {
                         None
@@ -152,42 +147,22 @@ pub fn run(plan: &Plan) -> io::Result<serde_json::Value> {
         }
         let target = &saved.targets[index];
         if let Some(inode) = target.inode {
-            let temporary = format!(".ml-expd-delete-{id}-{index}");
-            let directory = if root.entry_exists(OsStr::new(&temporary))? {
-                root.child(OsStr::new(&temporary), false)?
-            } else {
-                let (parent, name) = match parent(&root, &target.path) {
-                    Ok(value) => value,
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                        saved.targets[index].done = true;
-                        store.replace_regular(OsStr::new(&name), &serde_json::to_vec(&saved)?)?;
-                        continue;
+            match parent(&root, &target.path) {
+                Ok((parent, leaf)) if parent.entry_exists(OsStr::new(&leaf))? => {
+                    let directory = parent.child(OsStr::new(&leaf), false)?;
+                    if directory.identity()? != inode {
+                        return Err(invalid());
                     }
-                    Err(e) => return Err(e),
-                };
-                if !parent.entry_exists(OsStr::new(&name))? {
-                    saved.targets[index].done = true;
-                    store.replace_regular(
-                        OsStr::new(&format!("{id}.json")),
-                        &serde_json::to_vec(&saved)?,
-                    )?;
-                    continue;
+                    // The reviewed plan and worker lock already fence execution.
+                    // Delete through this retained exact inode, keeping its
+                    // original pathname attached; CPFS needs no directory rename.
+                    remove(&directory, 0, &mut 0)?;
+                    parent.remove_staged_empty_child(&directory)?;
                 }
-                let directory = parent.child(OsStr::new(&name), false)?;
-                if directory.identity()? != inode {
-                    return Err(invalid());
-                }
-                // The reviewed plan and worker lock already fence execution.
-                // Delete through this retained exact inode, keeping its
-                // original pathname attached; CPFS needs no directory rename.
-                // Old quarantined operations above remain resumable.
-                directory
-            };
-            if directory.identity()? != inode {
-                return Err(invalid());
+                Ok(_) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
             }
-            remove(&directory, 0, &mut 0)?;
-            root.remove_staged_empty_child(&directory)?;
         }
         saved.targets[index].done = true;
         store.replace_regular(OsStr::new(&name), &serde_json::to_vec(&saved)?)?;
@@ -195,4 +170,124 @@ pub fn run(plan: &Plan) -> io::Result<serde_json::Value> {
     saved.complete = true;
     store.replace_regular(OsStr::new(&name), &serde_json::to_vec(&saved)?)?;
     plan.receipt().map_err(|_| invalid())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ml_exp_core::{
+        checkpoints::{self, Context},
+        launch,
+        maintenance::Selection,
+        managed::Config,
+    };
+    use serde_json::json;
+    use std::{collections::BTreeMap, fs, path::Path};
+
+    fn config(attempt: &Path) -> Config {
+        let identity = launch::Identity {
+            project: "demo".into(),
+            run_id: "train".into(),
+            attempt_id: "attempt-001".into(),
+        };
+        let manifest = launch::Manifest {
+            contract: launch::CONTRACT.into(),
+            identity: identity.clone(),
+            environment: BTreeMap::from([(
+                "OUTPUT_DIR".into(),
+                attempt.join("outputs").to_str().unwrap().into(),
+            )]),
+            argv: vec!["/bin/true".into()],
+            workdir: "/tmp".into(),
+            timeout_seconds: 60,
+        };
+        let bytes = manifest.encode().unwrap();
+        fs::create_dir_all(attempt.join("worker")).unwrap();
+        fs::write(attempt.join("worker/launch-manifest.json"), &bytes).unwrap();
+        fs::write(attempt.join("worker/.managed-launch.lock"), b"").unwrap();
+        Config {
+            manifest_path: attempt.join("launch-manifest.json"),
+            endpoint: String::new(),
+            attempt_root: attempt.join("worker"),
+            workdir: "/tmp".into(),
+            maximum_timeout_seconds: 60,
+            base_environment: BTreeMap::new(),
+            local_binding: Some(launch::Binding {
+                identity,
+                sha256: ml_exp_core::slurm::helper::sha256_bytes(&bytes)[7..].into(),
+            }),
+            output_directory: Some(attempt.join("outputs")),
+            runtime_environment: Vec::new(),
+            checkpoint_restore: None,
+            datasets: Vec::new(),
+            data_preparation: None,
+        }
+    }
+    fn plan(config: &Config, selection: Selection, request: char) -> Plan {
+        Plan {
+            contract: "native-storage-maintenance.v1".into(),
+            config: config.clone(),
+            selection,
+            request_id: request.to_string().repeat(32),
+        }
+    }
+    fn sealed_generation(attempt: &Path) -> serde_json::Value {
+        let generation = attempt.join("state/checkpoints/step-4");
+        fs::create_dir_all(&generation).unwrap();
+        fs::write(generation.join("state.bin"), b"weights").unwrap();
+        let ready = json!({"step":4,"files":[{"path":"checkpoints/step-4/state.bin","bytes":7,
+            "sha256":"9a129038d9a00aed0cf6a7ea059ca50a813449061ab87848cf1a13eafdf33b2c"}]});
+        let state = Directory::open(&attempt.join("state"), false).unwrap();
+        ml_exp_io::checkpoints::verify(&state, &checkpoints::manifest(&ready).unwrap(), true)
+            .unwrap();
+        let context = Context {
+            project: "demo".into(),
+            run_id: "train".into(),
+            attempt_id: "attempt-001".into(),
+            source_id: format!("source.{}", "a".repeat(64)),
+            image_id: format!("sha256:{}", "b".repeat(64)),
+            storage_scope: format!("sha256:{}", "c".repeat(64)),
+            state_root: attempt.join("state").to_str().unwrap().into(),
+        };
+        checkpoints::document(&context, &ready).unwrap()
+    }
+
+    #[test]
+    fn outputs_state_and_one_generation_are_removed_independently() {
+        let temp = tempfile::tempdir().unwrap();
+        let attempt = temp.path().join("runs/demo/train/attempts/attempt-001");
+        let config = config(&attempt);
+        // A user's own checkpoints directory is an ordinary result, not a refusal.
+        fs::create_dir_all(attempt.join("outputs/checkpoints")).unwrap();
+        fs::write(attempt.join("outputs/checkpoints/kept.pt"), b"weights").unwrap();
+        let document = sealed_generation(&attempt);
+        fs::create_dir_all(attempt.join("state/checkpoints/step-8")).unwrap();
+        fs::write(attempt.join("state/checkpoints/step-8/other"), b"x").unwrap();
+
+        let outputs = plan(&config, Selection::Outputs, 'a');
+        assert_eq!(run(&outputs).unwrap()["paths"], json!(["outputs"]));
+        assert!(!attempt.join("outputs").exists());
+        assert!(attempt.join("state/checkpoints/step-4/state.bin").exists());
+
+        let generation = plan(
+            &config,
+            Selection::Checkpoint {
+                checkpoint: Box::new(document),
+            },
+            'b',
+        );
+        assert_eq!(
+            run(&generation).unwrap()["paths"],
+            json!(["state/checkpoints/step-4"])
+        );
+        assert!(!attempt.join("state/checkpoints/step-4").exists());
+        assert!(attempt.join("state/checkpoints/step-8/other").exists());
+
+        let state = plan(&config, Selection::State, 'c');
+        assert_eq!(run(&state).unwrap()["paths"], json!(["state"]));
+        assert!(!attempt.join("state").exists());
+        assert!(attempt.join("worker/launch-manifest.json").exists());
+        // A repeated plan returns its saved receipt and removes nothing new.
+        assert!(run(&outputs).is_ok());
+    }
 }

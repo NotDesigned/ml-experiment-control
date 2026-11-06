@@ -23,7 +23,8 @@ fn staged_attempt_exists_before_submission_and_reuses_original_files_after_resta
     let path = attempt(root.path());
     let bytes = fs::read(path.join("attempt.json")).unwrap();
     assert_eq!(bytes, request.prepared_content().unwrap().0.as_bytes());
-    assert!(path.join("inputs").is_dir() && path.join("outputs").is_dir());
+    assert!(path.join("state").is_dir());
+    assert!(!path.join("inputs").exists() && !path.join("outputs").exists());
     assert_eq!(calls(root.path()), 0);
     drop(helper);
     let mut config = config(root.path());
@@ -75,17 +76,17 @@ fn preexisting_attempt_is_never_adopted_or_repaired() {
 }
 #[test]
 fn damaged_shared_evidence_never_starts_a_scheduler_submission() {
-    for change in ["manifest", "marker", "missing-outputs", "symlink-inputs"] {
+    for change in ["manifest", "marker", "missing-state", "symlink-state"] {
         let (root, helper, request) = staged_fixture();
         assert_eq!(handle(&helper, &request).outcome, ReplyOutcome::Prepared);
         let path = attempt(root.path());
         match change {
             "manifest" => fs::write(path.join("attempt.json"), b"{}").unwrap(),
             "marker" => fs::write(path.join(".native-staging.json"), b"{}").unwrap(),
-            "missing-outputs" => fs::remove_dir(path.join("outputs")).unwrap(),
-            "symlink-inputs" => {
-                fs::remove_dir(path.join("inputs")).unwrap();
-                std::os::unix::fs::symlink(root.path(), path.join("inputs")).unwrap();
+            "missing-state" => fs::remove_dir(path.join("state")).unwrap(),
+            "symlink-state" => {
+                fs::remove_dir(path.join("state")).unwrap();
+                std::os::unix::fs::symlink(root.path(), path.join("state")).unwrap();
             }
             _ => unreachable!(),
         }
@@ -142,7 +143,7 @@ fn staged_request_cannot_use_a_foreign_scope_or_directory_even_with_matching_byt
 }
 
 #[test]
-fn changed_output_directory_after_dispatch_does_not_erase_the_known_submission() {
+fn changed_state_directory_after_dispatch_does_not_erase_the_known_submission() {
     let (root, helper, request) = staged_fixture();
     assert_eq!(handle(&helper, &request).outcome, ReplyOutcome::Prepared);
     let submit = Request::submit(request.intent().clone()).unwrap();
@@ -152,7 +153,7 @@ fn changed_output_directory_after_dispatch_does_not_erase_the_known_submission()
             job_id: "12345".into()
         }
     );
-    fs::remove_dir(attempt(root.path()).join("outputs")).unwrap();
+    fs::remove_dir(attempt(root.path()).join("state")).unwrap();
     for operation in [submit, Request::inspect(request.intent().clone()).unwrap()] {
         assert_eq!(
             handle(&helper, &operation).outcome,
@@ -165,11 +166,11 @@ fn changed_output_directory_after_dispatch_does_not_erase_the_known_submission()
 }
 
 #[test]
-fn missing_outputs_after_dispatch_still_allow_owned_observation_and_single_cancel() {
+fn missing_state_after_dispatch_still_allows_owned_observation_and_single_cancel() {
     let (root, helper, request) = staged_fixture();
     assert_eq!(handle(&helper, &request).outcome, ReplyOutcome::Prepared);
     handle(&helper, &Request::submit(request.intent().clone()).unwrap());
-    fs::remove_dir(attempt(root.path()).join("outputs")).unwrap();
+    fs::remove_dir(attempt(root.path()).join("state")).unwrap();
     drop(helper);
     for (name, body) in [
         ("sacct", "cat \"$EVIDENCE\""),
@@ -368,7 +369,7 @@ fn managed_launch_is_staged_with_exact_local_binding_and_keeps_control_outputs_f
     assert_eq!(package.manifest.argv, vec!["python", "train.py"]);
     assert_eq!(config.runtime_environment, vec!["CUDA_VISIBLE_DEVICES"]);
     assert!(!attempt(root.path()).join("worker").exists());
-    assert!(!attempt(root.path()).join("outputs/payload").exists());
+    assert!(!attempt(root.path()).join("outputs").exists());
     assert_eq!(
         handle(&helper, &Request::submit(request.intent().clone()).unwrap()).outcome,
         ReplyOutcome::Submitted {
@@ -379,7 +380,7 @@ fn managed_launch_is_staged_with_exact_local_binding_and_keeps_control_outputs_f
 }
 #[test]
 fn changed_launch_package_or_preexisting_worker_never_dispatches() {
-    for change in ["config", "launch", "control", "payload"] {
+    for change in ["config", "launch", "control", "outputs", "state"] {
         let (root, helper, request) = staged_fixture();
         assert_eq!(handle(&helper, &request).outcome, ReplyOutcome::Prepared);
         let path = attempt(root.path());
@@ -387,7 +388,8 @@ fn changed_launch_package_or_preexisting_worker_never_dispatches() {
             "config" => fs::write(path.join("managed-config.json"), b"{}").unwrap(),
             "launch" => fs::write(path.join("launch-manifest.json"), b"{}").unwrap(),
             "control" => fs::create_dir(path.join("worker")).unwrap(),
-            "payload" => fs::create_dir(path.join("outputs/payload")).unwrap(),
+            "outputs" => fs::create_dir(path.join("outputs")).unwrap(),
+            "state" => fs::write(path.join("state/stale"), b"").unwrap(),
             _ => unreachable!(),
         }
         let submit = Request::submit(request.intent().clone()).unwrap();

@@ -29,6 +29,7 @@ Run inputs use the ordinary native `data` field:
 
 The worker supplies `DATASETS_JSON`, mapping each input name to its verified
 shared-storage directory. Training code reads the named directory from this map.
+See [paths in the job](#paths-in-the-job).
 
 `ARCHIVED` means the uploaded archive passed verification. `READY` additionally
 means the selected backend has a verified shared-storage tree. These states are
@@ -43,6 +44,23 @@ not interchangeable.
 A cache is scoped to its executor/storage identity. An asset's presence on one
 backend does not prove readiness on another. Partial trees and hash mismatches
 are not accepted as ready data. Dataset directories remain outside results.
+
+## Paths in the job
+
+Two variables point at data, with the same meaning on Slurm, SenseCore and PAI:
+
+- `DATASETS_JSON` is the one entry for declared inputs. It is a JSON object from
+  each name in the Run's `data` field to that asset's verified directory, the same
+  path the worker checks before training. It is absent when the Run declares none.
+- `DATA_DIR` is this Project's data directory on backend storage, for data the
+  platform did not deliver. When the Run declares `data_preparation`, it is instead
+  the verified tree that script wrote. The platform does not create the Project
+  directory for you, so it may not exist until something has been stored there.
+
+Read declared inputs from `DATASETS_JSON` rather than building paths below
+`DATA_DIR`: the layout under it belongs to the platform. There is no `INPUT_DIR`, and
+no `/inputs` or `/outputs` path. On Slurm each declared dataset is also bound read-only
+at its own path. Every backend rehashes it before training starts.
 
 ## PAI preparation using an existing image
 

@@ -87,9 +87,9 @@ pub fn plan_with_inputs(
         return Err(helper::Error::Identity);
     }
     let root = format!("{}/attempts/{}", spec.storage.run_dir, scope.attempt_id);
-    // The existing outputs directory belongs to shared staging. A fresh child
-    // preserves managed execution's no-adoption/no-replay boundary.
-    let output = format!("{root}/outputs/payload");
+    // Staging creates `state`. The worker creates `outputs` and refuses one that
+    // already exists, which is the no-adoption/no-replay boundary.
+    let output = format!("{root}/outputs");
     let timeout =
         super::walltime_seconds(&spec.backend.time).map_err(|_| helper::Error::Metadata)?;
     let mut manifest = launch::Manifest {
@@ -101,7 +101,8 @@ pub fn plan_with_inputs(
         },
         environment: BTreeMap::from([
             ("OUTPUT_DIR".into(), output.clone()),
-            ("INPUT_DIR".into(), format!("{root}/inputs")),
+            ("STATE_DIR".into(), format!("{root}/state")),
+            ("METRICS_PATH".into(), format!("{output}/metrics.jsonl")),
             ("DATA_DIR".into(), spec.storage.project_data_root.clone()),
         ]),
         argv: spec.command.clone(),
@@ -121,23 +122,14 @@ pub fn plan_with_inputs(
             ("RESUME_STEP".into(), plan.step.to_string()),
         ]);
     }
-    let bytes = manifest.encode().map_err(|_| helper::Error::Metadata)?;
     if !datasets.is_empty() {
         crate::datasets::mounts(datasets).map_err(|_| helper::Error::Metadata)?;
-        let mapping: BTreeMap<_, _> = datasets
-            .iter()
-            .map(|v| (v.name.clone(), format!("{root}/inputs/{}", v.name)))
-            .collect();
         manifest.environment.insert(
             "DATASETS_JSON".into(),
-            serde_json::to_string(&mapping).map_err(|_| helper::Error::Metadata)?,
+            crate::datasets::paths_json(datasets).map_err(|_| helper::Error::Metadata)?,
         );
     }
-    let bytes = if datasets.is_empty() {
-        bytes
-    } else {
-        manifest.encode().map_err(|_| helper::Error::Metadata)?
-    };
+    let bytes = manifest.encode().map_err(|_| helper::Error::Metadata)?;
     let config = managed::Config {
         manifest_path: PathBuf::from(format!("{root}/{MANIFEST_FILE}")),
         endpoint: String::new(),

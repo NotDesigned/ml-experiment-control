@@ -32,7 +32,7 @@ impl Helper {
                 self.observe_shared(request.intent(), &snapshot.directory, false)?;
             let package = &plan.managed;
             let worker = crate::managed::sample(&package.config).map_err(|_| Error::Metadata)?;
-            let outputs = directories[5].child(OsStr::new("payload"), false)?;
+            let outputs = directories[3].child(OsStr::new("outputs"), false)?;
             if !outputs.entry_exists(OsStr::new("metrics.jsonl"))?
                 && worker.phase == Phase::Finished
                 && request.history_cursor().is_none()

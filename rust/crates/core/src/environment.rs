@@ -24,10 +24,11 @@ pub fn validate(values: &BTreeMap<String, String>) -> Result<(), Error> {
                     | "OUTPUT_DIR"
                     | "STATE_DIR"
                     | "DATA_DIR"
-                    | "INPUT_DIR"
-                    | "INPUTS_DIR"
                     | "DATASETS_JSON"
                     | "METRICS_PATH"
+                    | "RESUME_DIR"
+                    | "RESUME_CHECKPOINT_ID"
+                    | "RESUME_STEP"
             )
         {
             return Err(Error);
@@ -62,6 +63,9 @@ mod tests {
             "DATA_DIR",
             "STATE_DIR",
             "METRICS_PATH",
+            "RESUME_DIR",
+            "RESUME_CHECKPOINT_ID",
+            "RESUME_STEP",
             "RUN_ID",
             "ML_EXPD_API_TOKEN",
             "1bad",
@@ -72,6 +76,8 @@ mod tests {
                 "{key}"
             );
         }
+        // The platform no longer sets this name, so it is an ordinary user variable.
+        assert!(validate(&BTreeMap::from([("INPUT_DIR".into(), "/mine".into())])).is_ok());
         assert!(from_document(&serde_json::json!({})).unwrap().is_empty());
         for bad in [
             serde_json::json!({"env":null}),

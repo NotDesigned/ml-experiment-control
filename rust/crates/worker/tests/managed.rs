@@ -507,9 +507,10 @@ fn operator_cli_only_loads_private_config_and_can_initialize_run_and_inspect() {
 #[test]
 fn local_sealed_launch_bootstraps_once_and_freezes_only_approved_runtime_environment() {
     let mut f = Fixture::new("complete");
-    let outputs = f._root.path().join("shared-outputs");
-    private_directory(&outputs);
-    f.config.output_directory = Some(outputs.join("payload"));
+    let shared = f._root.path().join("shared-attempt");
+    private_directory(&shared);
+    let outputs = shared.join("outputs");
+    f.config.output_directory = Some(outputs.clone());
     f.config.runtime_environment = vec!["CUDA_VISIBLE_DEVICES".into()];
     f.document["environment"]["OUTPUT_DIR"] = json!(f.config.output_path());
     f.document["environment"]["EXPECTED_CUDA"] = json!("3,5");
@@ -543,7 +544,7 @@ fn local_sealed_launch_bootstraps_once_and_freezes_only_approved_runtime_environ
     assert!(observation["receipt"]["runtime_environment_sha256"].is_string());
     assert_eq!(f.count(), 1);
     assert_eq!(
-        fs::read(outputs.join("payload/weights.bin")).unwrap(),
+        fs::read(outputs.join("weights.bin")).unwrap(),
         b"synthetic model weights"
     );
     assert!(!f.config.attempt_root.join("outputs").exists());

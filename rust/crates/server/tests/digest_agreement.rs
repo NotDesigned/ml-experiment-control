@@ -91,7 +91,7 @@ fn attempt(root: &str) -> Value {
 /// Resuming a registered checkpoint brings a float into the sealed configuration.
 fn resuming_attempt(root: &str) -> Value {
     let storage_scope = repeated("sha256:", "d");
-    let state_root = format!("{root}/runs/demo/earlier/attempts/attempt-001/outputs/payload");
+    let state_root = format!("{root}/runs/demo/earlier/attempts/attempt-001/state");
     let mut registered = checkpoints::register(
         &checkpoints::document(&context("earlier", &storage_scope, state_root), &ready()).unwrap(),
         "2026-01-01T00:00:00Z",
@@ -169,7 +169,7 @@ fn the_helper_re_derives_exactly_what_the_server_authored() {
     );
     assert_eq!(
         sha(&bytes),
-        "5cc17ba118978325db0a0765c39e9a827f2985ae23c9befe11f72b27ab295ed0"
+        "3566264a8f5cce87320c7b3146f69d6acd7b675ac799c1757642b1a80b0eb9bf"
     );
     let server = authored(&document);
     let worker = staged(FIXED_ROOT, &bytes);
@@ -182,11 +182,11 @@ fn the_helper_re_derives_exactly_what_the_server_authored() {
     assert_eq!(manifest, worker.manifest_bytes().unwrap());
     assert_eq!(
         sha(&manifest),
-        "2ac969915bc6c4c0602bc0fb78e7a573514477de5a32a122a8892102361f7d69"
+        "340921a785935a1ab6ddc2cad45154ac4006a61aecad4afb66bf1ff3dd009ee0"
     );
     assert_eq!(
         server.config.digest().unwrap(),
-        "473bc48a4ef048d20b5699a0576c7eebeaa10b96d23a5e12ccfeab95f1e285a7"
+        "489ebbbd7b6574b812d7eb3068c6c1e66a1eb801540a4847c6603773586ee98b"
     );
     assert_eq!(server.config.digest(), worker.config.digest());
     let accepted = launch::verify_binding(&manifest, &server.config.binding().unwrap()).unwrap();
@@ -287,11 +287,11 @@ fn a_cloud_manifest_and_config_stay_pinned() {
     let manifest = package.manifest.encode().unwrap();
     assert_eq!(
         sha(&manifest),
-        "880956a2a21e1e6e9305279b5465ae670c35a2cef1bf86d7ab41947113940ed6"
+        "f5d0655dd9e2a4d667bdb5769b694cf57841e01c4b0833cb3962dac33bea5546"
     );
     assert_eq!(
         package.config.digest().unwrap(),
-        "72f3867650f199ee30ec652e5025a823a9152ff20297c6a0ae5bf6390f65eb7f"
+        "70b85c091c50eb15df5cab9084f8384a40f34e110a28fdf1758a818735d4c6f3"
     );
     launch::verify_binding(&manifest, &package.config.binding().unwrap()).unwrap();
 }
