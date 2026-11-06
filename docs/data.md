@@ -131,8 +131,10 @@ The report contains current available bytes/inodes, marker/state identity and
 metadata hashes, modes/ownership, recorded part counts, part sizes, and an
 existing-lock nonblocking check. Part contents are not read. Up to 128 part
 entries are included with an explicit truncation flag. A missing lock is never
-created. `statvfs` does not prove user-quota availability. Missing offline
-logs stay `AWAITING_OFFLINE_LOGS`; a later explicit observation can retrieve them.
+created. `statvfs` does not prove user-quota availability. The job logs its report
+in numbered, hashed parts, at most 19 lines, so a long report survives provider line
+limits. Until every part is readable the report stays `AWAITING_OFFLINE_LOGS`; a
+later explicit observation can retrieve the rest.
 
 To read what the provider recorded for the copy and its diagnostic, add `--provider`
 (with optional `--lines`, up to 2000). This returns each job's reason, pods, events

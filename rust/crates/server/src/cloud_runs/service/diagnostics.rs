@@ -4,7 +4,8 @@ use super::*;
 use ml_exp_core::cloud::{Job, exchange::Sync, pai::Allocation};
 
 const SCRIPT: &str = include_str!("sync_diagnostic.py");
-const PREFIX: &str = "ML_EXPD_DIAGNOSTIC=";
+const PART_PREFIX: &str = "ML_EXPD_DIAGNOSTIC_PART=";
+const MAX_REPORT_BYTES: usize = 32768;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Saved {
@@ -91,33 +92,89 @@ fn provider_read(
 fn job_view(read: Option<Value>) -> Value {
     read.unwrap_or_else(|| json!({"diagnostic":"NO_PROVIDER_JOB_RECORDED"}))
 }
-fn report(value: &Value, config: &Value) -> Option<Value> {
+/// Every string in a provider's log response, however its pods and Logs arrays nest them.
+fn log_texts<'a>(value: &'a Value, texts: &mut Vec<&'a str>) {
     match value {
-        Value::String(text) => text
-            .lines()
-            .filter_map(|line| {
-                let raw = line.split_once(PREFIX)?.1;
-                if raw.len() > 32768 {
-                    return None;
-                }
-                let value: Value = serde_json::from_slice(raw.as_bytes()).ok()?;
-                if value["contract"] != config["contract"]
-                    || value["request_id"] != config["request_id"]
-                {
-                    return None;
-                }
-                for key in ["action", "project", "asset_id"] {
-                    if value[key] != config[key] {
-                        return None;
-                    }
-                }
-                Some(value)
-            })
-            .next(),
-        Value::Array(rows) => rows.iter().find_map(|v| report(v, config)),
-        Value::Object(rows) => rows.values().find_map(|v| report(v, config)),
-        _ => None,
+        Value::String(text) => texts.push(text),
+        Value::Array(rows) => {
+            for row in rows {
+                log_texts(row, texts);
+            }
+        }
+        Value::Object(rows) => {
+            for row in rows.values() {
+                log_texts(row, texts);
+            }
+        }
+        _ => {}
     }
+}
+/// One `<sha256>:<i>:<n>:<chunk>` line of a report. A provider timestamp may lead it.
+struct Part<'a> {
+    digest: &'a str,
+    index: usize,
+    count: usize,
+    chunk: &'a str,
+}
+fn part(line: &str) -> Option<Part<'_>> {
+    let mut fields = line.split_once(PART_PREFIX)?.1.splitn(4, ':');
+    let part = Part {
+        digest: fields.next()?,
+        index: fields.next()?.parse::<usize>().ok()?,
+        count: fields.next()?.parse::<usize>().ok()?,
+        chunk: fields.next()?,
+    };
+    (part.index < part.count).then_some(part)
+}
+/// The report one complete set of parts spells, if it is within its cap, matches its
+/// digest and belongs to this exact diagnostic.
+fn complete_report(
+    digest: &str,
+    count: usize,
+    chunks: &BTreeMap<usize, &str>,
+    config: &Value,
+) -> Option<Value> {
+    if chunks.len() != count {
+        return None;
+    }
+    let text: String = chunks.values().copied().collect();
+    if text.len() > MAX_REPORT_BYTES || helper::sha256_bytes(text.as_bytes())[7..] != *digest {
+        return None;
+    }
+    let value: Value = serde_json::from_str(&text).ok()?;
+    if value["contract"] != config["contract"] || value["request_id"] != config["request_id"] {
+        return None;
+    }
+    for key in ["action", "project", "asset_id"] {
+        if value[key] != config[key] {
+            return None;
+        }
+    }
+    Some(value)
+}
+/// The first report whose parts have all arrived. Parts may come in any order, from
+/// any pod and more than once. An incomplete set is no report yet, so it stays pending.
+fn report(value: &Value, config: &Value) -> Option<Value> {
+    let mut texts = Vec::new();
+    log_texts(value, &mut texts);
+    let mut sets: Vec<(&str, usize, BTreeMap<usize, &str>)> = Vec::new();
+    for found in texts.into_iter().flat_map(str::lines).filter_map(part) {
+        match sets
+            .iter_mut()
+            .find(|set| set.0 == found.digest && set.1 == found.count)
+        {
+            Some(set) => {
+                set.2.entry(found.index).or_insert(found.chunk);
+            }
+            None => sets.push((
+                found.digest,
+                found.count,
+                BTreeMap::from([(found.index, found.chunk)]),
+            )),
+        }
+    }
+    sets.iter()
+        .find_map(|(digest, count, chunks)| complete_report(digest, *count, chunks, config))
 }
 impl Service {
     fn diagnostic_saved(
@@ -500,21 +557,106 @@ mod tests {
         );
         assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
     }
+    /// The lines `sync_diagnostic.py` prints for a report of this text.
+    fn lines_of(text: &str) -> Vec<String> {
+        let digest = helper::sha256_bytes(text.as_bytes());
+        let chunks: Vec<_> = text.as_bytes().chunks(1800).collect();
+        chunks
+            .iter()
+            .enumerate()
+            .map(|(index, chunk)| {
+                format!(
+                    "{PART_PREFIX}{}:{index}:{}:{}",
+                    &digest[7..],
+                    chunks.len(),
+                    std::str::from_utf8(chunk).unwrap()
+                )
+            })
+            .collect()
+    }
+    fn config() -> Value {
+        json!({"contract":"sync-diagnostic.v1","action":"action-0123456789abcdef","request_id":"a".repeat(32)})
+    }
+    fn large(config: &Value) -> Value {
+        let mut value = config.clone();
+        value["filler"] = json!("x".repeat(30000));
+        value
+    }
     #[test]
-    fn only_bounded_matching_diagnostic_line_is_accepted_from_delayed_nested_logs() {
-        let config = json!({"contract":"sync-diagnostic.v1","action":"action-0123456789abcdef","request_id":"a".repeat(32)});
+    fn the_line_the_launcher_prints_is_the_line_this_reads() {
+        // The same line is pinned in tests/test_sync_diagnostic.py.
+        let line = "ML_EXPD_DIAGNOSTIC_PART=265ee923a61584279face2967b07f430b70f20d8d36ab06bc1ccf8d66cde6446:0:1:{\"contract\":\"sync-diagnostic.v1\"}";
+        let config = json!({"contract":"sync-diagnostic.v1"});
+        assert_eq!(report(&json!(line), &config), Some(config));
+    }
+    #[test]
+    fn a_report_is_read_from_parts_in_any_order_repeated_and_across_pods() {
+        let config = config();
+        let whole = large(&config);
+        let lines = lines_of(&whole.to_string());
+        assert!(lines.len() > 10);
         assert!(report(&json!({"Logs":["no report yet"]}), &config).is_none());
-        let text = format!(
-            "timestamp {PREFIX}{}",
-            serde_json::to_string(&config).unwrap()
-        );
-        assert_eq!(
-            report(&json!({"Logs":[text]}), &config),
-            Some(config.clone())
-        );
-        let mut foreign = config.clone();
+        let mut first_pod: Vec<String> = lines
+            .iter()
+            .rev()
+            .map(|line| format!("2026-11-06T00:00:00Z {line}"))
+            .collect();
+        let second_pod = first_pod.split_off(5);
+        let logs = json!([{"Logs":first_pod},{"Logs":second_pod.join("\n")},{"Logs":[lines[0]]}]);
+        assert_eq!(report(&logs, &config), Some(whole));
+    }
+    #[test]
+    fn an_incomplete_set_is_no_report_until_its_last_part_arrives() {
+        let config = config();
+        let whole = large(&config);
+        let mut lines = lines_of(&whole.to_string());
+        let last = lines.pop().unwrap();
+        assert!(report(&json!({"Logs":lines}), &config).is_none());
+        lines.push(last);
+        assert_eq!(report(&json!({"Logs":lines}), &config), Some(whole));
+    }
+    #[test]
+    fn corrupt_foreign_oversized_or_malformed_parts_are_no_report() {
+        let config = config();
+        let whole = large(&config);
+        let text = whole.to_string();
+        let good = lines_of(&text);
+        // A changed chunk under the original digest.
+        let mut corrupt = good.clone();
+        corrupt[1] = corrupt[1].replacen("xxxx", "xxxy", 1);
+        assert!(report(&json!(corrupt), &config).is_none());
+        // Another diagnostic's complete report, with a valid digest.
+        for key in ["request_id", "action", "contract"] {
+            let mut foreign = whole.clone();
+            foreign[key] = json!("foreign");
+            assert!(report(&json!(lines_of(&foreign.to_string())), &config).is_none());
+        }
+        // Valid parts and digest for a report over the cap.
+        let mut over = config.clone();
+        over["filler"] = json!("x".repeat(MAX_REPORT_BYTES));
+        assert!(report(&json!(lines_of(&over.to_string())), &config).is_none());
+        // A foreign set beside the right one does not hide it, and order does not matter.
+        let mut foreign = whole.clone();
         foreign["request_id"] = json!("b".repeat(32));
-        assert!(report(&json!(format!("{PREFIX}{foreign}")), &config).is_none());
-        assert!(report(&json!(format!("{PREFIX}{}", "x".repeat(32769))), &config).is_none());
+        let mut both = lines_of(&foreign.to_string());
+        both.extend(good.clone());
+        assert_eq!(report(&json!(both), &config), Some(whole));
+        // Lines that are not a part.
+        let digest = helper::sha256_bytes(text.as_bytes());
+        let digest = &digest[7..];
+        for line in [
+            format!("{PART_PREFIX}{digest}"),
+            format!("{PART_PREFIX}{digest}:0"),
+            format!("{PART_PREFIX}{digest}:0:0:{text}"),
+            format!("{PART_PREFIX}{digest}:1:1:{text}"),
+            format!("{PART_PREFIX}{digest}:x:1:{text}"),
+            format!("ML_EXPD_DIAGNOSTIC={text}"),
+        ] {
+            assert!(report(&json!(line), &config).is_none(), "{line}");
+        }
+        // A count that disagrees is another set, so it cannot complete this one.
+        let mut mixed = good;
+        mixed[0] = mixed[0].replacen(&format!(":0:{}:", mixed.len()), ":0:1:", 1);
+        assert!(report(&json!(mixed), &config).is_none());
     }
 }

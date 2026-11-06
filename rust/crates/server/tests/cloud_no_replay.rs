@@ -1733,6 +1733,58 @@ fn attempt_diagnostics_read_through_the_run_outbox_and_keep_their_keys() {
     }
 }
 
+/// The log lines the diagnostic job prints for a report.
+fn diagnostic_lines(report: &Value) -> Vec<String> {
+    let text = report.to_string();
+    let digest = helper::sha256_bytes(text.as_bytes());
+    let chunks: Vec<_> = text.as_bytes().chunks(1800).collect();
+    chunks
+        .iter()
+        .enumerate()
+        .map(|(index, chunk)| {
+            format!(
+                "ML_EXPD_DIAGNOSTIC_PART={}:{index}:{}:{}",
+                &digest[7..],
+                chunks.len(),
+                std::str::from_utf8(chunk).unwrap()
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_report_split_across_pods_stays_pending_until_it_is_whole_with_one_diagnostic_job() {
+    let c = CopyFixture::new(Kind::Pai, 3);
+    let service = c.open();
+    c.publish(&service, REQUEST_A).unwrap();
+    c.provider.set_state("FAILED");
+    let expected = json!({"contract":"data-diagnostic.v1","project":"demo","asset_id":c.asset,
+        "request_id":REQUEST_A,"filler":"x".repeat(5000)});
+    let lines = diagnostic_lines(&expected);
+    assert!(lines.len() > 1);
+    let diagnose = || {
+        service
+            .data_diagnostic("demo", c.f.executor, &c.asset, REQUEST_A, true, T_RECONCILE)
+            .unwrap()
+    };
+    c.provider
+        .world()
+        .pod_logs
+        .insert("pod-a".into(), json!(["starting", lines[1]]));
+    let pending = diagnose();
+    assert_eq!(pending["report_status"], "AWAITING_OFFLINE_LOGS");
+    assert!(pending["report"].is_null());
+    assert_eq!(c.provider.creates(), 2);
+    c.provider
+        .world()
+        .pod_logs
+        .insert("pod-b".into(), json!([lines.join("\n")]));
+    let whole = diagnose();
+    assert_eq!(whole["report_status"], "AVAILABLE");
+    assert_eq!(whole["report"], expected);
+    assert_eq!(c.provider.creates(), 2, "observing never submits again");
+}
+
 #[test]
 fn a_crash_after_retaining_the_old_job_leaves_its_request_current() {
     let c = CopyFixture::new(Kind::Pai, 3);

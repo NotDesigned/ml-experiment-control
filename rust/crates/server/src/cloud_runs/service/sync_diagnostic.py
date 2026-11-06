@@ -15,8 +15,13 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-PREFIX = "ML_EXPD_DIAGNOSTIC="
+PART_PREFIX = "ML_EXPD_DIAGNOSTIC_PART="
 CONTRACT = "sync-diagnostic.v1"
+MAX_REPORT_BYTES = 32768
+# PAI log lines are treated as limited to 2048 characters. With the prefix, digest,
+# counters and room for a timestamp, a whole line stays under that. The API reads a
+# 100-line tail per pod, and a report of MAX_REPORT_BYTES needs 19 lines.
+CHUNK_BYTES = 1800
 
 
 def components(path, absolute=False):
@@ -270,6 +275,19 @@ def diagnose_data(config):
     return report
 
 
+def encoded(report):
+    # A log store may trim a line's ends and a chunk can end anywhere, so the text
+    # holds no whitespace. json.dumps already escapes everything else.
+    return json.dumps(report, separators=(",", ":"), ensure_ascii=True).replace(" ", "\\u0020")
+
+
+def emit(text):
+    digest = hashlib.sha256(text.encode()).hexdigest()
+    chunks = [text[i:i + CHUNK_BYTES] for i in range(0, len(text), CHUNK_BYTES)]
+    for index, chunk in enumerate(chunks):
+        print("{}{}:{}:{}:{}".format(PART_PREFIX, digest, index, len(chunks), chunk), flush=True)
+
+
 def main():
     start = time.monotonic()
     signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(TimeoutError()))
@@ -293,12 +311,12 @@ def main():
         if isinstance(error, OSError):
             report["errno"] = error.errno
     report["elapsed_ms"] = round((time.monotonic() - start) * 1000)
-    line = json.dumps(report, separators=(",", ":"), ensure_ascii=True)
-    if len(line.encode()) > 32768:
+    text = encoded(report)
+    if len(text) > MAX_REPORT_BYTES:
         small = {key: report[key] for key in ("contract", "action", "project", "asset_id", "request_id") if key in report}
         small["error"] = "REPORT_TOO_LARGE"
-        line = json.dumps(small)
-    print(PREFIX + line, flush=True)
+        text = encoded(small)
+    emit(text)
 
 
 if __name__ == "__main__":
