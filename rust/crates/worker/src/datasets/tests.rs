@@ -277,8 +277,11 @@ fn ready_tree_is_never_replaced_when_files_or_permissions_change() {
 fn explicit_initialization_and_root_marker_do_not_reinterpret_existing_storage() {
     let f = Fixture::new();
     assert!(Store::initialize(f.config.clone()).is_err());
+    let mut shape = f.config.clone();
+    shape.target.backend_id = "another-shape".into();
+    Store::open(shape).expect("another executor on this storage shares the store");
     let mut foreign = f.config.clone();
-    foreign.target.backend_id = "foreign".into();
+    foreign.target.storage_scope = format!("sha256:{}", "9".repeat(64));
     assert!(Store::open(foreign).is_err());
     let marker = f.config.root.join(MARKER);
     fs::remove_file(&marker).unwrap();

@@ -63,15 +63,15 @@ fn a_data_dir_made_before_or_after_the_store_does_not_stop_delivery() {
 }
 
 #[test]
-fn a_store_for_another_target_is_still_refused() {
+fn a_store_is_shared_on_its_storage_and_refused_elsewhere() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("datasets");
-    let config = |backend: &str| Config {
+    let config = |backend: &str, scope: &str| Config {
         root: root.to_str().unwrap().into(),
         target: Target {
             backend_id: backend.into(),
             profile_sha256: format!("sha256:{}", "a".repeat(64)),
-            storage_scope: format!("sha256:{}", "b".repeat(64)),
+            storage_scope: format!("sha256:{}", scope.repeat(64)),
         },
         project: "demo".into(),
         definition: datasets::Definition {
@@ -84,9 +84,10 @@ fn a_store_for_another_target_is_still_refused() {
         },
         timeout_seconds: 30,
     };
-    cache(&config("pai-h200")).unwrap();
-    assert!(cache(&config("other")).is_err());
-    cache(&config("pai-h200")).unwrap();
+    cache(&config("pai-h200", "b")).unwrap();
+    cache(&config("another-shape", "b")).unwrap();
+    assert!(cache(&config("elsewhere", "c")).is_err());
+    cache(&config("pai-h200", "b")).unwrap();
 }
 
 #[test]
