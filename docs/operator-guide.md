@@ -214,7 +214,7 @@ refused by `--check` and at startup.
 
 This is the operator registry for indexing and polling, not a prerequisite
 research workflow. The daemon's workspace-local registry selects projects to index
-and poll. Each record binds a stable identity to an absolute Project file on the
+and poll. Each record binds a stable identity to an absolute JSON Project file on the
 daemon host (see the [example](../rust/deploy/project.example.json)), lifecycle,
 source, timestamps and operator reason. A research question is not required or
 loaded. Use `ml-exp project` to register and change state; `project register` takes

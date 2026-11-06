@@ -22,7 +22,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub struct Scope {
     pub project: String,
     pub run: String,
-    /// Legacy observation scopes were not restricted to managed Attempt IDs.
+    /// Observation scopes are not restricted to managed Attempt IDs.
     pub attempt: Value,
 }
 impl Scope {
