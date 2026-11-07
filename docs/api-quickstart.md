@@ -29,8 +29,18 @@ Project and executor are only defaults; see [configuration](configuration.md).
 
 The repository needs a Dockerfile whose external `FROM` lines are pinned by digest;
 `docker buildx imagetools inspect IMAGE` prints the digest to pin, and the
-[Dockerfile rules](builds.md#dockerfile-contract) say what else is required. The code
-reads where to write from its environment:
+[Dockerfile rules](builds.md#dockerfile-contract) say what else is required. Have it `COPY`
+only the files that decide your dependencies, and changing the code will not rebuild the
+image:
+
+```dockerfile
+FROM registry.example/base@sha256:...
+WORKDIR /opt/app
+COPY pyproject.toml uv.lock ./
+RUN uv sync --no-install-project
+```
+
+The code reads where to write from its environment:
 
 ```python
 import json, os
@@ -44,7 +54,7 @@ with open(os.path.join(os.environ["OUTPUT_DIR"], "summary.json"), "w") as summar
 Then one command does the rest:
 
 ```sh
-ml-exp submit ~/my-repo --gpus 1 --time 2h -- python3 train.py
+ml-exp submit ~/my-repo --gpus 1 --time 2h --env PYTHONPATH=src -- python3 train.py
 ```
 
 ```text
@@ -53,6 +63,7 @@ Run my-repo-3fa81c2e
   command   python3 train.py
   image     registry.example/base@sha256:...
   source    42 files from /home/me/my-repo
+  environment will be built from 3 files; 42 code files go with the job
   resources 1 GPU, 8 CPU, 32 GB
   time      up to 7200 seconds
   spend     up to 2 GPU hours
@@ -60,7 +71,12 @@ Proceed? [y/N]
 ```
 
 After you answer, it uploads the source, builds the image, prepares and sends the job,
-then shows the backend's status until the job ends. Anything already done is skipped.
+then shows the backend's status until the job ends. Anything already done is skipped: the
+next time, if only code changed, the question says `environment reused` and nothing is
+built. The job starts in its own read-only copy of the code, at `SOURCE_DIR`, not in
+`/ml-expd/source`. On Slurm, or if the Dockerfile copies everything with `COPY . /app`, the
+code stays in the image and any change builds it again; the question says so, and
+[the Dockerfile rules](builds.md#code-delivered-to-the-job) have the details.
 Ctrl-C stops the watching, and a job already sent keeps running. The command fails if
 the job does not end in success. Afterwards:
 
@@ -84,7 +100,8 @@ code or settings, or pass `--seed` or `--run`. A failed job is run again with `m
 **What is uploaded.** In a git repository, the files git tracks and the files it does not
 ignore, with nested repositories following their own rules. Elsewhere, every file except
 `.git`, `.venv` and `__pycache__`. The question shows how many. Keep data and outputs out;
-the limits are 20,000 files, 256 MiB and 64 MiB compressed.
+the limits are 20,000 files, 256 MiB and 64 MiB compressed. Code delivered to the job has
+a limit of 64 MiB of files: move anything larger to data with `ml-exp data upload`.
 
 **Preparation needs the client.** Closing it during a build pauses the work, and repeating
 the command resumes it. Use `--detach` to return right after the job is sent, and `--yes`
@@ -103,8 +120,8 @@ to skip the question in a script; without a terminal `--yes` is required.
 
 `--file` takes the experiment file below, with everything `submit` derives left out, for
 metrics, W&B, scheduling and required files. Options win over the file, and the file over
-saved settings. It cannot set `request_id`, `source_id`, `base_image` or `runtime_id`; to
-fix those, use the steps below.
+saved settings. It cannot set `request_id`, `source_id`, `code_source_id`, `base_image` or
+`runtime_id`; to fix those, use the steps below.
 
 ## Each step separately
 
@@ -155,7 +172,10 @@ the digest of your Dockerfile's final `FROM`:
 `request_id` is 32 lowercase hex characters and is a durable recovery slot;
 changing the payload under the same ID is a conflict. For an existing Runtime,
 omit `runtime` and set `run.runtime_id`. The executor decides whether the requested
-resources fit. Slurm rejects the cloud-only `scheduling` option.
+resources fit. Slurm rejects the cloud-only `scheduling` and `code_source_id` options.
+Set `run.code_source_id` to a source ID on a cloud executor to deliver that code to each
+Attempt, instead of working from the code in the image. It cannot go with
+`data_preparation`.
 
 Preparation and dispatch are separate commands:
 

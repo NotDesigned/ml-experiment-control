@@ -5,6 +5,8 @@ use crate::{launch, managed};
 use std::path::PathBuf;
 
 pub const MAX_PACKAGE_BYTES: usize = 8 * 1024 * 1024;
+/// Under the Attempt root: where delivered code lives and the working directory.
+pub const CODE: &str = "code";
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -24,6 +26,9 @@ pub struct Package {
     pub artifacts: Option<crate::artifacts::publication::Policy>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub result_upload: bool,
+    /// The frozen source the worker must fetch before this Attempt starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_source_id: Option<String>,
 }
 /// Pure storage plan. The mount itself must already exist; no provider or local
 /// filesystem operation is permitted by this value alone.
@@ -169,6 +174,29 @@ impl Package {
                 return Err(Error("checkpoint context scope"));
             }
         }
+        if let Some(code) = &self.code_source_id {
+            let workdir = self.config.attempt_root.join(CODE);
+            let workdir = workdir.to_str().ok_or(Error("code path"))?;
+            crate::sources::validate_source_id(code).map_err(|_| Error("code source"))?;
+            if self.config.workdir.to_str() != Some(workdir)
+                || self.manifest.workdir != workdir
+                || self
+                    .manifest
+                    .environment
+                    .get("SOURCE_DIR")
+                    .map(String::as_str)
+                    != Some(workdir)
+                || self
+                    .manifest
+                    .environment
+                    .get("PYTHONDONTWRITEBYTECODE")
+                    .map(String::as_str)
+                    != Some("1")
+                || self.config.data_preparation.is_some()
+            {
+                return Err(Error("cloud code delivery"));
+            }
+        }
         let parent = self.root.join(&identity.project).join(&identity.run_id);
         if !managed::absolute(&self.root)
             || self.root.parent().is_none()
@@ -312,6 +340,7 @@ pub fn compile(input: Input<'_>) -> Result<Package> {
         imports: Vec::new(),
         artifacts: None,
         result_upload: false,
+        code_source_id: None,
     };
     package.validate()?;
     Ok(package)

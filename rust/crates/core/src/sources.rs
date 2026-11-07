@@ -15,6 +15,9 @@ pub const MAX_DEPTH: usize = 128;
 pub const MAX_TOPOLOGY_ENTRIES: usize = 100_000;
 pub const MAX_TOPOLOGY_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_METADATA_BYTES: usize = 64 * 1024;
+/// The file bytes one Run may carry outside its image. Every Attempt holds its own
+/// copy on backend storage, so large files belong in `ml-exp data upload`.
+pub const MAX_CODE_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -362,6 +365,79 @@ impl TreeDigest {
         Ok(format!("sha256:{:x}", self.digest.finalize()))
     }
 }
+/// The source identity of a tree, given a way to read each exact frame of it.
+pub fn tree_source_id(
+    plan: TreePlan,
+    mut frame: impl FnMut(&str, u64, usize) -> std::io::Result<Vec<u8>>,
+) -> std::io::Result<String> {
+    let mut digest = TreeDigest::new(plan);
+    while let Some(request) = digest.next_chunk() {
+        let bytes = frame(request.path, request.offset, request.len)?;
+        digest = digest.consume(&bytes).map_err(std::io::Error::other)?;
+    }
+    source_id(&digest.finish().map_err(std::io::Error::other)?).map_err(std::io::Error::other)
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodeFile {
+    pub path: String,
+    pub bytes: u64,
+    pub sha256: String,
+    pub executable: bool,
+}
+/// What a worker needs to unpack a code source and name a file that differs. The
+/// file hashes only say which file; `source_id` is what proves the whole tree, so a
+/// manifest altered along with its files still fails.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodeManifest {
+    pub source_id: String,
+    pub directories: Vec<String>,
+    pub files: Vec<CodeFile>,
+}
+impl CodeManifest {
+    pub fn plan(&self) -> Result<TreePlan> {
+        let policy = Policy {
+            max_archive_bytes: MAX_ARCHIVE_BYTES,
+            max_source_bytes: MAX_CODE_BYTES,
+            max_source_files: crate::artifacts::MAX_FILES,
+        };
+        // A worker's walks of its copy are bounded by entries, not only by files.
+        if self.directories.len() + self.files.len() > crate::artifacts::MAX_FILES {
+            return Err(Error::Limit);
+        }
+        let directories = self.directories.iter().map(|path| TreeEntry {
+            path: path.clone(),
+            kind: TreeKind::Directory,
+        });
+        let files = self.files.iter().map(|file| TreeEntry {
+            path: file.path.clone(),
+            kind: TreeKind::File {
+                size: file.bytes,
+                executable: file.executable,
+            },
+        });
+        TreePlan::new(directories.chain(files).collect(), &policy)
+    }
+    /// Paths are safe, parents exist, and the order is the one the content arrives in.
+    pub fn validate(&self, source: &str) -> Result<TreePlan> {
+        validate_source_id(source)?;
+        if self.source_id != source
+            || self.files.is_empty()
+            || !self.directories.windows(2).all(|w| w[0] < w[1])
+            || !self.files.windows(2).all(|w| w[0].path < w[1].path)
+        {
+            return Err(Error::Identity);
+        }
+        for file in &self.files {
+            validate_archive_digest(&file.sha256)?;
+        }
+        self.plan()
+    }
+    pub fn total_bytes(&self) -> u64 {
+        self.files.iter().map(|file| file.bytes).sum()
+    }
+}
 pub fn validate_archive_digest(value: &str) -> Result<&str> {
     if value.len() != 64
         || !value
@@ -531,6 +607,69 @@ pub fn response(
 
 #[cfg(test)]
 mod tests {
+    fn code_manifest() -> CodeManifest {
+        CodeManifest {
+            source_id: format!("source.{}", "a".repeat(64)),
+            directories: vec!["src".into()],
+            files: vec![
+                CodeFile {
+                    path: "src/train.py".into(),
+                    bytes: 2,
+                    sha256: "b".repeat(64),
+                    executable: false,
+                },
+                CodeFile {
+                    path: "uv.lock".into(),
+                    bytes: 1,
+                    sha256: "c".repeat(64),
+                    executable: false,
+                },
+            ],
+        }
+    }
+    #[test]
+    fn a_code_manifest_must_name_this_source_and_hold_a_safe_ordered_tree() {
+        let good = code_manifest();
+        let source = good.source_id.clone();
+        assert!(good.validate(&source).is_ok());
+        assert_eq!(good.total_bytes(), 3);
+        assert!(
+            good.validate(&format!("source.{}", "d".repeat(64)))
+                .is_err()
+        );
+        let refused = |change: fn(&mut CodeManifest)| {
+            let mut manifest = code_manifest();
+            change(&mut manifest);
+            manifest.validate(&source).is_err()
+        };
+        assert!(refused(|m| m.files[0].path = "../escape".into()));
+        assert!(refused(|m| m.files[0].path = "/absolute".into()));
+        assert!(refused(|m| m.files[0].path = "src/./train.py".into()));
+        assert!(refused(|m| m.files[1].path = "src/train.py".into()));
+        assert!(refused(|m| m.files.swap(0, 1)));
+        assert!(refused(|m| m.files.clear()));
+        assert!(refused(|m| m.directories.clear()));
+        assert!(refused(|m| m.files[0].sha256 = "short".into()));
+        assert!(refused(|m| m.files[0].bytes = MAX_CODE_BYTES));
+    }
+    #[test]
+    fn a_tree_read_through_frames_has_the_identity_the_store_computes() {
+        let mut manifest = code_manifest();
+        manifest.files[0].bytes = (CHUNK_BYTES + 1) as u64;
+        let plan = manifest.plan().unwrap();
+        let by_frames = tree_source_id(plan, |_, _, len| Ok(vec![7; len])).unwrap();
+        let plan = manifest.plan().unwrap();
+        let mut digest = TreeDigest::new(plan);
+        while let Some(request) = digest.next_chunk() {
+            let bytes = vec![7; request.len];
+            digest = digest.consume(&bytes).unwrap();
+        }
+        assert_eq!(by_frames, source_id(&digest.finish().unwrap()).unwrap());
+        // A frame of the wrong size is a failure and never an identity.
+        let plan = manifest.plan().unwrap();
+        assert!(tree_source_id(plan, |_, _, _| Ok(vec![7])).is_err());
+    }
+
     use super::*;
     use serde_json::json;
 

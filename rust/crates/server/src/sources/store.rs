@@ -3,7 +3,9 @@
 //! This store never imports a Project implicitly,
 //! executes repository code, or retries a publication whose effect is unclear.
 use super::archive;
-use ml_exp_core::sources::{self, Metadata, Policy, TreeDigest, TreeEntry, TreeKind, TreePlan};
+use ml_exp_core::sources::{
+    self, CodeFile, CodeManifest, Metadata, Policy, TreeDigest, TreeEntry, TreeKind, TreePlan,
+};
 use ml_exp_io::directory::{Directory, FileLock, LockOptions, Wait};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -233,6 +235,83 @@ impl Store {
         self.verify_tree(project, source_id, &source)
     }
 
+    /// A verified source small enough to deliver to a job. The configured store limit
+    /// is about what may be built into an image, and is not this limit.
+    fn code_tree(&self, project: &str, source_id: &str) -> Result<(Vec<TreeEntry>, Files)> {
+        ml_exp_core::identity::validate_id(project).map_err(why!(Error::Identity))?;
+        sources::validate_source_id(source_id).map_err(why!(Error::Identity))?;
+        let project_sources = self.sources.child(OsStr::new(project), false)?;
+        let source = project_sources.child(OsStr::new(source_id), false)?;
+        self.verify_tree(project, source_id, &source)?;
+        let (entries, files) = topology(&source.child(OsStr::new("tree"), false)?, "")?;
+        let bytes = entries
+            .iter()
+            .map(|entry| match entry.kind {
+                TreeKind::File { size, .. } => size,
+                TreeKind::Directory => 0,
+            })
+            .fold(0u64, u64::saturating_add);
+        if bytes > sources::MAX_CODE_BYTES || entries.len() > ml_exp_core::artifacts::MAX_FILES {
+            return Err(Error::Limit);
+        }
+        Ok((entries, files))
+    }
+    pub fn check_code(&self, project: &str, source_id: &str) -> Result<()> {
+        self.code_tree(project, source_id).map(|_| ())
+    }
+    pub fn code_manifest(&self, project: &str, source_id: &str) -> Result<CodeManifest> {
+        let (entries, mut opened) = self.code_tree(project, source_id)?;
+        let mut directories = Vec::new();
+        let mut files = Vec::new();
+        for entry in entries {
+            let TreeKind::File { size, executable } = entry.kind else {
+                directories.push(entry.path);
+                continue;
+            };
+            let (parent, name) = opened.remove(&entry.path).ok_or(Error::Archive)?;
+            let (sha256, bytes) =
+                ml_exp_io::artifacts::hash(&mut parent.open_regular_read(&name)?)?;
+            if bytes != size {
+                return Err(Error::Archive);
+            }
+            files.push(CodeFile {
+                path: entry.path,
+                bytes,
+                sha256,
+                executable,
+            });
+        }
+        directories.sort();
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(CodeManifest {
+            source_id: source_id.to_owned(),
+            directories,
+            files,
+        })
+    }
+    pub fn code_content(&self, project: &str, source_id: &str) -> Result<CodeContent> {
+        let (entries, files) = self.code_tree(project, source_id)?;
+        let sizes: BTreeMap<String, u64> = entries
+            .into_iter()
+            .filter_map(|entry| match entry.kind {
+                TreeKind::File { size, .. } => Some((entry.path, size)),
+                TreeKind::Directory => None,
+            })
+            .collect();
+        // Both maps are ordered by path, which is the order the manifest lists.
+        let files = files
+            .into_iter()
+            .map(|(path, (parent, name))| -> Result<_> {
+                let size = *sizes.get(&path).ok_or(Error::Archive)?;
+                Ok((parent, name, size))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(CodeContent {
+            bytes: sizes.values().sum(),
+            files,
+        })
+    }
+
     pub fn import_archive<R: Read + Seek>(
         &self,
         project: &str,
@@ -365,6 +444,35 @@ impl Store {
             }
             (Err(error), Ok(())) => Err(error),
         }
+    }
+}
+
+/// The files of a code source one after another, in the order of their manifest. The
+/// manifest has the sizes, so this needs no framing and has no paths for a worker to trust.
+pub struct CodeContent {
+    pub bytes: u64,
+    files: Vec<(Directory, OsString, u64)>,
+}
+impl CodeContent {
+    pub fn each_chunk(self, mut send: impl FnMut(Vec<u8>) -> std::io::Result<()>) -> Result<()> {
+        for (parent, name, size) in self.files {
+            let mut file = parent.open_regular_read(&name)?.take(size);
+            let mut sent = 0;
+            loop {
+                let mut chunk = vec![0; 256 * 1024];
+                let count = file.read(&mut chunk)?;
+                if count == 0 {
+                    break;
+                }
+                chunk.truncate(count);
+                send(chunk)?;
+                sent += count as u64;
+            }
+            if sent != size {
+                return Err(Error::Archive);
+            }
+        }
+        Ok(())
     }
 }
 

@@ -475,6 +475,14 @@ pub fn status_summary(value: &Value) -> Result<String> {
         text(get(scheduler, "job_id"), "not observed"),
         text(get(scheduler, "native_state"), "not observed")
     ));
+    let identity = object(get(value, "identity"));
+    if truth(identity) {
+        lines.push(format!(
+            "Made from: environment {}; code {}",
+            text(get(identity, "runtime_id"), "not recorded"),
+            text(get(identity, "code_source_id"), "in the image")
+        ));
+    }
     lines.extend(queue_lines(
         first(&[
             object(get(value, "queue")),

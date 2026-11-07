@@ -193,6 +193,11 @@ impl From<crate::backends::slurm::service::Error> for Error {
                 "DATASET_MANIFESTS_TOO_LARGE",
                 "the Run's dataset manifests exceed their 256 KiB budget; use fewer inputs or package many small files into fewer",
             ),
+            E::Admission(cause)
+                if cause.0 == ml_exp_core::first_submission::native::creation::CODE_DELIVERY_UNSUPPORTED =>
+            {
+                (422, "CODE_DELIVERY_UNSUPPORTED", cause.0)
+            }
             E::Admission(cause) => (422, "SUBMISSION_ADMISSION_REJECTED", cause.0),
             E::Authority | E::Conflict | E::Configuration => (
                 409,
@@ -259,6 +264,16 @@ impl From<crate::backends::cloud::Error> for Error {
                     422,
                     "DATASET_MANIFESTS_TOO_LARGE",
                     "the Run's dataset manifests exceed their 256 KiB budget; use fewer inputs or package many small files into fewer",
+                ),
+                ("CODE_SOURCE_TOO_LARGE", _) => (
+                    422,
+                    "CODE_SOURCE_TOO_LARGE",
+                    "the code exceeds 64 MiB or 20000 entries; move large files to data with `ml-exp data upload`",
+                ),
+                ("CODE_DELIVERY_UNSUPPORTED", _) => (
+                    422,
+                    "CODE_DELIVERY_UNSUPPORTED",
+                    ml_exp_core::first_submission::native::creation::CODE_DELIVERY_UNSUPPORTED,
                 ),
                 ("DEBUG_MACHINE_LIMIT", _) => (
                     409,
@@ -370,6 +385,8 @@ mod tests {
             ("INPUT_NOT_READY", 409),
             ("LAUNCH_METADATA_TOO_LARGE", 422),
             ("DATASET_MANIFESTS_TOO_LARGE", 422),
+            ("CODE_SOURCE_TOO_LARGE", 422),
+            ("CODE_DELIVERY_UNSUPPORTED", 422),
             ("DEBUG_MACHINE_LIMIT", 409),
             ("ARTIFACTS_ADMINISTRATIVELY_REMOVED", 410),
             ("ARTIFACT_NOT_PUBLISHED", 409),

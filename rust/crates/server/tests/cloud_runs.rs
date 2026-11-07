@@ -29,6 +29,79 @@ fn archive() -> Vec<u8> {
     tar.append_data(&mut header, "train.py", &body[..]).unwrap();
     tar.into_inner().unwrap().finish().unwrap()
 }
+fn archive_of(files: &[(&str, &[u8])]) -> Vec<u8> {
+    let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    let mut tar = tar::Builder::new(encoder);
+    for (path, body) in files {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(body.len() as u64);
+        header.set_mode(0o400);
+        header.set_cksum();
+        tar.append_data(&mut header, path, *body).unwrap();
+    }
+    tar.into_inner().unwrap().finish().unwrap()
+}
+/// The client's local identity is what the real store computes for its archive, or
+/// the question about reuse would be wrong without anyone noticing.
+#[test]
+fn the_environment_identity_the_client_computes_is_the_one_the_server_publishes() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let registry = temp.path().join("registry");
+    read_config::initialize(&registry).unwrap();
+    let project = temp.path().join("project.json");
+    private(
+        &project,
+        &json!({"schema_version":1,"project":"demo","title":"Fixture","run_roots":["runs"]}),
+    );
+    fs::create_dir(temp.path().join("runs")).unwrap();
+    let settings = read_config::Settings {
+        schema_version: 1,
+        registry_root: registry,
+        projects: vec![read_config::Project {
+            project: "demo".into(),
+            project_file: project,
+            run_roots: vec![temp.path().join("runs")],
+            runs: Vec::new(),
+            discover_runs: None,
+        }],
+        source_policy: Some(Policy::default()),
+    };
+    sources::Service::initialize(&settings).unwrap();
+    let sources = sources::Service::open(&settings, None).unwrap();
+    let directory = temp.path().join("repo");
+    fs::create_dir_all(directory.join("deps/nested")).unwrap();
+    fs::write(directory.join("Dockerfile"), "FROM x\n").unwrap();
+    fs::write(directory.join("deps/nested/lock"), "a\n").unwrap();
+    fs::write(directory.join("deps/run.sh"), vec![7; 3 * 1024 * 1024]).unwrap();
+    fs::set_permissions(
+        directory.join("deps/run.sh"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    fs::write(directory.join("train.py"), "code\n").unwrap();
+    let files = vec![
+        "Dockerfile".to_owned(),
+        "deps/nested/lock".to_owned(),
+        "deps/run.sh".to_owned(),
+    ];
+    let packed = ml_exp_client::sources::pack_files(&directory, files.clone()).unwrap();
+    assert_eq!(packed.paths, files);
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut &packed.file, &mut bytes).unwrap();
+    let published = sources
+        .publish(
+            "demo",
+            &mut Cursor::new(&bytes),
+            &packed.sha256,
+            "2026-10-29T00:00:00Z",
+        )
+        .unwrap();
+    assert_eq!(
+        published["source_id"],
+        ml_exp_client::sources::local_source_id(&directory, &files).unwrap()
+    );
+}
 #[test]
 fn create_reuse_restart_and_frozen_guard_without_provider_effects() {
     let temp = tempfile::tempdir().unwrap();
@@ -445,6 +518,116 @@ fn create_reuse_restart_and_frozen_guard_without_provider_effects() {
         ml_exp_core::slurm::helper::sha256_bytes(&download_bytes)
     );
     fs::write(&ready_file, &ready_bytes).unwrap();
+    // Code delivered apart from the image, through the real store and Action.
+    let publish = |bytes: &[u8]| -> String {
+        sources
+            .publish(
+                "demo",
+                &mut Cursor::new(bytes),
+                &ml_exp_core::slurm::helper::sha256_bytes(bytes)[7..],
+                "2026-10-29T00:00:00Z",
+            )
+            .unwrap()["source_id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let code_files: [(&str, &[u8]); 2] = [
+        ("src/train.py", &b"print('code')\n"[..]),
+        ("uv.lock", &b"x\n"[..]),
+    ];
+    let code_id = publish(&archive_of(&code_files));
+    let other_code_id = publish(&archive_of(&[("other.py", &b"never served\n"[..])]));
+    let mut code_run = request.clone();
+    code_run.run_id = "code-run".into();
+    code_run.code_source_id = Some(code_id.clone());
+    service
+        .create_run("demo", code_run, "2026-10-29T00:00:00Z")
+        .unwrap();
+    service
+        .prepare(
+            "demo",
+            "code-run",
+            Approval {
+                max_gpu_hours: 1.,
+                reason: String::new(),
+            },
+            "2026-10-29T00:01:00Z",
+            "2026-10-29T01:01:00Z",
+            &"e".repeat(32),
+        )
+        .unwrap();
+    let code_saved: Value = serde_json::from_slice(
+        &fs::read(registry.join("cloud-submissions/slots").join(format!(
+            "{}.json",
+            ml_exp_core::first_submission::native::attempt_slot("demo", "code-run", "attempt-001")
+                .unwrap()
+        )))
+        .unwrap(),
+    )
+    .unwrap();
+    let code_execution: ml_exp_core::cloud::action::Execution =
+        serde_json::from_value(code_saved["execution"].clone()).unwrap();
+    let code_package = code_execution.package().unwrap();
+    assert_eq!(
+        code_package.code_source_id.as_deref(),
+        Some(code_id.as_str())
+    );
+    assert!(
+        code_package
+            .manifest
+            .workdir
+            .ends_with("/code-run/attempt-001/code")
+    );
+    let code_manifest: Value =
+        serde_json::from_slice(&fs::read(runs.join("code-run/manifest.json")).unwrap()).unwrap();
+    assert_eq!(code_manifest["code_source_id"], code_id.as_str());
+    assert_eq!(code_manifest["source_id"], runtime.source_id.as_str());
+    // A code source that is absent, or above the limit, stops the Run being created.
+    let mut absent = request.clone();
+    absent.run_id = "code-absent".into();
+    absent.code_source_id = Some(format!("source.{}", "f".repeat(64)));
+    assert!(
+        service
+            .create_run("demo", absent, "2026-10-29T00:00:00Z")
+            .is_err()
+    );
+    assert!(!runs.join("code-absent").exists());
+    let weights = vec![0; ml_exp_core::sources::MAX_CODE_BYTES as usize + 1];
+    let large_id = publish(&archive_of(&[("weights.bin", weights.as_slice())]));
+    drop(weights);
+    let mut large = request.clone();
+    large.run_id = "code-large".into();
+    large.code_source_id = Some(large_id);
+    let refused = service
+        .create_run("demo", large, "2026-10-29T00:00:00Z")
+        .unwrap_err();
+    assert_eq!(refused.code, "CODE_SOURCE_TOO_LARGE");
+    assert_eq!(refused.http_status, Some(422));
+    assert!(!runs.join("code-large").exists());
+    // Refused before any image is built for a Run a Slurm executor could never create.
+    let mut slurm_code = setup.clone();
+    slurm_code.request_id = "e".repeat(32);
+    slurm_code
+        .run
+        .insert("run_id".into(), json!("code-on-slurm"));
+    slurm_code
+        .run
+        .insert("executor".into(), json!("slurm-test"));
+    slurm_code
+        .run
+        .insert("code_source_id".into(), json!(code_id));
+    let refused = service
+        .experiment_prepare(
+            "demo",
+            slurm_code,
+            Some(&std::collections::BTreeMap::from([(
+                "slurm-test".to_owned(),
+                true,
+            )])),
+        )
+        .unwrap_err();
+    assert_eq!(refused.code, "CODE_DELIVERY_UNSUPPORTED");
     // Simulate a stop after the complete copy intent was saved but before its
     // outbox entry. A later API URL or launcher must not rebuild this command.
     let storage = Settings::from_slice(&serde_json::to_vec(&config).unwrap())
@@ -815,6 +998,37 @@ fn create_reuse_restart_and_frozen_guard_without_provider_effects() {
     )
     .unwrap();
     assert!(initial_status["worker"]["state"].is_null());
+    assert_eq!(
+        initial_status["identity"]["runtime_id"],
+        runtime.runtime_id.as_str()
+    );
+    assert_eq!(
+        initial_status["identity"]["environment_source_id"],
+        runtime.source_id.as_str()
+    );
+    assert!(initial_status["identity"].get("code_source_id").is_none());
+    let code_status = ml_exp_client::status::observe(
+        &client,
+        &health,
+        None,
+        ml_exp_client::observation::Selection {
+            project: Some("demo"),
+            run: Some("code-run"),
+            attempt: Some("attempt-001"),
+        },
+        false,
+    )
+    .unwrap();
+    assert_eq!(code_status["identity"]["code_source_id"], code_id.as_str());
+    assert_eq!(
+        code_status["identity"]["runtime_id"],
+        runtime.runtime_id.as_str()
+    );
+    assert!(
+        ml_exp_client::presentation::status_summary(&code_status)
+            .unwrap()
+            .contains(&code_id[..40])
+    );
     assert!(initial_status["training"]["process_state"].is_null());
     assert_eq!(initial_status["training"]["status"], "UNKNOWN");
     assert_eq!(
@@ -880,6 +1094,88 @@ fn create_reuse_restart_and_frozen_guard_without_provider_effects() {
     assert_eq!(
         fs::read(&download_slot).unwrap(),
         serde_json::to_vec(&download_saved).unwrap()
+    );
+    // The token of this Attempt reaches exactly the code frozen in this Attempt.
+    let code_base = "/api/worker-exchange/demo/code-run/attempt-001";
+    let code_token = code_package.channel.token.as_str();
+    let read_code = |token: Option<&str>, path: &str| {
+        let request = http.get(format!("http://{address}{path}"));
+        match token {
+            Some(token) => request.bearer_auth(token),
+            None => request,
+        }
+        .send()
+        .unwrap()
+    };
+    let listing: ml_exp_core::sources::CodeManifest = serde_json::from_slice(
+        &read_code(Some(code_token), &format!("{code_base}/code"))
+            .bytes()
+            .unwrap(),
+    )
+    .unwrap();
+    let plan = listing.validate(&code_id).unwrap();
+    assert_eq!(
+        listing
+            .files
+            .iter()
+            .map(|f| f.path.as_str())
+            .collect::<Vec<_>>(),
+        ["src/train.py", "uv.lock"]
+    );
+    assert_eq!(listing.directories, ["src"]);
+    assert_eq!(listing.source_id, code_id);
+    assert_ne!(listing.source_id, other_code_id);
+    let content = read_code(Some(code_token), &format!("{code_base}/code-content"));
+    assert_eq!(content.status().as_u16(), 200);
+    assert_eq!(content.content_length(), Some(listing.total_bytes()));
+    let content = content.bytes().unwrap();
+    assert_eq!(content.as_ref(), b"print('code')\nx\n");
+    // What a worker computes from these bytes is what the store published.
+    let mut offsets = std::collections::BTreeMap::new();
+    let mut at = 0;
+    for file in &listing.files {
+        offsets.insert(file.path.clone(), at);
+        at += file.bytes as usize;
+    }
+    let found = ml_exp_core::sources::tree_source_id(plan, |path, offset, len| {
+        let start = offsets[path] + offset as usize;
+        Ok(content[start..start + len].to_vec())
+    })
+    .unwrap();
+    assert_eq!(found, code_id);
+    for suffix in ["code", "code-content"] {
+        let path = format!("{code_base}/{suffix}");
+        for token in [None, Some("wrong"), Some(download_channel.token.as_str())] {
+            assert_eq!(
+                read_code(token, &path).status().as_u16(),
+                401,
+                "{path} {token:?}"
+            );
+        }
+        // A real capability does not reach another Attempt, or an ordinary route.
+        assert_eq!(
+            read_code(
+                Some(code_token),
+                &format!("/api/worker-exchange/demo/code-run/attempt-002/{suffix}")
+            )
+            .status()
+            .as_u16(),
+            401
+        );
+        // A Run with no delivered code has nothing to serve, whoever asks.
+        assert_eq!(
+            read_code(
+                Some(&download_channel.token),
+                &format!("/api/worker-exchange/demo/download-inventory/attempt-001/{suffix}")
+            )
+            .status()
+            .as_u16(),
+            404
+        );
+    }
+    assert_eq!(
+        read_code(Some(code_token), "/api/health").status().as_u16(),
+        401
     );
     let post = |token: &str, path: &str, body: Vec<u8>| {
         http.post(format!("http://{address}{path}"))

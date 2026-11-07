@@ -181,6 +181,48 @@ impl Service {
         self.scope(project)?;
         Ok(metadata.to_value())
     }
+    fn code<T>(
+        &self,
+        project: &str,
+        source_id: &str,
+        read: impl FnOnce(&Store) -> Result<T, super::Error>,
+    ) -> Result<T, crate::error::Error> {
+        self.scope(project)?;
+        sources::validate_source_id(source_id).map_err(why!(invalid()))?;
+        let value = read(&self.store).map_err(|error| match error {
+            super::Error::Limit => crate::error::Error {
+                status: 422,
+                code: "CODE_SOURCE_TOO_LARGE",
+                detail: "the code exceeds 64 MiB or 20000 entries; move large files to data with `ml-exp data upload`",
+            },
+            other => store_error(other),
+        })?;
+        self.scope(project)?;
+        Ok(value)
+    }
+    pub fn check_code(&self, project: &str, source_id: &str) -> Result<(), crate::error::Error> {
+        self.code(project, source_id, |store| {
+            store.check_code(project, source_id)
+        })
+    }
+    pub fn code_manifest(
+        &self,
+        project: &str,
+        source_id: &str,
+    ) -> Result<sources::CodeManifest, crate::error::Error> {
+        self.code(project, source_id, |store| {
+            store.code_manifest(project, source_id)
+        })
+    }
+    pub fn code_content(
+        &self,
+        project: &str,
+        source_id: &str,
+    ) -> Result<super::CodeContent, crate::error::Error> {
+        self.code(project, source_id, |store| {
+            store.code_content(project, source_id)
+        })
+    }
     pub fn lookup(&self, project: &str, sha256: &str) -> Result<Value, crate::error::Error> {
         self.scope(project)?;
         sources::validate_archive_digest(sha256).map_err(why!(invalid()))?;

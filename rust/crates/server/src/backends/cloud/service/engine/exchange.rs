@@ -196,13 +196,14 @@ impl Service {
             .map_err(why!(cloud::Error::evidence()))?
             .ok_or_else(missing)
     }
-    pub fn worker_package(
+    /// The frozen package of exactly the Attempt this token was issued for.
+    fn worker_authorized(
         &self,
         project: &str,
         run: &str,
         attempt: &str,
         token: &str,
-    ) -> cloud::Result<Value> {
+    ) -> cloud::Result<ml_exp_core::cloud::launch::Package> {
         let denied = || cloud::Error {
             code: "WORKER_AUTH_REQUIRED".into(),
             http_status: Some(401),
@@ -220,11 +221,59 @@ impl Service {
             return Err(denied());
         }
         self.require_live(project, run)?;
-        let package = prepared
+        prepared
             .execution
             .package()
-            .map_err(why!(cloud::Error::evidence()))?;
+            .map_err(why!(cloud::Error::evidence()))
+    }
+    pub fn worker_package(
+        &self,
+        project: &str,
+        run: &str,
+        attempt: &str,
+        token: &str,
+    ) -> cloud::Result<Value> {
+        let package = self.worker_authorized(project, run, attempt, token)?;
         serde_json::to_value(package).map_err(why!(cloud::Error::evidence()))
+    }
+    /// Only the source frozen in this Attempt's package. A request names no source,
+    /// so holding a token cannot reach any other code in the Project.
+    fn worker_code_source(
+        &self,
+        project: &str,
+        run: &str,
+        attempt: &str,
+        token: &str,
+    ) -> cloud::Result<String> {
+        self.worker_authorized(project, run, attempt, token)?
+            .code_source_id
+            .ok_or_else(missing)
+    }
+    pub fn worker_code(
+        &self,
+        project: &str,
+        run: &str,
+        attempt: &str,
+        token: &str,
+    ) -> cloud::Result<Value> {
+        let source = self.worker_code_source(project, run, attempt, token)?;
+        let manifest = self
+            .sources
+            .code_manifest(project, &source)
+            .map_err(why!(cloud::Error::evidence()))?;
+        serde_json::to_value(manifest).map_err(why!(cloud::Error::evidence()))
+    }
+    pub fn worker_code_content(
+        &self,
+        project: &str,
+        run: &str,
+        attempt: &str,
+        token: &str,
+    ) -> cloud::Result<sources::CodeContent> {
+        let source = self.worker_code_source(project, run, attempt, token)?;
+        self.sources
+            .code_content(project, &source)
+            .map_err(why!(cloud::Error::evidence()))
     }
     pub fn has_exchange(&self) -> bool {
         self.exchange.is_some()

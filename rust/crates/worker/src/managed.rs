@@ -392,7 +392,11 @@ pub fn initialize_with_environment(
     config.validate_runtime(runtime)?;
     let bytes = private_file(&config.manifest_path, launch::MAX_BYTES as u64)?;
     verified(config, &bytes)?;
-    Directory::open(&config.workdir, false).map_err(crate::managed::storage_failure!())?;
+    // Code delivered into the Attempt root cannot exist before that root does. Its
+    // arrival is checked by `run`, before anything starts.
+    if !config.workdir.starts_with(&config.attempt_root) {
+        Directory::open(&config.workdir, false).map_err(crate::managed::storage_failure!())?;
+    }
     let parent = Directory::open(
         config.attempt_root.parent().ok_or(Error::Configuration)?,
         false,

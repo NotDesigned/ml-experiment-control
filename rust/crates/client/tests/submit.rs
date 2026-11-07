@@ -44,6 +44,10 @@ struct World {
     cpu_limit: u32,
     /// The first prepared request, which any later one must equal.
     prepared_request: Option<Value>,
+    /// A server and executor that can deliver code to a job.
+    code_delivery: bool,
+    /// The Runtime the client asks about has been built already.
+    runtime_ready: bool,
     /// A failed provider read keeps the old state beside this.
     provider_read_failing: bool,
     prepare_never_arrives: bool,
@@ -77,6 +81,8 @@ impl World {
             no_executors: false,
             cpu_limit: 8,
             prepared_request: None,
+            code_delivery: false,
+            runtime_ready: false,
             provider_read_failing: false,
             prepare_never_arrives: false,
             job_states: vec![("RUNNING", "Running"), ("SUCCEEDED", "Succeeded")],
@@ -167,12 +173,29 @@ impl World {
             ("GET", "/api/executors") => (
                 200,
                 json!({"executors":[{"executor_id":"pai","enabled":true,"run_creation":true,
+                    "capabilities":if self.code_delivery {
+                        json!({"code_delivery":{"worker_sha256":format!("sha256:{}","9".repeat(64))}})
+                    } else {
+                        json!({})
+                    },
                     "limits":{"gpus":1,"cpus":self.cpu_limit,"memory_gb":32,"walltime_seconds":3600}}]}),
             ),
+            ("GET", r) if r.contains("/runtimes/") && !r.ends_with("/progress") => {
+                if self.runtime_ready {
+                    (200, json!({"status":"READY"}))
+                } else {
+                    (404, json!({"code":"NOT_FOUND"}))
+                }
+            }
             ("GET", r) if r.contains("/source-imports/") => (404, json!({"code":"NOT_FOUND"})),
             ("POST", "/api/source-imports/archive") => {
                 let sha = path.rsplit("sha256=").next().unwrap_or_default();
-                let digest = "2".repeat(64);
+                // Told apart only where this matters: the real one hashes the tree.
+                let digest = if self.code_delivery {
+                    sha.to_owned()
+                } else {
+                    "2".repeat(64)
+                };
                 (
                     200,
                     json!({"source_id":format!("source.{digest}"),"project":"demo",
@@ -508,6 +531,229 @@ fn one_command_confirms_once_and_sends_one_job() {
         json!({"gpus":1,"cpus":8,"memory_gb":32})
     );
     assert_eq!(request["approval"]["max_gpu_hours"], 0.17);
+}
+
+impl Files {
+    /// A Dockerfile that takes only its dependency file from the directory.
+    fn dependencies_only(&self) {
+        let source = self.root.path().join("source");
+        std::fs::write(
+            source.join("Dockerfile"),
+            format!("FROM {IMAGE}\nCOPY uv.lock /w/\nRUN true\n"),
+        )
+        .unwrap();
+        std::fs::write(source.join("uv.lock"), "locked\n").unwrap();
+    }
+    fn change_the_code(&self) {
+        let path = self.root.path().join("source/train.py");
+        std::fs::write(path, "print('changed')\n").unwrap();
+    }
+}
+fn delivering() -> Fake {
+    let mut world = World::new();
+    world.code_delivery = true;
+    Fake::start(world)
+}
+const ARCHIVE: &str = "/api/source-imports/archive";
+
+#[test]
+fn code_travels_apart_from_what_the_dockerfile_uses() {
+    let files = Files::new();
+    files.dependencies_only();
+    let fake = delivering();
+    let mut asked = Vec::new();
+    let value = files.run(&fake, true, &mut asked).unwrap();
+    assert_eq!(value["status"], "VERIFIED");
+    assert!(
+        asked[0].contains("will be built from 2 files; 3 code files go with the job"),
+        "{}",
+        asked[0]
+    );
+    assert_eq!(fake.count("POST", ARCHIVE), 2);
+    let request = fake.prepared_request();
+    let code = request["run"]["code_source_id"].as_str().unwrap();
+    assert_ne!(request["runtime"]["source_id"], code);
+    // The same command again is the same job, and uploads and asks nothing.
+    let mutations = fake.mutations();
+    let again = files.run(&fake, true, &mut asked).unwrap();
+    assert_eq!(again["already_submitted"], true);
+    assert_eq!(again["run_id"], value["run_id"]);
+    assert_eq!(fake.mutations(), mutations);
+    assert_eq!(asked.len(), 1);
+}
+
+#[test]
+fn changing_only_code_is_a_new_run_of_the_same_environment() {
+    let files = Files::new();
+    files.dependencies_only();
+    let source = files.root.path().join("source");
+    let environment = |source: &std::path::Path| {
+        let paths = ml_exp_client::sources::pack_directory(source)
+            .unwrap()
+            .paths;
+        let dockerfile = std::fs::read_to_string(source.join("Dockerfile")).unwrap();
+        let ml_exp_client::dockerfile::Split::Files(paths) =
+            ml_exp_client::dockerfile::split(&dockerfile, "Dockerfile", &paths)
+        else {
+            panic!("expected only the dependency file")
+        };
+        ml_exp_client::sources::local_source_id(source, &paths).unwrap()
+    };
+    let before = environment(&source);
+    let first = delivering();
+    let one = files.run(&first, true, &mut Vec::new()).unwrap();
+    let one_request = first.prepared_request();
+
+    files.change_the_code();
+    assert_eq!(environment(&source), before, "the real tree identity");
+    let second = delivering();
+    let two = files.run(&second, true, &mut Vec::new()).unwrap();
+    let two_request = second.prepared_request();
+
+    assert_ne!(one["run_id"], two["run_id"]);
+    assert_ne!(one_request["request_id"], two_request["request_id"]);
+    assert_ne!(
+        one_request["run"]["code_source_id"],
+        two_request["run"]["code_source_id"]
+    );
+    // The Runtime is computed from exactly this, on the client and on the server.
+    assert_eq!(one_request["runtime"], two_request["runtime"]);
+}
+
+#[test]
+fn a_built_environment_is_reported_as_reused_with_nothing_new_to_ask_for() {
+    let files = Files::new();
+    files.dependencies_only();
+    let mut world = World::new();
+    world.code_delivery = true;
+    world.runtime_ready = true;
+    let fake = Fake::start(world);
+    let mut asked = Vec::new();
+    files.run(&fake, true, &mut asked).unwrap();
+    assert!(
+        asked[0].contains("environment reused; 3 code files go with the job"),
+        "{}",
+        asked[0]
+    );
+    // The same one request as a build: the server sees the Runtime is READY.
+    assert_eq!(fake.count("POST", "/experiment-preparations"), 1);
+    let path = fake
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(_, path, _)| path.contains("/runtimes/"))
+        .map(|(_, path, _)| path.clone())
+        .unwrap();
+    let id = ml_exp_core::cloud::build::Definition {
+        source_id: ml_exp_client::sources::local_source_id(
+            &files.root.path().join("source"),
+            &["Dockerfile".to_owned(), "uv.lock".to_owned()],
+        )
+        .unwrap(),
+        executor: "pai".into(),
+        base_image: IMAGE.into(),
+        dockerfile: "Dockerfile".into(),
+    }
+    .id("demo", &format!("sha256:{}", "9".repeat(64)))
+    .unwrap();
+    assert_eq!(path, format!("/api/projects/demo/runtimes/{id}"));
+}
+
+#[test]
+fn without_delivery_on_the_executor_the_code_stays_in_the_image() {
+    let files = Files::new();
+    files.dependencies_only();
+    let fake = Fake::start(World::new());
+    let mut asked = Vec::new();
+    files.run(&fake, true, &mut asked).unwrap();
+    assert_eq!(fake.count("POST", ARCHIVE), 1);
+    assert!(
+        fake.prepared_request()["run"]
+            .get("code_source_id")
+            .is_none()
+    );
+    assert!(asked[0].contains("keeps code in the image"), "{}", asked[0]);
+    assert!(
+        fake.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(_, path, _)| !path.contains("/runtimes/")),
+        "with no worker digest there is no Runtime to ask about"
+    );
+}
+
+#[test]
+fn a_dockerfile_that_copies_everything_delivers_nothing_and_says_why() {
+    let files = Files::new();
+    std::fs::write(
+        files.root.path().join("source/Dockerfile"),
+        format!("FROM {IMAGE}\nCOPY . /w\n"),
+    )
+    .unwrap();
+    let fake = delivering();
+    let mut asked = Vec::new();
+    files.run(&fake, true, &mut asked).unwrap();
+    assert_eq!(fake.count("POST", ARCHIVE), 1);
+    assert!(
+        fake.prepared_request()["run"]
+            .get("code_source_id")
+            .is_none()
+    );
+    assert!(
+        asked[0].contains("copies the whole directory"),
+        "{}",
+        asked[0]
+    );
+}
+
+#[test]
+fn data_preparation_keeps_its_code_in_the_image() {
+    let files = Files::new();
+    files.dependencies_only();
+    let fake = delivering();
+    let mut spec = files.spec();
+    spec.extra
+        .insert("data_preparation".into(), json!({"script":"train.py"}));
+    submit::run(
+        &fake.client(),
+        &spec,
+        &files.root.path().join("states"),
+        Hooks {
+            confirm: &mut |_| Ok(true),
+            progress: &mut |_| {},
+            poll: Duration::from_millis(1),
+            deadline: Duration::from_secs(5),
+            follow: false,
+            silence: Duration::from_millis(30),
+            follow_poll: Duration::from_millis(1),
+        },
+    )
+    .unwrap();
+    assert!(
+        fake.prepared_request()["run"]
+            .get("code_source_id")
+            .is_none()
+    );
+    assert_eq!(fake.count("POST", ARCHIVE), 1);
+}
+
+#[test]
+fn code_above_the_limit_is_refused_before_anything_is_sent() {
+    let files = Files::new();
+    files.dependencies_only();
+    let large = std::fs::File::create(files.root.path().join("source/weights.bin")).unwrap();
+    large
+        .set_len(ml_exp_core::sources::MAX_CODE_BYTES + 1)
+        .unwrap();
+    let fake = delivering();
+    let mut asked = Vec::new();
+    let refused = files.run(&fake, true, &mut asked).unwrap_err().to_string();
+    assert!(refused.contains("ml-exp data upload"), "{refused}");
+    assert!(refused.contains("64 MiB"), "{refused}");
+    assert!(asked.is_empty());
+    assert_eq!(fake.mutations(), 0);
 }
 
 #[test]

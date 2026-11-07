@@ -1,5 +1,6 @@
-//! Cloud bootstrap around the existing sealed worker. It never fetches code,
-//! installs packages, picks a checkpoint or replays an uncertain process.
+//! Cloud bootstrap around the existing sealed worker. It never installs packages,
+//! picks a checkpoint or replays an uncertain process. The only code it fetches is the
+//! source frozen in its package, which `cloud_code` verifies before anything starts.
 use crate::managed;
 use ml_exp_core::{
     cloud::launch::{MAX_PACKAGE_BYTES, Package},
@@ -273,7 +274,14 @@ pub fn run(
                     .wait_timeout(guard, std::time::Duration::from_secs(5));
             }
         });
-        let result = crate::cloud_data::materialize(package, cancelled)
+        // STARTED cannot run again, so it has no use for code and `managed::run` says so.
+        let delivered = if original.phase == managed::Phase::Prepared {
+            crate::cloud_code::deliver(package, cancelled)
+        } else {
+            Ok(())
+        };
+        let result = delivered
+            .and_then(|_| crate::cloud_data::materialize(package, cancelled))
             .and_then(|_| managed::run(&package.config, cancelled));
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
         if let Ok(_guard) = wake.0.lock() {

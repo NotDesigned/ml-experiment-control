@@ -65,6 +65,9 @@ impl Service {
                     uncertain: false,
                 });
             }
+            if let Some(code) = &run.code_source_id {
+                self.check_code(project, code)?;
+            }
             let runtime = if let Some(recipe) = &request.runtime {
                 ml_exp_core::cloud::run::Runtime {
                     runtime_id: run.runtime_id.clone(),
@@ -137,6 +140,13 @@ impl Service {
             || run.scheduling.is_some()
         {
             return Err(cloud::Error::configuration());
+        } else if run.code_source_id.is_some() {
+            // Before any image is built for a Run that could never be created.
+            return Err(cloud::Error {
+                code: "CODE_DELIVERY_UNSUPPORTED".into(),
+                http_status: Some(422),
+                uncertain: false,
+            });
         }
         if !self.backends.contains_key(&run.executor)
             && run.data_preparation.is_some()
@@ -186,6 +196,9 @@ impl Service {
             "status":if saved.submission.is_some(){"READY"}else if saved.started{"PREPARING"}else{"PREPARED"},"phase":if saved.submission.is_some(){"SUBMISSION_PREPARED"}else{"ENVIRONMENT_PREPARATION"},
             "confirmation":format!("PREPARE {id}"),"submission":saved.submission,"training_authorized":false,"scheduler_submitted":false,
             "frozen":{"executor":run.executor,"gpus":run.resources.gpus,"cpus":run.resources.cpus,"memory_gb":run.resources.memory_gb,"max_gpu_hours":saved.request.approval.max_gpu_hours}});
+        if let Some(code) = &run.code_source_id {
+            value["frozen"]["code_source_id"] = json!(code);
+        }
         if saved.submission.is_none() && saved.started && self.accepts(&run.executor) {
             if let Some(progress) = self.script_status(&saved.project, &run.run_id)? {
                 value["phase"] = json!(if progress["status"] == "READY" {

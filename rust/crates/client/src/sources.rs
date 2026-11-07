@@ -24,6 +24,8 @@ pub struct PreparedArchive {
     pub paths: Vec<String>,
     /// Paths, executable bits and contents, so it does not change with the compression.
     pub content_sha256: String,
+    /// The sum of the file sizes when this side packed it.
+    pub expanded_bytes: u64,
 }
 /// Callers cannot replace the route, length, or archive identity after planning.
 #[derive(Clone, Debug)]
@@ -242,6 +244,7 @@ pub fn inspect_archive(mut file: File) -> Result<PreparedArchive, Error> {
         sha256,
         bytes,
         paths: Vec::new(),
+        expanded_bytes: 0,
     })
 }
 fn same_metadata(before: &std::fs::Metadata, after: &std::fs::Metadata) -> bool {
@@ -444,6 +447,53 @@ fn refused(path: &str, why: &str) -> Error {
 /// never run. The initial names and file metadata are rechecked before success,
 /// so an edit during packing fails rather than producing a torn archive.
 pub fn pack_directory(path: &Path) -> Result<PreparedArchive, Error> {
+    pack(path, None)
+}
+/// Only these files of the directory, which an earlier `pack_directory` listed.
+pub fn pack_files(path: &Path, files: Vec<String>) -> Result<PreparedArchive, Error> {
+    pack(path, Some(Selection::new(files)))
+}
+/// The source ID the server will compute for these files, without sending anything.
+pub fn local_source_id(directory: &Path, files: &[String]) -> std::io::Result<String> {
+    use source_contract::{TreeEntry, TreeKind, TreePlan};
+    let mut parents = std::collections::BTreeSet::new();
+    let mut entries = Vec::new();
+    for path in files {
+        let mut child = path.as_str();
+        while let Some((parent, _)) = child.rsplit_once('/') {
+            parents.insert(parent.to_owned());
+            child = parent;
+        }
+        let metadata = std::fs::symlink_metadata(directory.join(path))?;
+        #[cfg(unix)]
+        let executable = {
+            use std::os::unix::fs::MetadataExt;
+            metadata.mode() & 0o111 != 0
+        };
+        #[cfg(not(unix))]
+        let executable = false;
+        entries.push(TreeEntry {
+            path: path.clone(),
+            kind: TreeKind::File {
+                size: metadata.len(),
+                executable,
+            },
+        });
+    }
+    entries.extend(parents.into_iter().map(|path| TreeEntry {
+        path,
+        kind: TreeKind::Directory,
+    }));
+    let plan = TreePlan::new(entries, &policy()).map_err(std::io::Error::other)?;
+    source_contract::tree_source_id(plan, |path, offset, len| {
+        let mut file = File::open(directory.join(path))?;
+        file.seek(SeekFrom::Start(offset))?;
+        let mut bytes = vec![0; len];
+        file.read_exact(&mut bytes)?;
+        Ok(bytes)
+    })
+}
+fn pack(path: &Path, only: Option<Selection>) -> Result<PreparedArchive, Error> {
     use ml_exp_io::directory::Directory;
     #[cfg(unix)]
     use std::os::unix::fs::MetadataExt;
@@ -476,7 +526,10 @@ pub fn pack_directory(path: &Path) -> Result<PreparedArchive, Error> {
     }
     let root = Directory::open(&normalized, false).map_err(|_| packing())?;
     let limits = policy();
-    let selection = git_selection(&normalized)?;
+    let selection = match only {
+        Some(selection) => Some(selection),
+        None => git_selection(&normalized)?,
+    };
     // Ignored names are not part of the source, so they neither count nor must stay still.
     let visible = |relative: &str, names: Vec<OsString>| -> Vec<OsString> {
         match &selection {
@@ -650,5 +703,6 @@ pub fn pack_directory(path: &Path) -> Result<PreparedArchive, Error> {
     let mut prepared = inspect_archive(writer.file)?;
     prepared.paths = entries.into_iter().map(|entry| entry.path).collect();
     prepared.content_sha256 = format!("{:x}", content.finalize());
+    prepared.expanded_bytes = expanded;
     Ok(prepared)
 }

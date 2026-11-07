@@ -1,6 +1,15 @@
 use super::*;
 use ml_exp_core::capacity::{self, Observation};
 impl Service {
+    /// What a client needs to know a Runtime's identity before anything is uploaded.
+    /// Absent where code cannot be delivered, so that client keeps code in the image.
+    fn code_delivery(&self) -> Option<Value> {
+        if !self.has_exchange() {
+            return None;
+        }
+        let builds = self.builds.as_ref()?;
+        Some(json!({"worker_sha256":builds.worker_sha256}))
+    }
     pub fn catalogue(&self) -> cloud::Result<Vec<Value>> {
         self.backends.iter().map(|(id,backend)|{
             let (kind,limits,allocation)=match &backend.adapter.profile {
@@ -8,7 +17,7 @@ impl Service {
                 cloud::adapter::Profile::Sensecore(p)=>("sensecore",json!({"gpus":p.worker_gpus,"cpus":p.worker_cpus,"memory_gb":p.worker_memory_gb,"fixed_resources":true,"cluster":p.cluster}),json!(["guaranteed"])),
             };
             Ok(json!({"executor_id":id,"kind":kind,"enabled":self.enabled,"run_creation":self.creation,"limits":limits,"allocation_policies":allocation,"default_priority":5,
-                "capabilities":{"oci_images":true,"persistent_checkpoints":true,"dataset_upload":self.has_datasets(),"data_image_copy":backend.data_copier.is_some(),"data_preparation":if kind=="pai-dlc"{json!("inside_job")}else if backend.data_copier.is_some(){json!("before_job")}else{Value::Null},"metrics":self.has_exchange(),"result_objects":self.has_artifacts(),"cpu_collection":backend.collector.is_some(),"capacity_query":true},"live_availability_checked":false}))
+                "capabilities":{"code_delivery":self.code_delivery(),"oci_images":true,"persistent_checkpoints":true,"dataset_upload":self.has_datasets(),"data_image_copy":backend.data_copier.is_some(),"data_preparation":if kind=="pai-dlc"{json!("inside_job")}else if backend.data_copier.is_some(){json!("before_job")}else{Value::Null},"metrics":self.has_exchange(),"result_objects":self.has_artifacts(),"cpu_collection":backend.collector.is_some(),"capacity_query":true},"live_availability_checked":false}))
         }).collect()
     }
     pub fn capacity(&self, executor: &str, refresh: bool, now: &str) -> cloud::Result<Value> {

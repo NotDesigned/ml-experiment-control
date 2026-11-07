@@ -94,3 +94,15 @@ fn retry_request_json_and_hash_are_stable_and_sources_are_exclusive() {
     neither.resume_from = None;
     assert!(neither.validate(ACTION).is_err());
 }
+#[test]
+fn every_kind_of_retry_keeps_the_code_it_started_with() {
+    let code = format!("source.{}", "c".repeat(64));
+    let (mut run, receipt) = fixture();
+    run["code_source_id"] = json!(code);
+    let attempt = plan(&run, receipt, &Value::Null).unwrap();
+    assert_eq!(attempt["code_source_id"], code);
+    // An Attempt whose code differs from its Run is not the plan of that Run.
+    let (run, receipt) = fixture();
+    let attempt = plan(&run, receipt, &Value::Null).unwrap();
+    assert!(attempt.get("code_source_id").is_none());
+}
