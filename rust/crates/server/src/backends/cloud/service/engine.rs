@@ -59,7 +59,7 @@ pub struct Service {
     lifecycle: Option<Arc<projects::Service>>,
     backends: BTreeMap<String, Backend>,
     enabled: bool,
-    pub(super) verifying: datasets::Verifying,
+    verifying: datasets::Verifying,
     creation: bool,
     tracking: ml_exp_core::tracking::RoutingSettings,
     exchange: Option<exchange::Authority>,
