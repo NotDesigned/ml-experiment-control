@@ -345,6 +345,7 @@ pub fn upload(
 }
 /// [`upload`], with what it does to the object store supplied.
 #[doc(hidden)]
+const VERIFYING_WAIT: Duration = Duration::from_secs(30);
 pub fn upload_with(
     client: &Client,
     project: &str,
@@ -462,13 +463,22 @@ pub fn upload_with(
                 current = next;
             }
         }
-        let value = send(
-            client,
-            format!("{base}/{asset}/complete"),
-            reqwest::Method::POST,
-            Vec::new(),
-            true,
-        )?;
+        // A request gives up before a large archive is read, and that read goes on.
+        let value = loop {
+            match send(
+                client,
+                format!("{base}/{asset}/complete"),
+                reqwest::Method::POST,
+                Vec::new(),
+                true,
+            ) {
+                Err(Error::Http(failure)) if failure.error_code == "DATASET_VERIFYING" => {
+                    eprintln!("The server is still verifying this archive; waiting.");
+                    std::thread::sleep(VERIFYING_WAIT);
+                }
+                other => break other?,
+            }
+        };
         let archived = value["archive_verified"] == true;
         let ready = state(value.clone(), project, executor, &asset)?;
         current

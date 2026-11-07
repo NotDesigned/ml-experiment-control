@@ -2125,7 +2125,7 @@ fn a_late_archive_verification_keeps_the_copy_that_started_meanwhile() {
         assert_eq!(before["copy_request_id"], REQUEST_A);
 
         let view = service
-            .dataset_archive_verified("demo", c.f.executor, &c.asset, &verifying)
+            .dataset_archive_verified("demo", c.f.executor, &c.asset, &verifying, 0)
             .unwrap();
         assert_eq!(view["archive_verified"], true);
         assert_eq!(c.saved_dataset(), before);
@@ -2151,7 +2151,7 @@ fn a_late_archive_verification_of_another_state_changes_nothing() {
         let before = c.saved_dataset();
         assert!(
             service
-                .dataset_archive_verified("demo", c.f.executor, &c.asset, &stale)
+                .dataset_archive_verified("demo", c.f.executor, &c.asset, &stale, 0)
                 .is_err()
         );
         assert_eq!(c.saved_dataset(), before);
@@ -3506,6 +3506,47 @@ fn a_wrong_part_is_refused_at_complete_and_the_repeat_can_replace_it() {
                 .dataset_download("demo", c.f.executor, &c.asset(), 0)
                 .is_ok()
         );
+    }
+}
+/// A read that began before a part was removed may have seen the right bytes, and the
+/// part may have been replaced by wrong ones of the same size since. The record is the
+/// same either way, so only the count of removals tells them apart.
+#[test]
+fn a_read_from_before_a_removal_accepts_nothing() {
+    for kind in KINDS {
+        let c = DirectUpload::new(kind);
+        let mut wrong = c.archive.clone();
+        *wrong.last_mut().unwrap() ^= 1;
+        assert_eq!(c.put(&wrong), 200);
+        let recorded = c.uploaded().unwrap();
+        let mut state = recorded.clone();
+        for field in [
+            "archive_verified",
+            "materialization",
+            "data_image",
+            "copy_job",
+            "new_request_allowed",
+            "diagnostic",
+            "import_source",
+            "runtime_id",
+        ] {
+            state.as_object_mut().unwrap().remove(field);
+        }
+        let state: State = serde_json::from_value(state).unwrap();
+        assert_eq!(c.complete().unwrap_err().code, "DATASET_PART_REJECTED");
+        assert_eq!(c.put(&wrong), 200);
+        assert_eq!(c.uploaded().unwrap()["parts"], recorded["parts"]);
+        assert!(
+            c.service
+                .dataset_archive_verified("demo", c.f.executor, &c.asset(), &state, 0)
+                .is_err()
+        );
+        assert_eq!(c.view()["archive_verified"], false);
+        // The wrong part is still found, and the upload still recovers.
+        assert_eq!(c.complete().unwrap_err().code, "DATASET_PART_REJECTED");
+        assert_eq!(c.put(&c.archive), 200);
+        c.uploaded().unwrap();
+        assert_eq!(c.complete().unwrap()["archive_verified"], true);
     }
 }
 #[test]

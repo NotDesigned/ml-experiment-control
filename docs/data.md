@@ -86,6 +86,10 @@ The worker supplies `DATASETS_JSON`, mapping each input name to its verified
 shared-storage directory. Training code reads the named directory from this map.
 See [paths in the job](#paths-in-the-job).
 
+The server reads the whole archive once, at `complete`. A large archive can outlast
+the request, and the read goes on. A repeat during it answers 409 `DATASET_VERIFYING`,
+and `data upload` waits and asks again.
+
 `ARCHIVED` means the uploaded archive passed verification. `READY` additionally
 means the selected backend has a verified shared-storage tree. These states are
 not interchangeable.

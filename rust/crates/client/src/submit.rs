@@ -1226,6 +1226,25 @@ fn follow(
         std::thread::sleep(hooks.follow_poll);
     }
 }
+/// PAI names no preempted state: a reclaimed job reads as FAILED or CANCELLED. So say
+/// so only where it can be true: not a job stopped by request, nor one the provider says
+/// had no idle resources. `UseOversoldResource` decides when the provider reports it.
+fn idle_note(allocation: Option<&str>, provider: &Value) -> Option<&'static str> {
+    if provider["provider_state"] == "Stopped" {
+        return None;
+    }
+    match provider["used_idle"].as_bool() {
+        Some(false) => None,
+        Some(true) => Some(
+            "This job ran on idle resources. PAI does not report a preemption as such, so it \
+             may have been reclaimed rather than have failed: see the reason below",
+        ),
+        None => allocation.filter(|name| *name != "guaranteed").map(|_| {
+            "This job could use idle resources. PAI does not report a preemption as such, so \
+             it may have been reclaimed rather than have failed: see the reason below"
+        }),
+    }
+}
 /// What the backend says went wrong, when a job ended without success.
 fn explain_failure(
     client: &Client,
@@ -1234,19 +1253,15 @@ fn explain_failure(
     allocation: Option<&str>,
     hooks: &mut Hooks<'_>,
 ) {
-    // PAI names no preempted state: a reclaimed job reads as FAILED or CANCELLED.
-    if allocation.is_some_and(|name| name != "guaranteed") {
-        (hooks.progress)(
-            "This job could use idle resources, and PAI does not report a preemption as such: \
-             it may have been reclaimed rather than have failed",
-        );
-    }
     let selection = observation::Selection {
         project: Some(project),
         run: Some(run),
         attempt: None,
     };
     if let Ok(value) = read::provider_diagnostics(client, None, selection, 40) {
+        if let Some(note) = idle_note(allocation, &value["provider"]) {
+            (hooks.progress)(note);
+        }
         (hooks.progress)(&presentation::provider_diagnostics(&value));
     }
 }
@@ -1994,6 +2009,19 @@ mod tests {
         assert_eq!(plan.request_id, "d15e3a7b64b5196d01b80a6cb8d74587");
         assert_eq!(plan.run_id, "source-d15e3a7b");
     }
+    #[test]
+    fn the_preemption_note_appears_only_where_a_preemption_is_possible() {
+        let note = |allocation, provider: Value| idle_note(allocation, &provider);
+        let failed = |used: Value| json!({"provider_state":"Failed","used_idle":used});
+        assert!(note(None, failed(json!(true))).unwrap().contains("ran on idle"));
+        assert_eq!(note(Some("allow_idle"), failed(json!(false))), None);
+        assert!(note(Some("allow_idle"), failed(Value::Null)).unwrap().contains("could use"));
+        assert_eq!(note(Some("guaranteed"), failed(Value::Null)), None);
+        assert_eq!(note(None, failed(Value::Null)), None);
+        let stopped = json!({"provider_state":"Stopped","used_idle":true});
+        assert_eq!(note(Some("allow_idle"), stopped), None);
+    }
+
     #[test]
     fn a_new_pai_job_with_gpus_freezes_the_default_and_the_question_says_it_may_be_preempted() {
         let spec = spec();

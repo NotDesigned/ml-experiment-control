@@ -20,10 +20,45 @@ pub(super) struct Saved {
     pub(super) copy_status: Option<Value>,
     pub(super) diagnostic: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// How many times parts were removed. An observation made before a removal says
+    /// nothing about what is stored after it, so it cannot accept or remove anything.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub(super) discards: u64,
     pub(super) import_source: Option<datasets::oss::Import>,
 }
 /// How many wrong parts one call removes while it holds the service lock.
 const MAX_DISCARDED_PARTS: usize = 64;
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+/// Assets whose archive one request is reading now. That read can outlast its request,
+/// and it holds request slots, so a repeat is told to wait rather than read it again.
+#[derive(Default)]
+pub(super) struct Verifying(Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>);
+struct Verification {
+    names: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
+    name: String,
+}
+impl Verifying {
+    fn begin(&self, name: &str) -> cloud::Result<Verification> {
+        let mut names = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
+        if !names.insert(name.to_owned()) {
+            return Err(refused("DATASET_VERIFYING"));
+        }
+        Ok(Verification {
+            names: self.0.clone(),
+            name: name.to_owned(),
+        })
+    }
+}
+impl Drop for Verification {
+    fn drop(&mut self) {
+        self.names
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .remove(&self.name);
+    }
+}
 fn refused(code: &str) -> cloud::Error {
     cloud::Error {
         code: code.into(),
@@ -307,6 +342,7 @@ impl Service {
                     copy_intent: None,
                     copy_status: None,
                     diagnostic: None,
+                    discards: 0,
                     import_source: None,
                 });
             }
@@ -383,6 +419,7 @@ impl Service {
                     return Err(cloud::Error::evidence());
                 }
                 if !saved.archive_verified {
+                    let _verification = self.verifying.begin(&name)?;
                     drop(lock);
                     let objects = self
                         .objects
@@ -397,6 +434,7 @@ impl Service {
                             executor,
                             &asset,
                             &saved.state,
+                            saved.discards,
                         );
                     }
                     // Nothing is accepted. Each wrong part is removed so that the repeat
@@ -407,7 +445,7 @@ impl Service {
                     if wrong.is_empty() {
                         return Err(refused("DATASET_ARCHIVE_REFUSED"));
                     }
-                    self.dataset_discard_parts(project, executor, &asset, &wrong)?;
+                    self.dataset_discard_parts(project, executor, &asset, &wrong, saved.discards)?;
                     return Err(refused("DATASET_PART_REJECTED"));
                 }
                 return Ok(Self::data_view(saved));
@@ -491,7 +529,7 @@ impl Service {
         match size {
             None => return Err(refused("DATASET_PART_NOT_STORED")),
             Some(size) if size != record.bytes => {
-                self.dataset_discard_parts(project, executor, asset, &[part])?;
+                self.dataset_discard_parts(project, executor, asset, &[part], saved.discards)?;
                 return Err(refused("DATASET_PART_REJECTED"));
             }
             Some(_) => {}
@@ -514,37 +552,57 @@ impl Service {
     }
     /// Remove parts refused as wrong, so that a repeat can send them again. Once the
     /// archive is verified its parts are in use, and no earlier observation removes one.
-    /// The lock covers the check and the deletes, so only a few go per call: a repeat
-    /// finds the rest, and it keeps verifying until no part is wrong.
+    /// `observed` is the count the refusal was read under. If anything was removed since,
+    /// the part may already be a new one, so nothing happens and the repeat looks again.
+    ///
+    /// Only a few go per call, because each DELETE can take minutes. The lock is not held
+    /// for them: raising the count first ends every read that started earlier, and a
+    /// record outliving its object is safe, since `complete` calls a missing part wrong.
     fn dataset_discard_parts(
         &self,
         project: &str,
         executor: &str,
         asset: &str,
         wrong: &[u64],
+        observed: u64,
     ) -> cloud::Result<()> {
-        let _lock = self.lock()?;
-        let mut current = self
-            .data_saved(project, executor, asset)?
-            .ok_or_else(missing)?;
-        if current.archive_verified || current.state.ready.is_some() {
-            return Err(cloud::Error::evidence());
-        }
+        let name = Self::data_name(project, executor, asset)?;
+        let definition = {
+            let _lock = self.lock()?;
+            let mut current = self
+                .data_saved(project, executor, asset)?
+                .ok_or_else(missing)?;
+            if current.archive_verified || current.state.ready.is_some() {
+                return Err(cloud::Error::evidence());
+            }
+            if current.discards != observed {
+                return Ok(());
+            }
+            current.discards += 1;
+            self.slots
+                .replace_regular(OsStr::new(&name), &encode(&current)?)
+                .map_err(io)?;
+            current.state.definition
+        };
         let objects = self
             .objects
             .as_ref()
             .ok_or_else(cloud::Error::configuration)?;
-        for part in wrong.iter().take(MAX_DISCARDED_PARTS) {
+        let removing = &wrong[..wrong.len().min(MAX_DISCARDED_PARTS)];
+        for part in removing {
             objects
-                .delete_data(project, executor, &current.state.definition, *part)
+                .delete_data(project, executor, &definition, *part)
                 .map_err(io)?;
+        }
+        let _lock = self.lock()?;
+        let mut current = self
+            .data_saved(project, executor, asset)?
+            .ok_or_else(missing)?;
+        for part in removing {
             current.state.parts.remove(part);
         }
         self.slots
-            .replace_regular(
-                OsStr::new(&Self::data_name(project, executor, asset)?),
-                &encode(&current)?,
-            )
+            .replace_regular(OsStr::new(&name), &encode(&current)?)
             .map_err(io)
     }
     /// Record a verification that ran with the lock released. Anything else may have
@@ -558,12 +616,13 @@ impl Service {
         executor: &str,
         asset: &str,
         verified: &State,
+        discards: u64,
     ) -> cloud::Result<Value> {
         let _lock = self.lock()?;
         let mut current = self
             .data_saved(project, executor, asset)?
             .ok_or_else(missing)?;
-        if current.state != *verified {
+        if current.state != *verified || current.discards != discards {
             return Err(cloud::Error::evidence());
         }
         current.archive_verified = true;
@@ -619,5 +678,20 @@ impl Service {
             .ok_or_else(cloud::Error::configuration)?
             .data_ticket(project, &prepared.execution.backend_id, definition, part)
             .map_err(io)
+    }
+}
+
+#[cfg(test)]
+mod verifying_tests {
+    use super::*;
+
+    #[test]
+    fn a_second_read_of_one_archive_waits_and_others_do_not() {
+        let verifying = Verifying::default();
+        let first = verifying.begin("a").unwrap();
+        assert_eq!(verifying.begin("a").err().unwrap().code, "DATASET_VERIFYING");
+        drop(verifying.begin("b").unwrap());
+        drop(first);
+        verifying.begin("a").unwrap();
     }
 }

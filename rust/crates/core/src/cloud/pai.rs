@@ -473,7 +473,8 @@ fn provider_text(value: &Value) -> Value {
 /// The provider's own account of a job, selected field by field so that
 /// environment, credentials and command never leave the provider response.
 pub fn diagnostic_job(row: &Value) -> Value {
-    json!({"provider_state":provider_text(&row["Status"]),"sub_status":provider_text(&row["SubStatus"]),
+    json!({"used_idle":row["UseOversoldResource"].as_bool(),
+        "provider_state":provider_text(&row["Status"]),"sub_status":provider_text(&row["SubStatus"]),
         "reason_code":provider_text(&row["ReasonCode"]),"reason_message":provider_text(&row["ReasonMessage"]),
         "created_at":provider_text(&row["GmtCreateTime"]),"running_at":provider_text(&row["GmtRunningTime"]),
         "failed_at":provider_text(&row["GmtFailedTime"]),"finished_at":provider_text(&row["GmtFinishTime"])})
