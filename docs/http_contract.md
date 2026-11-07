@@ -220,7 +220,7 @@ changing source, parameters or restore reference requires a new Run.
 | `GET /api/submissions/S/artifacts` / `/artifacts/SHA256` | Result bundle metadata and download |
 | `POST /api/submissions/S/download-ticket` | Short-lived signed part URL |
 | `POST /api/submissions/S/acknowledge` | Confirm verified local files and release |
-| `GET /api/runs/P/R/tracking` | Frozen [W&B](wandb.md) destination and publication status |
+| `GET /api/runs/P/R/tracking` | Frozen [W&B](wandb.md) and [MLflow](mlflow.md) destinations and publication status; each scope's MLflow state is under `mlflow` |
 | `POST /api/runs/P/R/attempts/A/derived-metrics` | Add one post-hoc JSONL file to an ended Attempt as a separate [derived batch](metrics.md#add-derived-metrics-to-an-ended-run) |
 | `POST /api/runs/P/R/attempts/A/wandb-rebuilds` | Publish a finished Attempt again to a new W&B Run without the metric names of one [exclusion list](wandb.md#rebuild-a-finished-wb-run-without-some-metrics) |
 

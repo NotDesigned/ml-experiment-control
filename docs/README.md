@@ -15,7 +15,7 @@ records.
 4. [Data](data.md): target-backed uploads, resume, download scripts and limits.
 5. [Persistent checkpoints](persistent-checkpoints.md): complete state and explicit restore.
 6. [Metrics](metrics.md): curves, comparison results, units and protocol identity.
-7. [W&B](wandb.md): optional server publication and per-Run destinations.
+7. [W&B](wandb.md) and [MLflow](mlflow.md): optional server publication and per-Run destinations.
 8. [Local metrics](metrics.md#attach-metrics-from-local-training): attach an existing local JSONL stream through the native client.
 9. [Recovery](recovery.md): failed stages, uncertain requests and output collection.
 10. [Debug sessions](debug-sessions.md): temporary DSW SSH machines.

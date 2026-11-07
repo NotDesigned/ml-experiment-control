@@ -160,9 +160,9 @@ fn handle(stream: TcpStream, data: &Mutex<Data>, expected: &str) {
         route(&mut data, &method, &endpoint, &query, &request)
     };
     let dropped = data.drop_after_commit.get_mut(&endpoint).is_some_and(|n| {
-        let drop = *n > 0;
+        let pending = *n > 0;
         *n = n.saturating_sub(1);
-        drop
+        pending
     });
     drop(data);
     let mut stream = reader.into_inner();
