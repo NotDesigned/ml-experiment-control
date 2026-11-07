@@ -144,3 +144,15 @@ Monitor's offline logs can be empty for a job that failed. A job that exits befo
 first report then leaves events and an exit code. The server's journal has a
 `worker-fetch:` line for each package, worker and code fetch, with its HTTP status, which
 shows how far the job got.
+
+Such a job also says why it stopped, if it can reach the server. When the cloud worker's
+launch fails, for example while preparing storage under the mount, it prints
+`cloud launch failed: ...` and posts that line once to the server, with one retry if
+nothing was received, within about 10 seconds each. It prints
+`ML_EXPD_STARTUP_FAILURE_REPORT=DELIVERED` or `NOT_DELIVERED`, and exits with failure
+either way. `ml-exp status` and `ml-exp run diagnose` then show one line such as
+`Startup failure: managed launch storage failed at crates/worker/src/cloud.rs:123: ...`,
+and the journal has a `worker-fetch: ... startup-failure` line. Only the latest report is
+kept, and only until the Attempt's first worker report. Nothing is sent when the command
+line names no valid channel, when the process is killed or runs out of memory, or when
+training itself fails, which the worker reports in the ordinary way.

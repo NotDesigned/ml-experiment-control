@@ -390,6 +390,15 @@ pub(crate) fn extend(document: &mut Value) {
         )),
     );
     insert(
+        "/api/worker-exchange/{project}/{run}/{attempt}/startup-failure",
+        "post",
+        "Keep a worker's report of why it could not start, redacted and clipped, as evidence only. The latest report replaces an earlier one; it is ignored once this Attempt has sent a worker packet. It changes no Run state and starts no retry",
+        Some(object(
+            &["message"],
+            json!({"message":{"type":"string","minLength":1,"description":"One line; the whole body is at most 4 KiB"}}),
+        )),
+    );
+    insert(
         "/api/worker-exchange/{project}/{run}/{attempt}/datasets/{asset}/{part}",
         "post",
         "Return a short-lived URL for one frozen input part; no API payload spooling",

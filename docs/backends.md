@@ -141,7 +141,10 @@ Low-level source, Runtime, Run and submission APIs remain available.
 
 For a cloud Attempt, `GET /api/submissions/{id}/progress` includes `input_delivery`
 from bounded, exact-Attempt worker logs. When a job failed before any worker report,
-use `ml-exp run diagnose` to read the provider's reason, events and logs. The worker reports
+use `ml-exp run diagnose` to read the provider's reason, events and logs. If the cloud
+worker's launch itself failed, it sent the server its error line; progress carries it as
+`startup_failure`, and `ml-exp status` and `ml-exp run diagnose` print it as
+`Startup failure: ...` even when the provider kept no log. The worker reports
 waiting for the cache lock, downloading, extracting, verifying, publishing,
 mounting and READY/FAILED. Evidence includes HTTP status, received/expected bytes,
 elapsed time, observed throughput, timestamp, failed phase and a safe error code.

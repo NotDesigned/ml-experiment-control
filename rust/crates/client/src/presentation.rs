@@ -342,6 +342,21 @@ fn worker_lines(worker: &Value) -> Result<Vec<String>> {
     }
     Ok(vec![format!("Worker phase: {}", parts.join("; "))])
 }
+/// What a cloud worker said when it could not start, kept only until it first reports.
+fn startup_failure_line(value: &Value) -> Option<String> {
+    let failure = object(value);
+    if !truth(get(failure, "message")) {
+        return None;
+    }
+    let mut line = format!("Startup failure: {}", text(get(failure, "message"), ""));
+    if truth(get(failure, "received_at")) {
+        line.push_str(&format!(
+            " (reported {})",
+            show(get(failure, "received_at"))
+        ));
+    }
+    Some(line)
+}
 fn training_line(training: &Value) -> Result<String> {
     let mut parts = vec![
         show(get(training, "status")),
@@ -494,6 +509,7 @@ pub fn status_summary(value: &Value) -> Result<String> {
     )?);
     lines.push(training_line(training)?);
     lines.extend(worker_lines(worker)?);
+    lines.extend(startup_failure_line(get(value, "startup_failure")));
     let step = model
         .get("step")
         .unwrap_or_else(|| get(object(get(model, "detail")), "step"));
@@ -556,6 +572,7 @@ pub fn provider_diagnostics(value: &Value) -> String {
         word(&value["attempt_id"]),
         word(&value["backend"])
     )];
+    lines.extend(startup_failure_line(&value["startup_failure"]));
     if !value["diagnostic"].is_null() {
         lines.push(format!("Provider not read: {}", word(&value["diagnostic"])));
         return lines.join("\n");
@@ -650,6 +667,28 @@ mod tests {
         assert_eq!(
             command(&json!(["run", "训练 😀"])).unwrap(),
             "run '训练 😀'"
+        );
+    }
+
+    #[test]
+    fn a_startup_failure_is_one_line_in_status_and_diagnose() {
+        let failure = json!({"message":"managed launch storage failed at crates/worker/src/cloud.rs:123: denied\nnext","received_at":"2026-11-07T00:00:00Z"});
+        let expected = "Startup failure: managed launch storage failed at crates/worker/src/cloud.rs:123: denied next (reported 2026-11-07T00:00:00Z)";
+        let status = status_summary(&json!({"project":"p","run_id":"r","attempt_id":"attempt-001","startup_failure":failure})).unwrap();
+        assert!(status.lines().any(|line| line == expected), "{status}");
+        let diagnose = provider_diagnostics(
+            &json!({"project":"p","run_id":"r","attempt_id":"attempt-001",
+            "backend":"sensecore","diagnostic":"NO_PROVIDER_JOB_RECORDED","startup_failure":failure}),
+        );
+        assert!(diagnose.lines().any(|line| line == expected), "{diagnose}");
+        assert!(diagnose.contains("Provider not read"));
+        for absent in [json!(null), json!({}), json!({"message":""}), json!("text")] {
+            assert!(startup_failure_line(&absent).is_none());
+        }
+        assert!(
+            !status_summary(&json!({"project":"p","run_id":"r"}))
+                .unwrap()
+                .contains("Startup failure")
         );
     }
 

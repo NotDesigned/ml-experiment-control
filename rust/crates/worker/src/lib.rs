@@ -15,6 +15,8 @@ pub mod cloud_data;
 #[cfg(unix)]
 pub mod cloud_exchange;
 #[cfg(unix)]
+pub mod cloud_startup;
+#[cfg(unix)]
 mod cloud_storage;
 #[cfg(unix)]
 pub mod data_import;

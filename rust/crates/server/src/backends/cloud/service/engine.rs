@@ -469,6 +469,7 @@ mod diagnostics;
 mod exchange;
 mod observation;
 mod retry;
+pub mod startup_failure;
 mod synchronization;
 
 mod datasets;

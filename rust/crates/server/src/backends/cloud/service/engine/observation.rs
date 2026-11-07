@@ -94,6 +94,9 @@ impl Service {
                 json!({"phase":saved.evidence.worker.phase,"observed_at":saved.observed_at});
             value["input_delivery"] = selected.cloned().unwrap_or(Value::Null);
             value["inputs"] = Value::Array(inputs);
+        } else if let Some(failure) = self.startup_failure(&prepared)? {
+            // Said by a worker that never reported; availability stays NOT_REPORTED.
+            value["startup_failure"] = failure;
         }
         Ok(Some(value))
     }
