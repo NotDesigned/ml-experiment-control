@@ -91,11 +91,11 @@ fn exercise_gap_repair(uncertain: bool, missing_sequence: i64) {
         )
         .unwrap();
     let flag = AtomicBool::new(false);
-    let mut sdk = None;
-    publish_bound(&store, &runtime, &mut sdk, &scope, &flag).unwrap();
+    let mut session = Session::default();
+    publish_bound(&store, &runtime, &mut session, &scope, &flag).unwrap();
     let status = store.scope_status(&guard, &scope).unwrap().unwrap();
     let id = status["wandb_id"].as_str().unwrap().to_owned();
-    sdk.as_mut().unwrap().shutdown().unwrap();
+    session.shutdown();
     let mut data: Value = serde_json::from_slice(&fs::read(&cloud).unwrap()).unwrap();
     assert_eq!(data["runs"][&id]["pending"], json!([]));
     assert_eq!(data["runs"][&id]["history"].as_array().unwrap().len(), 4);
@@ -109,7 +109,7 @@ fn exercise_gap_repair(uncertain: bool, missing_sequence: i64) {
             .collect::<Vec<_>>()
     );
     fs::write(&cloud, serde_json::to_vec(&data).unwrap()).unwrap();
-    drop(sdk.take());
+    session.lost();
     let original = store.publication_state(&guard, &scope).unwrap().unwrap();
     if uncertain {
         let mut reserved = original.clone();
@@ -160,13 +160,13 @@ fn exercise_gap_repair(uncertain: bool, missing_sequence: i64) {
     assert_eq!(repeated["writes"], 0);
     let guard = store.guard("demo", "train").unwrap();
     store.append(&guard, &scope, &[metric(5)]).unwrap();
-    publish_bound(&store, &runtime, &mut sdk, &scope, &flag).unwrap();
-    publish_bound(&store, &runtime, &mut sdk, &scope, &flag).unwrap();
+    publish_bound(&store, &runtime, &mut session, &scope, &flag).unwrap();
+    publish_bound(&store, &runtime, &mut session, &scope, &flag).unwrap();
     assert_eq!(
         store.scope_status(&guard, &scope).unwrap().unwrap()["confirmed"],
         5
     );
-    sdk.as_mut().unwrap().shutdown().unwrap();
+    session.shutdown();
     let data: Value = serde_json::from_slice(&fs::read(&cloud).unwrap()).unwrap();
     let rows = data["runs"][&id]["history"].as_array().unwrap();
     assert_eq!(rows.len(), 5);
@@ -233,7 +233,7 @@ fn delayed_remote_ack_restart_variants_and_terminal_finish_preserve_exact_cursor
     let cloud = root.path().join("cloud.json");
     fs::write(
         &cloud,
-        r#"{"hidden":true,"runs":{},"inits":0,"logs":0,"finishes":0}"#,
+        r#"{"hidden":true,"flush_on_crash":true,"runs":{},"inits":0,"logs":0,"finishes":0}"#,
     )
     .unwrap();
     let module = root.path().join("fake_sdk.py");
@@ -281,10 +281,10 @@ fn delayed_remote_ack_restart_variants_and_terminal_finish_preserve_exact_cursor
         )
         .unwrap();
     let flag = AtomicBool::new(false);
-    let mut sdk = None;
-    let cycle = |sdk: &mut Option<Sdk>| publish_bound(&store, &runtime, sdk, &scope, &flag);
+    let mut session = Session::default();
+    let cycle = |session: &mut Session| publish_bound(&store, &runtime, session, &scope, &flag);
     let read_cloud = || serde_json::from_slice::<Value>(&fs::read(&cloud).unwrap()).unwrap();
-    cycle(&mut sdk).unwrap();
+    cycle(&mut session).unwrap();
     assert_eq!(
         store.scope_status(&guard, &scope).unwrap().unwrap()["confirmed"],
         0
@@ -299,7 +299,8 @@ fn delayed_remote_ack_restart_variants_and_terminal_finish_preserve_exact_cursor
         )
         .unwrap();
     let other_scope = store.scope(&other, "attempt-001").unwrap();
-    let error = sdk
+    let error = session
+        .sdk
         .as_mut()
         .unwrap()
         .call(
@@ -310,23 +311,23 @@ fn delayed_remote_ack_restart_variants_and_terminal_finish_preserve_exact_cursor
             &flag,
         )
         .unwrap_err();
-    record_failure(&store, &other_scope, &mut sdk, &error);
+    record_failure(&store, &other_scope, &mut session, &error);
     assert!(
-        sdk.is_some(),
+        session.sdk.is_some(),
         "a missing remote Run must not kill another Run's buffered SDK session"
     );
     assert_eq!(
         store.scope_status(&other, &other_scope).unwrap().unwrap()["error"],
         "WANDB_REMOTE_RUN_MISSING"
     );
-    cycle(&mut sdk).unwrap();
+    cycle(&mut session).unwrap();
     assert_eq!(
         store.scope_status(&guard, &scope).unwrap().unwrap()["status"],
         "ACK_PENDING"
     );
     assert_eq!(read_cloud()["logs"], 4);
-    sdk = None;
-    cycle(&mut sdk).unwrap();
+    session.lost();
+    cycle(&mut session).unwrap();
     assert_eq!(
         read_cloud()["logs"],
         4,
@@ -335,12 +336,12 @@ fn delayed_remote_ack_restart_variants_and_terminal_finish_preserve_exact_cursor
     let mut remote = read_cloud();
     remote["hidden"] = json!(false);
     fs::write(&cloud, remote.to_string()).unwrap();
-    cycle(&mut sdk).unwrap();
+    cycle(&mut session).unwrap();
     assert_eq!(
         store.scope_status(&guard, &scope).unwrap().unwrap()["confirmed"],
         4
     );
-    cycle(&mut sdk).unwrap();
+    cycle(&mut session).unwrap();
     assert_eq!(
         store.scope_status(&guard, &scope).unwrap().unwrap()["status"],
         "SYNCED"
@@ -379,7 +380,7 @@ fn delayed_remote_ack_restart_variants_and_terminal_finish_preserve_exact_cursor
     fs::write(&cloud, client_summary.to_string()).unwrap();
     store.append(&guard,&scope,&[Event{event_id:"terminal".into(),payload:json!({"kind":"lifecycle","data":{"phase":"METRICS_DRAINED","state":"SUCCEEDED"}})}]).unwrap();
     for _ in 0..4 {
-        cycle(&mut sdk).unwrap();
+        cycle(&mut session).unwrap();
     }
     let status = store.scope_status(&guard, &scope).unwrap().unwrap();
     assert_eq!(status["confirmed"], 5);
@@ -417,7 +418,7 @@ fn delayed_remote_ack_restart_variants_and_terminal_finish_preserve_exact_cursor
             .unwrap()
             .contains("test-key-never-stored")
     );
-    drop(sdk);
+    drop(session);
 }
 
 #[test]
@@ -433,7 +434,7 @@ fn a_name_collision_in_one_history_row_reports_its_own_code() {
 }
 
 #[test]
-fn sdk_repeated_pages_require_identical_full_rows_and_reject_distinct_duplicate_rows() {
+fn sdk_repeats_of_a_record_are_counted_and_conflicting_rows_are_refused() {
     let root = tempfile::tempdir().unwrap();
     let cloud = root.path().join("cloud.json");
     fs::write(root.path().join("fake_sdk.py"), include_str!("fake_sdk.py")).unwrap();
@@ -447,15 +448,25 @@ fn sdk_repeated_pages_require_identical_full_rows_and_reject_distinct_duplicate_
         "route":{"entity":"fixture","project":"science"},"wandb_id":"original",
         "scope":{},"config":{},"confirmed":0,"through":2,"open_session":false,"resume":"must"});
     let mut sdk = Sdk::open(&wrapper).unwrap();
-    for flag in ["repeat_pages", "conflicting_page", "duplicate_sequence"] {
+    for flag in [
+        "repeat_pages",
+        "duplicate_sequence",
+        "conflicting_page",
+        "conflicting_sequence",
+    ] {
         let mut data = base.clone();
         data[flag] = json!(true);
         fs::write(&cloud, data.to_string()).unwrap();
         let observed = sdk.call(&job, &AtomicBool::new(false));
-        if flag == "repeat_pages" {
+        if flag == "repeat_pages" || flag == "duplicate_sequence" {
+            let observed = observed.unwrap();
             assert_eq!(
-                observed.unwrap()["evidence"]["history"],
+                observed["evidence"]["history"],
                 json!([{"sequence":2,"event_id":"m2"}])
+            );
+            assert_eq!(
+                observed["evidence"]["duplicate_rows"],
+                u64::from(flag == "duplicate_sequence")
             );
         } else {
             assert!(matches!(
@@ -467,4 +478,483 @@ fn sdk_repeated_pages_require_identical_full_rows_and_reject_distinct_duplicate_
         assert_eq!(data["logs"], 0);
         assert_eq!(data["inits"], 0);
     }
+}
+
+/// A journal, a fake W&B and a publisher session, as one restartable test Run.
+struct Fixture {
+    root: tempfile::TempDir,
+    cloud: std::path::PathBuf,
+    runtime: Runtime,
+    store: Store,
+    session: Session,
+    flag: AtomicBool,
+}
+impl Fixture {
+    fn new(cloud_flags: Value) -> Self {
+        let root = tempfile::tempdir().unwrap();
+        let cloud = root.path().join("cloud.json");
+        let mut data = json!({"hidden":false,"runs":{},"inits":0,"logs":0,"finishes":0});
+        data.as_object_mut()
+            .unwrap()
+            .extend(cloud_flags.as_object().unwrap().clone());
+        fs::write(&cloud, data.to_string()).unwrap();
+        fs::write(root.path().join("fake_sdk.py"), include_str!("fake_sdk.py")).unwrap();
+        let wrapper = root.path().join("python");
+        fs::write(&wrapper,format!("#!/usr/bin/python3\nimport sys,os\nsys.path.insert(0,{root:?})\nos.environ['TEST_CLOUD']={cloud:?}\nimport fake_sdk\nsys.modules['wandb']=fake_sdk\nexec(compile(sys.argv[4],'<sdk>','exec'),{{'__name__':'__main__'}})\n",root=root.path().to_str().unwrap(),cloud=cloud.to_str().unwrap())).unwrap();
+        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700)).unwrap();
+        let runtime = Runtime {
+            config: super::super::Config {
+                schema_version: 1,
+                python: wrapper,
+                api_key_file: root.path().join("unused"),
+                entity: Some("fixture".into()),
+                project: None,
+                enabled: true,
+            },
+            key: "never-print".into(),
+            routing: Default::default(),
+            diagnostic: None,
+        };
+        let store = Store::open(root.path(), "0123456789abcdef0123456789abcdef").unwrap();
+        Self {
+            root,
+            cloud,
+            runtime,
+            store,
+            session: Session::default(),
+            flag: AtomicBool::new(false),
+        }
+    }
+    fn scope(&self, run: &str) -> String {
+        let guard = self.store.guard("demo", run).unwrap();
+        self.store
+            .bind(
+                &guard,
+                &json!({"enabled":true,"entity":"fixture","project":"science"}),
+                &json!({"ml_expd":{"run_id":run}}),
+            )
+            .unwrap();
+        self.store.scope(&guard, "attempt-001").unwrap()
+    }
+    fn append(&self, scope: &str, steps: std::ops::RangeInclusive<u64>) {
+        let parsed = Scope::parse(scope).unwrap();
+        let guard = self.store.guard("demo", &parsed.run).unwrap();
+        let events: Vec<_> = steps
+            .map(|step| Event {
+                event_id: format!("m{step}"),
+                payload: normalized_metric(
+                    &json!({"name":"loss","unit":"nats/token","step":step,"value":step as f64 / 4.0}),
+                    &json!({}),
+                )
+                .unwrap(),
+            })
+            .collect();
+        self.store.append(&guard, scope, &events).unwrap();
+    }
+    fn succeed(&self, scope: &str) {
+        let parsed = Scope::parse(scope).unwrap();
+        let guard = self.store.guard("demo", &parsed.run).unwrap();
+        self.store.append(&guard,scope,&[Event{event_id:"terminal".into(),payload:json!({"kind":"lifecycle","data":{"phase":"METRICS_DRAINED","state":"SUCCEEDED"}})}]).unwrap();
+    }
+    /// The server restarts: the SDK child dies and nothing in memory survives.
+    fn restart(&mut self) {
+        self.session = Session::default();
+        self.session.settle = Duration::ZERO;
+    }
+    fn visit(&mut self, scope: &str) -> Result<Next> {
+        publish_bound(
+            &self.store,
+            &self.runtime,
+            &mut self.session,
+            scope,
+            &self.flag,
+        )
+    }
+    fn status(&self, scope: &str) -> Value {
+        let parsed = Scope::parse(scope).unwrap();
+        let guard = self.store.guard("demo", &parsed.run).unwrap();
+        self.store.scope_status(&guard, scope).unwrap().unwrap()
+    }
+    fn state(&self, scope: &str) -> Value {
+        let parsed = Scope::parse(scope).unwrap();
+        let guard = self.store.guard("demo", &parsed.run).unwrap();
+        self.store
+            .publication_state(&guard, scope)
+            .unwrap()
+            .unwrap()
+    }
+    fn cloud(&self) -> Value {
+        serde_json::from_slice(&fs::read(&self.cloud).unwrap()).unwrap()
+    }
+    fn edit_cloud(&self, edit: impl FnOnce(&mut Value)) {
+        let mut data = self.cloud();
+        edit(&mut data);
+        fs::write(&self.cloud, data.to_string()).unwrap();
+    }
+    fn rows(&self, scope: &str) -> Vec<Value> {
+        let id = self.status(scope)["wandb_id"].as_str().unwrap().to_owned();
+        self.cloud()["runs"][&id]["history"]
+            .as_array()
+            .unwrap()
+            .clone()
+    }
+    /// Each journal record must be on W&B once, exact, on a rising physical step.
+    fn assert_each_record_once(&self, scope: &str, steps: u64) {
+        let rows = self.rows(scope);
+        let physical: Vec<_> = rows.iter().map(|r| r["_step"].as_i64().unwrap()).collect();
+        assert!(physical.windows(2).all(|pair| pair[0] < pair[1]));
+        for step in 1..=steps {
+            let row: Vec<_> = rows
+                .iter()
+                .filter(|r| r["ml_expd/event_id"] == format!("m{step}"))
+                .collect();
+            assert_eq!(row.len(), 1, "record {step} must appear exactly once");
+            assert_eq!(row[0]["ml_expd/sequence"], step);
+            assert_eq!(row[0]["loss"], step as f64 / 4.0);
+            assert_eq!(row[0]["ml_expd/axes/loss/step"], step);
+            assert!(
+                row[0]["ml_expd/record"]
+                    .as_str()
+                    .unwrap()
+                    .contains("nats/token")
+            );
+        }
+        assert_eq!(self.cloud().get("dropped"), None);
+    }
+}
+
+#[test]
+fn one_visit_sends_a_whole_window_and_one_scan_confirms_the_range() {
+    let mut fixture = Fixture::new(json!({}));
+    let scope = fixture.scope("train");
+    fixture.append(&scope, 1..=600);
+    assert_eq!(fixture.visit(&scope).unwrap(), Next::Poll);
+    assert_eq!(fixture.cloud()["logs"], 600);
+    assert_eq!(fixture.visit(&scope).unwrap(), Next::Poll);
+    assert_eq!(fixture.status(&scope)["confirmed"], 600);
+    assert_eq!(fixture.state(&scope)["state"]["sent"], json!({}));
+    fixture.session.shutdown();
+    fixture.assert_each_record_once(&scope, 600);
+}
+
+#[test]
+fn waiting_for_visibility_is_not_counted_as_a_failure() {
+    let mut fixture = Fixture::new(json!({"hidden":true}));
+    let scope = fixture.scope("train");
+    fixture.append(&scope, 1..=2);
+    for _ in 0..3 {
+        fixture.visit(&scope).unwrap();
+    }
+    let status = fixture.status(&scope);
+    assert_eq!(status["error"], "REMOTE_ACK_PENDING");
+    assert_eq!(status["failures"], 0);
+}
+
+#[test]
+fn a_synced_scope_costs_no_cloud_request_until_its_journal_grows() {
+    let mut fixture = Fixture::new(json!({}));
+    let scope = fixture.scope("train");
+    fixture.append(&scope, 1..=2);
+    while fixture.status(&scope)["status"] != "SYNCED"
+        || fixture.visit(&scope).unwrap() != Next::Idle
+    {
+        fixture.visit(&scope).unwrap();
+    }
+    let scans = fixture.cloud()["scans"].clone();
+    assert_eq!(fixture.visit(&scope).unwrap(), Next::Idle);
+    assert_eq!(fixture.cloud()["scans"], scans);
+    fixture.append(&scope, 3..=3);
+    assert_eq!(fixture.visit(&scope).unwrap(), Next::Poll);
+    assert_eq!(fixture.cloud()["logs"], 3);
+}
+
+#[test]
+fn a_large_backlog_cannot_keep_a_live_run_from_sending() {
+    let mut fixture = Fixture::new(json!({"hidden":true}));
+    let backlog = fixture.scope("backlog");
+    let live = fixture.scope("live");
+    fixture.append(&backlog, 1..=300);
+    fixture.append(&live, 1..=2);
+    // A share never drops below what one Run needs however many Runs are busy.
+    for index in 0..1000 {
+        fixture
+            .session
+            .note_backlog(&format!("other-{index}"), true);
+    }
+    assert_eq!(fixture.session.share(&backlog), 128);
+    fixture.visit(&backlog).unwrap();
+    assert_eq!(fixture.cloud()["logs"], 128);
+    fixture.visit(&live).unwrap();
+    assert_eq!(
+        fixture.cloud()["logs"],
+        130,
+        "the live Run has its own share"
+    );
+    for index in 0..1000 {
+        fixture
+            .session
+            .note_backlog(&format!("other-{index}"), false);
+    }
+    // Shares grow back as Runs catch up, up to one Run's window.
+    assert_eq!(fixture.session.share(&live), 4096);
+    for other in ["c", "d", "e", "f"] {
+        fixture.session.note_backlog(other, true);
+    }
+    assert_eq!(fixture.session.share("g"), 16384 / 7);
+}
+
+#[test]
+fn frames_keep_order_and_never_exceed_the_pipe_bound() {
+    let job = json!({"operation":"apply"});
+    let effects: Vec<_> = (0..40)
+        .map(|index| json!({"index":index,"record":"x".repeat(1024 * 1024)}))
+        .collect();
+    let frames = Sdk::frames(&job, effects).unwrap();
+    assert!(frames.len() > 4);
+    let mut next = 0;
+    for frame in &frames {
+        assert!(Sdk::validate_request(frame).is_ok());
+        for effect in frame["effects"].as_array().unwrap() {
+            assert_eq!(effect["index"], next);
+            next += 1;
+        }
+    }
+    assert_eq!(next, 40);
+}
+
+#[test]
+fn a_restart_recovers_a_lost_tail_without_a_person_and_then_finishes() {
+    let mut fixture = Fixture::new(json!({"hidden":true}));
+    let scope = fixture.scope("train");
+    fixture.append(&scope, 1..=2);
+    fixture.visit(&scope).unwrap();
+    fixture.edit_cloud(|data| data["hidden"] = json!(false));
+    fixture.visit(&scope).unwrap();
+    assert_eq!(fixture.status(&scope)["confirmed"], 2);
+    fixture.edit_cloud(|data| data["hidden"] = json!(true));
+    // Rows reserved and handed to the SDK, which then dies with the server.
+    fixture.append(&scope, 3..=6);
+    fixture.visit(&scope).unwrap();
+    assert_eq!(fixture.cloud()["logs"], 6);
+    fixture.restart();
+    fixture.edit_cloud(|data| data["hidden"] = json!(false));
+    // The Run finishes while its publication is still stranded.
+    fixture.append(&scope, 7..=7);
+    fixture.succeed(&scope);
+    // The first scan only starts the clock: nothing is sent on one observation.
+    fixture.visit(&scope).unwrap();
+    assert_eq!(fixture.cloud()["logs"], 6);
+    assert_eq!(fixture.status(&scope)["status"], "RECOVERY_SETTLING");
+    let id = fixture.status(&scope)["wandb_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(fixture.cloud()["runs"][&id]["state"], "crashed");
+    // The second, unchanged scan proves absence, and only the lost rows go.
+    fixture.visit(&scope).unwrap();
+    assert_eq!(fixture.cloud()["logs"], 10);
+    let state = fixture.state(&scope);
+    assert_eq!(state["history_repair"]["source"], "automatic");
+    assert!(state["history_repair"].get("attempts").is_none());
+    assert_eq!(state["history_repair"]["events"]["3"], "m3");
+    assert_eq!(state["history_repair"]["remote_confirmed"], false);
+    assert_eq!(fixture.status(&scope)["status"], "REPAIR_ACK_PENDING");
+    for _ in 0..8 {
+        fixture.visit(&scope).unwrap();
+    }
+    let status = fixture.status(&scope);
+    assert_eq!(status["status"], "FINISHED");
+    assert_eq!(status["confirmed"], 8);
+    assert_eq!(
+        fixture.state(&scope)["history_repair"]["remote_confirmed"],
+        true
+    );
+    assert_eq!(fixture.cloud()["runs"][&id]["state"], "finished");
+    fixture.assert_each_record_once(&scope, 7);
+}
+
+#[test]
+fn rows_arriving_during_the_settle_delay_are_never_sent_again() {
+    // wandb-core delivers after the crash, slower than the scans read.
+    let mut fixture = Fixture::new(json!({"hidden":true,"flush_on_crash":true,"reveal":0}));
+    let scope = fixture.scope("train");
+    fixture.append(&scope, 1..=4);
+    fixture.visit(&scope).unwrap();
+    fixture.restart();
+    fixture.edit_cloud(|data| data["reveal"] = json!(1));
+    // A settle of zero still needs an unchanged scan, and each of these changed.
+    for confirmed in 0..4 {
+        fixture.visit(&scope).unwrap();
+        assert!(fixture.status(&scope)["confirmed"].as_i64().unwrap() <= confirmed + 1);
+        assert_eq!(fixture.cloud()["logs"], 4);
+    }
+    fixture.edit_cloud(|data| data["hidden"] = json!(false));
+    fixture.visit(&scope).unwrap();
+    assert_eq!(fixture.status(&scope)["confirmed"], 4);
+    assert_eq!(fixture.cloud()["logs"], 4);
+    assert_eq!(fixture.state(&scope).get("history_repair"), None);
+    fixture.session.shutdown();
+    fixture.assert_each_record_once(&scope, 4);
+}
+
+#[test]
+fn the_default_settle_delay_holds_uncertain_rows_back() {
+    let mut fixture = Fixture::new(json!({"hidden":true}));
+    let scope = fixture.scope("train");
+    fixture.append(&scope, 1..=2);
+    fixture.visit(&scope).unwrap();
+    fixture.session.lost();
+    for _ in 0..3 {
+        fixture.visit(&scope).unwrap();
+    }
+    assert_eq!(fixture.cloud()["logs"], 2);
+    assert_eq!(fixture.status(&scope)["status"], "RECOVERY_SETTLING");
+}
+
+#[test]
+fn a_lost_repair_is_observed_then_retried_for_as_long_as_it_stays_missing() {
+    let mut fixture = Fixture::new(json!({"hidden":true}));
+    let scope = fixture.scope("train");
+    fixture.append(&scope, 1..=2);
+    fixture.visit(&scope).unwrap();
+    for attempt in 1..=5 {
+        fixture.restart();
+        fixture.visit(&scope).unwrap();
+        assert_eq!(fixture.cloud()["logs"], 2 * attempt);
+        fixture.visit(&scope).unwrap();
+        assert_eq!(fixture.cloud()["logs"], 2 * attempt + 2);
+        let saved = &fixture.state(&scope)["history_repair"]["attempts"];
+        assert_eq!(saved.as_u64().unwrap_or(1), attempt);
+        assert_eq!(fixture.status(&scope)["status"], "REPAIR_ACK_PENDING");
+    }
+}
+
+#[test]
+fn a_settle_clock_ends_when_the_child_is_lost_or_a_read_fails() {
+    let mut fixture = Fixture::new(json!({}));
+    let scope = fixture.scope("train");
+    fixture.append(&scope, 1..=1);
+    fixture.visit(&scope).unwrap();
+    let evidence = json!({"history":[]});
+    let session = &mut fixture.session;
+    assert!(session.stable_for(&scope, &evidence).is_none());
+    assert!(session.stable_for(&scope, &evidence).is_some());
+    session.lost();
+    assert!(session.stable_for(&scope, &evidence).is_none());
+    assert!(session.stable_for(&scope, &evidence).is_some());
+    record_failure(
+        &fixture.store,
+        &scope,
+        &mut fixture.session,
+        &Error::SdkRequest("WANDB_HISTORY_READ_FAILED"),
+    );
+    assert!(fixture.session.stable_for(&scope, &evidence).is_none());
+}
+
+#[test]
+fn a_saved_single_attempt_reads_as_an_older_server_wrote_it() {
+    let saved = |attempts| {
+        serde_json::to_value(HistoryRepair {
+            events: BTreeMap::new(),
+            attempted: true,
+            remote_confirmed: false,
+            attempts,
+            source: None,
+            at: None,
+        })
+        .unwrap()
+    };
+    assert!(saved(1).get("attempts").is_none());
+    assert_eq!(saved(2)["attempts"], 2);
+}
+
+#[test]
+fn a_failed_finish_leaves_no_dead_session_and_the_run_still_ends_finished() {
+    let mut fixture = Fixture::new(json!({"finish_failures":1}));
+    let scope = fixture.scope("train");
+    fixture.append(&scope, 1..=2);
+    fixture.succeed(&scope);
+    let mut failed = false;
+    for _ in 0..10 {
+        failed |= fixture.visit(&scope).is_err();
+    }
+    assert!(failed);
+    assert_eq!(fixture.status(&scope)["status"], "FINISHED");
+    let id = fixture.status(&scope)["wandb_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(fixture.cloud()["runs"][&id]["state"], "finished");
+    fixture.assert_each_record_once(&scope, 2);
+}
+
+#[test]
+fn production_state_with_a_confirmed_repair_loads_and_a_new_gap_can_be_repaired() {
+    struct One(std::path::PathBuf);
+    impl Source for One {
+        fn publisher_leader(&self) -> Result<ml_exp_io::directory::FileLock> {
+            ml_exp_io::directory::Directory::open(&self.0, false)
+                .and_then(|directory| {
+                    directory.lock(
+                        std::ffi::OsStr::new("leader"),
+                        ml_exp_io::directory::LockOptions {
+                            create: true,
+                            ..Default::default()
+                        },
+                    )
+                })
+                .map_err(|_| Error::Storage)
+        }
+        fn publisher_store(&self) -> Result<Store> {
+            Store::open(&self.0, "0123456789abcdef0123456789abcdef").map_err(|_| Error::Storage)
+        }
+        fn tracking_journal(&self, _: &str, _: &str) -> Result<Store> {
+            self.publisher_store()
+        }
+    }
+    let mut fixture = Fixture::new(json!({"hidden":true}));
+    let scope = fixture.scope("train");
+    fixture.append(&scope, 1..=2);
+    fixture.visit(&scope).unwrap();
+    fixture.session.lost();
+    // Exactly the shape the previous release saved.
+    let mut state = fixture.state(&scope);
+    state["history_repair"] = json!({"events":{"1":"m0"},"attempted":true,"remote_confirmed":true});
+    let guard = fixture.store.guard("demo", "train").unwrap();
+    fixture
+        .store
+        .save_publication_state(&guard, &scope, &state, "ACK_PENDING", None, "fixture")
+        .unwrap();
+    drop(guard);
+    let source = Arc::new(One(fixture.root.path().to_owned()));
+    fixture.edit_cloud(|data| data["hidden"] = json!(false));
+    let result = repair(source, fixture.runtime.clone(), &scope).unwrap();
+    assert_eq!(result["status"], "REPAIRED");
+    assert_eq!(result["appended"], 2);
+    let saved = fixture.state(&scope);
+    assert_eq!(saved["repairs"][0]["first"], 1);
+    assert_eq!(saved["history_repair"]["source"], "operator");
+    fixture.assert_each_record_once(&scope, 2);
+}
+
+#[test]
+fn an_incremental_display_is_the_same_document_as_a_full_replay() {
+    let fixture = Fixture::new(json!({}));
+    let scope = fixture.scope("train");
+    fixture.append(&scope, 1..=300);
+    let guard = fixture.store.guard("demo", "train").unwrap();
+    let mut session = Session::default();
+    for through in [10, 11, 280, 300] {
+        assert_eq!(
+            session
+                .display(&fixture.store, &guard, &scope, through)
+                .unwrap(),
+            fixture.store.display(&guard, &scope, through).unwrap()
+        );
+    }
+    // A smaller window after a larger one rebuilds rather than overstating.
+    assert_eq!(
+        session.display(&fixture.store, &guard, &scope, 50).unwrap(),
+        fixture.store.display(&guard, &scope, 50).unwrap()
+    );
 }

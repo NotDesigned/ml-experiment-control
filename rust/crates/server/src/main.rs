@@ -374,7 +374,7 @@ async fn main() -> std::process::ExitCode {
         },
         None => None,
     };
-    let _publisher = match tracking.filter(|runtime| runtime.routing().enabled) {
+    let publisher = match tracking.filter(|runtime| runtime.routing().enabled) {
         Some(runtime) => match ml_exp_server::tracking::Publisher::start(
             reads
                 .as_ref()
@@ -390,8 +390,15 @@ async fn main() -> std::process::ExitCode {
         },
         None => None,
     };
+    // Flush W&B sessions as soon as a stop is asked for, not after the last HTTP
+    // connection has drained: a slow client must not use up systemd's stop limit.
+    let (stopping, stop_publisher) = tokio::sync::oneshot::channel::<()>();
+    let publisher_stopped = tokio::task::spawn_blocking(move || {
+        let _ = stop_publisher.blocking_recv();
+        drop(publisher);
+    });
     let result = axum::serve(listener, ml_exp_server::app(auth, reads))
-        .with_graceful_shutdown(async {
+        .with_graceful_shutdown(async move {
             #[cfg(unix)]
             {
                 if let Ok(mut term) =
@@ -404,8 +411,10 @@ async fn main() -> std::process::ExitCode {
             {
                 let _ = tokio::signal::ctrl_c().await;
             }
+            let _ = stopping.send(());
         })
         .await;
+    let _ = publisher_stopped.await;
     if result.is_err() {
         eprintln!("server stopped with an I/O failure");
         return std::process::ExitCode::FAILURE;

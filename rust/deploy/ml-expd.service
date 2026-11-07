@@ -13,6 +13,9 @@ WorkingDirectory=/opt/ml-exp
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=120s
+# Only the server gets SIGTERM. The default also signals the W&B SDK child and
+# wandb-core, which die at once and lose rows the server was about to flush.
+KillMode=mixed
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict

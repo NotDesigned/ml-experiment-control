@@ -375,6 +375,41 @@ impl Store {
         self.require_scope(guard, scope)?;
         result
     }
+    /// Like `events`, but stops once `max_bytes` of payload are loaded, always
+    /// returning at least one row so one large record cannot block a scope.
+    pub fn events_bounded(
+        &self,
+        guard: &RecordGuard<'_>,
+        scope: &str,
+        after: i64,
+        limit: i64,
+        max_bytes: usize,
+    ) -> Result<Vec<EventRow>> {
+        self.require_scope(guard, scope)?;
+        let rows = self.database.read_only(|connection| -> Result<_> {
+            let mut statement = connection.prepare(
+                "SELECT seq,event_id,payload FROM events WHERE scope=? AND seq>? ORDER BY seq LIMIT ?",
+            )?;
+            let mut query = statement.query(params![scope, after, limit])?;
+            let mut rows = Vec::new();
+            let mut bytes = 0;
+            while let Some(row) = query.next()? {
+                let payload: String = row.get(2)?;
+                bytes += payload.len();
+                if bytes > max_bytes && !rows.is_empty() {
+                    break;
+                }
+                rows.push(EventRow {
+                    seq: row.get(0)?,
+                    event_id: row.get(1)?,
+                    payload: serde_json::from_str(&payload)?,
+                });
+            }
+            Ok(rows)
+        })?;
+        self.require_scope(guard, scope)?;
+        Ok(rows)
+    }
     pub fn total(&self, guard: &RecordGuard<'_>, scope: &str) -> Result<i64> {
         self.require_scope(guard, scope)?;
         let value = self.database.read_only(|connection| -> Result<_> {

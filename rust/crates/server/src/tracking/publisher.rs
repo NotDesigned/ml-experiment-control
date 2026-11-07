@@ -1,6 +1,6 @@
 use super::{Error, Result, Runtime, transport::Sdk};
 use crate::background::Worker;
-use crate::records::{RecordGuard, RemoteHistoryEvidence, RemoteObservation, Store};
+use crate::records::{EventRow, RecordGuard, RemoteHistoryEvidence, RemoteObservation, Store};
 use ml_exp_core::{
     records::{RunKind, Scope},
     tracking::{
@@ -23,7 +23,15 @@ use std::{
     time::{Duration, Instant},
 };
 mod repair;
+mod session;
 pub use repair::repair;
+use session::{Next, Session};
+
+/// Seconds before the next look at a scope waiting for remote history. W&B is
+/// read at most this often per scope, so it also bounds the cost of waiting.
+const POLL_SECONDS: u64 = 5;
+/// An idle scope costs two local reads and no cloud request.
+const IDLE_SECONDS: u64 = 2;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -31,6 +39,26 @@ struct HistoryRepair {
     events: BTreeMap<i64, String>,
     attempted: bool,
     remote_confirmed: bool,
+    // States saved before automatic recovery have none of these.
+    // One is what `attempted` already says, so an older server can still load it.
+    #[serde(default, skip_serializing_if = "at_most_one")]
+    attempts: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    at: Option<String>,
+}
+
+/// What remains of a confirmed repair once a later one replaces its record.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RepairAudit {
+    first: i64,
+    last: i64,
+    count: usize,
+    attempts: u32,
+    source: Option<String>,
+    at: Option<String>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -42,6 +70,18 @@ struct Saved {
     ever_opened: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     history_repair: Option<HistoryRepair>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    repairs: Vec<RepairAudit>,
+    /// The most rows W&B has shown repeating a record: a repair crossed a late delivery.
+    /// Nothing was lost, and a W&B row cannot be removed, so this only reports it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    duplicate_rows: u64,
+}
+fn at_most_one(value: &u32) -> bool {
+    *value <= 1
+}
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 pub struct Publisher {
     _worker: Worker,
@@ -123,44 +163,44 @@ impl Publisher {
                 ..Default::default()
             };
             let mut schedule = ml_exp_core::polling::Schedule::default();
-            let mut sdk = None;
+            let mut session = Session::default();
             let mut candidates = BTreeSet::new();
             let mut discover_at = 0;
             while !stop.requested() {
                 let elapsed = start.elapsed().as_secs();
                 if elapsed >= discover_at {
                     if let Ok(scopes) = service.publication_scopes(&store) {
+                        session.retain(&scopes);
                         candidates = scopes;
                     }
                     discover_at = elapsed.saturating_add(30);
                 }
                 let (next, selected) = schedule.select(&candidates, elapsed, &policy);
                 schedule = next;
-                if let Some((scope, _)) = selected {
-                    let outcome =
-                        publish_scope(&*service, &store, &runtime, &mut sdk, &scope, flag);
-                    schedule = schedule.outcome(
-                        &scope,
-                        start.elapsed().as_secs(),
-                        &policy,
-                        outcome.is_ok(),
-                        false,
-                    );
-                    match outcome {
-                        Err(error) if !stop.requested() => {
-                            record_failure(&store, &scope, &mut sdk, &error);
-                        }
-                        _ => {}
+                // Sleep only when no scope is due: the rotation inside `select`
+                // is what shares the thread between Runs, one batch at a time.
+                let Some((scope, _)) = selected else {
+                    if !stop.pause() {
+                        break;
                     }
-                }
-                if !stop.pause() {
-                    break;
+                    continue;
+                };
+                let outcome =
+                    publish_scope(&*service, &store, &runtime, &mut session, &scope, flag);
+                let now = start.elapsed().as_secs();
+                schedule = match &outcome {
+                    Ok(Next::Poll) => schedule.due_at(&scope, now.saturating_add(POLL_SECONDS)),
+                    Ok(Next::Idle) => schedule.due_at(&scope, now.saturating_add(IDLE_SECONDS)),
+                    Err(_) => schedule.outcome(&scope, now, &policy, false, false),
+                };
+                match outcome {
+                    Err(error) if !stop.requested() => {
+                        record_failure(&store, &scope, &mut session, &error);
+                    }
+                    _ => {}
                 }
             }
-            if let Some(sdk) = sdk.as_mut() {
-                let _ = sdk.shutdown();
-            }
-            drop(sdk);
+            session.shutdown();
         })
         .map_err(why!(Error::Transport))?;
         Ok(Self { _worker: worker })
@@ -184,13 +224,15 @@ fn candidate_scopes(store: &Store) -> Result<BTreeSet<String>> {
     }
     Ok(scopes)
 }
-fn record_failure(store: &Store, scope: &str, sdk: &mut Option<Sdk>, error: &Error) {
-    // A complete per-Run error frame leaves the pipe usable. Killing the shared
-    // SDK here can discard other Runs' buffered history, which is already
-    // durably reserved and therefore cannot safely be sent again.
+fn record_failure(store: &Store, scope: &str, session: &mut Session, error: &Error) {
+    // A complete per-Run error frame leaves the pipe usable. A broken pipe does
+    // not, and losing the SDK strands the other Runs' buffered rows: those stay
+    // reserved, and only automatic recovery may append them, once proven absent.
     if matches!(error, Error::Transport | Error::SdkMissing) {
-        *sdk = None;
+        session.lost();
     }
+    // Rows may have arrived unseen during a failed read, so the next scan starts over.
+    session.forget_watch(scope);
     let _ = failure(store, scope, error);
 }
 fn failure(store: &Store, scope: &str, error: &Error) -> Result<()> {
@@ -214,23 +256,23 @@ fn publish_scope(
     service: &dyn Source,
     store: &Store,
     runtime: &Runtime,
-    sdk: &mut Option<Sdk>,
+    session: &mut Session,
     scope: &str,
     cancelled: &AtomicBool,
-) -> Result<()> {
+) -> Result<Next> {
     let parsed = Scope::parse(scope).map_err(why!(Error::Identity))?;
     let _authority = service
         .tracking_journal(&parsed.project, &parsed.run)
         .map_err(why!(Error::Publication("JOURNAL_AUTHORITY_UNAVAILABLE")))?;
-    publish_bound(store, runtime, sdk, scope, cancelled)
+    publish_bound(store, runtime, session, scope, cancelled)
 }
 fn publish_bound(
     store: &Store,
     runtime: &Runtime,
-    sdk: &mut Option<Sdk>,
+    session: &mut Session,
     scope: &str,
     cancelled: &AtomicBool,
-) -> Result<()> {
+) -> Result<Next> {
     let parsed = Scope::parse(scope).map_err(why!(Error::Identity))?;
     let guard = store
         .guard(&parsed.project, &parsed.run)
@@ -248,6 +290,9 @@ fn publish_bound(
         .ok_or(Error::Identity)?;
     let confirmed = status["confirmed"].as_i64().ok_or(Error::Identity)?;
     let total = store.total(&guard, scope).map_err(why!(Error::Storage))?;
+    if session.is_idle(scope, total) {
+        return Ok(Next::Idle);
+    }
     let mut saved: Saved = store
         .publication_state(&guard, scope)
         .map_err(why!(Error::Storage))?
@@ -256,7 +301,7 @@ fn publish_bound(
         .map_err(why!(Error::Identity))?
         .unwrap_or_default();
     if saved.remote_finished {
-        return Ok(());
+        return Ok(Next::Idle);
     }
     if saved.state.confirmed > confirmed {
         return Err(Error::Identity);
@@ -264,29 +309,39 @@ fn publish_bound(
     let display_version = tracking::DISPLAY_VERSION;
     saved.state.confirmed = confirmed;
     saved.state.sent.retain(|sequence, _| *sequence > confirmed);
+    let highest = saved
+        .state
+        .sent
+        .keys()
+        .next_back()
+        .map_or(confirmed, |s| *s);
     let mut events = store
-        .events(&guard, scope, confirmed, 128)
+        .events_bounded(
+            &guard,
+            scope,
+            confirmed,
+            session.share(scope).max(highest - confirmed),
+            session::WINDOW_BYTES,
+        )
         .map_err(why!(Error::Storage))?;
-    let mut bytes = 0;
-    let mut count = 0;
-    for event in &events {
-        let size = serde_json::to_vec(&event.document())
-            .map_err(why!(Error::Identity))?
-            .len();
-        if bytes + size > 2 * 1024 * 1024 {
-            break;
-        }
-        bytes += size;
-        count += 1;
+    // `sent` is saved as one bounded document, so event IDs bound a window too.
+    let mut reserved = 0;
+    if let Some(cut) = events.iter().position(|event| {
+        reserved += event.event_id.len() + 24;
+        reserved > session::RESERVATION_BYTES && event.seq > highest
+    }) {
+        events.truncate(cut);
     }
-    if !events.is_empty() && count == 0 {
-        return Err(Error::Storage);
-    }
-    events.truncate(count);
     let through = events.last().map_or(confirmed, |e| e.seq);
-    let lifecycle = store
-        .latest_lifecycle(&guard, scope)
-        .map_err(why!(Error::Storage))?;
+    // Only the journal's end can be terminal, and this query walks back through
+    // every record since the last lifecycle event.
+    let lifecycle = if through == total {
+        store
+            .latest_lifecycle(&guard, scope)
+            .map_err(why!(Error::Storage))?
+    } else {
+        json!({})
+    };
     let terminal = lifecycle["phase"] == "METRICS_DRAINED"
         && matches!(
             lifecycle["state"].as_str(),
@@ -295,13 +350,7 @@ fn publish_bound(
         && through == total;
     let mut job = json!({"operation":"observe","api_key":runtime.key,"route":binding["route"],"wandb_id":status["wandb_id"],"scope":status,"config":binding["config"],"confirmed":confirmed,"through":through,
         "open_session":!saved.finish_requested,"resume":if saved.ever_opened||confirmed>0||!saved.state.sent.is_empty(){"must"}else{"allow"}});
-    if sdk.is_none() {
-        *sdk = Some(Sdk::open(&runtime.config.python)?);
-    }
-    let remote = sdk
-        .as_mut()
-        .ok_or(Error::Transport)?
-        .call(&job, cancelled)?;
+    let remote = session.open(runtime)?.call(&job, cancelled)?;
     if remote["wandb_id"] != status["wandb_id"] || remote["route"] != binding["route"] {
         return Err(Error::Publication("REMOTE_RUN_IDENTITY_MISMATCH"));
     }
@@ -327,7 +376,8 @@ fn publish_bound(
     )
     .map_err(why!(Error::Publication("PUBLICATION_PLAN_INVALID")))?;
     match &plan.status {
-        PublicationStatus::ReconcileRequired { .. } => {
+        // A hole among our own reservations is what recovery looks at below.
+        PublicationStatus::ReconcileRequired { .. } if saved.state.sent.is_empty() => {
             return Err(Error::Publication("REMOTE_HISTORY_RECONCILE_REQUIRED"));
         }
         PublicationStatus::IdentityConflict { .. } => {
@@ -364,6 +414,9 @@ fn publish_bound(
     }
     saved.ever_opened = true;
     saved.state = plan.state;
+    saved.duplicate_rows = saved
+        .duplicate_rows
+        .max(remote["evidence"]["duplicate_rows"].as_u64().unwrap_or(0));
     if let Some(repair) = saved.history_repair.as_mut() {
         if repair.attempted
             && repair
@@ -374,6 +427,7 @@ fn publish_bound(
             repair.remote_confirmed = true;
         }
     }
+    session.note_backlog(scope, total > saved.state.confirmed);
     let finish = plan
         .actions
         .iter()
@@ -390,7 +444,8 @@ fn publish_bound(
     {
         saved.remote_finished = true;
         saved.state.finished = true;
-        return save(store, &guard, scope, &saved, "FINISHED", None, &at);
+        save(store, &guard, scope, &saved, "FINISHED", None, &at)?;
+        return Ok(Next::Idle);
     }
     saved.state.finished = false;
     saved.finish_requested |= finish;
@@ -406,11 +461,35 @@ fn publish_bound(
         }
         _ => ("ACK_PENDING", Some("REMOTE_ACK_PENDING")),
     };
-    if plan.actions.is_empty() {
-        return save(store, &guard, scope, &saved, phase, error, &at);
+    let visit = repair::Visit {
+        store,
+        guard: &guard,
+        scope,
+        events: &events,
+        at: &at,
+        through,
+        cancelled,
+    };
+    if plan.actions.is_empty() && !saved.state.sent.is_empty() {
+        return repair::await_reservations(
+            &visit,
+            session,
+            &mut saved,
+            &remote,
+            &job,
+            (phase, error),
+        );
     }
-    let display = store
-        .display(&guard, scope, through)
+    session.forget_watch(scope);
+    if plan.actions.is_empty() {
+        save(store, &guard, scope, &saved, phase, error, &at)?;
+        if phase == "SYNCED" && through == total {
+            session.mark_idle(scope, total);
+        }
+        return Ok(Next::Idle);
+    }
+    let display = session
+        .display(store, &guard, scope, through)
         .map_err(why!(Error::Storage))?;
     let keys: Vec<String> =
         serde_json::from_value(remote["summary_keys"].clone()).map_err(why!(Error::Identity))?;
@@ -431,22 +510,15 @@ fn publish_bound(
     job["definitions"] = json!(tracking::definition_specs(&display).map_err(why!(
         Error::Publication("JOURNAL_METRIC_DEFINITIONS_INVALID")
     ))?);
-    job["effects"] = json!(effects);
     // Reject an oversized/invalid effect before reserving any new sequence.
     // Transport loss after the durable reservation still requires remote ACK.
-    Sdk::validate_request(&job)?;
+    let frames = Sdk::frames(&job, effects)?;
     if cancelled.load(Ordering::Relaxed) {
         return Err(Error::Transport);
     }
     save(store, &guard, scope, &saved, phase, error, &at)?;
-    let applied = sdk
-        .as_mut()
-        .ok_or(Error::Transport)?
-        .call(&job, cancelled)?;
-    if applied["applied"] != true {
-        return Err(Error::Transport);
-    }
-    Ok(())
+    session.send(scope, &job, frames, cancelled)?;
+    Ok(Next::Poll)
 }
 fn history_error(error: tracking::Error) -> Error {
     match error {
