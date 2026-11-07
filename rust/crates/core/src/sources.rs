@@ -18,6 +18,8 @@ pub const MAX_METADATA_BYTES: usize = 64 * 1024;
 /// The file bytes one Run may carry outside its image. Every Attempt holds its own
 /// copy on backend storage, so large files belong in `ml-exp data upload`.
 pub const MAX_CODE_BYTES: u64 = 64 * 1024 * 1024;
+/// The server's bound on a JSON response, which a code listing has to pass through.
+pub const MAX_CODE_LISTING_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -437,6 +439,10 @@ impl CodeManifest {
     pub fn total_bytes(&self) -> u64 {
         self.files.iter().map(|file| file.bytes).sum()
     }
+    /// A hash has a fixed length, so this answers before any content has been read.
+    pub fn listing_fits(&self) -> bool {
+        serde_json::to_vec(self).is_ok_and(|bytes| bytes.len() <= MAX_CODE_LISTING_BYTES)
+    }
 }
 pub fn validate_archive_digest(value: &str) -> Result<&str> {
     if value.len() != 64
@@ -651,6 +657,23 @@ mod tests {
         assert!(refused(|m| m.directories.clear()));
         assert!(refused(|m| m.files[0].sha256 = "short".into()));
         assert!(refused(|m| m.files[0].bytes = MAX_CODE_BYTES));
+    }
+    #[test]
+    fn a_listing_too_long_for_a_response_is_seen_from_its_paths_alone() {
+        let listing = |length: usize| CodeManifest {
+            source_id: format!("source.{}", "a".repeat(64)),
+            directories: Vec::new(),
+            files: (0..20_000)
+                .map(|i| CodeFile {
+                    path: format!("{i:05}{}", "x".repeat(length)),
+                    bytes: 1,
+                    sha256: "0".repeat(64),
+                    executable: false,
+                })
+                .collect(),
+        };
+        assert!(listing(100).listing_fits());
+        assert!(!listing(400).listing_fits());
     }
     #[test]
     fn a_tree_read_through_frames_has_the_identity_the_store_computes() {

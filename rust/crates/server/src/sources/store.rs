@@ -242,7 +242,7 @@ impl Store {
         sources::validate_source_id(source_id).map_err(why!(Error::Identity))?;
         let project_sources = self.sources.child(OsStr::new(project), false)?;
         let source = project_sources.child(OsStr::new(source_id), false)?;
-        self.verify_tree(project, source_id, &source)?;
+        // Sizes and names first: one that is too large is refused without being read.
         let (entries, files) = topology(&source.child(OsStr::new("tree"), false)?, "")?;
         let bytes = entries
             .iter()
@@ -251,9 +251,13 @@ impl Store {
                 TreeKind::Directory => 0,
             })
             .fold(0u64, u64::saturating_add);
-        if bytes > sources::MAX_CODE_BYTES || entries.len() > ml_exp_core::artifacts::MAX_FILES {
+        if bytes > sources::MAX_CODE_BYTES
+            || entries.len() > ml_exp_core::artifacts::MAX_FILES
+            || !listing_of(source_id, &entries).listing_fits()
+        {
             return Err(Error::Limit);
         }
+        self.verify_tree(project, source_id, &source)?;
         Ok((entries, files))
     }
     pub fn check_code(&self, project: &str, source_id: &str) -> Result<()> {
@@ -447,6 +451,26 @@ impl Store {
     }
 }
 
+/// The listing's shape with placeholder hashes, which have the real ones' length.
+fn listing_of(source_id: &str, entries: &[TreeEntry]) -> CodeManifest {
+    let mut manifest = CodeManifest {
+        source_id: source_id.to_owned(),
+        directories: Vec::new(),
+        files: Vec::new(),
+    };
+    for entry in entries {
+        match entry.kind {
+            TreeKind::Directory => manifest.directories.push(entry.path.clone()),
+            TreeKind::File { size, executable } => manifest.files.push(CodeFile {
+                path: entry.path.clone(),
+                bytes: size,
+                sha256: "0".repeat(64),
+                executable,
+            }),
+        }
+    }
+    manifest
+}
 /// The files of a code source one after another, in the order of their manifest. The
 /// manifest has the sizes, so this needs no framing and has no paths for a worker to trust.
 pub struct CodeContent {

@@ -169,6 +169,21 @@ async fn code_content(
         Ok(cloud) => cloud,
         Err(error) => return http_effect::failure(error),
     };
+    let authorizing = cloud.clone();
+    let task = tokio::task::spawn_blocking(move || {
+        authorizing.worker_code_grant(&project, &run, &attempt, &token)
+    });
+    let grant = match tokio::time::timeout(Duration::from_secs(35), task).await {
+        Ok(Ok(Ok(grant))) => grant,
+        Ok(Ok(Err(error))) => return http_effect::failure(error.into()),
+        _ => {
+            return http_effect::failure(Error {
+                status: 503,
+                code: "CODE_STREAM_UNAVAILABLE",
+                detail: "the code could not be read yet; try again",
+            });
+        }
+    };
     let Ok(permit) = state.data_slots.clone().try_acquire_owned() else {
         let mut response = http_effect::failure(Error {
             status: 429,
@@ -180,9 +195,7 @@ async fn code_content(
             .insert("retry-after", HeaderValue::from_static("1"));
         return response;
     };
-    let task = tokio::task::spawn_blocking(move || {
-        cloud.worker_code_content(&project, &run, &attempt, &token)
-    });
+    let task = tokio::task::spawn_blocking(move || cloud.worker_code_content(&grant));
     let content = match tokio::time::timeout(Duration::from_secs(35), task).await {
         Ok(Ok(Ok(content))) => content,
         Ok(Ok(Err(error))) => return http_effect::failure(error.into()),

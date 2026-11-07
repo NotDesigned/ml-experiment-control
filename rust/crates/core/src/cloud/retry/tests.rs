@@ -65,7 +65,10 @@ fn full_restart_preserves_science_and_budget_and_is_deterministic() {
     assert!(plan(&run, insufficient, &Value::Null).is_ok());
     let mut resumed = run.clone();
     resumed["resume_from"] = json!({"run_id":"other"});
-    assert!(plan(&resumed, receipt, &Value::Null).unwrap()["resume_from"].is_null());
+    assert!(
+        plan(&resumed, receipt, &Value::Null).is_err(),
+        "a claim with nothing to restore must not train from step 0"
+    );
 }
 #[test]
 fn explicit_restart_needs_a_terminal_parent_not_a_special_failure_code() {
@@ -93,6 +96,27 @@ fn retry_request_json_and_hash_are_stable_and_sources_are_exclusive() {
     let mut neither = request;
     neither.resume_from = None;
     assert!(neither.validate(ACTION).is_err());
+}
+#[test]
+fn a_retry_without_a_checkpoint_restores_what_the_run_was_frozen_with() {
+    let frozen = json!({"checkpoint_id":"frozen"});
+    let reference = json!({"run_id":"earlier","attempt_id":"attempt-001","checkpoint_id":"frozen"});
+    let (mut run, receipt) = fixture();
+    run["resume_from"] = reference.clone();
+    run["native_checkpoint"] = frozen.clone();
+    let attempt = plan(&run, receipt.clone(), &Value::Null).unwrap();
+    assert_eq!(attempt["resume_from"], reference);
+    assert_eq!(attempt["native_checkpoint"], frozen);
+    let mut binding = receipt.parent_binding.clone();
+    binding.attempt_id = "attempt-002".into();
+    validate_attempt(&run, &attempt, &binding).unwrap();
+    // Only the frozen one: a saved Attempt cannot swap in another under this request.
+    let mut swapped = attempt.clone();
+    swapped["native_checkpoint"] = json!({"checkpoint_id":"other"});
+    assert!(validate_attempt(&run, &swapped, &binding).is_err());
+    let mut dropped = attempt;
+    dropped["native_checkpoint"] = Value::Null;
+    assert!(validate_attempt(&run, &dropped, &binding).is_err());
 }
 #[test]
 fn every_kind_of_retry_keeps_the_code_it_started_with() {

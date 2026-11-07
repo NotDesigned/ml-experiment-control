@@ -22,8 +22,7 @@ use std::{
 };
 
 const MANIFEST: &str = ".code-manifest.json";
-/// What the server's bounded JSON response allows.
-const MANIFEST_BYTES: u64 = 8 * 1024 * 1024;
+const MANIFEST_BYTES: u64 = sources::MAX_CODE_LISTING_BYTES as u64;
 const NOT_STARTED: &str = "training was not started";
 
 /// `status` and `logs` show this, so it names the file and what it means for the job.
@@ -399,11 +398,58 @@ fn deliver_from(
     );
     Ok(())
 }
-/// Before training, and before `managed::run` opens the working directory.
+/// The tree the published listing describes, without reading its content again: the
+/// delivery has just done that, and this only has to catch a tree changed since.
+pub(crate) fn require_published(
+    attempt: &Directory,
+    attempt_root: &Path,
+    workdir: &Path,
+) -> Result<()> {
+    if workdir != attempt_root.join(CODE) {
+        return Err(Error::Configuration);
+    }
+    let bytes = attempt
+        .read_regular(OsStr::new(MANIFEST), MANIFEST_BYTES)
+        .map_err(|error| refused!("the code has no published listing: {error}; {NOT_STARTED}"))?;
+    let Some(source) = serde_json::from_slice::<CodeManifest>(&bytes)
+        .ok()
+        .map(|manifest| manifest.source_id)
+    else {
+        return Err(refused!("the code listing cannot be read; {NOT_STARTED}"));
+    };
+    let manifest = parse(&bytes, &source)?;
+    let tree = attempt
+        .child(OsStr::new(CODE), false)
+        .map_err(|error| refused!("the code of this Attempt is gone: {error}; {NOT_STARTED}"))?;
+    check_shape(
+        &tree,
+        "",
+        &manifest.directories.iter().map(String::as_str).collect(),
+        &manifest.files.iter().map(|f| f.path.as_str()).collect(),
+    )?;
+    for file in &manifest.files {
+        let path = &file.path;
+        let opened = open(&tree, path)
+            .map_err(|error| refused!("code file {path}: {error}; {NOT_STARTED}"))?;
+        let size = opened
+            .metadata()
+            .map_err(|error| refused!("code file {path}: {error}; {NOT_STARTED}"))?
+            .len();
+        if size != file.bytes {
+            return Err(refused!(
+                "code file {path}: its size differs from the frozen source; {NOT_STARTED}"
+            ));
+        }
+    }
+    Ok(())
+}
+/// Before training, and before `managed::run` opens the working directory. The launch
+/// lock is held throughout, because this may remove an unfinished tree.
 pub fn deliver(package: &Package, cancelled: &AtomicBool) -> Result<()> {
     let Some(source) = &package.code_source_id else {
         return Ok(());
     };
+    let _held = crate::managed::hold_unstarted(&package.config)?;
     deliver_from(
         &package.channel.url,
         &package.channel.token,
@@ -701,12 +747,32 @@ mod tests {
             crate::managed::inspect(&package.config).unwrap().phase,
             crate::managed::Phase::Prepared
         );
+        // A second worker cannot begin to deliver while the launch lock is held.
+        {
+            let _first = crate::managed::hold_unstarted(&package.config).unwrap();
+            assert!(matches!(deliver(&package, &cancelled), Err(Error::Busy)));
+        }
         let (url, thread) = server(vec![
             (200, serde_json::to_vec(&manifest).unwrap()),
             (200, content),
         ]);
         deliver_with(&url, &package.config.attempt_root, &manifest.source_id).unwrap();
         thread.join().unwrap();
+        // The start refuses a tree that no longer matches what was published, and a
+        // refusal leaves the Attempt able to go on.
+        let marker = package.config.attempt_root.join(MANIFEST);
+        let hidden = marker.with_extension("hidden");
+        fs::rename(&marker, &hidden).unwrap();
+        let refused = message(crate::managed::run(&package.config, &cancelled).unwrap_err());
+        assert!(refused.contains("no published listing"), "{refused}");
+        fs::rename(&hidden, &marker).unwrap();
+        let file = workdir.join("train.py");
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::write(&file, b"short").unwrap();
+        let refused = message(crate::managed::run(&package.config, &cancelled).unwrap_err());
+        assert!(refused.contains("code file train.py"), "{refused}");
+        fs::write(&file, b"print('one')\n").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o400)).unwrap();
         let receipt = crate::managed::run(&package.config, &cancelled).unwrap();
         assert_eq!(
             receipt.receipt.as_ref().unwrap().training,

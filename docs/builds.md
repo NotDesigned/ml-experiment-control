@@ -32,7 +32,9 @@ Dockerfile uses cannot be missed. The image's identity depends only on those fil
 changing other code gives a new Run of the same Runtime, with no rebuild and no new
 command.
 
-The whole directory is uploaded as well, as the Run's code, frozen with the Run:
+The whole directory is uploaded as well, as the Run's code, frozen with the Run. It holds
+the Dockerfile and the lock file too, so editing one of those changes both the Runtime and
+the code source; only the reverse is free:
 
 - The worker downloads it before training, into `ATTEMPT_ROOT/code`, and checks every
   file against the source's identity. A file that differs is named in the job's error, and
@@ -43,8 +45,11 @@ The whole directory is uploaded as well, as the Run's code, frozen with the Run:
 - The directory is read-only and `PYTHONDONTWRITEBYTECODE=1` is set. Write to `OUTPUT_DIR`
   and `STATE_DIR`. `--env` cannot set these two names for such a Run.
 - A retry or a checkpoint resume keeps the original code, in a new directory of its own.
-- The code is at most 64 MiB of files and 20,000 entries. Move large files to data with
-  [`ml-exp data upload`](data.md).
+- The code that goes with a job is at most 64 MiB of files and 20,000 entries. A larger
+  directory is not refused: it stays in the image and any change builds it again, and the
+  question says so. Move large files to data with [`ml-exp data upload`](data.md) to avoid
+  that. A Run named by hand with `code_source_id` over the limit is refused.
+- Choosing a Runtime by hand with `code_source_id` needs one built with the current worker.
 
 The whole directory stays in the image, as `COPY . /workspace` asks, and nothing is
 delivered separately, when the Dockerfile uses any of these, because what it reads cannot

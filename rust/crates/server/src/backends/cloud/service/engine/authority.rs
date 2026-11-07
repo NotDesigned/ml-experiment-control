@@ -207,6 +207,16 @@ impl Service {
             }
         })
     }
+    pub(super) fn check_code_worker(&self, runtime: &run::Runtime) -> cloud::Result<()> {
+        if self.builds.as_ref().map(|b| &b.worker_sha256) != Some(&runtime.worker_sha256) {
+            return Err(cloud::Error {
+                code: "CODE_DELIVERY_WORKER_OUTDATED".into(),
+                http_status: Some(422),
+                uncertain: false,
+            });
+        }
+        Ok(())
+    }
     pub(super) fn documents(
         &self,
         project: &str,

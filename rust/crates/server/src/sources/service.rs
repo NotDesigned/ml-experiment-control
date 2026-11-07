@@ -193,7 +193,7 @@ impl Service {
             super::Error::Limit => crate::error::Error {
                 status: 422,
                 code: "CODE_SOURCE_TOO_LARGE",
-                detail: "the code exceeds 64 MiB or 20000 entries; move large files to data with `ml-exp data upload`",
+                detail: "the code exceeds 64 MiB, 20000 entries or the length of its listing; move large files to data with `ml-exp data upload`",
             },
             other => store_error(other),
         })?;

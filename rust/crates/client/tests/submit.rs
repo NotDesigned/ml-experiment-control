@@ -6,6 +6,7 @@ use ml_exp_client::{
 };
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeMap,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     sync::{
@@ -740,7 +741,47 @@ fn data_preparation_keeps_its_code_in_the_image() {
 }
 
 #[test]
-fn code_above_the_limit_is_refused_before_anything_is_sent() {
+fn the_environment_is_the_same_snapshot_as_the_code() {
+    let files = Files::new();
+    files.dependencies_only();
+    let source = files.root.path().join("source");
+    let dockerfile = std::fs::read_to_string(source.join("Dockerfile")).unwrap();
+    let whole = ml_exp_client::sources::pack_directory(&source).unwrap();
+    let chosen = ["Dockerfile".to_owned(), "uv.lock".to_owned()];
+    // An edit after packing cannot reach what the image is built from.
+    std::fs::write(source.join("uv.lock"), "edited\n").unwrap();
+    let subset =
+        ml_exp_client::sources::pack_subset(&whole, &chosen, ("Dockerfile", dockerfile.as_str()))
+            .unwrap();
+    assert_eq!(subset.paths, chosen);
+    let mut found = BTreeMap::new();
+    let decoder = flate2::read::GzDecoder::new(&subset.file);
+    for entry in tar::Archive::new(decoder).entries().unwrap() {
+        let mut entry = entry.unwrap();
+        let mut body = String::new();
+        entry.read_to_string(&mut body).unwrap();
+        found.insert(entry.path().unwrap().to_str().unwrap().to_owned(), body);
+    }
+    assert_eq!(found["uv.lock"], "locked\n");
+    // The same bytes make the same archive as a direct pack, so the upload is reused.
+    let direct = files.root.path().join("direct");
+    std::fs::create_dir(&direct).unwrap();
+    std::fs::write(direct.join("Dockerfile"), &dockerfile).unwrap();
+    std::fs::write(direct.join("uv.lock"), "locked\n").unwrap();
+    let direct = ml_exp_client::sources::pack_directory(&direct).unwrap();
+    assert_eq!(subset.content_sha256, direct.content_sha256);
+    assert_eq!(subset.sha256, direct.sha256);
+    // A Dockerfile that is not the text it was read as stops the job.
+    let refused =
+        ml_exp_client::sources::pack_subset(&whole, &chosen, ("Dockerfile", "FROM other\n"))
+            .err()
+            .unwrap()
+            .to_string();
+    assert!(refused.contains("changed while preparing"), "{refused}");
+}
+
+#[test]
+fn code_above_the_limit_stays_in_the_image_and_says_why() {
     let files = Files::new();
     files.dependencies_only();
     std::fs::File::create(files.root.path().join("source/weights.bin"))
@@ -749,11 +790,25 @@ fn code_above_the_limit_is_refused_before_anything_is_sent() {
         .unwrap();
     let fake = delivering();
     let mut asked = Vec::new();
-    let refused = files.run(&fake, true, &mut asked).unwrap_err().to_string();
-    assert!(refused.contains("ml-exp data upload"), "{refused}");
-    assert!(refused.contains("64 MiB"), "{refused}");
-    assert!(asked.is_empty());
-    assert_eq!(fake.mutations(), 0);
+    let value = files.run(&fake, true, &mut asked).unwrap();
+    assert_eq!(value["status"], "VERIFIED");
+    assert!(
+        asked[0].contains("will be built with the code"),
+        "{}",
+        asked[0]
+    );
+    assert!(
+        asked[0].contains("only 64 MiB can go with a job"),
+        "{}",
+        asked[0]
+    );
+    assert!(asked[0].contains("ml-exp data upload"), "{}", asked[0]);
+    assert_eq!(fake.count("POST", ARCHIVE), 1);
+    assert!(
+        fake.prepared_request()["run"]
+            .get("code_source_id")
+            .is_none()
+    );
 }
 
 #[test]

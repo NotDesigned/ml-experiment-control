@@ -88,6 +88,9 @@ ml-exp cancel     # ask, then stop it
 ml-exp retry      # ask, then run it again; --checkpoint resumes from one
 ```
 
+A retry without `--checkpoint` starts where the Run was frozen to start: from step 0, or
+from the checkpoint it was created with using `resume_from`.
+
 `results`, `cancel` and `retry` act on your latest submission unless given `--run NAME`.
 If a job ended but its results were not published, `ml-exp results --collect` publishes
 them with a zero-GPU job, without running training again.
@@ -100,8 +103,9 @@ code or settings, or pass `--seed` or `--run`. A failed job is run again with `m
 **What is uploaded.** In a git repository, the files git tracks and the files it does not
 ignore, with nested repositories following their own rules. Elsewhere, every file except
 `.git`, `.venv` and `__pycache__`. The question shows how many. Keep data and outputs out;
-the limits are 20,000 files, 256 MiB and 64 MiB compressed. Code delivered to the job has
-a limit of 64 MiB of files: move anything larger to data with `ml-exp data upload`.
+the limits are 20,000 files, 256 MiB and 64 MiB compressed. Above 64 MiB of files the code
+cannot go with the job, so it stays in the image and each change builds again; move large
+files to data with `ml-exp data upload` to avoid that.
 
 **Preparation needs the client.** Closing it during a build pauses the work, and repeating
 the command resumes it. Use `--detach` to return right after the job is sent, and `--yes`

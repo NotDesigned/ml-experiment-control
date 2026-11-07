@@ -82,8 +82,8 @@ pub fn plan(run: &Value, receipt: Receipt, checkpoint: &Value) -> Result<Value> 
         {
             return Err(Error("retry checkpoint provenance"));
         }
-    } else if !checkpoint.is_null() {
-        return Err(Error("startup retry cannot restore a checkpoint"));
+    } else if !checkpoint.is_null() && *checkpoint != run["native_checkpoint"] {
+        return Err(Error("startup retry cannot restore another checkpoint"));
     }
     let mut attempt = run.clone();
     attempt["attempt_id"] = json!(next);
@@ -91,10 +91,16 @@ pub fn plan(run: &Value, receipt: Receipt, checkpoint: &Value) -> Result<Value> 
     if receipt.request.resume_from.is_some() {
         attempt["resume_from"] = json!(receipt.request.resume_from);
         attempt["native_checkpoint"] = checkpoint.clone();
-    } else {
+    } else if run["native_checkpoint"].is_null() {
+        // The Run's science says it continues from something this cannot restore.
+        if !run["resume_from"].is_null() {
+            return Err(Error("retry cannot restore the Run's frozen checkpoint"));
+        }
         attempt["resume_from"] = Value::Null;
         attempt["native_checkpoint"] = Value::Null;
     }
+    // Otherwise the copy above keeps the checkpoint the Run was frozen with: its
+    // `resume_from` and `protocol_id` claim it, so training from step 0 would be false.
     attempt["native_cloud_retry"] = json!(receipt);
     Ok(attempt)
 }

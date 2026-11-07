@@ -113,7 +113,9 @@ fn the_environment_identity_the_client_computes_is_the_one_the_server_publishes(
         "deps/nested/lock".to_owned(),
         "deps/run.sh".to_owned(),
     ];
-    let packed = ml_exp_client::sources::pack_files(&directory, files.clone()).unwrap();
+    let whole = ml_exp_client::sources::pack_directory(&directory).unwrap();
+    let packed =
+        ml_exp_client::sources::pack_subset(&whole, &files, ("Dockerfile", "FROM x\n")).unwrap();
     assert_eq!(packed.paths, files);
     let mut bytes = Vec::new();
     std::io::Read::read_to_end(&mut &packed.file, &mut bytes).unwrap();
@@ -161,7 +163,11 @@ fn an_attempt_reads_only_its_own_frozen_code_and_the_run_can_say_what_it_was_mad
         true,
     )
     .unwrap();
+    let worker = runtime.worker_sha256.clone();
+    let socket = world.temp.path().join("builder.sock");
+    let peer = ml_exp_io::directory::effective_uid();
     let config = json!({"schema_version":1,"enabled":false,"allow_run_creation":true,
+        "builds":{"socket":socket,"peer_uid":peer,"worker_sha256":worker},
         "exchange":{"public_url":"https://api.example/ml-expd","signing_key_file":signing_key},
         "backends":[{"executor":"pai-h200","profile":{"provider":"pai","region":"us-southeast-1",
             "workspace_id":"253","quota_id":"quota1","max_gpus":8,"max_cpus":200,"max_memory_gb":1600,
@@ -251,6 +257,30 @@ fn an_attempt_reads_only_its_own_frozen_code_and_the_run_can_say_what_it_was_mad
     assert_eq!(refused.code, "CODE_SOURCE_TOO_LARGE");
     assert_eq!(refused.http_status, Some(422));
     assert!(!world.runs().join("code-large").exists());
+    // A Runtime with another worker cannot be paired with code, and a Run already created
+    // stays valid when the configured worker moves on.
+    let mut upgraded = config.clone();
+    upgraded["builds"]["worker_sha256"] = json!(format!("sha256:{}", "9".repeat(64)));
+    let later = Service::open(
+        world.settings.clone(),
+        Settings::from_slice(&serde_json::to_vec(&upgraded).unwrap()).unwrap(),
+        world.sources.clone(),
+        None,
+        Default::default(),
+    )
+    .unwrap();
+    let refused = later
+        .create_run("demo", request("code-old-worker", Some(&code_id)), NOW)
+        .unwrap_err();
+    assert_eq!(refused.code, "CODE_DELIVERY_WORKER_OUTDATED");
+    assert!(!world.runs().join("code-old-worker").exists());
+    assert_eq!(
+        later
+            .create_run("demo", request("code-run", Some(&code_id)), NOW)
+            .unwrap()["reused"],
+        true
+    );
+    drop(later);
     // Refused before any image is built for a Run a Slurm executor could never create.
     let on_slurm: ml_exp_core::preparation::Request = serde_json::from_value(json!({
         "request_id":"e".repeat(32),"run":{"run_id":"code-on-slurm",

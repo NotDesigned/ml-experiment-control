@@ -316,6 +316,13 @@ fn cloud_authorship_refuses_dataset_manifests_over_their_budget() {
 
 /// One Run authored and compiled through the real functions.
 fn compiled(code: Option<&str>, attempt: &str) -> (Value, action::Execution) {
+    compiled_from(code, attempt, None)
+}
+fn compiled_from(
+    code: Option<&str>,
+    attempt: &str,
+    checkpoint: Option<&Value>,
+) -> (Value, action::Execution) {
     let runtime = run::Runtime {
         runtime_id: format!("runtime.{}", "1".repeat(64)),
         source_id: job().source_id,
@@ -329,6 +336,10 @@ fn compiled(code: Option<&str>, attempt: &str) -> (Value, action::Execution) {
         "walltime_seconds":3600,"seed":42,"env":{"PYTHONPATH":"src"}});
     if let Some(code) = code {
         request["code_source_id"] = json!(code);
+    }
+    if let Some(checkpoint) = checkpoint {
+        request["resume_from"] = json!({"run_id":"earlier","attempt_id":"attempt-001",
+            "checkpoint_id":checkpoint["checkpoint_id"]});
     }
     let request: run::Create = serde_json::from_value(request).unwrap();
     let digest = format!("sha256:{}", "a".repeat(64));
@@ -350,7 +361,7 @@ fn compiled(code: Option<&str>, attempt: &str) -> (Value, action::Execution) {
             run_root: root,
             data_root: "/mnt/workspace/ml-expd/datasets",
             datasets: &[],
-            checkpoint: None,
+            checkpoint,
         },
         "2026-10-29T00:00:00Z",
     )
@@ -429,6 +440,42 @@ fn compiled(code: Option<&str>, attempt: &str) -> (Value, action::Execution) {
     .map_err(|error| error.0)
     .unwrap();
     (docs.run, execution)
+}
+#[test]
+fn a_retry_of_a_resumed_run_compiles_the_same_restore_and_a_plain_run_starts_from_zero() {
+    let state_root = "/mnt/workspace/ml-expd/runs/demo/earlier/attempt-001/state";
+    let context = crate::checkpoints::Context {
+        project: "demo".into(),
+        run_id: "earlier".into(),
+        attempt_id: "attempt-001".into(),
+        source_id: job().source_id,
+        image_id: format!("sha256:{}", "b".repeat(64)),
+        storage_scope: format!("sha256:{}", "a".repeat(64)),
+        state_root: state_root.into(),
+    };
+    let ready = json!({"step":4,"files":[
+        {"path":"checkpoints/step-4/state.bin","bytes":7,"sha256":"a".repeat(64)}
+    ]});
+    let mut document = crate::checkpoints::document(&context, &ready).unwrap();
+    document["status"] = json!("REGISTERED");
+    document["verification"] = json!("worker-sha256");
+    document["registered_at"] = json!("2026-10-29T00:00:00Z");
+    let resume = |attempt: &str| {
+        let (_, execution) = compiled_from(None, attempt, Some(&document));
+        execution.package().unwrap().manifest.environment
+    };
+    assert_eq!(resume("attempt-001")["RESUME_STEP"], "4");
+    let retried = resume("attempt-002");
+    assert_eq!(retried["RESUME_STEP"], "4");
+    assert_eq!(retried["RESUME_CHECKPOINT_ID"], document["checkpoint_id"]);
+    assert_eq!(
+        retried["RESUME_DIR"],
+        format!("{state_root}/checkpoints/step-4")
+    );
+    let (_, plain) = compiled(None, "attempt-002");
+    let plain = plain.package().unwrap();
+    assert!(plain.config.checkpoint_restore.is_none());
+    assert!(!plain.manifest.environment.contains_key("RESUME_STEP"));
 }
 #[test]
 fn delivered_code_moves_only_the_working_directory_and_is_per_attempt() {

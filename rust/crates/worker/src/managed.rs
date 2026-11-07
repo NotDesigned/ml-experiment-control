@@ -205,7 +205,7 @@ fn verified(
     Ok((target, manifest, values))
 }
 
-struct Held {
+pub(crate) struct Held {
     root: Directory,
     file: File,
     /// None for `sample`, which observes the ledger without taking the lock.
@@ -376,6 +376,16 @@ impl Held {
     }
 }
 
+/// The launch lock, for work that must not overlap a start: nothing may have started,
+/// and nothing can start until this is dropped. `run` takes the same lock afterwards.
+pub(crate) fn hold_unstarted(config: &Config) -> Result<Held> {
+    let mut held = Held::open(config, true)?;
+    if held.observe(config)?.phase != Phase::Prepared {
+        return Err(Error::Uncertain);
+    }
+    Ok(held)
+}
+
 /// Explicit bootstrap of one fresh, dedicated Attempt root. Existing paths are
 /// never adopted, reset or repaired. Its frozen OUTPUT_DIR fixes this location.
 pub fn initialize(config: &Config) -> Result<Observation> {
@@ -506,6 +516,11 @@ pub fn run(config: &Config, cancelled: &AtomicBool) -> Result<Observation> {
         return Err(Error::Uncertain);
     }
     Directory::open(&config.workdir, false).map_err(crate::managed::storage_failure!())?;
+    // flock does not exclude across every shared filesystem, so a tree that another
+    // node has been working on is refused here, under the last check before the start.
+    if config.workdir.starts_with(&config.attempt_root) {
+        crate::cloud_code::require_published(&held.root, &config.attempt_root, &config.workdir)?;
+    }
     let bytes = private_bytes(&held.root, OsStr::new(MANIFEST), launch::MAX_BYTES as u64)?;
     let (target, manifest, mut environment) = verified(config, &bytes)?;
     if let Some(plan) = &config.data_preparation {

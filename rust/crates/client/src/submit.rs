@@ -1537,7 +1537,9 @@ pub fn retry(
         let question = format!(
             "Run {} again after {attempt}, from {}\n  resources {resources}\n  spend     up to {spend} more GPU hours",
             latest.run_id,
-            checkpoint.as_deref().unwrap_or("the start"),
+            checkpoint
+                .as_deref()
+                .unwrap_or("the start it was frozen with"),
         );
         if !(hooks.confirm)(&question)? {
             return Err(Error::Observation("not submitted; nothing was sent"));
@@ -1642,8 +1644,21 @@ fn deliver(
     use dockerfile::Split;
     let files = archive.paths.len();
     let worker = executor["capabilities"]["code_delivery"]["worker_sha256"].as_str();
+    let mib = |bytes: u64| bytes / (1024 * 1024);
     let split = match worker {
         None => Split::Whole("this executor keeps code in the image".into()),
+        // Too large to go with a job is no reason to stop one that works from the image.
+        Some(_) if archive.expanded_bytes > ml_exp_core::sources::MAX_CODE_BYTES => {
+            Split::Whole(format!(
+                "the code is {} MiB and only {} MiB can go with a job; move large files to data \
+                 with `ml-exp data upload` to stop rebuilding on every change",
+                mib(archive.expanded_bytes),
+                mib(ml_exp_core::sources::MAX_CODE_BYTES),
+            ))
+        }
+        Some(_) if !sources::listing_fits(&archive.paths) => {
+            Split::Whole("the list of files is too long to go with a job".into())
+        }
         Some(_) if spec.extra.contains_key("data_preparation") => {
             Split::Whole("data_preparation needs its code in the image".into())
         }
@@ -1657,14 +1672,6 @@ fn deliver(
         worker.is_some_and(|worker| environment_ready(client, spec, plan, built_from, worker));
     Ok(match split {
         Split::Files(paths) => {
-            if archive.expanded_bytes > ml_exp_core::sources::MAX_CODE_BYTES {
-                return Err(Error::Submit(format!(
-                    "the code is {} MiB, above the {} MiB limit. Move large files to data with \
-                     `ml-exp data upload`, or ignore them in .gitignore",
-                    archive.expanded_bytes / (1024 * 1024),
-                    ml_exp_core::sources::MAX_CODE_BYTES / (1024 * 1024),
-                )));
-            }
             let line = if reused {
                 format!("reused; {files} code files go with the job")
             } else {
@@ -1674,7 +1681,11 @@ fn deliver(
                 )
             };
             Delivery {
-                environment: Some(sources::pack_files(&spec.directory, paths)?),
+                environment: Some(sources::pack_subset(
+                    archive,
+                    &paths,
+                    (spec.dockerfile.as_str(), dockerfile),
+                )?),
                 line,
             }
         }

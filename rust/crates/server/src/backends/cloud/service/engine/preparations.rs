@@ -78,7 +78,11 @@ impl Service {
                     worker_sha256: worker.into(),
                 }
             } else {
-                self.runtime(project, &run.executor, &run.runtime_id)?
+                let runtime = self.runtime(project, &run.executor, &run.runtime_id)?;
+                if run.code_source_id.is_some() {
+                    self.check_code_worker(&runtime)?;
+                }
+                runtime
             };
             let resources = &run.resources;
             let job = ml_exp_core::cloud::Job {
@@ -389,7 +393,8 @@ impl Service {
                 }
             }
         }
-        self.create_run(project, run.clone(), now)?;
+        // The preflight above has checked this, and a build frozen here keeps its worker.
+        self.author_run(project, run.clone(), now)?;
         if self.prepare_script(project, &run.run_id)?.is_some() {
             return self.setup_view(&saved).map(Continue::View);
         }

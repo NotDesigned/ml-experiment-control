@@ -268,7 +268,12 @@ impl From<crate::backends::cloud::Error> for Error {
                 ("CODE_SOURCE_TOO_LARGE", _) => (
                     422,
                     "CODE_SOURCE_TOO_LARGE",
-                    "the code exceeds 64 MiB or 20000 entries; move large files to data with `ml-exp data upload`",
+                    "the code exceeds 64 MiB, 20000 entries or the length of its listing; move large files to data with `ml-exp data upload`",
+                ),
+                ("CODE_DELIVERY_WORKER_OUTDATED", _) => (
+                    422,
+                    "CODE_DELIVERY_WORKER_OUTDATED",
+                    "this Runtime's worker is not the current one, and may not know how to fetch delivered code; build the Runtime again",
                 ),
                 ("CODE_DELIVERY_UNSUPPORTED", _) => (
                     422,
@@ -387,6 +392,7 @@ mod tests {
             ("DATASET_MANIFESTS_TOO_LARGE", 422),
             ("CODE_SOURCE_TOO_LARGE", 422),
             ("CODE_DELIVERY_UNSUPPORTED", 422),
+            ("CODE_DELIVERY_WORKER_OUTDATED", 422),
             ("DEBUG_MACHINE_LIMIT", 409),
             ("ARTIFACTS_ADMINISTRATIVELY_REMOVED", 410),
             ("ARTIFACT_NOT_PUBLISHED", 409),

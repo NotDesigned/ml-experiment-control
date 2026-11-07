@@ -113,6 +113,10 @@ pub(super) struct Saved {
     pub inputs: Vec<ml_exp_core::input_progress::Record>,
     pub checkpoint_error: Option<String>,
 }
+pub struct CodeGrant {
+    project: String,
+    source: String,
+}
 impl Service {
     pub fn synchronize(
         &self,
@@ -263,16 +267,22 @@ impl Service {
             .map_err(why!(cloud::Error::evidence()))?;
         serde_json::to_value(manifest).map_err(why!(cloud::Error::evidence()))
     }
-    pub fn worker_code_content(
+    /// Proof that this token may read this Attempt's code, before a transfer is begun.
+    pub fn worker_code_grant(
         &self,
         project: &str,
         run: &str,
         attempt: &str,
         token: &str,
-    ) -> cloud::Result<sources::CodeContent> {
-        let source = self.worker_code_source(project, run, attempt, token)?;
+    ) -> cloud::Result<CodeGrant> {
+        Ok(CodeGrant {
+            project: project.to_owned(),
+            source: self.worker_code_source(project, run, attempt, token)?,
+        })
+    }
+    pub fn worker_code_content(&self, grant: &CodeGrant) -> cloud::Result<sources::CodeContent> {
         self.sources
-            .code_content(project, &source)
+            .code_content(&grant.project, &grant.source)
             .map_err(why!(cloud::Error::evidence()))
     }
     pub fn has_exchange(&self) -> bool {
