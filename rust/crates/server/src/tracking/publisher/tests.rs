@@ -807,9 +807,6 @@ fn a_lost_repair_is_observed_then_retried_only_a_bounded_number_of_times() {
     let scope = fixture.scope("train");
     fixture.append(&scope, 1..=2);
     fixture.visit(&scope).unwrap();
-    let restart = |fixture: &mut Fixture| {
-        fixture.restart();
-    };
     for attempt in 1..=3 {
         fixture.restart();
         fixture.visit(&scope).unwrap();
