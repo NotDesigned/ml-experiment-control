@@ -629,6 +629,12 @@ pub fn resolve(spec: &Spec, identity: Identity, executor: &Value) -> Result<Plan
         .ok_or(Error::Response)?
         .to_owned();
     let (gpus, cpus, memory_gb) = resources(spec, &chosen, &executor["limits"])?;
+    if gpus == 0 && executor["kind"] == "slurm" {
+        return Err(Error::Submit(format!(
+            "{chosen} is a Slurm executor, which needs at least one GPU; use --gpus 1 or a \
+             CPU executor from `ml-exp backend`"
+        )));
+    }
     ml_exp_core::environment::validate(&spec.env).map_err(|_| {
         Error::Submit(
             "an environment variable has an invalid or reserved name; \

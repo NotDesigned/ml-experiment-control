@@ -209,9 +209,21 @@ impl<T: Transport> Adapter<T> {
                 }
                 Ok(observation)
             }
-            Profile::Sensecore(p) => p
-                .validate_job(&row, job, handle.provider_uid.as_deref())
-                .map_err(why!(Error::evidence())),
+            Profile::Sensecore(p) => {
+                let mut observation = p
+                    .validate_job(&row, job, handle.provider_uid.as_deref())
+                    .map_err(why!(Error::evidence()))?;
+                if matches!(
+                    observation.state,
+                    ml_exp_core::state::RunState::Queued | ml_exp_core::state::RunState::Starting
+                ) {
+                    // A separate diagnostic failure cannot erase a known job.
+                    if let Ok(workers) = self.call(p.workers(&handle.job_id, "1"), cancelled) {
+                        observation.queue = ml_exp_core::cloud::sensecore::waiting_for(&workers);
+                    }
+                }
+                Ok(observation)
+            }
         }
     }
     /// Positive absence requires complete, stable and duplicate-free pages.

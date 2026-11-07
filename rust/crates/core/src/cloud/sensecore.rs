@@ -403,6 +403,26 @@ impl Profile {
         })
     }
 }
+#[cfg(test)]
+mod waiting_tests {
+    use super::*;
+    #[test]
+    fn a_worker_with_no_node_is_reported_as_waiting() {
+        let row = serde_json::json!({"workers":[{"phase":"Pending","node_name":""}]});
+        assert!(
+            waiting_for(&row)
+                .unwrap()
+                .reason
+                .unwrap()
+                .contains("1 of 1")
+        );
+        let row = serde_json::json!({"workers":[{"phase":"Pending","node_name":"n1"}]});
+        assert!(waiting_for(&row).is_none(), "placed, pulling its image");
+        let row = serde_json::json!({"workers":[{"phase":"Running","node_name":"n1"}]});
+        assert!(waiting_for(&row).is_none());
+        assert!(waiting_for(&serde_json::json!({})).is_none());
+    }
+}
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct OfflineLogs {
     pub text: String,
@@ -509,6 +529,30 @@ pub fn validate_offline_logs(
         source: "offline".into(),
         worker: worker.into(),
         unavailable_reason: rows.is_empty().then(|| "OFFLINE_LOGS_EMPTY".into()),
+    })
+}
+/// What a job still starting is waiting for. Its state alone says nothing, and a worker
+/// with no node is waiting to be scheduled rather than failing.
+pub fn waiting_for(workers: &Value) -> Option<QueueDiagnostic> {
+    let rows = workers["workers"].as_array()?;
+    let unplaced = rows
+        .iter()
+        .filter(|row| {
+            row["phase"] == "Pending" && row["node_name"].as_str().unwrap_or("").is_empty()
+        })
+        .count();
+    (unplaced > 0).then(|| QueueDiagnostic {
+        source: "sensecore-workers".into(),
+        code: None,
+        code_type: None,
+        reason: Some(format!(
+            "{unplaced} of {} workers have no node yet; waiting to be scheduled",
+            rows.len()
+        )),
+        position: None,
+        priority: None,
+        enqueued_at: None,
+        blocker: None,
     })
 }
 pub fn normalize(value: &str) -> RunState {
