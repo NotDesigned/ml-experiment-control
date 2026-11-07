@@ -233,7 +233,7 @@ class Deploy(unittest.TestCase):
         self.assertEqual(self.version(), "1.1.0")
 
     def test_a_damaged_stored_worker_is_replaced(self):
-        spec = importlib.util.spec_from_file_location("deploy_native_tool", DEPLOY)
+        spec = importlib.util.spec_from_file_location("deploy_native_under_test", TOOL)
         tool = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(tool)
         worker = digest(self.root / "bin/ml-exp-worker-rs")
