@@ -1182,6 +1182,65 @@ fn a_terminal_job_leaves_the_observer_at_the_next_discovery() {
     }
 }
 
+/// A retry's Action is prepared in its own `<slot>.attempt-002.json`. The observer
+/// refreshes it like a first Attempt, with one read per cycle and never a create,
+/// and drops it once it is terminal.
+#[test]
+fn a_retried_attempt_is_observed_with_reads_only() {
+    for kind in KINDS {
+        let f = Fixture::new(kind);
+        let service = Arc::new(f.open());
+        let flag = AtomicBool::new(false);
+        let (first, _) = f.ready(&service, "train");
+        f.execute(&service, &first).unwrap();
+        f.provider.world().terminal = true;
+        let retried = service
+            .retry(&first, retry_request("train"), T_RECONCILE, &flag)
+            .unwrap();
+        assert_eq!(retried["next_action"], "PREPARE_NEW_ACTION");
+        let prepared = f.prepare(&service, "train");
+        let action = prepared["submission_id"].as_str().unwrap().to_owned();
+        assert_ne!(action, first);
+        let slot = f
+            .settings
+            .registry_root
+            .join("cloud-submissions/slots")
+            .join(format!(
+                "{}.json",
+                native::attempt_slot("demo", "train", "attempt-002").unwrap()
+            ));
+        let saved: Value = serde_json::from_slice(&fs::read(slot).unwrap()).unwrap();
+        let execution: Execution = serde_json::from_value(saved["execution"].clone()).unwrap();
+        assert_eq!(execution.job.attempt_id, "attempt-002");
+        f.provider.bind(&execution.job);
+        f.provider.world().terminal = false;
+        assert_eq!(f.execute(&service, &action).unwrap()["status"], "VERIFIED");
+        assert_eq!(
+            f.get(&service, &action)["cloud_observation"]["observation"]["state"],
+            "RUNNING"
+        );
+        assert_eq!(f.provider.creates(), 2);
+
+        // Only the provider changes; nothing but the observer reads it.
+        f.provider.world().terminal = true;
+        let reads = f.provider.reads();
+        let mut observer = observer(service.clone());
+        observer.walk(0..3);
+        assert_eq!(f.provider.reads(), reads + 1);
+        assert_eq!(
+            f.get(&service, &action)["cloud_observation"]["observation"]["state"],
+            "FAILED"
+        );
+        // Terminal now, and the first Attempt was terminal already: after the next
+        // discovery nothing is left to read.
+        observer.walk(3..30);
+        assert_eq!(f.provider.reads(), reads + 3);
+        observer.walk(30..120);
+        assert_eq!(f.provider.reads(), reads + 3);
+        assert_eq!(f.provider.creates(), 2);
+    }
+}
+
 /// One Slurm backend's configuration over the fixture's registry and source.
 /// Copied from the fixture in `backends/slurm/tests/submission_tests.rs`, which is
 /// private to its crate.
