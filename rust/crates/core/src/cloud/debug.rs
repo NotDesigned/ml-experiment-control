@@ -213,7 +213,7 @@ impl Profile {
             method == Method::Get,
         )
     }
-    pub fn path(&self, recipe: &Recipe, id: Option<&str>) -> Result<String> {
+    pub fn path(&self, _recipe: &Recipe, id: Option<&str>) -> Result<String> {
         match self {
             Self::PaiDsw { .. } => Ok(format!(
                 "/api/v2/instances{}",
