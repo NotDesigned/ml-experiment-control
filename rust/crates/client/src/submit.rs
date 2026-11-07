@@ -1643,7 +1643,11 @@ fn deliver(
 ) -> Result<Delivery, Error> {
     use dockerfile::Split;
     let files = archive.paths.len();
-    let worker = executor["capabilities"]["code_delivery"]["worker_sha256"].as_str();
+    let delivery = &executor["capabilities"]["code_delivery"];
+    // An earlier server names only the worker, and its Runtimes are named by that.
+    let worker = delivery["runtime_identity"]
+        .as_str()
+        .or(delivery["worker_sha256"].as_str());
     let mib = |bytes: u64| bytes / (1024 * 1024);
     let split = match worker {
         None => Split::Whole("this executor keeps code in the image".into()),

@@ -1,6 +1,15 @@
-//! Native-image identity: a frozen recipe, source, base and worker.
+//! Native-image identity: a frozen recipe, source and base, with what the image's worker
+//! must do. PAI and SenseCore images hold a worker that can fetch the one its Run froze, so
+//! they name the contract it keeps. Slurm images, and every image built before this, name
+//! the worker itself, and their identities stay exactly as they were.
 use super::*;
 pub const CONTRACT: &str = "native-image-recipe.v1";
+/// Goes up only when an image's worker can no longer serve as the bootstrap for a later
+/// one, and that forces one rebuild of every environment. The contract is: `cloud-launch`
+/// and its arguments, `worker_sha256` at the top of a package, the exchange's `/package`
+/// and `/worker`, and the plans of `script-prepare` and `data-import`, which run in the
+/// image's own worker. A raised version must go on recognising this one for stored Runtimes.
+pub const BOOTSTRAP: &str = "worker-bootstrap.v1";
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Definition {
@@ -37,15 +46,16 @@ impl Definition {
         }
         .validate()
     }
-    pub fn id(&self, project: &str, worker: &str) -> Result<String> {
+    /// `frozen` is `BOOTSTRAP`, or the hash of the worker for an image that cannot bootstrap.
+    pub fn id(&self, project: &str, frozen: &str) -> Result<String> {
         self.validate()?;
         identity::validate_id(project).map_err(|_| Error("build project"))?;
-        if !helper::valid_digest(worker) {
+        if frozen != BOOTSTRAP && !helper::valid_digest(frozen) {
             return Err(Error("build worker"));
         }
         Ok(format!(
             "runtime.{}",
-            canonical::digest(&json!([CONTRACT, project, self, worker]))
+            canonical::digest(&json!([CONTRACT, project, self, frozen]))
                 .map_err(|_| Error("build identity"))?
         ))
     }

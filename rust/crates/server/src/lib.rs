@@ -110,7 +110,10 @@ async fn guard(State(state): State<Arc<AppState>>, request: Request, next: Next)
             parts.len() == 7
                 && parts[1] == "api"
                 && parts[2] == "worker-exchange"
-                && matches!(parts[6], "status" | "package" | "code" | "code-content")
+                && matches!(
+                    parts[6],
+                    "status" | "package" | "code" | "code-content" | "worker"
+                )
         }
     {
         return next.run(request).await;
@@ -791,6 +794,7 @@ mod schema_tests {
                     && !path.ends_with("/package")
                     && !path.ends_with("/code")
                     && !path.ends_with("/code-content")
+                    && !path.ends_with("/worker")
                 || path.starts_with("/api/dataset-exchange/")
                 || path.ends_with("/refresh")
                 || path == "/api/debug/{identity}/stop"
@@ -827,6 +831,7 @@ mod schema_tests {
                         || path.ends_with("/package")
                         || path.ends_with("/code")
                         || path.ends_with("/code-content")
+                        || path.ends_with("/worker")
                     {
                         "get"
                     } else {

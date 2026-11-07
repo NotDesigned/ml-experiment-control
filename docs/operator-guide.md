@@ -162,16 +162,26 @@ the tool without `--apply` first and resolve anything it refuses.
 
 With `--apply` it keeps the installed files in `ROOT/previous/`, stops the API and
 requires exit status 0, stops the builder, takes the publisher locks that exist (a
-missing one means no publisher has run, and is not created), replaces the files, sets `builds.worker_sha256` to the new worker, and starts both services. If
+missing one means no publisher has run, and is not created), replaces the files, keeps the
+new worker in `ROOT/workers/` under its hash, sets `builds.worker_sha256` to it and
+`builds.worker_store` to that directory, and starts both services. If
 the API does not report the new version on `/api/health`, it restores the previous
 files and worker hash and restarts them. On success it writes `ROOT/DEPLOYED.json`
 with the version, source commit and hashes; read that file to learn what is running.
 
 The tool replaces programs only. It does not touch registries, Runs, Attempts,
 provider jobs or remote Slurm helpers, and rollback restores no database. New builds
-embed the new worker, so they get new Runtime identities; existing Runtimes and images
-keep their frozen worker. An unpublished Runtime prepared with the old worker needs
-fresh preparation. One deployment runs at a time (`ROOT/.deploy.lock`).
+embed the new worker. On Slurm they get new Runtime identities. On PAI and SenseCore they
+do not, so an environment is not rebuilt, and each new Run freezes the new worker and
+downloads it when it starts ([details](builds.md#the-worker-and-upgrades)); the first release
+with this still builds each environment once more. Existing Runtimes and images keep their
+frozen worker. One deployment runs at a time (`ROOT/.deploy.lock`).
+
+Never delete `ROOT/workers/`: a queued job or a retry fetches the worker its Run froze from
+there, and without it fails before training with `WORKER_BINARY_UNAVAILABLE`. It grows by one
+worker, about 8 MiB, per release. After a rollback the earlier server does not read a Runtime
+built on the new identity, or a preparation frozen with it, so rolling back past this
+release needs those removed from the cloud state first.
 
 ## Enable training after source import
 
@@ -225,8 +235,10 @@ python3.11 -m venv /opt/ml-exp/image-effects
 /opt/ml-exp/image-effects/bin/pip install -r deploy/image-bridge-requirements.txt
 ```
 
-In the cloud configuration, `builds` sets the builder `socket`, its `peer_uid`, and
-the `worker_sha256` of the exact native worker. Configure the publisher itself
+In the cloud configuration, `builds` sets the builder `socket`, its `peer_uid`, the
+`worker_sha256` of the exact native worker, and `worker_store`, the directory of workers
+named by their hash that jobs fetch from. Without `worker_store`, new Runtimes name their
+worker and are rebuilt on each upgrade, as they were before. Configure the publisher itself
 following [builds](builds.md). The default builds on a CPU PAI DSW and pushes to the
 configured registry; local BuildKit is the alternative. The daemon has no Docker
 socket access. Build push credentials are separate from training pull credentials:

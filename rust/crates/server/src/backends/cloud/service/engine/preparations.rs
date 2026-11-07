@@ -9,8 +9,18 @@ struct Saved {
     project: String,
     request: Request,
     worker_sha256: String,
+    /// What the Runtime's identity is built from, when that is not `worker_sha256`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime_identity: Option<String>,
     started: bool,
     submission: Option<Value>,
+}
+impl Saved {
+    fn frozen(&self) -> &str {
+        self.runtime_identity
+            .as_deref()
+            .unwrap_or(&self.worker_sha256)
+    }
 }
 /// The executors this service does not run, each with whether it can run a
 /// data-preparation script. The caller supplies them; refusing here, before a build or
@@ -44,11 +54,11 @@ impl Service {
         &self,
         project: &str,
         request: &Request,
-        worker: &str,
+        frozen: &str,
         external: Option<&ExternalExecutors>,
     ) -> cloud::Result<()> {
         let run = request
-            .resolve(project, worker)
+            .resolve(project, frozen)
             .map_err(why!(cloud::Error::configuration()))?;
         if let Some(backend) = self.backends.get(&run.executor) {
             if matches!(
@@ -68,21 +78,14 @@ impl Service {
             if let Some(code) = &run.code_source_id {
                 self.check_code(project, code)?;
             }
-            let runtime = if let Some(recipe) = &request.runtime {
-                ml_exp_core::cloud::run::Runtime {
-                    runtime_id: run.runtime_id.clone(),
-                    source_id: recipe.source_id.clone(),
-                    image: recipe.base_image.clone(),
-                    source_dir: "/ml-expd/source".into(),
-                    worker_path: "/usr/local/bin/ml-exp-worker-rs".into(),
-                    worker_sha256: worker.into(),
-                }
+            let (source_id, image) = if let Some(recipe) = &request.runtime {
+                (recipe.source_id.clone(), recipe.base_image.clone())
             } else {
                 let runtime = self.runtime(project, &run.executor, &run.runtime_id)?;
                 if run.code_source_id.is_some() {
                     self.check_new_code_run(project, &run.run_id, &runtime)?;
                 }
-                runtime
+                (runtime.source_id, runtime.image)
             };
             let resources = &run.resources;
             let job = ml_exp_core::cloud::Job {
@@ -90,8 +93,8 @@ impl Service {
                 run_id: run.run_id.clone(),
                 attempt_id: "attempt-001".into(),
                 submission_token: "0".repeat(32),
-                source_id: runtime.source_id,
-                image: runtime.image,
+                source_id,
+                image,
                 command: run.command.clone(),
                 gpus: resources.gpus,
                 cpus: resources.cpus,
@@ -182,24 +185,30 @@ impl Service {
         }
         Ok(saved)
     }
-    /// An upgrade changes the worker, and a Runtime can only be built with the current
-    /// one, so an unbuilt preparation frozen with the old one could never finish. Nothing
-    /// ran under the old identity, so it moves on, but only once its build is proven to
-    /// have left nothing behind. A built Runtime keeps the worker it was built with.
+    /// An identity that names a worker can only be built with that worker, so an unbuilt
+    /// preparation frozen with an old one could never finish. Nothing ran under the old
+    /// identity, so it moves on, but only once its build is proven to have left nothing
+    /// behind. A built Runtime keeps its identity, and an identity that names no worker
+    /// has nothing to follow.
     fn follow_current_worker(&self, saved: &mut Saved) -> cloud::Result<bool> {
-        let Some(current) = self.builds.as_ref().map(|s| &s.worker_sha256) else {
+        let Some(settings) = &self.builds else {
             return Ok(false);
         };
-        if saved.request.runtime.is_none() || &saved.worker_sha256 == current {
+        let Some(definition) = &saved.request.runtime else {
+            return Ok(false);
+        };
+        let identity = self.bootstrap_identity(&definition.executor);
+        if saved.frozen() == identity.unwrap_or(&settings.worker_sha256) {
             return Ok(false);
         }
         let old = saved
             .request
-            .resolve(&saved.project, &saved.worker_sha256)
+            .resolve(&saved.project, saved.frozen())
             .map_err(why!(cloud::Error::evidence()))?;
         let status = self.runtime_status(&saved.project, &old.runtime_id)?;
         if status["runtime"].is_null() && status["retry_safe"] == true {
-            saved.worker_sha256 = current.clone();
+            saved.worker_sha256 = settings.worker_sha256.clone();
+            saved.runtime_identity = identity.map(str::to_owned);
             return Ok(true);
         }
         Ok(false)
@@ -211,7 +220,7 @@ impl Service {
             .map_err(why!(cloud::Error::evidence()))?;
         let run = saved
             .request
-            .resolve(&saved.project, &saved.worker_sha256)
+            .resolve(&saved.project, saved.frozen())
             .map_err(why!(cloud::Error::evidence()))?;
         let runtime = if saved.request.runtime.is_some() {
             self.runtime_status(&saved.project, &run.runtime_id)?
@@ -277,7 +286,11 @@ impl Service {
             .as_ref()
             .map(|s| s.worker_sha256.clone())
             .unwrap_or_else(|| format!("sha256:{}", "0".repeat(64)));
-        self.setup_preflight(project, &request, &worker, external)?;
+        let identity = request
+            .runtime
+            .as_ref()
+            .and_then(|definition| self.bootstrap_identity(&definition.executor));
+        self.setup_preflight(project, &request, identity.unwrap_or(&worker), external)?;
         if let Some(definition) = &request.runtime {
             self.prepare_runtime(project, definition.clone())?;
         }
@@ -297,6 +310,7 @@ impl Service {
             project: project.into(),
             request,
             worker_sha256: worker,
+            runtime_identity: identity.map(str::to_owned),
             started: false,
             submission: None,
         };
@@ -369,9 +383,9 @@ impl Service {
         }
         let run = saved
             .request
-            .resolve(project, &saved.worker_sha256)
+            .resolve(project, saved.frozen())
             .map_err(why!(cloud::Error::evidence()))?;
-        self.setup_preflight(project, &saved.request, &saved.worker_sha256, external)?;
+        self.setup_preflight(project, &saved.request, saved.frozen(), external)?;
         if saved.request.runtime.is_some() {
             let runtime = self.runtime_status(project, &run.runtime_id)?;
             if runtime["status"] != "READY" {

@@ -10,6 +10,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -267,6 +268,106 @@ class NativeBridge(unittest.TestCase):
                     BUILD_PROGRESS.reset(token)
                 self.assertEqual(sum('Popen' in value for value in calls), 1)
                 self.assertEqual(len(calls), 4)
+
+    def dsw_publisher(self, cli):
+        from ml_exp_server.builds.pai_dsw import DswPublisher
+        builder = DswPublisher.__new__(DswPublisher)
+        builder.instance = 'dsw-owned'
+        builder.cli = cli
+        builder.log_output = lambda value: value
+        return builder
+
+    def run_remote(self, code):
+        """Run what would go to DSW, for real, as the MCP exec would."""
+        subprocess.run([sys.executable, '-c', code], check=True, capture_output=True)
+
+    def test_dsw_transfers_outlast_a_gateway_not_yet_up_and_give_up_in_time(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'small'
+            source.write_bytes(b'x')
+            calls = []
+            def cli(args, *_args, **_kwargs):
+                calls.append(args[2])
+                if len(calls) < 3:
+                    raise ValueError('failed to reach paimcp: HTTP 502')
+                return ''
+            with patch('ml_exp_server.builds.pai_dsw.time.sleep') as sleep:
+                self.dsw_publisher(cli).upload(source, '/remote/small', Path(directory))
+            self.assertEqual(calls, ['cp', 'cp', 'cp'])
+            self.assertEqual(sleep.call_count, 2)
+            calls.clear()
+            def down(args, *_args, **_kwargs):
+                calls.append(args[2])
+                raise ValueError('failed to reach paimcp: HTTP 502')
+            with patch('ml_exp_server.builds.pai_dsw.time.sleep') as sleep, \
+                    self.assertRaisesRegex(ValueError, 'paimcp'):
+                self.dsw_publisher(down).upload(source, '/remote/small', Path(directory))
+            self.assertEqual(len(calls), 6)
+            self.assertEqual(sleep.call_count, 5)
+
+    def test_dsw_assembly_repeated_after_a_lost_reply_finds_its_work_done(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'large'
+            source.write_bytes(b'0123456789' * 60000)
+            remote = root / 'remote'
+            remote.mkdir()
+            target = str(remote / 'context.tar')
+            private = root / 'cli'
+            assemblies = []
+            def cli(args, *_args, **_kwargs):
+                if args[2] == 'cp':
+                    shutil.copyfile(args[3], args[4].removeprefix('dsw:'))
+                    return ''
+                assemblies.append(args[-1])
+                self.run_remote(args[-1])
+                if len(assemblies) == 1:
+                    raise ValueError('failed to reach paimcp: HTTP 502')
+                return ''
+            builder = self.dsw_publisher(cli)
+            builder.builder = SimpleNamespace(root=root)
+            with patch('ml_exp_server.builds.pai_dsw.time.sleep'):
+                builder.upload(source, target, private)
+            self.assertEqual(len(assemblies), 2)
+            self.assertEqual(Path(target).read_bytes(), source.read_bytes())
+            self.assertEqual([path.name for path in remote.iterdir()], ['context.tar'])
+            # A failure part way leaves nothing published, and a repeat can still finish.
+            (remote / 'context.tar').unlink()
+            (remote / 'context.tar.part-0').write_bytes(b'wrong')
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.run_remote(assemblies[0].replace("'" + target + ".part-1', ", ''))
+            self.assertFalse(Path(target).exists())
+
+    def test_dsw_context_directory_call_can_be_repeated(self):
+        import inspect
+        from ml_exp_server.builds import pai_dsw
+        text = inspect.getsource(pai_dsw.DswPublisher.publish)
+        self.assertIn('self.repeatable(["dsw", "instance", "exec"', text)
+        self.assertEqual(text.count('p.mkdir(mode=0o700,exist_ok=True)'), 1)
+        self.assertNotIn('self.repeatable', inspect.getsource(pai_dsw.DswPublisher.build))
+
+    def test_a_runtime_id_retried_after_an_upgrade_is_built_with_the_new_worker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            builder = SimpleNamespace(root=root, config={})
+            key = 'a' * 64
+            value = {'operation': 'native-logs', 'runtime_id': 'runtime.' + key, 'project': 'demo',
+                     'source_id': 'source.' + 'b' * 64, 'base_image': 'r.example/x@sha256:' + 'c' * 64,
+                     'dockerfile': 'Dockerfile', 'worker_sha256': 'sha256:' + 'e' * 64, 'mirror': False}
+            frozen = {k: v for k, v in value.items() if k != 'operation'}
+            (root / (key + '.native-definition.json')).write_text(
+                json.dumps({**frozen, 'worker_sha256': 'sha256:' + 'd' * 64}))
+            self.assertEqual(native_image.request(builder, value)['runtime_id'], 'runtime.' + key)
+            (root / (key + '.native-definition.json')).write_text(
+                json.dumps({**frozen, 'dockerfile': 'Other'}))
+            with self.assertRaisesRegex(ValueError, 'frozen identity differs'):
+                native_image.request(builder, value)
+            # A receipt is what was built, so it must match exactly.
+            (root / (key + '.native-definition.json')).unlink()
+            (root / (key + '.native.json')).write_text(
+                json.dumps({'request': {**frozen, 'worker_sha256': 'sha256:' + 'd' * 64}}))
+            with self.assertRaisesRegex(ValueError, 'receipt differs'):
+                native_image.request(builder, {**value, 'operation': 'native-get'})
 
     def test_native_reconcile_returns_fresh_retry_evidence_without_dispatch(self):
         from ml_exp_server.builds.builder_client import BuildReceiptMissingError

@@ -54,6 +54,8 @@ pub enum Error {
         operation: &'static str,
         http_status: Option<u16>,
     },
+    #[error("worker bootstrap failed: {0}; training was not started")]
+    Bootstrap(String),
     #[error(
         "managed input, checkpoint, record or publication I/O has not been ported; no process started"
     )]

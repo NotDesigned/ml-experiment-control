@@ -239,9 +239,21 @@ def install_tree(source, destination):
             path.unlink()
 
 
+def retain_worker(root):
+    """A queued job or a retry asks for the worker its Run froze, even after an upgrade."""
+    store = root / "workers"
+    store.mkdir(exist_ok=True)
+    store.chmod(0o755)
+    worker = root / "bin/ml-exp-worker-rs"
+    target = store / sha256(worker)
+    if not target.exists():
+        replace_file(worker, target, 0o555)
+
+
 def install(root, settings, source):
     for name in BINARIES:
         replace_file(source / "bin" / name, root / "bin" / name, 0o755)
+    retain_worker(root)
     site = Path(settings["python_site_packages"])
     for package in PACKAGES:
         install_tree(source / "python" / package, site / package)
@@ -255,13 +267,16 @@ def replace_config(temporary, path):
     os.replace(temporary, path)
 
 
-def pin_worker(settings, digest):
-    """New builds embed this worker; existing Runtimes keep their frozen hash."""
+def pin_worker(root, settings, digest):
+    """New builds embed this worker and new Runs freeze it; existing Runtimes and Runs keep theirs."""
     path = Path(settings["cloud_config"])
     config = json.loads(path.read_text())
-    if (config.get("builds") or {}).get("worker_sha256") in (None, digest):
+    builds = config.get("builds") or {}
+    store = str(root / "workers")
+    if builds.get("worker_sha256") is None or (builds["worker_sha256"] == digest and builds.get("worker_store") == store):
         return
     config["builds"]["worker_sha256"] = digest
+    config["builds"]["worker_store"] = store
     temporary = path.with_name(f".{path.name}.deploy")
     temporary.write_text(json.dumps(config, indent=2) + "\n")
     replace_config(temporary, path)
@@ -362,7 +377,7 @@ def first_install(root, settings, args):
         (root / "bin").mkdir(exist_ok=True)
         (root / "bin").chmod(0o755)
         install(root, settings, unpacked)
-        pin_worker(settings, worker)
+        pin_worker(root, settings, worker)
     try:
         start(settings)
         wait_healthy(settings, version, args.health_timeout)
@@ -397,7 +412,7 @@ def deploy(root, settings, args):
         with publishers_stopped(settings):
             try:
                 install(root, settings, unpacked)
-                pin_worker(settings, plan["worker_sha256"])
+                pin_worker(root, settings, plan["worker_sha256"])
             except OSError:
                 restore_previous(root, settings)
                 raise

@@ -24,11 +24,12 @@ impl Request {
         self.resolve(project, &format!("sha256:{}", "0".repeat(64)))?;
         Ok(())
     }
-    pub fn resolve(&self, project: &str, worker: &str) -> Result<creation::Request, &'static str> {
+    /// `frozen` is what `build::Definition::id` builds the Runtime's identity from.
+    pub fn resolve(&self, project: &str, frozen: &str) -> Result<creation::Request, &'static str> {
         let mut run = self.run.clone();
         if let Some(definition) = &self.runtime {
             let id = definition
-                .id(project, worker)
+                .id(project, frozen)
                 .map_err(|_| "preparation environment")?;
             if run.get("executor").and_then(Value::as_str) != Some(&definition.executor)
                 || run.contains_key("runtime_id")

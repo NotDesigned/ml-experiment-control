@@ -69,6 +69,16 @@ def _active(lock):
         os.close(descriptor)
 
 
+def _same_definition(saved, frozen):
+    """The same Runtime ID with another worker is a build retried after an upgrade.
+
+    An ID that names its worker cannot arrive with another one. An ID that does not is
+    built with the current worker, and a retry is allowed only once the first attempt is
+    proven to have published nothing. A receipt still has to match exactly.
+    """
+    return {**saved, "worker_sha256": None} == {**frozen, "worker_sha256": None}
+
+
 def request(builder, value):
     if value.get("operation") in {"native-data-build", "native-data-get"}:
         from .native_data import request as data_request
@@ -88,7 +98,7 @@ def request(builder, value):
     receipt = builder.root / (identifier + ".native.json")
     progress = builder.root / (identifier + ".progress.json")
     log = builder.root / (identifier + ".log")
-    if definition.exists() and json.loads(definition.read_text()) != frozen:
+    if definition.exists() and not _same_definition(json.loads(definition.read_text()), frozen):
         raise ValueError("native build frozen identity differs")
     if value["operation"] in {"native-logs", "native-progress"}:
         text = ""

@@ -7,6 +7,8 @@ use std::{io, path::Path, sync::atomic::AtomicBool, time::Duration};
 pub mod cloud;
 pub mod cloud_artifacts;
 #[cfg(unix)]
+pub mod cloud_bootstrap;
+#[cfg(unix)]
 pub mod cloud_code;
 #[cfg(unix)]
 pub mod cloud_data;

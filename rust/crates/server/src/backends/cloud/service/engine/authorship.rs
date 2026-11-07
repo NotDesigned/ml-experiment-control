@@ -28,7 +28,7 @@ impl Service {
         {
             return Ok(());
         }
-        self.check_code_worker(runtime)
+        self.check_code_worker(project, runtime)
     }
     pub(super) fn author_run(
         &self,

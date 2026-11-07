@@ -103,6 +103,11 @@ fn download_with_retries(
 /// Download metadata only through the existing exact Attempt capability.
 /// Redirects are disabled so its token never follows a different origin.
 pub fn download(url: &str, token: &str, expected: &str) -> managed::Result<Package> {
+    let bytes = download_raw(url, token, expected)?;
+    scoped(url, token, &bytes)
+}
+/// The exact bytes of a package this worker may not be new enough to read.
+pub fn download_raw(url: &str, token: &str, expected: &str) -> managed::Result<Vec<u8>> {
     let uri = reqwest::Url::parse(url).map_err(|_| download_error("url", None))?;
     if uri.scheme() != "https"
         || uri.host_str().is_none()
@@ -115,13 +120,9 @@ pub fn download(url: &str, token: &str, expected: &str) -> managed::Result<Packa
     {
         return Err(download_error("url", None));
     }
-    let channel = ml_exp_core::cloud::exchange::Channel {
-        url: url
-            .strip_suffix("/package")
-            .ok_or_else(|| download_error("url", None))?
-            .into(),
-        token: token.into(),
-    };
+    if !url.ends_with("/package") {
+        return Err(download_error("url", None));
+    }
     let client = reqwest::blocking::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(std::time::Duration::from_secs(10))
@@ -129,8 +130,18 @@ pub fn download(url: &str, token: &str, expected: &str) -> managed::Result<Packa
         .build()
         .map_err(|_| download_error("client", None))?;
     eprintln!("ML_EXPD_PACKAGE_DOWNLOAD=START");
-    let bytes = download_with_retries(&client, url, token, expected)?;
-    let package = decode(&bytes).map_err(|_| download_error("decode", Some(200)))?;
+    download_with_retries(&client, url, token, expected)
+}
+/// A package for this worker, of exactly the Attempt it was asked for.
+pub fn scoped(url: &str, token: &str, bytes: &[u8]) -> managed::Result<Package> {
+    let channel = ml_exp_core::cloud::exchange::Channel {
+        url: url
+            .strip_suffix("/package")
+            .ok_or_else(|| download_error("url", None))?
+            .into(),
+        token: token.into(),
+    };
+    let package = decode(bytes).map_err(|_| download_error("decode", Some(200)))?;
     if package.channel != channel {
         return Err(download_error("scope", Some(200)));
     }

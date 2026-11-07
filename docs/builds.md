@@ -49,7 +49,8 @@ the code source; only the reverse is free:
   directory is not refused: it stays in the image and any change builds it again, and the
   question says so. Move large files to data with [`ml-exp data upload`](data.md) to avoid
   that. A Run named by hand with `code_source_id` over the limit is refused.
-- Choosing a Runtime by hand with `code_source_id` needs one built with the current worker.
+- Choosing a Runtime by hand with `code_source_id` needs one built with the current
+  worker, unless it can bootstrap (see [below](#the-worker-and-upgrades)).
 
 The whole directory stays in the image, as `COPY . /workspace` asks, and nothing is
 delivered separately, when the Dockerfile uses any of these, because what it reads cannot
@@ -74,6 +75,44 @@ is linux/amd64. Current admission rejects custom syntax/escape directives,
 heredocs, build-argument FROM and external-image COPY --from. ADD and ONBUILD
 are supported; literal `<<` inside quoted strings or comments is permitted.
 Dockerfile size is at most 256 KiB; `ml-expd-build-internal` is reserved.
+## The worker and upgrades
+
+On PAI and SenseCore, a server upgrade does not rebuild an environment. A Runtime's identity
+names a constant, `worker-bootstrap.v1`, and not the worker in its image, so the same recipe
+finds the same Runtime after any number of releases. The worker in the image is a bootstrap:
+
+- A new Run freezes the server's current worker as `native_cloud.worker_sha256`, which is
+  also where the Run shows what it ran with. A Runtime records the one it was built with.
+  A retry keeps the Run's worker.
+- `cloud-launch` first reads `worker_sha256` from the package, and nothing else in it, since
+  a later server's package may not decode in this worker. If its own hash differs, it
+  downloads that worker from the Attempt's `/worker` exchange endpoint with the Attempt's
+  token, retrying a passing failure, checks the hash, writes it to a private local temporary
+  directory, checks that file again, and `exec`s it with the same arguments.
+- The worker `exec`ed must have that hash, or the job stops. Any failure stops before
+  training and the job's log says why; lines start `ML_EXPD_WORKER_BOOTSTRAP=`.
+- It does not go in the Attempt's directory: that cannot exist before the Attempt starts,
+  because an existing one reads as a launch that began, and shared storage may be mounted
+  noexec. It tries `$TMPDIR`, `/tmp` and `/var/tmp` in turn, and needs one that can execute.
+  A restarted job downloads it again.
+
+The bootstrap contract is `cloud-launch` and its arguments, `worker_sha256` at the top of a
+package, the `/package` and `/worker` endpoints, and the plans of `script-prepare` and
+`data-import`, which run in the image's own worker. Changing any of these means raising
+`BOOTSTRAP` in `rust/crates/core/src/cloud/build.rs`, which builds every environment once
+more, and recognising the old value for stored Runtimes.
+
+A Runtime built before this keeps its identity and behaviour: its worker cannot bootstrap,
+its Runs freeze nothing and run with the image's worker, and it cannot take delivered code
+once that worker is not the current one. The same recipe gets a new identity, so **each
+environment builds one more time** after this release, and then no more for an upgrade. A
+preparation not yet built moves to the new identity; one built stays on the old.
+
+Slurm keeps today's identity and builds per worker, since its jobs have no exchange to fetch
+from and a SIF is materialized per Runtime. To follow later, a Slurm job would need a route to
+the worker, such as the gateway placing it on shared storage, and materialization keyed
+on the image rather than the worker. Data images (`native-data-*`) also still name the worker.
+
 See [platform checks](platform-checks.md) for the distinction between user
 requirements, implementation limits and additional platform policies under review.
 

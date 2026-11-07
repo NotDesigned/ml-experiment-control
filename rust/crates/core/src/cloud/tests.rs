@@ -323,6 +323,14 @@ fn compiled_from(
     attempt: &str,
     checkpoint: Option<&Value>,
 ) -> (Value, action::Execution) {
+    compiled_with_worker(code, attempt, checkpoint, None)
+}
+fn compiled_with_worker(
+    code: Option<&str>,
+    attempt: &str,
+    checkpoint: Option<&Value>,
+    worker: Option<&str>,
+) -> (Value, action::Execution) {
     let runtime = run::Runtime {
         runtime_id: format!("runtime.{}", "1".repeat(64)),
         source_id: job().source_id,
@@ -370,6 +378,10 @@ fn compiled_from(
         "datasets":"/mnt/workspace/ml-expd/datasets"});
     docs.run["native_cloud"]["storage"] = storage.clone();
     docs.attempt["native_cloud"]["storage"] = storage;
+    if let Some(worker) = worker {
+        docs.run["native_cloud"]["worker_sha256"] = json!(worker);
+        docs.attempt["native_cloud"]["worker_sha256"] = json!(worker);
+    }
     let mut attempt_document = docs.attempt.clone();
     if attempt != "attempt-001" {
         let first = crate::first_submission::native::Binding {
@@ -915,4 +927,50 @@ fn provider_diagnostics_select_reason_and_bound_tails_without_private_fields() {
     let tail = pai::diagnostic_tail(&json!(many), 200);
     assert!(tail.iter().all(|line| line.len() <= 4096));
     assert!(tail.iter().map(|line| line.len() + 1).sum::<usize>() <= 256 * 1024);
+}
+
+fn recipe() -> build::Definition {
+    build::Definition {
+        source_id: format!("source.{}", "2".repeat(64)),
+        executor: "dlc".into(),
+        base_image: format!("registry.example/base@sha256:{}", "3".repeat(64)),
+        dockerfile: "Dockerfile".into(),
+    }
+}
+#[test]
+fn a_stored_runtime_keeps_its_identity_and_a_new_one_no_longer_names_a_worker() {
+    // Written out, because a Runtime already stored and built has exactly this ID.
+    let worker = format!("sha256:{}", "d".repeat(64));
+    assert_eq!(
+        recipe().id("demo", &worker).unwrap(),
+        "runtime.67501929549274141554354c79703bc0c4a6721ed5aca203e8ef6a6775b0b95c"
+    );
+    assert_eq!(
+        recipe().id("demo", build::BOOTSTRAP).unwrap(),
+        "runtime.cedceae7140394af7a554cc33f1e5c9320d090eadcdd8a3f1629113c53f83e4f"
+    );
+    assert!(recipe().id("demo", "anything else").is_err());
+    assert!(recipe().id("demo", "worker-bootstrap.v2").is_err());
+}
+#[test]
+fn a_run_on_a_bootstrapping_runtime_freezes_its_worker_and_any_other_is_unchanged() {
+    let (run, execution) = compiled(None, "attempt-001");
+    assert!(run["native_cloud"].get("worker_sha256").is_none());
+    let image = format!("sha256:{}", "d".repeat(64));
+    assert_eq!(execution.launch_package.worker_sha256, image);
+    assert!(
+        !serde_json::to_string(&*execution.launch_package)
+            .unwrap()
+            .contains("bootstrap")
+    );
+    assert_eq!(execution.job.command[0], "/opt/ml-expd/worker");
+    // Frozen, it is what the package requires, on a retry as well: the command that
+    // starts the job still names the worker in the image.
+    let frozen = format!("sha256:{}", "e".repeat(64));
+    for attempt in ["attempt-001", "attempt-002"] {
+        let (run, execution) = compiled_with_worker(None, attempt, None, Some(&frozen));
+        assert_eq!(run["native_cloud"]["worker_sha256"], frozen.as_str());
+        assert_eq!(execution.launch_package.worker_sha256, frozen);
+        assert_eq!(execution.job.command[0], "/opt/ml-expd/worker");
+    }
 }

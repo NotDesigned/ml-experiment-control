@@ -22,6 +22,7 @@ use std::{
 use tokio::sync::mpsc;
 /// A worker that stops reading must not hold a transfer slot for ever.
 const CODE_TRANSFER: Duration = Duration::from_secs(15 * 60);
+type Cloud = crate::backends::cloud::service::Service;
 pub(crate) fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route(
@@ -39,6 +40,10 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
         .route(
             "/api/worker-exchange/{project}/{run}/{attempt}/code-content",
             get(code_content),
+        )
+        .route(
+            "/api/worker-exchange/{project}/{run}/{attempt}/worker",
+            get(worker_binary),
         )
         .route(
             "/api/worker-exchange/{project}/{run}/{attempt}/datasets/{asset}/{part}",
@@ -126,14 +131,80 @@ fn send_code(
         }
     }
 }
-/// Streamed from sealed files, so a large source neither sits in this server's memory
-/// nor holds one of the slots ordinary requests wait for. The worker checks every byte.
 async fn code_content(
+    state: State<Arc<AppState>>,
+    path: Path<(String, String, String)>,
+    raw: RawQuery,
+    headers: HeaderMap,
+) -> Response {
+    attempt_transfer(
+        state,
+        path,
+        raw,
+        headers,
+        Transfer {
+            busy: "CODE_TRANSFER_BUSY",
+            unavailable: "CODE_STREAM_UNAVAILABLE",
+            authorize: |cloud, project, run, attempt, token| {
+                cloud.worker_code_grant(project, run, attempt, token)
+            },
+            open: |cloud, grant| cloud.worker_code_content(grant),
+            bytes: |content| content.bytes,
+            send: |content, send| content.each_chunk(send).map_err(io::Error::other),
+        },
+    )
+    .await
+}
+async fn worker_binary(
+    state: State<Arc<AppState>>,
+    path: Path<(String, String, String)>,
+    raw: RawQuery,
+    headers: HeaderMap,
+) -> Response {
+    attempt_transfer(
+        state,
+        path,
+        raw,
+        headers,
+        Transfer {
+            busy: "WORKER_TRANSFER_BUSY",
+            unavailable: "WORKER_STREAM_UNAVAILABLE",
+            authorize: |cloud, project, run, attempt, token| {
+                cloud.worker_binary_grant(project, run, attempt, token)
+            },
+            open: |cloud, grant| cloud.worker_binary(grant),
+            bytes: |content| content.bytes,
+            send: |content, send| content.each_chunk(send),
+        },
+    )
+    .await
+}
+/// What an Attempt may read, and how. Only `Cloud` can say what either grant allows.
+struct Transfer<G, C> {
+    busy: &'static str,
+    unavailable: &'static str,
+    authorize: fn(&Cloud, &str, &str, &str, &str) -> crate::backends::cloud::Result<G>,
+    open: fn(&Cloud, &G) -> crate::backends::cloud::Result<C>,
+    bytes: fn(&C) -> u64,
+    send: fn(C, &mut dyn FnMut(Vec<u8>) -> io::Result<()>) -> io::Result<()>,
+}
+/// Streamed from files, so a large one neither sits in this server's memory nor holds one
+/// of the slots ordinary requests wait for. The worker checks every byte.
+async fn attempt_transfer<G: Send + 'static, C: Send + 'static>(
     State(state): State<Arc<AppState>>,
     Path((project, run, attempt)): Path<(String, String, String)>,
     RawQuery(raw): RawQuery,
     headers: HeaderMap,
+    transfer: Transfer<G, C>,
 ) -> Response {
+    let Transfer {
+        busy,
+        unavailable,
+        authorize,
+        open,
+        bytes,
+        send,
+    } = transfer;
     if api::no_parameters(raw.as_deref()).is_err() {
         return http_effect::failure(Error {
             status: 422,
@@ -185,7 +256,7 @@ async fn code_content(
     let authorizing = cloud.clone();
     let task = tokio::task::spawn_blocking(move || {
         let _slot = authorizing_slot;
-        authorizing.worker_code_grant(&project, &run, &attempt, &token)
+        authorize(&authorizing, &project, &run, &attempt, &token)
     });
     let grant = match tokio::time::timeout(Duration::from_secs(35), task).await {
         Ok(Ok(Ok(grant))) => grant,
@@ -193,40 +264,42 @@ async fn code_content(
         _ => {
             return http_effect::failure(Error {
                 status: 503,
-                code: "CODE_STREAM_UNAVAILABLE",
-                detail: "the code could not be read yet; try again",
+                code: unavailable,
+                detail: "the file could not be read yet; try again",
             });
         }
     };
     let Ok(permit) = state.data_slots.clone().try_acquire_owned() else {
         let mut response = http_effect::failure(Error {
             status: 429,
-            code: "CODE_TRANSFER_BUSY",
-            detail: "code transfer concurrency limit reached; try again",
+            code: busy,
+            detail: "transfer concurrency limit reached; try again",
         });
         response
             .headers_mut()
             .insert("retry-after", HeaderValue::from_static("1"));
         return response;
     };
-    let task = tokio::task::spawn_blocking(move || cloud.worker_code_content(&grant));
+    let task = tokio::task::spawn_blocking(move || open(&cloud, &grant));
     let content = match tokio::time::timeout(Duration::from_secs(35), task).await {
         Ok(Ok(Ok(content))) => content,
         Ok(Ok(Err(error))) => return http_effect::failure(error.into()),
         _ => {
             return http_effect::failure(Error {
                 status: 503,
-                code: "CODE_STREAM_UNAVAILABLE",
-                detail: "the code could not be read yet; try again",
+                code: unavailable,
+                detail: "the file could not be read yet; try again",
             });
         }
     };
-    let bytes = content.bytes;
+    let length = bytes(&content);
     let (sender, receiver) = mpsc::channel(2);
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
         let deadline = Instant::now() + CODE_TRANSFER;
-        let sent = content.each_chunk(|chunk| send_code(&sender, Ok(chunk.into()), deadline));
+        let sent = send(content, &mut |chunk| {
+            send_code(&sender, Ok(chunk.into()), deadline)
+        });
         // Ending early with an error tells the worker it did not receive everything.
         if let Err(error) = sent {
             let _ = send_code(&sender, Err(io::Error::other(error)), deadline);
@@ -239,7 +312,7 @@ async fn code_content(
     );
     response
         .headers_mut()
-        .insert(header::CONTENT_LENGTH, HeaderValue::from(bytes));
+        .insert(header::CONTENT_LENGTH, HeaderValue::from(length));
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));

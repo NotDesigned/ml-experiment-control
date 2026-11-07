@@ -233,6 +233,12 @@ pub fn execution(
         ),
         None => runtime.source_dir.clone(),
     };
+    // A Run on an image that can bootstrap froze the worker it runs with. Any other runs
+    // with the image's own, and its package stays what it always was.
+    let worker = match run["native_cloud"].get("worker_sha256") {
+        Some(value) => value.as_str().ok_or(Error("frozen worker"))?,
+        None => &runtime.worker_sha256,
+    };
     let mut package = super::launch::compile(super::launch::Input {
         root,
         project,
@@ -241,7 +247,7 @@ pub fn execution(
         workdir: &workdir,
         argv: &request.command,
         timeout_seconds: request.walltime_seconds,
-        worker_sha256: &runtime.worker_sha256,
+        worker_sha256: worker,
         storage: serde_json::from_value(run["native_cloud"]["storage"].clone())
             .map_err(|_| Error("frozen cloud storage"))?,
         channel,

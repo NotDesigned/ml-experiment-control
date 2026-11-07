@@ -34,6 +34,11 @@ from ..storage import atomic_json
 from ..pai_storage import PaiStorage
 
 
+# A DSW reports Running before its MCP gateway answers, so the first calls can meet
+# "failed to reach paimcp ... HTTP 502". These cover a couple of minutes of that.
+TRANSFER_DELAYS = (5, 10, 20, 40, 60)
+
+
 def file_sha(path):
     value = hashlib.sha256()
     with Path(path).open("rb") as f:
@@ -69,12 +74,22 @@ class DswPublisher:
     def role(self):
         return PaiStorage(self.config, self.api).role()
 
+    def repeatable(self, args, private, **options):
+        """Only for a call with the same result however often it reaches DSW."""
+        for number, delay in enumerate(TRANSFER_DELAYS, 1):
+            try:
+                return self.cli(args, private, **options)
+            except (OSError, ValueError, subprocess.SubprocessError) as error:
+                self.log_output("DSW transfer retry " + str(number) + ": " + type(error).__name__)
+                time.sleep(delay)
+        return self.cli(args, private, **options)
+
     def upload(self, source, target, private):
         """Use small parts below MCP's practical request size, then verify SHA256."""
         source = Path(source)
         if source.stat().st_size <= 512 * 1024:
-            self.cli(["dsw", "instance", "cp", str(source), "dsw:" + target,
-                      "--instance", self.instance], private, timeout=180, quiet=True)
+            self.repeatable(["dsw", "instance", "cp", str(source), "dsw:" + target,
+                             "--instance", self.instance], private, timeout=180, quiet=True)
             return
         parts = []
         with tempfile.TemporaryDirectory(prefix="dsw-parts-", dir=self.builder.root) as directory:
@@ -83,18 +98,25 @@ class DswPublisher:
                     suffix = ".part-" + str(len(parts))
                     path = Path(directory) / ("payload" + suffix)
                     path.write_bytes(chunk)
-                    self.cli(["dsw", "instance", "cp", str(path), "dsw:" + target + suffix,
-                              "--instance", self.instance], private, timeout=180, quiet=True)
+                    self.repeatable(["dsw", "instance", "cp", str(path), "dsw:" + target + suffix,
+                                     "--instance", self.instance], private, timeout=180, quiet=True)
                     parts.append(target + suffix)
                     path.unlink()
-        code = ("from pathlib import Path; import hashlib; "
+        # A lost reply may hide a success, or a first run still going, so each run assembles
+        # its own copy, publishes it whole, and finds its work done if the target is right.
+        code = ("from pathlib import Path; import hashlib, os\n"
                 "parts=" + repr(parts) + "; target=Path(" + repr(target) + "); "
-                "f=target.open('xb'); "
-                "[f.write(Path(p).read_bytes()) for p in parts]; f.close(); "
-                "actual=hashlib.file_digest(target.open('rb'),'sha256').hexdigest(); "
-                "\nif actual != " + repr(file_sha(source)) + ": raise ValueError('DSW transfer SHA256 differs')"
-                "\nfor p in parts: Path(p).unlink()")
-        self.cli(["dsw", "instance", "exec", self.instance, "--code", code], private, quiet=True)
+                "expected=" + repr(file_sha(source)) + "\n"
+                "def sha(path):\n"
+                "    with path.open('rb') as f: return hashlib.file_digest(f,'sha256').hexdigest()\n"
+                "if not (target.exists() and sha(target) == expected):\n"
+                "    stage=target.with_name(target.name + '.' + str(os.getpid()))\n"
+                "    with stage.open('wb') as f:\n"
+                "        for p in parts: f.write(Path(p).read_bytes())\n"
+                "    if sha(stage) != expected: raise ValueError('DSW transfer SHA256 differs')\n"
+                "    os.replace(stage, target)\n"
+                "for p in parts: Path(p).unlink(missing_ok=True)")
+        self.repeatable(["dsw", "instance", "exec", self.instance, "--code", code], private, quiet=True)
 
     def shutdown_timer(self):
         """Cloud-side stop budget survives a lost CLI or API-host process."""
@@ -330,8 +352,10 @@ class DswPublisher:
                     raise ValueError("DSW source context exceeds 300 MiB")
                 remote = "/tmp/ml-expd-build-" + nonce
                 self.phase("TRANSFERRING_DSW_CONTEXT", "Copying the sealed source context over PAI MCP")
-                self.cli(["dsw", "instance", "exec", self.instance, "--code",
-                          "from pathlib import Path; p=Path(" + repr(remote) + "); p.mkdir(mode=0o700); (p/'auth').mkdir(mode=0o700); (p/'tools').mkdir(mode=0o700)"], private)
+                # The first call after the DSW starts, and the likeliest to meet its gateway
+                # not yet up. The path is this build's own, so finding it already made is fine.
+                self.repeatable(["dsw", "instance", "exec", self.instance, "--code",
+                                 "from pathlib import Path; p=Path(" + repr(remote) + "); p.mkdir(mode=0o700,exist_ok=True); (p/'auth').mkdir(mode=0o700,exist_ok=True); (p/'tools').mkdir(mode=0o700,exist_ok=True)"], private)
                 bases = []
                 for row in DockerfileParser(fileobj=io.BytesIO((context / "Dockerfile").read_bytes())).structure:
                     if row["instruction"] == "FROM":

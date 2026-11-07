@@ -163,7 +163,17 @@ class Deploy(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.version(), "1.1.0")
         worker = "sha256:" + digest(self.root / "bin/ml-exp-worker-rs")
-        self.assertEqual(json.loads(self.cloud.read_text())["builds"]["worker_sha256"], worker)
+        pinned = json.loads(self.cloud.read_text())["builds"]
+        self.assertEqual(pinned["worker_sha256"], worker)
+        # Where a job fetches the worker its Run froze, from this release and the next.
+        store = Path(pinned["worker_store"])
+        self.assertEqual(store, self.root.resolve() / "workers")
+        first = store / worker.removeprefix("sha256:")
+        self.assertEqual(digest(first), worker.removeprefix("sha256:"))
+        self.assertEqual(first.stat().st_mode & 0o777, 0o555)
+        self.assertEqual(self.deploy(self.bundle("1.2.0"), "--apply").returncode, 0)
+        self.assertTrue(first.exists())
+        self.assertEqual(len(list(store.iterdir())), 2)
         self.assertEqual(self.cloud.stat().st_mode & 0o777, 0o600)
         self.assertEqual(json.loads((self.root / "DEPLOYED.json").read_text())["source_commit"], "c" * 40)
         self.assertTrue((self.site / "ml_exp_worker/new.py").exists())
@@ -402,7 +412,7 @@ class Deploy(unittest.TestCase):
         tool = self.tool()
         before = self.cloud.stat()
         with patch.object(os, "chown") as chown:
-            tool.pin_worker({"cloud_config": str(self.cloud)}, "sha256:new")
+            tool.pin_worker(self.root, {"cloud_config": str(self.cloud)}, "sha256:new")
         self.assertEqual(chown.call_args.args[1:], (before.st_uid, before.st_gid))
         self.assertEqual(self.cloud.stat().st_mode & 0o777, 0o600)
         self.assertEqual(json.loads(self.cloud.read_text())["builds"]["worker_sha256"], "sha256:new")

@@ -36,7 +36,8 @@
   "builds": {
     "socket": "/run/ml-exp-builder/builder.sock",
     "peer_uid": 0,
-    "worker_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    "worker_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "worker_store": "/opt/ml-exp/workers"
   },
   "polling": {"enabled": false, "interval_seconds": 10, "rpc_timeout_seconds": 5}
 }
