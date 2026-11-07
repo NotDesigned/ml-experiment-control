@@ -118,6 +118,9 @@ For every field and each separate step, see `ml-exp run start` and `ml-exp run e
         /// Keep the server's copy after downloading.
         #[arg(long)]
         keep: bool,
+        /// Publish results an ended job could not upload, with a zero-GPU job.
+        #[arg(long, conflicts_with_all = ["output", "keep"])]
+        collect: bool,
     },
     /// Cancel the latest submission or a named Run, after saying which one.
     Cancel {
@@ -911,6 +914,7 @@ fn expand(command: Command, config: &std::path::Path) -> Result<Command, ml_exp_
         Command::Results {
             output,
             keep,
+            collect,
             run,
             project,
         } => {
@@ -926,10 +930,14 @@ fn expand(command: Command, config: &std::path::Path) -> Result<Command, ml_exp_
                 ))?;
             let name = format!("{}{}", latest.run_id, sources::RESULTS_SUFFIX);
             Command::Run {
-                command: Run::Download {
-                    output: output.unwrap_or_else(|| name.into()),
-                    submission,
-                    keep,
+                command: if collect {
+                    Run::Collect { submission }
+                } else {
+                    Run::Download {
+                        output: output.unwrap_or_else(|| name.into()),
+                        submission,
+                        keep,
+                    }
                 },
             }
         }

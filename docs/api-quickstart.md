@@ -73,6 +73,8 @@ ml-exp retry      # ask, then run it again; --checkpoint resumes from one
 ```
 
 `results`, `cancel` and `retry` act on your latest submission unless given `--run NAME`.
+If a job ended but its results were not published, `ml-exp results --collect` publishes
+them with a zero-GPU job, without running training again.
 
 **Running it again.** The job's identity comes from the directory name, the code and the
 settings, so repeating the same command goes back to the same job and sends nothing new.

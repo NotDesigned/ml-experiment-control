@@ -169,6 +169,15 @@ impl HttpFailure {
 }
 impl std::fmt::Display for HttpFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.error_code == "ARTIFACT_NOT_PUBLISHED" {
+            return write!(
+                f,
+                "HTTP {} {}: the results have not been published. Once the job has ended, \
+                 `ml-exp results --collect` publishes them with a zero-GPU job and does not \
+                 run training again",
+                self.status, self.error_code
+            );
+        }
         write!(
             f,
             "HTTP {} {}; inspect saved identities before retrying",
