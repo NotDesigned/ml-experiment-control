@@ -30,7 +30,10 @@ pub enum Error {
         "dataset {asset} transfer is unconfirmed; inspect this asset and repeat the same dataset operation to reconcile durable parts: {source}"
     )]
     DatasetOutcomeUnknown { asset: String, source: Box<Error> },
-    #[error("invalid API URL; use HTTPS or loopback HTTP without userinfo, query or fragment")]
+    #[error(
+        "invalid API URL; use HTTPS or loopback HTTP without userinfo, query or fragment. \
+         A configuration from before 0.2 needs `ml-exp config set` again"
+    )]
     Url,
     #[error("invalid API token")]
     Token,

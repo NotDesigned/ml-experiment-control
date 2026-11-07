@@ -185,7 +185,11 @@ pub fn run(config: Config, mut request: Request) -> std::io::Result<serde_json::
         source_dir: request.runtime.source_dir.clone(),
         worker: managed::Runtime {
             program: request.runtime.worker_path.clone(),
-            base_environment: BTreeMap::new(),
+            // As on cloud backends: a bare command like `python3` needs a PATH to resolve.
+            base_environment: BTreeMap::from([(
+                "PATH".into(),
+                "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into(),
+            )]),
             runtime_environment: vec!["CUDA_VISIBLE_DEVICES".into(), "LD_LIBRARY_PATH".into()],
         },
     };
