@@ -1569,3 +1569,75 @@ fn a_rebuild_interrupted_by_a_restart_resumes_the_same_new_run_without_duplicate
     assert_eq!(rows.len() as i64, total);
     assert_rebuilt_rows(&rows, total);
 }
+
+/// One journal, two destinations: W&B and MLflow keep their own cursors and
+/// diagnostics, and one failing never holds back the other.
+#[test]
+fn wandb_and_mlflow_publish_one_journal_with_independent_cursors() {
+    use crate::tracking::mlflow::{self, fake};
+    let mut fixture = Fixture::new(json!({}));
+    let route = json!({"enabled":true,"entity":"fixture","project":"science",
+        "mlflow":{"enabled":true,"reason":null,"experiment":"demo"}});
+    let bind = |run: &str| {
+        let guard = fixture.store.guard("demo", run).unwrap();
+        fixture
+            .store
+            .bind(&guard, &route, &json!({"ml_expd":{"run_id":run}}))
+            .unwrap();
+        fixture.store.scope(&guard, "attempt-001").unwrap()
+    };
+    let (train, eval) = (bind("train"), bind("eval"));
+    for scope in [&train, &eval] {
+        fixture.append(scope, 1..=3);
+        fixture.succeed(scope);
+    }
+    let mlflow_state = |fixture: &Fixture, scope: &str| {
+        let parsed = Scope::parse(scope).unwrap();
+        let guard = fixture.store.guard("demo", &parsed.run).unwrap();
+        fixture
+            .store
+            .mlflow_state(&guard, scope)
+            .unwrap()
+            .unwrap_or(json!({}))
+    };
+    let flag = AtomicBool::new(false);
+    let mut session = mlflow::Session::default();
+
+    // MLflow is down: W&B publishes and finishes `train` all the same.
+    let down = fake::runtime(&fake::closed_url(), fixture.root.path(), "secret");
+    let error = mlflow::publish_ended(&fixture.store, &down, &mut session, &train, None, &flag)
+        .unwrap_err();
+    mlflow::record_failure(&fixture.store, &train, error);
+    until_finished(&mut fixture, &train);
+    assert_eq!(fixture.status(&train)["confirmed"], 4);
+    assert_eq!(fixture.status(&train)["status"], "FINISHED");
+    let state = mlflow_state(&fixture, &train);
+    assert_eq!(state["error"], "MLFLOW_UNREACHABLE");
+    assert_eq!(state["confirmed"], 0);
+
+    // W&B is broken: MLflow publishes and finishes `eval` all the same.
+    fixture.runtime.config.python = fixture.root.path().join("missing-python");
+    fixture.restart();
+    assert!(fixture.visit(&eval).is_err());
+    let server = fake::Server::start("admin", "secret");
+    let up = fake::runtime(&server.url, fixture.root.path(), "secret");
+    for _ in 0..8 {
+        mlflow::publish_ended(&fixture.store, &up, &mut session, &eval, None, &flag).unwrap();
+    }
+    let state = mlflow_state(&fixture, &eval);
+    assert_eq!(state["status"], "MLFLOW_FINISHED");
+    assert_eq!(state["confirmed"], 4);
+    assert_eq!(fixture.status(&eval)["confirmed"], 0);
+    assert_eq!(server.runs().len(), 1);
+    assert_eq!(server.runs()[0].name, "eval/attempt-001");
+    assert_eq!(server.runs()[0].points.len(), 3);
+
+    // MLflow comes back for `train`; its W&B publication is untouched.
+    for _ in 0..8 {
+        mlflow::publish_ended(&fixture.store, &up, &mut session, &train, None, &flag).unwrap();
+    }
+    assert_eq!(mlflow_state(&fixture, &train)["status"], "MLFLOW_FINISHED");
+    assert_eq!(server.runs().len(), 2);
+    assert_eq!(fixture.status(&train)["status"], "FINISHED");
+    assert_eq!(fixture.status(&train)["confirmed"], 4);
+}

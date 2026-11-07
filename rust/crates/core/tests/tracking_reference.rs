@@ -58,6 +58,7 @@ fn route(input: &Value) -> Value {
             .get("project")
             .and_then(Value::as_str)
             .map(str::to_owned),
+        mlflow: None,
     };
     let options = if input["options"].is_null() {
         None
