@@ -94,7 +94,7 @@ class DswPublisher:
                 "actual=hashlib.file_digest(target.open('rb'),'sha256').hexdigest(); "
                 "\nif actual != " + repr(file_sha(source)) + ": raise ValueError('DSW transfer SHA256 differs')"
                 "\nfor p in parts: Path(p).unlink()")
-        self.cli(["dsw", "instance", "exec", self.instance, "--code", code], private)
+        self.cli(["dsw", "instance", "exec", self.instance, "--code", code], private, quiet=True)
 
     def shutdown_timer(self):
         """Cloud-side stop budget survives a lost CLI or API-host process."""

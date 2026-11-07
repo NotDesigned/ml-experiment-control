@@ -196,6 +196,7 @@ impl Transport for FakeProvider {
                 uncertain: false,
             }),
             "GetJobEvents" => Ok(json!({"Events":["scheduled"]})),
+            "ListWorkers" => Ok(json!({"workers":[]})),
             other => panic!("unexpected provider operation {other}"),
         }
     }
@@ -1542,6 +1543,7 @@ impl Transport for CopyProvider {
                 Ok(json!({"Logs":logs}))
             }
             "GetJobEvents" => Ok(json!({"Events":["scheduled"]})),
+            "ListWorkers" => Ok(json!({"workers":[]})),
             other => panic!("unexpected provider operation {other}"),
         }
     }
