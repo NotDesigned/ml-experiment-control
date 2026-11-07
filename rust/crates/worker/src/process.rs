@@ -30,8 +30,8 @@ impl Log {
     fn verify_path(&self, expected: &Metadata) -> io::Result<()> {
         // lstat never opens a substituted FIFO or follows a substituted symlink.
         let current = fs::symlink_metadata(&self.path)?;
-        if !current.is_file() || current.dev() != expected.dev() || current.ino() != expected.ino()
-        {
+        // Not the device: a shared filesystem's client need not report a stable one.
+        if !current.is_file() || current.ino() != expected.ino() {
             return Err(io::Error::other(
                 "log path no longer names its original file",
             ));
@@ -40,6 +40,8 @@ impl Log {
     }
 
     fn hash(&mut self, captured_bytes: u64, captured_sha256: &str) -> io::Result<String> {
+        // Settle what a shared filesystem may still report late, then read the size.
+        self.file.sync_all()?;
         let expected = self.file.metadata()?;
         self.verify_path(&expected)?;
         // User code can open this path independently of the stdout/stderr pipe.
@@ -65,12 +67,9 @@ impl Log {
         }
         let current = self.file.metadata()?;
         self.verify_path(&expected)?;
-        if current.len() != expected.len()
-            || current.mtime() != expected.mtime()
-            || current.mtime_nsec() != expected.mtime_nsec()
-            || current.ctime() != expected.ctime()
-            || current.ctime_nsec() != expected.ctime_nsec()
-        {
+        // The digest below compares content with the pipe's bytes. Times add nothing to
+        // that, and CPFS moved them on an unchanged file, failing a successful 8-GPU job.
+        if current.len() != expected.len() {
             return Err(io::Error::other("log changed while being hashed"));
         }
         let actual = format!("{:x}", digest.finalize());
@@ -198,7 +197,8 @@ fn execute_environment(
     ] {
         match log.hash(captured_bytes, captured_sha256) {
             Ok(hash) => *field = Some(hash),
-            Err(_) => {
+            Err(error) => {
+                eprintln!("ML_EXPD_LOG_CAPTURE {}: {error}", log.path.display());
                 if result.error.is_none() {
                     result.error = Some(crate::Failure {
                         stage: "LOG_CAPTURE",
