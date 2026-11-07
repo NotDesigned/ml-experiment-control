@@ -4,6 +4,7 @@
 pub mod action;
 pub mod adapter;
 mod evidence;
+mod lock_diagnostics;
 pub mod outbox;
 mod registry;
 pub mod service;

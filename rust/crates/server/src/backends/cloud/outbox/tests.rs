@@ -103,7 +103,7 @@ fn sync_recovery_lost_reply_keeps_failed_parent_and_cannot_create_a_second_child
     outbox
         .prepare(&profile, &original, allocation, &|| Ok(()))
         .unwrap();
-    let lock = outbox.lock().unwrap();
+    let lock = outbox.lock("test").unwrap();
     let mut entry = outbox.load(&Outbox::slot(&original).unwrap()).unwrap();
     entry.started = true;
     entry.handle = Some(Handle {
@@ -422,4 +422,125 @@ fn cloud_runner_uses_the_action_claim_private_request_and_restart_reconciliation
     assert!(private == request);
     let public = serde_json::to_string(&verified).unwrap();
     assert!(!public.contains(&job.submission_token));
+}
+/// Calls `hook` once, on the first GetJob after it is armed, then answers as `Fake`.
+struct Hooked<F: Fn() + Send + Sync> {
+    inner: Fake,
+    armed: Arc<AtomicBool>,
+    hook: F,
+}
+impl<F: Fn() + Send + Sync> Transport for Hooked<F> {
+    fn request(&self, request: &Request, cancelled: &AtomicBool) -> Result<Value> {
+        if request.action == "GetJob" && self.armed.swap(false, Ordering::SeqCst) {
+            (self.hook)();
+        }
+        self.inner.request(request, cancelled)
+    }
+}
+/// A job whose reply was lost and was then found: the entry holds a handle.
+fn owned(outbox: &Outbox, adapter: &Adapter<impl Transport>, state: &Mutex<State>) -> Job {
+    let (job, profile, _) = setup();
+    let allocation = Allocation::Guaranteed;
+    let flag = AtomicBool::new(false);
+    let prepared = outbox
+        .prepare(&profile, &job, allocation, &|| Ok(()))
+        .unwrap();
+    outbox
+        .execute(
+            adapter,
+            &job,
+            allocation,
+            prepared["confirmation"].as_str().unwrap(),
+            &|| Ok(()),
+            &flag,
+        )
+        .unwrap();
+    state.lock().unwrap().visible = true;
+    let found = outbox
+        .reconcile(adapter, &job, allocation, &|| Ok(()), &flag)
+        .unwrap();
+    assert_eq!(found["phase"], "OWNED");
+    job
+}
+#[test]
+fn a_status_read_waits_for_a_brief_holder() {
+    let temp = tempfile::tempdir().unwrap();
+    Outbox::initialize(temp.path()).unwrap();
+    let outbox = Outbox::open(temp.path()).unwrap();
+    let (job, profile, _) = setup();
+    outbox
+        .prepare(&profile, &job, Allocation::Guaranteed, &|| Ok(()))
+        .unwrap();
+    let (held, wait) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let other = Outbox::open(temp.path()).unwrap();
+            let _lock = other.lock("test.holder").unwrap();
+            held.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(500));
+        });
+        wait.recv().unwrap();
+        let start = Instant::now();
+        assert_eq!(outbox.status(&job).unwrap()["phase"], "PREPARED");
+        assert!(outbox.optional_status(&job).unwrap().is_some());
+        assert!(start.elapsed() >= Duration::from_millis(200));
+    });
+}
+#[test]
+fn an_observation_is_read_unlocked_and_discarded_when_the_entry_changed() {
+    let temp = tempfile::tempdir().unwrap();
+    Outbox::initialize(temp.path()).unwrap();
+    let outbox = Outbox::open(temp.path()).unwrap();
+    let (_, profile, row) = setup();
+    let state = Arc::new(Mutex::new(State::default()));
+    let path = temp.path().to_owned();
+    let armed = Arc::new(AtomicBool::new(false));
+    let adapter = Adapter::new(
+        profile,
+        Hooked {
+            inner: Fake {
+                state: state.clone(),
+                row,
+            },
+            armed: armed.clone(),
+            // Another writer, in the middle of the provider GET. Taking the lock at
+            // all shows the reconcile does not hold it across that call.
+            hook: move || {
+                let other = Outbox::open(&path).unwrap();
+                let lock = other.lock("test.writer").unwrap();
+                let (job, _, _) = setup();
+                let slot = Outbox::slot(&job).unwrap();
+                let mut entry = other.load(&slot).unwrap();
+                entry.observation = None;
+                entry.diagnostic = Some(ErrorDocument {
+                    code: "CONCURRENT_WRITER".into(),
+                    http_status: None,
+                    uncertain: false,
+                });
+                other.save(&entry, &lock).unwrap();
+            },
+        },
+    )
+    .unwrap();
+    let job = owned(&outbox, &adapter, &state);
+    let flag = AtomicBool::new(false);
+    armed.store(true, Ordering::SeqCst);
+    let raced = outbox
+        .reconcile(&adapter, &job, Allocation::Guaranteed, &|| Ok(()), &flag)
+        .unwrap();
+    assert!(!armed.load(Ordering::SeqCst));
+    // The concurrent record stands; the stale RUNNING reply was not written.
+    assert_eq!(raced["diagnostic"]["code"], "CONCURRENT_WRITER");
+    assert!(raced["observation"].is_null());
+    assert_eq!(
+        outbox.status(&job).unwrap()["diagnostic"]["code"],
+        "CONCURRENT_WRITER"
+    );
+    // Unchanged entry: the next observation is committed as before.
+    let observed = outbox
+        .reconcile(&adapter, &job, Allocation::Guaranteed, &|| Ok(()), &flag)
+        .unwrap();
+    assert!(observed["diagnostic"].is_null());
+    assert_eq!(observed["observation"]["state"], "RUNNING");
+    assert_eq!(state.lock().unwrap().creates, 1);
 }

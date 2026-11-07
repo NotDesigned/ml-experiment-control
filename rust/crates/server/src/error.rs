@@ -420,6 +420,13 @@ impl From<crate::backends::cloud::Error> for Error {
                     "CLOUD_SUBMISSION_NOT_FOUND",
                     "the original cloud submission is unavailable",
                 ),
+                // The effects journal lock: kept as CLOUD_RUN_BUSY for clients,
+                // told apart from the cloud run lock by this detail.
+                ("CLOUD_EFFECT_BUSY", _) => (
+                    503,
+                    "CLOUD_RUN_BUSY",
+                    "the cloud effects journal is busy with a provider call; repeat the same query",
+                ),
                 (_, Some(503)) => (
                     503,
                     "CLOUD_RUN_BUSY",
