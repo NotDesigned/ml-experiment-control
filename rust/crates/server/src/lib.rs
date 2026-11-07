@@ -133,7 +133,10 @@ async fn guard(State(state): State<Arc<AppState>>, request: Request, next: Next)
         let fetch = worker_fetch(request.method(), request.uri().path());
         let response = next.run(request).await;
         if let Some(fetch) = fetch {
-            eprintln!("worker-fetch: {fetch} status={}", response.status().as_u16());
+            eprintln!(
+                "worker-fetch: {fetch} status={}",
+                response.status().as_u16()
+            );
         }
         return response;
     }
