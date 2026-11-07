@@ -42,7 +42,7 @@ PINS = {
     "rust/crates/worker/src/slurm/ledger/history.rs": "41f7b30c0b7e779e57eb55a29691f3c862b13352ad5cff7803dbfecfc9440655",
     "rust/crates/worker/src/slurm/ledger/jobs.rs": "695018e2b31111048c48eac6581140aa6f8f14b8c98561bd6f4f4efa2a0909f0",
     "rust/crates/worker/src/slurm/ledger/observation.rs": "19b00eb7ac7bbc8e5023e39a05a29f9f39beb0e32bfd6c1700916620c495ad04",
-    "rust/crates/worker/src/slurm/ledger/staging.rs": "8a1bd6762de01e69ffe8b28311fd033a64b8768b8c4dbb51272fc903bb765902",
+    "rust/crates/worker/src/slurm/ledger/staging.rs": "6c66fbc176902c7a1a04eeed84fbff3969ce8fe9ec2d0856f3e969e48a9d440e",
 }
 
 # Every line in the server crate's production code that calls a method named
