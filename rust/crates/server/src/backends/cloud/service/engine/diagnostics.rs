@@ -85,9 +85,16 @@ fn provider_read(
         return Ok(None);
     };
     let handle = serde_json::from_value(handle).map_err(why!(cloud::Error::evidence()))?;
-    adapter
-        .pai_provider_diagnostics(job, &handle, lines, &AtomicBool::new(false))
-        .map(Some)
+    let cancelled = AtomicBool::new(false);
+    match adapter.profile {
+        cloud::adapter::Profile::Pai(_) => {
+            adapter.pai_provider_diagnostics(job, &handle, lines, &cancelled)
+        }
+        cloud::adapter::Profile::Sensecore(_) => {
+            adapter.sensecore_provider_diagnostics(job, &handle, lines, &cancelled)
+        }
+    }
+    .map(Some)
 }
 fn job_view(read: Option<Value>) -> Value {
     read.unwrap_or_else(|| json!({"diagnostic":"NO_PROVIDER_JOB_RECORDED"}))
@@ -351,10 +358,6 @@ impl Service {
             .ok_or_else(cloud::Error::configuration)?;
         let mut result = json!({"project":project,"run_id":run,"attempt_id":attempt,
             "backend":prepared.execution.backend_id,"provider_read":false});
-        if !matches!(backend.adapter.profile, cloud::adapter::Profile::Pai(_)) {
-            result["diagnostic"] = json!("PROVIDER_DIAGNOSTICS_UNSUPPORTED");
-            return Ok(result);
-        }
         let read = provider_read(
             &backend.adapter,
             &self.outbox,

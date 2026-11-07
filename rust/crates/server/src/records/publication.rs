@@ -46,18 +46,35 @@ impl Store {
         self.database.transaction(||self.require_guard(guard),|tx| {
             self.require_guard(guard)?;
             tx.execute("INSERT INTO native_publications VALUES (?,?) ON CONFLICT(scope) DO UPDATE SET state=excluded.state",params![scope,encoded])?;
-            tx.execute("UPDATE scopes SET status=?,error=?,last_attempt_at=?,failures=CASE WHEN ? IS NULL THEN 0 ELSE failures+1 END WHERE id=?",params![status,error,at,error,scope])?;
+            // Waiting for W&B to show what was sent is the normal state between
+            // batches, not a failure: only real errors reach the failure count.
+            tx.execute("UPDATE scopes SET status=?,error=?,last_attempt_at=?,failures=CASE WHEN ? IS NULL THEN 0 WHEN ? LIKE '%_ACK_PENDING' THEN failures ELSE failures+1 END WHERE id=?",params![status,error,at,error,error,scope])?;
             self.require_guard(guard)
         })
     }
     pub fn display(&self, guard: &RecordGuard<'_>, scope: &str, through: i64) -> Result<Value> {
+        let projection =
+            self.advance_display(guard, scope, tracking::Projection::new(), through)?;
+        self.display_document(&projection)
+    }
+    pub fn display_document(&self, projection: &tracking::Projection) -> Result<Value> {
+        projection
+            .client_document()
+            .map_err(why!(Error::Invalid("display document")))
+    }
+    /// Replay only the records after `projection`'s cursor, up to `through`.
+    pub fn advance_display(
+        &self,
+        guard: &RecordGuard<'_>,
+        scope: &str,
+        mut projection: tracking::Projection,
+        through: i64,
+    ) -> Result<tracking::Projection> {
         self.require_scope(guard, scope)?;
-        if self.read_only || through < 0 || through > self.total(guard, scope)? || through > 100_000
-        {
+        if self.read_only || through < projection.cursor() || through > self.total(guard, scope)? {
             return Err(Error::Invalid("publisher display bound"));
         }
-        let mut projection = tracking::Projection::new();
-        let mut after = 0;
+        let mut after = projection.cursor();
         while after < through {
             let rows = self.events(guard, scope, after, (through - after).min(256))?;
             if rows.is_empty() {
@@ -79,8 +96,6 @@ impl Store {
         }
         projection
             .at(through)
-            .map_err(why!(Error::Invalid("display cutoff")))?
-            .client_document()
-            .map_err(why!(Error::Invalid("display document")))
+            .map_err(why!(Error::Invalid("display cutoff")))
     }
 }

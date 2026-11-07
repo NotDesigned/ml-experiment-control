@@ -4,12 +4,15 @@ Private bounded frames use stdin/stdout; credentials never enter argv/logs.
 No imports from the Python server or user experiment are needed.
 """
 import contextlib
+import hashlib
 import json
 import struct
 import sys
 import tempfile
 
 BOUND = 8 * 1024 * 1024
+# Each open W&B Run is a stream inside wandb-core on a small shared host.
+SESSION_LIMIT = 16
 sessions = {}
 
 
@@ -47,12 +50,24 @@ def exact(stream, length):
     return bytes(chunks)
 
 
+def close(identity):
+    """Flush and end one session. It is forgotten even if the SDK fails."""
+    handle, directory = sessions.pop(identity)
+    try:
+        handle.finish(exit_code=0)
+    finally:
+        directory.cleanup()
+
+
 def session(sdk, job):
     identity = job["wandb_id"]
     if identity in sessions:
+        sessions[identity] = sessions.pop(identity)
         return sessions[identity][0]
-    if len(sessions) >= 64:
-        raise ValueError("session limit")
+    if len(sessions) >= SESSION_LIMIT:
+        # Finishing flushes, so the least recently used Run only resumes later.
+        with contextlib.suppress(Exception):
+            close(next(iter(sessions)))
     directory = tempfile.TemporaryDirectory(prefix="ml-exp-wandb-")
     route = job["route"]
     scope = job["scope"]
@@ -67,7 +82,7 @@ def session(sdk, job):
                 root_dir=directory.name, disable_git=True, disable_code=True,
                 x_disable_stats=True, x_disable_meta=True,
                 x_disable_machine_info=True, console="off", quiet=True,
-                init_timeout=30)))
+                init_timeout=30, x_file_stream_transmit_interval=5)))
         if (handle.id, handle.entity, handle.project) != (
                 identity, route["entity"], route["project"]):
             raise ValueError("SDK identity differs")
@@ -81,12 +96,15 @@ def session(sdk, job):
 def dispatch(job):
     operation = job["operation"]
     if operation == "shutdown":
+        # One failure must not cost the other Runs their flush.
         for identity in list(sessions):
-            handle, directory = sessions[identity]
-            request('WRITE', lambda: handle.finish(exit_code=0))
-            del sessions[identity]
-            directory.cleanup()
+            with contextlib.suppress(Exception):
+                close(identity)
         return {"shutdown": True}
+    if operation == "close":
+        if job["wandb_id"] in sessions:
+            request('WRITE', lambda: close(job["wandb_id"]))
+        return {"closed": True}
     import wandb as sdk
     api = sdk.Api(api_key=job["api_key"],
                   overrides={"base_url": "https://api.wandb.ai"}, timeout=15)
@@ -110,32 +128,40 @@ def dispatch(job):
             raise ValueError("remote identity differs")
         def history_rows():
             history, maximum = {}, 0
+            first = max(1, job["confirmed"])
+            bound = max(0, job["through"] - first + 1)
             # SDK pages may repeat the live tail. Collapse only an identical
             # complete physical row; distinct rows remain distinct evidence.
+            # A digest of each row is enough for that, so a window costs little.
             for row in remote.scan_history(
                     min_step=max(0, job["confirmed"] - 1),
-                    page_size=128, use_cache=False):
+                    page_size=1000, use_cache=False):
                 if "ml_expd/sequence" not in row:
                     continue
                 sequence, physical = row["ml_expd/sequence"], row["_step"]
                 if type(sequence) is not int or type(physical) is not int:
                     raise ValueError("history sequence or physical step")
                 maximum = max(maximum, sequence)
-                if sequence < max(1, job["confirmed"]) or sequence > job["through"]:
+                if sequence < first or sequence > job["through"]:
                     continue
+                digest = hashlib.sha256(json.dumps(row, sort_keys=True).encode()).digest()
                 if physical in history:
-                    if history[physical] != row:
+                    if history[physical][0] != digest:
                         raise ValueError("conflicting physical history row")
                     continue
-                if len(history) >= 257:
+                if len(history) > bound:
                     raise ValueError("history bound")
-                history[physical] = row
-            ordered = sorted(history.values(), key=lambda row: row["ml_expd/sequence"])
-            if len({row["ml_expd/sequence"] for row in ordered}) != len(ordered):
-                raise ValueError("distinct physical rows repeat a sequence")
-            return [{"sequence": row["ml_expd/sequence"],
-                     "event_id": row["ml_expd/event_id"]} for row in ordered], maximum
-        history, maximum = request('HISTORY_READ', history_rows)
+                history[physical] = (digest, sequence, row["ml_expd/event_id"])
+            # A repair that crossed a late delivery shows one record twice. It stays
+            # counted and does not stop the Run: W&B cannot remove a row, and nothing
+            # is lost. Two different events at one sequence is a real conflict.
+            records = {}
+            for _, sequence, event_id in history.values():
+                if records.setdefault(sequence, event_id) != event_id:
+                    raise ValueError("distinct events repeat a sequence")
+            return [{"sequence": sequence, "event_id": records[sequence]}
+                    for sequence in sorted(records)], maximum, len(history) - len(records)
+        history, maximum, duplicates = request('HISTORY_READ', history_rows)
         summary_keys = list(remote.summary.keys())
         if len(summary_keys) > 8192:
             raise ValueError("summary bound")
@@ -144,6 +170,7 @@ def dispatch(job):
                 "summary_keys": summary_keys,
                 "physical_next_step": max(0, (remote.lastHistoryStep if remote.lastHistoryStep is not None else -1) + 1), "evidence": {
                     "history": history,
+                    "duplicate_rows": duplicates,
                     "last_history_step": maximum - 1,
                     "display_version": remote.summary.get("ml_expd/display_version"),
                     "display_through": remote.summary.get("ml_expd/display_through")}}
@@ -164,9 +191,13 @@ def dispatch(job):
                 for key, value in effect["patch"]["set"].items():
                     handle.summary[key] = value
             elif effect["operation"] == "finish":
-                handle.finish(exit_code=effect["exit_code"])
+                # Forget it first: a failed finish must not leave a dead handle
+                # that every later apply for this Run would be sent to.
                 _, directory = sessions.pop(job["wandb_id"])
-                directory.cleanup()
+                try:
+                    handle.finish(exit_code=effect["exit_code"])
+                finally:
+                    directory.cleanup()
             else:
                 raise ValueError("unknown SDK operation")
         # This is only a transport receipt, never a remote history ACK.
