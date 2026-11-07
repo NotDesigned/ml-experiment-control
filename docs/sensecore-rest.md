@@ -139,3 +139,8 @@ platform starts no new job. Spot quota can be preempted seconds after a job is s
 so an empty log does not mean training code failed.
 
 A copy job's provider read remains unsupported.
+
+Monitor's offline logs can be empty for a job that failed. A job that exits before its
+first report then leaves events and an exit code. The server's journal has a
+`worker-fetch:` line for each package, worker and code fetch, with its HTTP status, which
+shows how far the job got.

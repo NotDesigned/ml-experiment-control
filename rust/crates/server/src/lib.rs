@@ -102,6 +102,17 @@ pub(crate) struct AppState {
     download_slots: Arc<tokio::sync::Semaphore>,
 }
 
+/// A job that fails before its first report leaves no logs on some providers. These
+/// lines show how far it got: the path names only the Attempt, and no credential.
+fn worker_fetch(method: &Method, path: &str) -> Option<String> {
+    let parts: Vec<_> = path.split('/').collect();
+    (*method == Method::GET
+        && parts.len() == 7
+        && parts[2] == "worker-exchange"
+        && matches!(parts[6], "package" | "code" | "worker"))
+    .then(|| format!("{}/{}/{} {}", parts[3], parts[4], parts[5], parts[6]))
+}
+
 async fn guard(State(state): State<Arc<AppState>>, request: Request, next: Next) -> Response {
     // This route has separate, Attempt-scoped authentication in its handler.
     // A worker credential is never accepted by any ordinary API route.
@@ -119,7 +130,12 @@ async fn guard(State(state): State<Arc<AppState>>, request: Request, next: Next)
                 )
         }
     {
-        return next.run(request).await;
+        let fetch = worker_fetch(request.method(), request.uri().path());
+        let response = next.run(request).await;
+        if let Some(fetch) = fetch {
+            eprintln!("worker-fetch: {fetch} status={}", response.status().as_u16());
+        }
+        return response;
     }
     if !authorized(&state.auth.token, request.headers()) {
         return (
@@ -634,6 +650,23 @@ pub fn app(auth: Auth, api: Option<Arc<api::Api>>) -> Router {
         .fallback(unavailable)
         .layer(middleware::from_fn_with_state(state.clone(), guard))
         .with_state(state)
+}
+
+#[cfg(test)]
+mod worker_fetch_tests {
+    use super::*;
+
+    #[test]
+    fn only_a_job_fetching_its_start_is_named() {
+        let path = |tail: &str| format!("/api/worker-exchange/p/r/attempt-001/{tail}");
+        assert_eq!(
+            worker_fetch(&Method::GET, &path("worker")).as_deref(),
+            Some("p/r/attempt-001 worker")
+        );
+        assert_eq!(worker_fetch(&Method::POST, &path("worker")), None);
+        assert_eq!(worker_fetch(&Method::GET, &path("status")), None);
+        assert_eq!(worker_fetch(&Method::GET, &path("code-content")), None);
+    }
 }
 
 #[cfg(test)]
