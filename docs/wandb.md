@@ -108,7 +108,9 @@ summary value instead of falling back to unrelated history. Unrelated
 client-owned summary keys are not removed. Failed Attempts can retain valid
 measurements; filter `ml_expd/state` when comparing successful runs.
 
-Finished W&B Runs are not reopened. Publication does not rename or replay accepted
+Finished W&B Runs are not reopened, with one exception: a
+[derived batch](#derived-metrics-after-a-run-ended) added after the Run ended.
+Publication does not rename or replay accepted
 points, reset confirmation cursors, or resend uncertain events. Publications use
 exact names. Checkpoint changes remain per-point
 provenance. Numerator/denominator are metadata, not extra result metrics.
@@ -241,3 +243,20 @@ with `WANDB_HISTORY_READ_FAILED`.
 Sixteen Runs keep a session open at once. A seventeenth closes the oldest inside its own
 call, and a slow close can lose the SDK child. Recovery is the same as above, so it costs
 delay and not records.
+
+## Derived metrics after a Run ended
+
+A [derived batch](metrics.md#add-derived-metrics-to-an-ended-run) added to an
+Attempt whose W&B Run is already finished resumes that same W&B Run; no new Run is
+created. Its rows continue the Attempt's `ml_expd/sequence` after the last training
+row, and each carries `ml_expd/source=derived`, `ml_expd/kind=derived_metrics` and
+`ml_expd/derived_sha256`. Charts use the record's own `step` or `epoch`, so a step
+before the last training step is drawn where it belongs. The summary shows each
+derived name's latest value like any other metric.
+
+The rows go through the same publication as training rows: each is reserved before
+it is sent, confirmed only by reading it back from W&B history by its sequence and
+event ID, and never sent again unless it has been seen to be absent. When every
+row and the display are confirmed, the W&B Run is finished again: `finished` for
+a Run that succeeded, `failed` otherwise. The same file sent again changes nothing,
+so the W&B Run is not reopened for it. Training rows are not resent or changed.

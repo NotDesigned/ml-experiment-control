@@ -9,6 +9,8 @@ them through the API. Optional W&B publication uses the same accepted records.
 There is no required accuracy, perplexity or project-specific metric vocabulary.
 
 For existing local training, see [local attachment](#attach-metrics-from-local-training).
+To add evaluations computed after a cloud Run ended, see
+[derived metrics](#add-derived-metrics-to-an-ended-run).
 
 ## Record and query
 
@@ -175,6 +177,58 @@ Accepted metrics survive result archive ACK/release. The canonical journal and
 independent publication cursors remain in `tracking/outbox.sqlite`;
 this is not a second copy of weights or datasets. See [W&B](wandb.md) for display,
 publication confirmation and the distinction between curves and final results.
+
+## Add derived metrics to an ended Run
+
+Metrics computed after a cloud Run ended, such as an evaluation of its saved
+checkpoints, can be added to one of its Attempts. They are kept apart from what
+training reported, and the W&B publisher adds them to the Attempt's existing W&B Run.
+
+```bash
+ml-exp run append-derived --project demo --run train --attempt attempt-001 \
+  --metrics derived.jsonl --confirmation 'APPEND demo/train/attempt-001'
+```
+
+The Attempt is chosen as `run status`, `run logs` and `run diagnose` choose it:
+`--state`, or `--project` and `--run` with an optional `--attempt`, which defaults
+to the Run's current Attempt. A wrong confirmation is refused before anything is
+sent, and the message gives the exact one.
+
+The file uses the [record format](#record-format), one record per line, each with
+an explicit `name`, `value` and `unit`. A `step` or `epoch` may be earlier than the
+last training step. Records are validated against the Run's frozen schema as
+worker records are, but a line that is not a complete record refuses the whole
+file (`DERIVED_METRICS_INVALID`), so nothing is half added. Blank lines are skipped.
+
+- Only an Attempt whose journal recorded the end of its Run (`METRICS_DRAINED` with
+  `SUCCEEDED`, `FAILED`, `CANCELLED` or `TIMEOUT`) takes a batch; any other Attempt
+  is refused with `DERIVED_RUN_NOT_ENDED`.
+- One file holds at most 5000 records and 2 MiB; a larger one is refused with
+  `DERIVED_BATCH_TOO_LARGE`. Split it into several files.
+- A name used by a training-time metric of the same Attempt is refused with
+  `DERIVED_METRIC_NAME_CONFLICT`, so a derived record never changes a training
+  curve or its summary. Use a distinct name such as `eval/accuracy`.
+
+One file is one derived batch, identified by the SHA256 of its bytes and stored
+with its submission time. Sending the same file again stores and publishes
+nothing and returns the same result, so a lost response is safe to repeat. A
+different file is a new batch. Records never replace or deduplicate against
+existing ones.
+
+Derived records do not enter the training journal, the result archive, or
+`run metrics` reads and their validation. Each is stored in its own table with
+kind `derived_metrics`, its batch SHA256 and submission time, and an event ID
+`derived.<sha256>.<n>`, continuing the Attempt's publication sequence.
+`ml-exp run tracking` lists each batch with its SHA256, submission time, record
+count and sequence range. On W&B each row carries `ml_expd/source=derived` and
+`ml_expd/derived_sha256`; see [W&B](wandb.md#derived-metrics-after-a-run-ended).
+
+| Method and path | Body or result |
+|---|---|
+| `POST /api/runs/{project}/{run}/attempts/{attempt}/derived-metrics` | `sha256` (lowercase hex of the UTF-8 text), `records` (the JSONL text) and `confirmation` (`APPEND {project}/{run}/{attempt}`); returns the `batch` with `sha256`, `submitted_at`, `records`, `first_sequence` and `last_sequence` |
+
+The server checks the SHA256 against the text (`DERIVED_METRICS_DIGEST_MISMATCH`).
+This is available for cloud Runs.
 
 ## Attach metrics from local training
 

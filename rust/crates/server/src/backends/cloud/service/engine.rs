@@ -464,6 +464,7 @@ mod artifacts;
 mod authority;
 mod authorship;
 pub(super) mod builds;
+mod derived;
 mod diagnostics;
 mod exchange;
 mod observation;

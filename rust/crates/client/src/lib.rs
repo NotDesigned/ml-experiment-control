@@ -5,6 +5,7 @@ pub mod batch;
 pub mod config;
 pub mod credentials;
 pub mod datasets;
+pub mod derived;
 pub mod dockerfile;
 pub mod local;
 pub mod observation;

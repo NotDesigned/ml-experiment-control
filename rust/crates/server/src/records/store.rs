@@ -23,7 +23,16 @@ CREATE TABLE IF NOT EXISTS events (scope TEXT,seq INTEGER,event_id TEXT,payload 
  PRIMARY KEY(scope,seq),UNIQUE(scope,event_id),UNIQUE(scope,dedup));
 CREATE TABLE IF NOT EXISTS event_ids (scope TEXT,event_id TEXT,digest TEXT NOT NULL,PRIMARY KEY(scope,event_id));
 CREATE TABLE IF NOT EXISTS native_publications (scope TEXT PRIMARY KEY,state TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS derived_events (scope TEXT,seq INTEGER,event_id TEXT,payload TEXT NOT NULL,batch TEXT NOT NULL,
+ PRIMARY KEY(scope,seq),UNIQUE(scope,event_id));
+CREATE TABLE IF NOT EXISTS derived_batches (scope TEXT,sha256 TEXT,submitted_at TEXT NOT NULL,
+ first INTEGER NOT NULL,last INTEGER NOT NULL,records INTEGER NOT NULL,PRIMARY KEY(scope,sha256));
 "#;
+/// Training-time records and post-hoc derived batches share one sequence, so the
+/// publisher proves both the same way; only publication reads them together.
+const PUBLISHED: &str = "(SELECT scope,seq,event_id,payload FROM events UNION ALL SELECT scope,seq,event_id,payload FROM derived_events)";
+const TRAINING_TOTAL: &str = "(SELECT COALESCE(MAX(seq),0) FROM events WHERE scope=SCOPE)";
+const PUBLISHED_TOTAL: &str = "MAX((SELECT COALESCE(MAX(seq),0) FROM events WHERE scope=SCOPE),(SELECT COALESCE(MAX(seq),0) FROM derived_events WHERE scope=SCOPE))";
 
 pub struct Store {
     database: SqliteDatabase,
@@ -48,6 +57,22 @@ impl RecordGuard<'_> {
     }
     pub fn run(&self) -> &str {
         &self.run
+    }
+}
+
+/// One post-hoc file accepted for an Attempt, identified by its SHA256.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DerivedBatch {
+    pub sha256: String,
+    pub submitted_at: String,
+    pub first: i64,
+    pub last: i64,
+    pub records: i64,
+}
+impl DerivedBatch {
+    pub fn document(&self) -> Value {
+        json!({"sha256":self.sha256,"submitted_at":self.submitted_at,"records":self.records,
+            "first_sequence":self.first,"last_sequence":self.last,"source":"derived"})
     }
 }
 
@@ -167,6 +192,20 @@ impl Store {
         }
         Ok(())
     }
+    /// Every writable open creates the derived tables. A read-only Store may
+    /// predate them, and sees only the training journal, as an older server did.
+    fn published(&self) -> &'static str {
+        if self.read_only { "events" } else { PUBLISHED }
+    }
+    /// The highest sequence of `scope`, an SQL term such as `?1` or `s.id`.
+    fn total_sql(&self, scope: &str) -> String {
+        let total = if self.read_only {
+            TRAINING_TOTAL
+        } else {
+            PUBLISHED_TOTAL
+        };
+        total.replace("SCOPE", scope)
+    }
     pub fn bind(&self, guard: &RecordGuard<'_>, route: &Value, config: &Value) -> Result<()> {
         if self.read_only {
             return Err(Error::ReadOnly);
@@ -259,11 +298,10 @@ impl Store {
         if !bound {
             return Err(Error::Scope);
         }
-        let mut seq: i64 = tx.query_row(
-            "SELECT COALESCE(MAX(seq),0) FROM events WHERE scope=?",
-            [scope],
-            |row| row.get(0),
-        )?;
+        let mut seq: i64 =
+            tx.query_row(&format!("SELECT {}", self.total_sql("?1")), [scope], |row| {
+                row.get(0)
+            })?;
         for event in events {
             let old: Option<String> = tx
                 .query_row(
@@ -348,9 +386,10 @@ impl Store {
     ) -> Result<Vec<EventRow>> {
         self.require_scope(guard, scope)?;
         let rows = self.database.read_only(|connection| -> Result<_> {
-            let mut statement = connection.prepare(
-            "SELECT seq,event_id,payload FROM events WHERE scope=? AND seq>? ORDER BY seq LIMIT ?",
-        )?;
+            let mut statement = connection.prepare(&format!(
+                "SELECT seq,event_id,payload FROM {} WHERE scope=? AND seq>? ORDER BY seq LIMIT ?",
+                self.published()
+            ))?;
             let rows = statement
                 .query_map(params![scope, after, limit], |row| {
                     Ok((
@@ -387,9 +426,10 @@ impl Store {
     ) -> Result<Vec<EventRow>> {
         self.require_scope(guard, scope)?;
         let rows = self.database.read_only(|connection| -> Result<_> {
-            let mut statement = connection.prepare(
-                "SELECT seq,event_id,payload FROM events WHERE scope=? AND seq>? ORDER BY seq LIMIT ?",
-            )?;
+            let mut statement = connection.prepare(&format!(
+                "SELECT seq,event_id,payload FROM {} WHERE scope=? AND seq>? ORDER BY seq LIMIT ?",
+                self.published()
+            ))?;
             let mut query = statement.query(params![scope, after, limit])?;
             let mut rows = Vec::new();
             let mut bytes = 0;
@@ -414,7 +454,7 @@ impl Store {
         self.require_scope(guard, scope)?;
         let value = self.database.read_only(|connection| -> Result<_> {
             Ok(connection.query_row(
-                "SELECT COALESCE(MAX(seq),0) FROM events WHERE scope=?",
+                &format!("SELECT {}", self.total_sql("?1")),
                 [scope],
                 |row| row.get(0),
             )?)
@@ -432,7 +472,10 @@ impl Store {
         let value = self.database.read_only(|connection| -> Result<_> {
             Ok(connection
                 .query_row(
-                    "SELECT event_id FROM events WHERE scope=? AND seq=?",
+                    &format!(
+                        "SELECT event_id FROM {} WHERE scope=? AND seq=?",
+                        self.published()
+                    ),
                     params![scope, sequence],
                     |row| row.get(0),
                 )
@@ -535,6 +578,8 @@ impl Store {
     }
 }
 
+#[path = "derived.rs"]
+mod derived;
 #[path = "publication.rs"]
 mod publication;
 
@@ -612,18 +657,29 @@ fn row_document(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
 impl Store {
     pub fn scope_status(&self, guard: &RecordGuard<'_>, scope: &str) -> Result<Option<Value>> {
         self.require_scope(guard, scope)?;
-        let value=self.database.read_only(|connection| -> Result<_> {Ok(connection.query_row("SELECT s.*,(SELECT COALESCE(MAX(seq),0) FROM events WHERE scope=s.id) AS total FROM scopes s WHERE id=?",[scope],row_document).optional()?)})?;
+        let query = format!(
+            "SELECT s.*,{} AS total FROM scopes s WHERE id=?",
+            self.total_sql("s.id")
+        );
+        let value = self.database.read_only(|connection| -> Result<_> {
+            Ok(connection
+                .query_row(&query, [scope], row_document)
+                .optional()?)
+        })?;
         self.require_scope(guard, scope)?;
         Ok(value)
     }
     pub fn run_scopes(&self, guard: &RecordGuard<'_>) -> Result<Vec<Value>> {
         self.require_guard(guard)?;
-        let value=self.database.read_only(|connection| -> Result<_> {
-        let mut statement=connection.prepare("SELECT s.*,(SELECT COALESCE(MAX(seq),0) FROM events WHERE scope=s.id) AS total FROM scopes s WHERE project=? AND run=?")?;
-        let value = statement
-            .query_map(params![guard.project, guard.run], row_document)?
-            .collect::<std::result::Result<_, _>>()?;
-        Ok(value)
+        let value = self.database.read_only(|connection| -> Result<_> {
+            let mut statement = connection.prepare(&format!(
+                "SELECT s.*,{} AS total FROM scopes s WHERE project=? AND run=?",
+                self.total_sql("s.id")
+            ))?;
+            let value = statement
+                .query_map(params![guard.project, guard.run], row_document)?
+                .collect::<std::result::Result<_, _>>()?;
+            Ok(value)
         })?;
         self.require_guard(guard)?;
         Ok(value)
@@ -631,7 +687,7 @@ impl Store {
     pub fn pending(&self, guard: &RecordGuard<'_>) -> Result<Vec<Value>> {
         self.require_guard(guard)?;
         let rows=self.database.read_only(|connection| -> Result<_> {
-        let mut statement=connection.prepare("SELECT s.* FROM scopes s JOIN runs r ON r.project=s.project AND r.run=s.run WHERE s.project=? AND s.run=? AND json_extract(r.route,'$.enabled')=1 AND (confirmed < (SELECT COALESCE(MAX(seq),0) FROM events WHERE scope=s.id) OR (confirmed>0 AND (display_version<4 OR display_confirmed<confirmed))) ORDER BY COALESCE(last_attempt_at,'')")?;
+        let mut statement=connection.prepare(&format!("SELECT s.* FROM scopes s JOIN runs r ON r.project=s.project AND r.run=s.run WHERE s.project=? AND s.run=? AND json_extract(r.route,'$.enabled')=1 AND (confirmed < {} OR (confirmed>0 AND (display_version<4 OR display_confirmed<confirmed))) ORDER BY COALESCE(last_attempt_at,'')",self.total_sql("s.id")))?;
         let rows = statement
             .query_map(params![guard.project, guard.run], row_document)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -676,7 +732,7 @@ impl Store {
         self.require_scope(guard, scope)?;
         self.database.transaction(||self.require_guard(guard), |tx| {
         self.require_guard(guard)?;
-        let state=tx.query_row("SELECT s.*,(SELECT COALESCE(MAX(seq),0) FROM events WHERE scope=s.id) AS total FROM scopes s WHERE id=? AND project=? AND run=?",params![scope,guard.project,guard.run],row_document).optional()?.ok_or(Error::Scope)?;
+        let state=tx.query_row(&format!("SELECT s.*,{} AS total FROM scopes s WHERE id=? AND project=? AND run=?",self.total_sql("s.id")),params![scope,guard.project,guard.run],row_document).optional()?.ok_or(Error::Scope)?;
         let route: String = tx.query_row(
             "SELECT route FROM runs WHERE project=? AND run=?",
             params![guard.project, guard.run],
@@ -684,9 +740,10 @@ impl Store {
         )?;
         let route: Value = serde_json::from_str(&route)?;
         let events: Vec<(i64, String)> = {
-            let mut statement = tx.prepare(
-                "SELECT seq,event_id FROM events WHERE scope=? AND seq>=? AND seq<=? ORDER BY seq",
-            )?;
+            let mut statement = tx.prepare(&format!(
+                "SELECT seq,event_id FROM {} WHERE scope=? AND seq>=? AND seq<=? ORDER BY seq",
+                self.published()
+            ))?;
             statement
                 .query_map(
                     params![
@@ -711,7 +768,7 @@ impl Store {
             tx.execute("UPDATE scopes SET display_version=MAX(display_version,?),display_confirmed=MAX(display_confirmed,confirmed) WHERE id=?",params![version,scope])?;
         }
         let total: i64 = tx.query_row(
-            "SELECT COALESCE(MAX(seq),0) FROM events WHERE scope=?",
+            &format!("SELECT {}", self.total_sql("?1")),
             [scope],
             |row| row.get(0),
         )?;

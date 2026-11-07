@@ -958,3 +958,119 @@ fn an_incremental_display_is_the_same_document_as_a_full_replay() {
         fixture.store.display(&guard, &scope, 50).unwrap()
     );
 }
+
+/// Visit until the publication is finished on W&B, as the publisher thread would.
+fn until_finished(fixture: &mut Fixture, scope: &str) {
+    for _ in 0..12 {
+        if fixture.status(scope)["status"] == "FINISHED"
+            && fixture.visit(scope).unwrap() == Next::Idle
+        {
+            return;
+        }
+        fixture.visit(scope).unwrap();
+    }
+    panic!("publication did not finish: {}", fixture.status(scope));
+}
+
+fn exercise_derived_batch(state: &str, remote_state: &str) {
+    let mut fixture = Fixture::new(json!({}));
+    let scope = fixture.scope("train");
+    fixture.append(&scope, 1..=2);
+    {
+        let guard = fixture.store.guard("demo", "train").unwrap();
+        let end = json!({"kind":"lifecycle","data":{"phase":"METRICS_DRAINED","state":state}});
+        fixture
+            .store
+            .append(
+                &guard,
+                &scope,
+                &[Event {
+                    event_id: "terminal".into(),
+                    payload: end,
+                }],
+            )
+            .unwrap();
+    }
+    until_finished(&mut fixture, &scope);
+    let id = fixture.status(&scope)["wandb_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let before = fixture.cloud();
+    assert_eq!(before["runs"][&id]["state"], remote_state);
+    assert_eq!(before["finishes"], 1);
+    assert!(!candidate_scopes(&fixture.store).unwrap().contains(&scope));
+
+    // Evaluated after the Run ended, at steps before its last training step.
+    let text = "{\"name\":\"eval/fid\",\"value\":3.0,\"unit\":\"fid\",\"step\":1}\n\
+                {\"name\":\"eval/fid\",\"value\":2.5,\"unit\":\"fid\",\"step\":2}\n";
+    let observations =
+        ml_exp_core::records::derived_observations(text.as_bytes(), &json!({})).unwrap();
+    let sha256 = "a".repeat(64);
+    let append = |fixture: &Fixture, at: &str| {
+        let guard = fixture.store.guard("demo", "train").unwrap();
+        fixture
+            .store
+            .append_derived(&guard, &scope, &sha256, at, &observations)
+            .unwrap()
+    };
+    let batch = append(&fixture, "2026-11-07T00:00:00Z");
+    assert_eq!((batch.first, batch.last, batch.records), (4, 5, 2));
+    assert!(candidate_scopes(&fixture.store).unwrap().contains(&scope));
+    until_finished(&mut fixture, &scope);
+
+    let status = fixture.status(&scope);
+    assert_eq!(status["confirmed"], 5);
+    let after = fixture.cloud();
+    assert_eq!(
+        after["runs"].as_object().unwrap().len(),
+        1,
+        "the same W&B Run"
+    );
+    assert_eq!(after["runs"][&id]["state"], remote_state);
+    assert_eq!(after["finishes"], 2);
+    assert_eq!(after["inits"], before["inits"].as_i64().unwrap() + 1);
+    assert_eq!(after["logs"], before["logs"].as_i64().unwrap() + 2);
+    let rows = fixture.rows(&scope);
+    assert_eq!(rows.len(), 5);
+    let derived: Vec<_> = rows
+        .iter()
+        .filter(|row| row["ml_expd/source"] == "derived")
+        .collect();
+    assert_eq!(derived.len(), 2);
+    for (row, (step, value)) in derived.iter().zip([(1, 3.0), (2, 2.5)]) {
+        assert_eq!(row["eval/fid"], value);
+        assert_eq!(row["ml_expd/axes/eval/fid/step"], step);
+        assert_eq!(row["ml_expd/kind"], "derived_metrics");
+        assert_eq!(row["ml_expd/derived_sha256"], sha256.as_str());
+    }
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row.get("ml_expd/source").is_some())
+            .count(),
+        2,
+        "training rows are not marked"
+    );
+    assert_eq!(after["runs"][&id]["summary"]["eval/fid"], 2.5);
+    assert_eq!(after["runs"][&id]["summary"]["loss"], 0.5);
+    fixture.assert_each_record_once(&scope, 2);
+
+    // The same file again publishes nothing and returns the same batch.
+    assert_eq!(append(&fixture, "2026-11-08T00:00:00Z"), batch);
+    assert_eq!(fixture.visit(&scope).unwrap(), Next::Idle);
+    assert!(!candidate_scopes(&fixture.store).unwrap().contains(&scope));
+    let repeated = fixture.cloud();
+    assert_eq!(repeated["logs"], after["logs"]);
+    assert_eq!(repeated["inits"], after["inits"]);
+    assert_eq!(repeated["finishes"], 2);
+}
+
+#[test]
+fn a_derived_batch_reaches_the_same_finished_wandb_run_which_ends_finished_again() {
+    exercise_derived_batch("SUCCEEDED", "finished");
+}
+
+#[test]
+fn a_derived_batch_for_a_failed_run_leaves_its_wandb_run_failed_again() {
+    exercise_derived_batch("FAILED", "failed");
+}

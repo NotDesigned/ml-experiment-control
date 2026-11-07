@@ -137,6 +137,15 @@ pub(crate) fn extend(document: &mut Value) {
         Some(empty.clone()),
     );
     insert(
+        "/api/runs/{project}/{run}/attempts/{attempt}/derived-metrics",
+        "post",
+        "Append one complete post-hoc JSONL file of metric records to an Attempt whose Run has ended, as a separate derived batch with its SHA256 and submission time. At most 5000 records and 2 MiB; names must differ from the Attempt's training-time metrics. The training journal and result archive are unchanged. The same SHA256 again returns the same batch and adds nothing. The W&B publisher adds each record to the same W&B Run marked ml_expd/source=derived, then finishes it again.",
+        Some(object(
+            &["sha256", "records", "confirmation"],
+            json!({"sha256":{"type":"string","description":"Lowercase SHA256 of the UTF-8 records text"},"records":{"type":"string","description":"The JSONL file: one record per line with name, value and unit"},"confirmation":{"type":"string","description":"APPEND {project}/{run}/{attempt}"}}),
+        )),
+    );
+    insert(
         "/api/projects/{project}/datasets/{executor}/{asset}/publications/{request}/provider-diagnostics/refresh",
         "post",
         "Explicitly ask the provider for the reason, pods, events and bounded log tail (optional lines=1..2000) of one data copy and its read-only diagnostic. Read-only at the provider; nothing is stored.",

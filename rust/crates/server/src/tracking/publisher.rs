@@ -217,7 +217,12 @@ fn candidate_scopes(store: &Store) -> Result<BTreeSet<String>> {
             let saved = store
                 .publication_state(&guard, id)
                 .map_err(why!(Error::Storage))?;
-            if !saved.is_some_and(|s| s["remote_finished"] == true) {
+            let confirmed = scope["confirmed"].as_i64().ok_or(Error::Identity)?;
+            if !saved.is_some_and(|s| s["remote_finished"] == true)
+                || store
+                    .derived_after(&guard, id, confirmed)
+                    .map_err(why!(Error::Storage))?
+            {
                 scopes.insert(id.into());
             }
         }
@@ -301,7 +306,17 @@ fn publish_bound(
         .map_err(why!(Error::Identity))?
         .unwrap_or_default();
     if saved.remote_finished {
-        return Ok(Next::Idle);
+        // A finished W&B Run is resumed only for derived rows added after the Run
+        // ended. It is then published, proven and finished again like any other.
+        if !store
+            .derived_after(&guard, scope, confirmed)
+            .map_err(why!(Error::Storage))?
+        {
+            return Ok(Next::Idle);
+        }
+        saved.remote_finished = false;
+        saved.finish_requested = false;
+        saved.state.finished = false;
     }
     if saved.state.confirmed > confirmed {
         return Err(Error::Identity);

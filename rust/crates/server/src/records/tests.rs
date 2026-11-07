@@ -1293,3 +1293,157 @@ fn bounded_metric_reads_are_complete_or_fail_without_truncating_science() {
     );
     assert_eq!(store.workspace_id(&guard).unwrap(), SEED);
 }
+
+fn derived_file(name: &str) -> Vec<Value> {
+    let text = format!(
+        "{{\"name\":\"{name}\",\"value\":0.75,\"unit\":\"accuracy\",\"step\":1}}\n\
+         {{\"name\":\"{name}\",\"value\":0.5,\"unit\":\"accuracy\",\"step\":2}}\n"
+    );
+    ml_exp_core::records::derived_observations(text.as_bytes(), &json!({})).unwrap()
+}
+
+#[test]
+fn derived_batches_stay_apart_from_training_records_and_repeat_as_the_same_batch() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::open(temp.path(), SEED).unwrap();
+    let scope = bound(&store, "run-a", enabled(), json!({}));
+    let guard = store.guard("demo", "run-a").unwrap();
+    store
+        .append(
+            &guard,
+            &scope,
+            &[
+                event("m1", metric(2.5, 1)),
+                event("m2", metric(2.0, 2)),
+                event(
+                    "running",
+                    json!({"kind":"lifecycle","data":{"phase":"TRAINING","state":"RUNNING"}}),
+                ),
+            ],
+        )
+        .unwrap();
+    let observations = derived_file("eval/accuracy");
+    let first = "a".repeat(64);
+    let at = "2026-11-07T00:00:00Z";
+    // A running Attempt takes no derived batch.
+    assert!(matches!(
+        store.append_derived(&guard, &scope, &first, at, &observations),
+        Err(Error::NotEnded)
+    ));
+    store
+        .append(
+            &guard,
+            &scope,
+            &[event(
+                "terminal",
+                json!({"kind":"lifecycle","data":{"phase":"METRICS_DRAINED","state":"SUCCEEDED"}}),
+            )],
+        )
+        .unwrap();
+    let training = store.metric_records(&guard, "attempt-001").unwrap();
+    let latest = store.latest_metric_observation(&guard, &scope).unwrap();
+    let lifecycle = store.latest_lifecycle(&guard, &scope).unwrap();
+
+    let batch = store
+        .append_derived(&guard, &scope, &first, at, &observations)
+        .unwrap();
+    assert_eq!((batch.first, batch.last, batch.records), (5, 6, 2));
+    assert_eq!(batch.document()["source"], "derived");
+    // The same file again is the same batch, with its original submission time.
+    let again = store
+        .append_derived(
+            &guard,
+            &scope,
+            &first,
+            "2026-11-08T00:00:00Z",
+            &observations,
+        )
+        .unwrap();
+    assert_eq!(again, batch);
+    assert_eq!(store.total(&guard, &scope).unwrap(), 6);
+
+    // Training-time records, results and the latest observation are unchanged.
+    assert_eq!(
+        store.metric_records(&guard, "attempt-001").unwrap(),
+        training
+    );
+    assert_eq!(
+        store
+            .metric_records_bounded(&guard, "attempt-001", 1 << 20, 1000)
+            .unwrap(),
+        training
+    );
+    assert_eq!(
+        store.latest_metric_observation(&guard, &scope).unwrap(),
+        latest
+    );
+    assert_eq!(store.latest_lifecycle(&guard, &scope).unwrap(), lifecycle);
+    let connection = Connection::open(store.path()).unwrap();
+    let count = |table: &str| {
+        connection
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE scope=?"),
+                [&scope],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(count("events"), 4, "the training journal is unchanged");
+    assert_eq!(count("derived_events"), 2);
+
+    // Publication reads both, in one sequence; each derived row names its batch.
+    let rows = store.events(&guard, &scope, 0, 128).unwrap();
+    assert_eq!(rows.len(), 6);
+    assert_eq!(rows[4].event_id, format!("derived.{first}.1"));
+    assert_eq!(rows[5].payload["kind"], "derived_metrics");
+    assert_eq!(rows[5].payload["batch_sha256"], first.as_str());
+    assert_eq!(rows[5].payload["submitted_at"], at);
+    assert_eq!(rows[5].payload["observations"][0]["step"], 2);
+    assert_eq!(
+        rows[5].payload["observations"][0]["source"],
+        "derived-post-hoc"
+    );
+    assert_eq!(
+        store.scope_status(&guard, &scope).unwrap().unwrap()["total"],
+        6
+    );
+    assert!(store.derived_after(&guard, &scope, 4).unwrap());
+    assert!(!store.derived_after(&guard, &scope, 6).unwrap());
+    drop(guard);
+    // A read-only Store, as an older server, sees only the training journal.
+    let readonly = Store::read_only(temp.path());
+    let guard = readonly.guard("demo", "run-a").unwrap();
+    assert_eq!(readonly.events(&guard, &scope, 0, 128).unwrap().len(), 4);
+    assert_eq!(readonly.total(&guard, &scope).unwrap(), 4);
+    drop(guard);
+
+    let guard = store.guard("demo", "run-a").unwrap();
+    // Another file is another batch.
+    let second = "b".repeat(64);
+    let next = store
+        .append_derived(&guard, &scope, &second, at, &derived_file("eval/f1"))
+        .unwrap();
+    assert_eq!((next.first, next.last), (7, 8));
+    assert_eq!(
+        store.derived_batches(&guard, &scope).unwrap(),
+        vec![batch, next]
+    );
+    // A derived record cannot take the name of a training-time metric.
+    assert!(matches!(
+        store.append_derived(
+            &guard,
+            &scope,
+            &"c".repeat(64),
+            at,
+            &derived_file("custom/loss")
+        ),
+        Err(Error::DerivedNameConflict)
+    ));
+    // More records than one batch holds are refused.
+    let oversize = vec![observations[0].clone(); ml_exp_core::records::DERIVED_MAX_RECORDS + 1];
+    assert!(matches!(
+        store.append_derived(&guard, &scope, &"d".repeat(64), at, &oversize),
+        Err(Error::Invalid(_))
+    ));
+    assert_eq!(store.total(&guard, &scope).unwrap(), 8);
+}
