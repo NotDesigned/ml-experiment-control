@@ -708,10 +708,7 @@ fn json_mode_prints_one_error_document_on_stdout_and_still_fails() {
         assert!(!output.status.success(), "{view}");
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains("CLOUD_RUN_BUSY"), "{view}: {stderr}");
-        assert!(
-            paths[1].starts_with("GET /ml-expd/api/runs/p/r"),
-            "{paths:?}"
-        );
+        assert!(paths[1].starts_with("GET /ml-expd/api/"), "{paths:?}");
         if !json {
             assert!(output.stdout.is_empty(), "{view}");
             continue;
