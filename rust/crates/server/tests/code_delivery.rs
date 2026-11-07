@@ -281,6 +281,61 @@ fn an_attempt_reads_only_its_own_frozen_code_and_the_run_can_say_what_it_was_mad
         true
     );
     drop(later);
+    // An explicit Runtime saved in a preparation, and then the server is upgraded. One
+    // whose Run exists goes on; one that would create a Run is refused, and says why.
+    let saved = |id: &str, run: &str| -> ml_exp_core::preparation::Request {
+        serde_json::from_value(
+            json!({"request_id":id.repeat(32),"run":request(run, Some(&code_id)),
+            "approval":{"max_gpu_hours":1.0}}),
+        )
+        .unwrap()
+    };
+    let continuing = service
+        .experiment_prepare("demo", saved("c", "code-run"), None)
+        .unwrap()["preparation_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let creating = service
+        .experiment_prepare("demo", saved("d", "code-never"), None)
+        .unwrap()["preparation_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    upgraded["enabled"] = json!(true);
+    let later = Arc::new(
+        Service::open(
+            world.settings.clone(),
+            Settings::from_slice(&serde_json::to_vec(&upgraded).unwrap()).unwrap(),
+            world.sources.clone(),
+            None,
+            Default::default(),
+        )
+        .unwrap(),
+    );
+    let go_on = |id: &str| {
+        later
+            .experiment_continue(
+                "demo",
+                id,
+                &format!("PREPARE {id}"),
+                None,
+                ml_exp_server::runs::Context {
+                    now: "2026-10-29T00:02:00Z",
+                    expires: "2026-10-29T01:02:00Z",
+                    transition_id: &"f".repeat(32),
+                },
+            )
+            .err()
+            .map(|error| error.code)
+    };
+    assert_eq!(go_on(&continuing), None);
+    assert_eq!(
+        go_on(&creating).as_deref(),
+        Some("CODE_DELIVERY_WORKER_OUTDATED")
+    );
+    assert!(!world.runs().join("code-never").exists());
+    drop(later);
     // Refused before any image is built for a Run a Slurm executor could never create.
     let on_slurm: ml_exp_core::preparation::Request = serde_json::from_value(json!({
         "request_id":"e".repeat(32),"run":{"run_id":"code-on-slurm",

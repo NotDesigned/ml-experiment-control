@@ -80,7 +80,7 @@ impl Service {
             } else {
                 let runtime = self.runtime(project, &run.executor, &run.runtime_id)?;
                 if run.code_source_id.is_some() {
-                    self.check_code_worker(&runtime)?;
+                    self.check_new_code_run(project, &run.run_id, &runtime)?;
                 }
                 runtime
             };

@@ -169,8 +169,22 @@ async fn code_content(
         Ok(cloud) => cloud,
         Err(error) => return http_effect::failure(error),
     };
+    // The token can only be derived from the saved Action, so anyone can make this read
+    // it. It takes a slot as other worker reads do, kept until the read really ends.
+    let Ok(authorizing_slot) = state.effect_slots.clone().try_acquire_owned() else {
+        let mut response = http_effect::failure(Error {
+            status: 429,
+            code: "READ_BUSY",
+            detail: "local operation concurrency limit reached",
+        });
+        response
+            .headers_mut()
+            .insert("retry-after", HeaderValue::from_static("1"));
+        return response;
+    };
     let authorizing = cloud.clone();
     let task = tokio::task::spawn_blocking(move || {
+        let _slot = authorizing_slot;
         authorizing.worker_code_grant(&project, &run, &attempt, &token)
     });
     let grant = match tokio::time::timeout(Duration::from_secs(35), task).await {
