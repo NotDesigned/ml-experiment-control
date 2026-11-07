@@ -174,11 +174,7 @@ impl Service {
     /// Told by the stored identity, which a record cannot disagree with. A Runtime named in
     /// a backend's configuration has no record, and is built with the worker it names.
     pub(super) fn runtime_bootstraps(&self, project: &str, id: &str) -> cloud::Result<bool> {
-        if !self
-            .slots
-            .entry_exists(OsStr::new(&name(id)?))
-            .map_err(io)?
-        {
+        if !self.runtime_recorded(id)? {
             return Ok(false);
         }
         Ok(bootstraps(&self.build_record(project, id)?))
@@ -327,6 +323,14 @@ impl Service {
         };
         write(&self.slots, &name(&record.runtime_id)?, &record)?;
         Ok(self.build_view(&record))
+    }
+    pub(super) fn runtime_recorded(&self, id: &str) -> cloud::Result<bool> {
+        self.slots.entry_exists(OsStr::new(&name(id)?)).map_err(io)
+    }
+    /// What `build_view` shows of a Runtime whose record does not exist yet.
+    pub(super) fn unrecorded_runtime(project: &str, id: &str) -> Value {
+        json!({"project":project,"runtime_id":id,"status":"PREPARED","retry_safe":true,
+            "scheduler_submitted":false,"confirmation":format!("BUILD {id}")})
     }
     pub fn runtime_status(&self, project: &str, id: &str) -> cloud::Result<Value> {
         Ok(self.build_view(&self.build_record(project, id)?))

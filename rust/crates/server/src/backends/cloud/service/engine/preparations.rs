@@ -189,7 +189,10 @@ impl Service {
     /// preparation frozen with an old one could never finish. Nothing ran under the old
     /// identity, so it moves on, but only once its build is proven to have left nothing
     /// behind. A built Runtime keeps its identity, and an identity that names no worker
-    /// has nothing to follow.
+    /// has nothing to follow. A frozen identity with no record at all was left by a stop
+    /// between saving and creating it, and nothing can have run under that either.
+    ///
+    /// True means a record of the current identity must exist before this is relied on.
     fn follow_current_worker(&self, saved: &mut Saved) -> cloud::Result<bool> {
         let Some(settings) = &self.builds else {
             return Ok(false);
@@ -198,15 +201,19 @@ impl Service {
             return Ok(false);
         };
         let identity = self.bootstrap_identity(&definition.executor);
-        if saved.frozen() == identity.unwrap_or(&settings.worker_sha256) {
-            return Ok(false);
-        }
         let old = saved
             .request
             .resolve(&saved.project, saved.frozen())
             .map_err(why!(cloud::Error::evidence()))?;
-        let status = self.runtime_status(&saved.project, &old.runtime_id)?;
-        if status["runtime"].is_null() && status["retry_safe"] == true {
+        let recorded = self.runtime_recorded(&old.runtime_id)?;
+        if saved.frozen() == identity.unwrap_or(&settings.worker_sha256) {
+            return Ok(!recorded);
+        }
+        let unbuilt = !recorded || {
+            let status = self.runtime_status(&saved.project, &old.runtime_id)?;
+            status["runtime"].is_null() && status["retry_safe"] == true
+        };
+        if unbuilt {
             saved.worker_sha256 = settings.worker_sha256.clone();
             saved.runtime_identity = identity.map(str::to_owned);
             return Ok(true);
@@ -223,7 +230,12 @@ impl Service {
             .resolve(&saved.project, saved.frozen())
             .map_err(why!(cloud::Error::evidence()))?;
         let runtime = if saved.request.runtime.is_some() {
-            self.runtime_status(&saved.project, &run.runtime_id)?
+            if self.runtime_recorded(&run.runtime_id)? {
+                self.runtime_status(&saved.project, &run.runtime_id)?
+            } else {
+                // A read creates nothing. The next continue does.
+                Self::unrecorded_runtime(&saved.project, &run.runtime_id)
+            }
         } else {
             json!({"runtime_id":run.runtime_id,"status":"EXISTING"})
         };
@@ -362,21 +374,38 @@ impl Service {
         if !self.enabled || confirmation != format!("PREPARE {id}") {
             return Err(cloud::Error::configuration());
         }
-        let moved;
-        let saved = {
+        // The record comes before anything that points at it, and creating it twice is
+        // harmless, so a busy lock or a stop at any point here recovers on the next continue.
+        let needed = {
+            let _lock = self.lock()?;
+            let mut saved = self.setup_load(project, id)?;
+            if saved.submission.is_some() {
+                return self.setup_view(&saved).map(Continue::View);
+            }
+            if self.follow_current_worker(&mut saved)? {
+                saved.request.runtime.clone()
+            } else {
+                None
+            }
+        };
+        if let Some(definition) = needed {
+            self.prepare_runtime(project, definition)?;
+        }
+        let (saved, still_needed) = {
             let _lock = self.lock()?;
             let mut saved = self.setup_load(project, id)?;
             if saved.submission.is_some() {
                 return self.setup_view(&saved).map(Continue::View);
             }
             saved.started = true;
-            moved = self.follow_current_worker(&mut saved)?;
+            let still_needed = self.follow_current_worker(&mut saved)?;
             self.slots
                 .replace_regular(OsStr::new(&name(id)?), &encode(&saved)?)
                 .map_err(io)?;
-            saved
+            (saved, still_needed)
         };
-        if moved {
+        // Only if the old build became retryable between the two looks.
+        if still_needed {
             if let Some(definition) = &saved.request.runtime {
                 self.prepare_runtime(project, definition.clone())?;
             }

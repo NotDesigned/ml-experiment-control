@@ -944,3 +944,157 @@ fn an_upgrade_needs_no_rebuild_and_an_attempt_fetches_only_the_worker_it_froze()
     std::os::unix::fs::symlink(store.join(first.strip_prefix("sha256:").unwrap()), &held).unwrap();
     assert_eq!(get(Some(own), path).status().as_u16(), 409);
 }
+
+/// A stop between saving a preparation's identity and creating that Runtime's record.
+#[test]
+fn a_preparation_whose_runtime_has_no_record_is_repaired_by_its_next_continue() {
+    use ml_exp_core::cloud::build::Definition;
+    let world = world();
+    let temp = world.temp.path().to_path_buf();
+    let environment = world.publish(&[("Dockerfile", &b"FROM x\n"[..])]);
+    let credentials = temp.join("credentials.json");
+    private(
+        &credentials,
+        &json!({"provider":"pai","access_key_id":"synthetic","access_key_secret":"never-sent"}),
+    );
+    let signing_key = temp.join("worker-signing-key");
+    ml_exp_io::write_atomic(
+        &signing_key,
+        b"synthetic-exchange-key-0000000000000000000000",
+        true,
+    )
+    .unwrap();
+    let storage = pai::Storage {
+        cpfs_uri: "bmcpfs://cpfs-example.us-southeast-1.cpfs.aliyuncs.com/".into(),
+        workspace_user: "researcher".into(),
+        role_arn: "acs:ram::12345:role/pai-data-researcher".into(),
+    };
+    let socket = temp.join("builder.sock");
+    let requests = fake_builder(&socket);
+    Service::initialize(&world.settings).unwrap();
+    let open = |worker: &str| {
+        let config = json!({"schema_version":1,"enabled":true,"allow_run_creation":true,
+            "builds":{"socket":socket,"peer_uid":ml_exp_io::directory::effective_uid(),"worker_sha256":worker},
+            "exchange":{"public_url":"https://api.example/ml-expd","signing_key_file":signing_key},
+            "backends":[{"executor":"pai-h200","profile":{"provider":"pai","region":"us-southeast-1",
+                "workspace_id":"253","quota_id":"quota1","max_gpus":8,"max_cpus":200,"max_memory_gb":1600,
+                "storage":storage},"run_root":"/mnt/workspace/ml-expd/runs","credentials_file":credentials,
+                "registry_auth_file":null,"runtimes":{}}]});
+        Arc::new(
+            Service::open(
+                world.settings.clone(),
+                Settings::from_slice(&serde_json::to_vec(&config).unwrap()).unwrap(),
+                world.sources.clone(),
+                None,
+                Default::default(),
+            )
+            .unwrap(),
+        )
+    };
+    let slots = world.settings.registry_root.join("cloud-submissions/slots");
+    let (first, second) = (
+        format!("sha256:{}", "5".repeat(64)),
+        format!("sha256:{}", "6".repeat(64)),
+    );
+    let recipe = |base: &str| Definition {
+        source_id: environment.clone(),
+        executor: "pai-h200".into(),
+        base_image: format!("registry.example/base@sha256:{}", base.repeat(64)),
+        dockerfile: "Dockerfile".into(),
+    };
+    let request = |id: &str, run: &str, definition: &Definition| {
+        serde_json::from_value::<ml_exp_core::preparation::Request>(json!({
+            "request_id":id.repeat(32),"run":{"run_id":run,"executor":"pai-h200",
+            "command":["train"],"resources":{"gpus":1,"cpus":8,"memory_gb":64},
+            "walltime_seconds":300,"seed":42},"runtime":definition,
+            "approval":{"max_gpu_hours":1.0}}))
+        .unwrap()
+    };
+    let go_on = |service: &Arc<Service>, preparation: &str| {
+        service
+            .experiment_continue(
+                "demo",
+                preparation,
+                &format!("PREPARE {preparation}"),
+                None,
+                ml_exp_server::runs::Context {
+                    now: "2026-10-29T00:02:00Z",
+                    expires: "2026-10-29T01:02:00Z",
+                    transition_id: &"f".repeat(32),
+                },
+            )
+            .is_ok()
+    };
+    let built = |service: &Arc<Service>, id: &str| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let view = service.runtime_status("demo", id).unwrap();
+            if view["status"] == "READY" {
+                return view;
+            }
+            assert!(std::time::Instant::now() < deadline, "{view}");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    };
+    let prepared = |service: &Arc<Service>, id: &str, run: &str, definition: &Definition| {
+        let view = service
+            .experiment_prepare("demo", request(id, run, definition), None)
+            .unwrap();
+        view["preparation_id"].as_str().unwrap().to_owned()
+    };
+
+    // Exactly what #144 could leave: saved with the new worker, and no record of that Runtime.
+    let service = open(&first);
+    let definition = recipe("7");
+    let stranded = prepared(&service, "a", "stranded", &definition);
+    let setup = slots.join(format!("{stranded}.setup.json"));
+    let mut saved: Value = serde_json::from_slice(&fs::read(&setup).unwrap()).unwrap();
+    saved["worker_sha256"] = json!(second);
+    fs::remove_file(&setup).unwrap();
+    fs::write(&setup, serde_json::to_vec(&saved).unwrap()).unwrap();
+    fs::set_permissions(&setup, fs::Permissions::from_mode(0o600)).unwrap();
+    drop(service);
+    let service = open(&second);
+    let id = definition.id("demo", &second).unwrap();
+    assert!(!slots.join(format!("{id}.runtime.json")).exists());
+    // Reads work and create nothing, including a repeat of the same request.
+    let read = service.experiment_status("demo", &stranded).unwrap();
+    assert_eq!(read["runtime"]["runtime_id"], id.as_str());
+    assert_eq!(read["runtime"]["status"], "PREPARED");
+    assert!(
+        service
+            .experiment_prepare("demo", request("a", "stranded", &definition), None)
+            .is_ok()
+    );
+    assert!(!slots.join(format!("{id}.runtime.json")).exists());
+    assert!(go_on(&service, &stranded));
+    assert_eq!(
+        built(&service, &id)["runtime"]["worker_sha256"],
+        second.as_str()
+    );
+    assert_eq!(
+        service.experiment_status("demo", &stranded).unwrap()["runtime"]["status"],
+        "READY"
+    );
+    assert_eq!(requests.lock().unwrap().len(), 1);
+
+    // Stranded on a worker that has since gone: it moves on, as it would have unbuilt.
+    let definition = recipe("8");
+    let older = definition.id("demo", &second).unwrap();
+    let left = prepared(&service, "b", "left-behind", &definition);
+    drop(service);
+    fs::remove_file(slots.join(format!("{older}.runtime.json"))).unwrap();
+    let third = format!("sha256:{}", "a".repeat(64));
+    let service = open(&third);
+    assert!(go_on(&service, &left));
+    let id = definition.id("demo", &third).unwrap();
+    assert_eq!(
+        built(&service, &id)["runtime"]["worker_sha256"],
+        third.as_str()
+    );
+
+    // A Runtime with a record is never touched by the repair: no second build.
+    let builds = requests.lock().unwrap().len();
+    assert!(go_on(&service, &left));
+    assert_eq!(requests.lock().unwrap().len(), builds);
+}
