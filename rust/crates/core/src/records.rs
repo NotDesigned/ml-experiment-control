@@ -244,7 +244,7 @@ pub fn derived_observations(
             .map_err(|_| DerivedRefusal::Invalid)?;
         let items = payload["observations"]
             .as_array()
-            .filter(|items| items.len() == 1)
+            .filter(|items| items.len() == 1 && items[0]["name"].is_string())
             .ok_or(DerivedRefusal::Invalid)?;
         observations.extend(items.iter().cloned());
     }
@@ -679,7 +679,13 @@ mod tests {
         assert_eq!(observations[0]["step"], 100);
         assert_eq!(observations[0]["status"], "VALID");
         assert_eq!(observations[0]["source"], "derived-post-hoc");
-        for bad in ["", "\n", "not json\n", r#"{"name":"x","value":1}"#] {
+        for bad in [
+            "",
+            "\n",
+            "not json\n",
+            r#"{"name":"x","value":1}"#,
+            r#"{"name":"","value":1,"unit":"fid"}"#,
+        ] {
             assert_eq!(
                 derived_observations(bad.as_bytes(), &config),
                 Err(DerivedRefusal::Invalid),
