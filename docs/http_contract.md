@@ -68,6 +68,7 @@ reported and `NOT_REPORTED` otherwise, including for all Slurm Submissions.
 | `worker_phase` | Last reported worker stage and its observation time; a transition is not a heartbeat |
 | `input_delivery` | The most informative input record: a failure first, then unfinished work |
 | `inputs` | All retained input delivery records for this Attempt |
+| `startup_failure` | Present only while the Attempt has sent no worker packet: the latest `message` its cloud worker sent when its launch failed, and `received_at` |
 
 `GET /api/experiments/{project}/{run}/submissions` lists the current Attempt's cloud
 Submission for clients without saved state.
@@ -232,6 +233,13 @@ logs, missing files or a 404 are not proof that backend storage is empty.
 Provider diagnostics are bound to the original job; refreshing submits no training.
 For incomplete archives, repair and other recovery options see [recovery](recovery.md).
 Internal launch/data/checkpoint/record transfer routes use narrow worker
-capabilities, not the administrative client token. Scientific evaluation uses an
+capabilities, not the administrative client token. A cloud worker whose launch fails
+posts one `{"message": "..."}` (at most 4 KiB, else 413) to
+`POST /api/worker-exchange/{project}/{run}/{attempt}/startup-failure` with its Attempt
+capability. The server redacts the text, makes it one line of at most 1000 characters
+and keeps only the latest report, with its receive time, beside the Attempt's other
+cloud state. It answers `{"recorded": true}`, or `{"recorded": false}` once the Attempt
+has sent a worker packet, after which reports are ignored and none is shown. A report
+changes no Run state and starts no retry. Scientific evaluation uses an
 ordinary Run with checkpoint/data/protocol inputs, not a project-specific metric
 or research-question prerequisite.

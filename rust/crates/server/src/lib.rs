@@ -103,14 +103,15 @@ pub(crate) struct AppState {
 }
 
 /// A job that fails before its first report leaves no logs on some providers. These
-/// lines show how far it got: the path names only the Attempt, and no credential.
+/// lines show how far it got, and whether it said why it stopped: the path names only
+/// the Attempt, and no credential.
 fn worker_fetch(method: &Method, path: &str) -> Option<String> {
     let parts: Vec<_> = path.split('/').collect();
-    (*method == Method::GET
-        && parts.len() == 7
+    (parts.len() == 7
         && parts[2] == "worker-exchange"
-        && matches!(parts[6], "package" | "code" | "worker"))
-    .then(|| format!("{}/{}/{} {}", parts[3], parts[4], parts[5], parts[6]))
+        && (*method == Method::GET && matches!(parts[6], "package" | "code" | "worker")
+            || *method == Method::POST && parts[6] == "startup-failure"))
+        .then(|| format!("{}/{}/{} {}", parts[3], parts[4], parts[5], parts[6]))
 }
 
 async fn guard(State(state): State<Arc<AppState>>, request: Request, next: Next) -> Response {
@@ -669,6 +670,11 @@ mod worker_fetch_tests {
         assert_eq!(worker_fetch(&Method::POST, &path("worker")), None);
         assert_eq!(worker_fetch(&Method::GET, &path("status")), None);
         assert_eq!(worker_fetch(&Method::GET, &path("code-content")), None);
+        assert_eq!(
+            worker_fetch(&Method::POST, &path("startup-failure")).as_deref(),
+            Some("p/r/attempt-001 startup-failure")
+        );
+        assert_eq!(worker_fetch(&Method::GET, &path("startup-failure")), None);
     }
 }
 
@@ -986,6 +992,7 @@ mod schema_tests {
             "/api/debug",
             "/api/admin/maintenance/{identity}",
             "/api/worker-exchange/{project}/{run}/{attempt}",
+            "/api/worker-exchange/{project}/{run}/{attempt}/startup-failure",
             "/api/projects/{project}/local-runs",
             "/api/local-runs/{project}/{run}",
             "/api/local-runs/{project}/{run}/metrics",

@@ -25,6 +25,7 @@ const CODE_TRANSFER: Duration = Duration::from_secs(15 * 60);
 /// Many jobs starting together is normal, and a turn comes soon. A worker tries again after this.
 const TRANSFER_WAIT: Duration = Duration::from_secs(20);
 type Cloud = crate::backends::cloud::service::Service;
+use super::engine::startup_failure as startup;
 type Chunks<'a> = &'a mut dyn FnMut(Vec<u8>) -> io::Result<()>;
 pub(crate) fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -60,6 +61,10 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
         .route(
             "/api/worker-exchange/{project}/{run}/{attempt}/artifacts",
             post(artifact).layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
+        )
+        .route(
+            "/api/worker-exchange/{project}/{run}/{attempt}/startup-failure",
+            post(startup_failure).layer(DefaultBodyLimit::max(startup::MAX_BODY_BYTES)),
         )
 }
 async fn worker_read(
@@ -438,6 +443,63 @@ async fn receive(
             .map_err(|_| invalid())?;
         let ack = cloud.receive(&project, &run, &attempt, &token, &packet, &now)?;
         serde_json::to_value(ack).map_err(|_| invalid())
+    })
+    .await
+}
+/// A worker that could not start says why. The report is evidence only.
+async fn startup_failure(
+    State(state): State<Arc<AppState>>,
+    Path((project, run, attempt)): Path<(String, String, String)>,
+    RawQuery(raw): RawQuery,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let invalid = || Error {
+        status: 422,
+        code: "INVALID_STARTUP_FAILURE",
+        detail: "invalid bounded startup failure report",
+    };
+    if api::no_parameters(raw.as_deref()).is_err()
+        || ml_exp_core::identity::validate_id(&project)
+            .and_then(|_| ml_exp_core::identity::validate_id(&run))
+            .and_then(|_| ml_exp_core::identity::validate_attempt(&attempt))
+            .is_err()
+    {
+        return http_effect::failure(invalid());
+    }
+    let values: Vec<_> = headers.get_all("authorization").iter().collect();
+    let token = if values.len() == 1 {
+        values[0]
+            .to_str()
+            .ok()
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .map(str::to_owned)
+    } else {
+        None
+    };
+    let Some(token) = token else {
+        return http_effect::failure(Error {
+            status: 401,
+            code: "WORKER_AUTH_REQUIRED",
+            detail: "Attempt worker authentication required",
+        });
+    };
+    let report: startup::Report = match ml_exp_core::json::mapping(&body)
+        .ok()
+        .and_then(|v| serde_json::from_value(serde_json::Value::Object(v)).ok())
+    {
+        Some(r) => r,
+        None => return http_effect::failure(invalid()),
+    };
+    http_effect::execute(state, OnTimeout::Effect, move |api, now| {
+        let cloud = api.cloud_only()?;
+        let now = time::OffsetDateTime::from_unix_timestamp(now as i64)
+            .map_err(|_| invalid())?
+            .format(&time::format_description::well_known::Rfc3339)
+            .map_err(|_| invalid())?;
+        cloud
+            .receive_startup_failure(&project, &run, &attempt, &token, &report, &now)
+            .map_err(Into::into)
     })
     .await
 }

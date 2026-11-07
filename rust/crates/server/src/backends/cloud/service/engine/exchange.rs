@@ -233,7 +233,7 @@ impl Service {
             .ok_or_else(missing)
     }
     /// The frozen package of exactly the Attempt this token was issued for.
-    fn worker_authorized(
+    pub(super) fn worker_authorized(
         &self,
         project: &str,
         run: &str,

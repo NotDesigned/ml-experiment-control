@@ -582,6 +582,10 @@ impl Flow {
             "verification":{"status":get_or(&self.collection,"verification",json!("NOT_OBSERVED"))},"progress":progress,
             "queue":otherwise(&queue,Value::Null),"worker":{"state":worker["state"],"observed_at":worker["as_of"],"stale":get_or(&worker,"stale",json!(true))},
             "model":model_view,"input_delivery":self.progress["input_delivery"],"worker_phase":self.progress["worker_phase"]});
+        // Only a worker that never reported says this, so it is no Run state.
+        if self.progress["startup_failure"].is_object() {
+            value["startup_failure"] = self.progress["startup_failure"].clone();
+        }
         // What the frozen Run says it was made from, for telling results apart.
         let run = &self.run["manifest"]["metadata"];
         if run["source_id"].is_string() {

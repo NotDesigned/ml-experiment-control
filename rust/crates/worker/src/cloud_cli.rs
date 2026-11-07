@@ -87,9 +87,51 @@ pub(crate) fn main_from(args: impl IntoIterator<Item = OsString>) -> ExitCode {
                 ExitCode::FAILURE
             }
         }
-        Err(error) => {
-            eprintln!("cloud launch failed: {error}");
-            ExitCode::FAILURE
+        // An inspection or a collector is not the launch, so neither reports one.
+        Err(error) if args.inspect || args.sync => failed(&error, |_| None),
+        Err(error) => failed(&error, |text| {
+            ml_exp_worker::cloud_startup::report(&args.package_url, &args.package_token, text)
+        }),
+    }
+}
+/// The exit status is the launch's own, whatever became of its report.
+fn failed(
+    error: &ml_exp_worker::managed::Error,
+    report: impl FnOnce(&str) -> Option<ml_exp_worker::cloud_startup::Delivery>,
+) -> ExitCode {
+    eprintln!("cloud launch failed: {error}");
+    if let Some(delivery) = report(&error.to_string()) {
+        eprintln!("ML_EXPD_STARTUP_FAILURE_REPORT={delivery}");
+    }
+    ExitCode::FAILURE
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ml_exp_worker::{cloud_startup::Delivery, managed::Error};
+
+    #[test]
+    fn a_failed_launch_reports_its_error_and_still_fails() {
+        for delivery in [Some(Delivery::Recorded), Some(Delivery::Failed(None)), None] {
+            let mut sent = Vec::new();
+            let status = failed(
+                &Error::Storage {
+                    at: "crates/worker/src/cloud.rs:123",
+                    cause: "PermissionDenied".into(),
+                },
+                |text| {
+                    sent.push(text.to_owned());
+                    delivery
+                },
+            );
+            assert_eq!(status, ExitCode::FAILURE);
+            assert_eq!(
+                sent,
+                [
+                    "managed launch storage failed at crates/worker/src/cloud.rs:123: PermissionDenied"
+                ]
+            );
         }
     }
 }

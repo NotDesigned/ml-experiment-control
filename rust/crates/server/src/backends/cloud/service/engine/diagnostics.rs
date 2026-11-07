@@ -354,6 +354,10 @@ impl Service {
             .ok_or_else(missing)?;
         let mut result = json!({"project":project,"run_id":run,"attempt_id":attempt,
             "backend":prepared.execution.backend_id,"provider_read":false});
+        // Kept by this server, so it is shown even when the provider has nothing.
+        if let Some(failure) = self.startup_failure(&prepared)? {
+            result["startup_failure"] = failure;
+        }
         // A SenseCore Run freezes the cluster chosen for it, which the executor's own
         // profile does not name, so only the Run's own adapter can read its job.
         let read = provider_read(
