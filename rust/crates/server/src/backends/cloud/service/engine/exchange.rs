@@ -720,6 +720,18 @@ impl Service {
                         .collect::<Vec<_>>()
                 );
             }
+            // Each W&B rebuild keeps the id it replaced, which is never deleted.
+            let rebuilds = records
+                .wandb_rebuilds(&guard, id)
+                .map_err(why!(cloud::Error::evidence()))?;
+            if !rebuilds.is_empty() {
+                scope["wandb_rebuilds"] = json!(
+                    rebuilds
+                        .iter()
+                        .map(crate::records::WandbRebuild::document)
+                        .collect::<Vec<_>>()
+                );
+            }
             if route["enabled"] == true {
                 scope["url"] = json!(format!(
                     "https://wandb.ai/{}/{}/runs/{}",

@@ -197,7 +197,7 @@ def init(**kwargs):
             return value
         return {key: item for key, value in value.items()
                 if (item := visible(value)) != {}}
-    data["runs"].setdefault(identity, {"entity": kwargs["entity"],
+    data["runs"].setdefault(identity, {"entity": kwargs["entity"], "name": kwargs["name"],
         "project": kwargs["project"], "config": visible(kwargs["config"]),
         "history": [], "pending": [], "definitions": {}, "summary": {}})
     data["runs"][identity]["state"] = "running"

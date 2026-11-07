@@ -110,6 +110,8 @@ measurements; filter `ml_expd/state` when comparing successful runs.
 
 Finished W&B Runs are not reopened, with one exception: a
 [derived batch](#derived-metrics-after-a-run-ended) added after the Run ended.
+To remove metric names from a finished W&B Run, publish a new one with
+[`run rebuild-wandb`](#rebuild-a-finished-wb-run-without-some-metrics).
 Publication does not rename or replay accepted
 points, reset confirmation cursors, or resend uncertain events. Publications use
 exact names. Checkpoint changes remain per-point
@@ -260,3 +262,82 @@ event ID, and never sent again unless it has been seen to be absent. When every
 row and the display are confirmed, the W&B Run is finished again: `finished` for
 a Run that succeeded, `failed` otherwise. The same file sent again changes nothing,
 so the W&B Run is not reopened for it. Training rows are not resent or changed.
+
+## Rebuild a finished W&B Run without some metrics
+
+W&B cannot delete one metric key from a Run. To remove metric names from an
+Attempt's finished W&B Run, the platform publishes a new W&B Run for the
+Attempt from its own records, leaving out every observation with a listed name,
+and binds the Attempt to the new W&B id. It never deletes or changes a W&B Run:
+check the new Run, then delete the old one yourself in W&B.
+
+```bash
+printf 'loss/old\neval/old_accuracy\n' > names.txt
+ml-exp run rebuild-wandb --project demo --run train --attempt attempt-001 \
+  --exclude-names names.txt --confirmation 'REBUILD demo/train/attempt-001'
+```
+
+The Attempt is chosen as for `run append-derived`; `--attempt` defaults to the
+Run's current Attempt. A wrong confirmation is refused before anything is sent,
+and the message gives the exact one.
+
+**The list.** One full metric name per line, compared exactly; `*` and other
+characters have no special meaning. Surrounding spaces and blank lines are
+ignored and a repeated name counts once. At most 5000 names and 256 KiB; a larger
+list is refused with `WANDB_REBUILD_LIST_TOO_LARGE`, and one with no name or a
+control character with `WANDB_REBUILD_NAMES_INVALID`. The file is sent and stored
+verbatim with its SHA256.
+
+**When.** Only an Attempt whose Run ended (its journal recorded the end, or the
+provider proved the job stopped) and whose W&B Run holds every record, derived
+batches included, and is finished. Otherwise nothing changes:
+`WANDB_REBUILD_PUBLICATION_NOT_FINISHED` while publication is still running or a
+derived batch is not yet on W&B, `WANDB_REBUILD_RUN_NOT_ENDED` for a Run that has
+not ended. This is available for cloud Runs.
+
+**What the new Run holds.** Every row of the training journal and the Attempt's
+derived batches, in sequence order, as the publisher always publishes them, minus
+the listed observations: the same `ml_expd/sequence`, `ml_expd/event_id`, steps,
+summary rules and configuration, and the same display name `RUN/attempt-NNN` and
+group, so name filters find it. The old Run keeps its name. A row whose only
+metrics were all excluded is still published, with only its `ml_expd/*` metadata
+and its `ml_expd/record` showing no observation, so every sequence is on the new Run and
+it is proven complete exactly as any other Run. Excluded names get no chart, no
+summary value and no metric definition. The new Run ends `finished` for a Run that
+succeeded and `failed` otherwise.
+
+**The new id.** It is made from the old W&B id and the list's SHA256, so a server
+restart in the middle resumes the same new Run: rows already sent are read back
+before anything is sent again, as for any publication. Nothing is sent to the old
+W&B id after the rebuild starts.
+
+**Repeating and chaining.** The list of the latest rebuild again returns that
+rebuild (`status: ALREADY_REQUESTED`) and starts nothing, so a lost response is safe
+to repeat. A different list, once the previous rebuild's Run is finished, starts
+another rebuild from the full records to another new id made from the current
+one; lists do not accumulate, so each list names everything to leave out. While a
+rebuild is still publishing, a different list is refused with
+`WANDB_REBUILD_PUBLICATION_NOT_FINISHED`.
+
+**Afterwards.** The Attempt publishes as before, to the new id: a later
+[derived batch](#derived-metrics-after-a-run-ended) resumes the new Run, and the
+latest list still applies to it. The training journal, derived batches, results
+and `run metrics` reads are unchanged; only what W&B shows differs.
+
+**Audit.** `ml-exp run tracking` shows each scope's current `wandb_id` and a
+`wandb_rebuilds` list, oldest first. Each entry has `ordinal`, `sha256`,
+`previous_wandb_id`, `wandb_id`, `requested_at`, `finished_at` (the first time the
+new Run was finished), `status` (`PUBLISHING` or `FINISHED`), `names`, `excluded`
+(each excluded name with its observation count), `excluded_observations`,
+`unmatched_names` (listed names no record has), `emptied_rows` and
+`previous_wandb_run_deleted: false`. The verbatim list and the old publication
+state are kept in `tracking/outbox.sqlite`.
+
+| Method and path | Body or result |
+|---|---|
+| `POST /api/runs/{project}/{run}/attempts/{attempt}/wandb-rebuilds` | `sha256` (lowercase hex of the UTF-8 list), `names` (the list text) and `confirmation` (`REBUILD {project}/{run}/{attempt}`); returns `status` (`STARTED` or `ALREADY_REQUESTED`), the `rebuild` above and `wandb` with both ids and URLs |
+
+The server checks the SHA256 against the text (`WANDB_REBUILD_DIGEST_MISMATCH`).
+A server older than this feature cannot load a rebuilt scope's publication state,
+so after a downgrade it reports `PUBLICATION_RECONCILE_REQUIRED` for that scope
+rather than publishing the excluded names.

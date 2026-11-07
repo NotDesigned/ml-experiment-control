@@ -27,6 +27,9 @@ CREATE TABLE IF NOT EXISTS derived_events (scope TEXT,seq INTEGER,event_id TEXT,
  PRIMARY KEY(scope,seq),UNIQUE(scope,event_id));
 CREATE TABLE IF NOT EXISTS derived_batches (scope TEXT,sha256 TEXT,submitted_at TEXT NOT NULL,
  first INTEGER NOT NULL,last INTEGER NOT NULL,records INTEGER NOT NULL,PRIMARY KEY(scope,sha256));
+CREATE TABLE IF NOT EXISTS wandb_rebuilds (scope TEXT,ordinal INTEGER,sha256 TEXT NOT NULL,names TEXT NOT NULL,
+ audit TEXT NOT NULL,old_wandb_id TEXT NOT NULL,new_wandb_id TEXT NOT NULL UNIQUE,requested_at TEXT NOT NULL,
+ finished_at TEXT,previous_state TEXT,PRIMARY KEY(scope,ordinal),UNIQUE(scope,old_wandb_id,sha256));
 "#;
 /// Training-time records and post-hoc derived batches share one sequence, so the
 /// publisher proves both the same way; only publication reads them together.
@@ -268,6 +271,11 @@ impl Store {
                     [&scope],
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )?;
+                // A W&B rebuild moved the scope to the id it published again.
+                let rebuilt: Option<String> = tx
+                    .query_row(rebuild::CURRENT_ID, [&scope], |row| row.get(0))
+                    .optional()?;
+                let wandb_id = rebuilt.unwrap_or(wandb_id);
                 if frozen != (guard.project.clone(), guard.run.clone(), wandb_id) {
                     return Err(Error::Scope);
                 }
@@ -377,6 +385,8 @@ impl Store {
             invalid_lines: emission.counts.invalid_lines,
         })
     }
+    /// The rows as W&B shows them, in sequence: the training journal and derived
+    /// batches, without any observation a W&B rebuild of this scope excludes.
     pub fn events(
         &self,
         guard: &RecordGuard<'_>,
@@ -401,7 +411,7 @@ impl Store {
                 .collect::<std::result::Result<Vec<_>, _>>()?;
             Ok(rows)
         })?;
-        let result = rows
+        let mut result = rows
             .into_iter()
             .map(|(seq, event_id, payload)| {
                 Ok(EventRow {
@@ -410,9 +420,10 @@ impl Store {
                     payload: serde_json::from_str(&payload)?,
                 })
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
+        self.as_published(scope, &mut result)?;
         self.require_scope(guard, scope)?;
-        result
+        Ok(result)
     }
     /// Like `events`, but stops once `max_bytes` of payload are loaded, always
     /// returning at least one row so one large record cannot block a scope.
@@ -447,6 +458,8 @@ impl Store {
             }
             Ok(rows)
         })?;
+        let mut rows = rows;
+        self.as_published(scope, &mut rows)?;
         self.require_scope(guard, scope)?;
         Ok(rows)
     }
@@ -580,6 +593,9 @@ impl Store {
 
 #[path = "derived.rs"]
 mod derived;
+#[path = "rebuild.rs"]
+mod rebuild;
+pub use rebuild::WandbRebuild;
 #[path = "publication.rs"]
 mod publication;
 

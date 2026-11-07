@@ -80,6 +80,11 @@ struct Saved {
     /// never recreated, so the scope stops here and shows why.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     remote_missing: bool,
+    /// The SHA256 of the exclusion list this state publishes a rebuilt W&B Run
+    /// for. A server that predates rebuilds cannot load it, so it never sends the
+    /// excluded names to the new id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    wandb_rebuild: Option<String>,
 }
 fn at_most_one(value: &u32) -> bool {
     *value <= 1
@@ -340,6 +345,8 @@ fn publish_ended(
         .map_err(why!(Error::Storage))?
         .ok_or(Error::Identity)?;
     let confirmed = status["confirmed"].as_i64().ok_or(Error::Identity)?;
+    // What this thread remembers is about one W&B Run: a rebuild starts afresh.
+    session.rebind(scope, status["wandb_id"].as_str().ok_or(Error::Identity)?);
     let total = store.total(&guard, scope).map_err(why!(Error::Storage))?;
     // An ended Attempt is looked at until it is finished, though its journal is still.
     if ended.is_none() && session.is_idle(scope, total) {

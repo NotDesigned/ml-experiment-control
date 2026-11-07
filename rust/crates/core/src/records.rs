@@ -263,6 +263,94 @@ pub fn ended(lifecycle: &Value) -> bool {
         )
 }
 
+/// One exclusion list for a W&B rebuild: far above the few hundred metric names
+/// a Run declares, and small enough to read back on every publication visit.
+pub const REBUILD_MAX_NAMES: usize = 5000;
+pub const REBUILD_MAX_BYTES: usize = 256 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RebuildRefusal {
+    /// More names or bytes than one list may hold.
+    TooLarge,
+    /// No name, text that is not UTF-8, or a line with a control character.
+    Invalid,
+}
+
+/// The exact metric names one exclusion list removes. One full name per line,
+/// compared literally (`*` is an ordinary character); surrounding whitespace and
+/// blank lines are ignored, and a repeated name counts once.
+pub fn rebuild_names(
+    text: &[u8],
+) -> std::result::Result<std::collections::BTreeSet<String>, RebuildRefusal> {
+    if text.len() > REBUILD_MAX_BYTES {
+        return Err(RebuildRefusal::TooLarge);
+    }
+    let text = std::str::from_utf8(text).map_err(|_| RebuildRefusal::Invalid)?;
+    let mut names = std::collections::BTreeSet::new();
+    for line in text.split('\n') {
+        let name = line.trim();
+        if name.is_empty() {
+            continue;
+        }
+        if name.chars().any(char::is_control) {
+            return Err(RebuildRefusal::Invalid);
+        }
+        names.insert(name.to_owned());
+        if names.len() > REBUILD_MAX_NAMES {
+            return Err(RebuildRefusal::TooLarge);
+        }
+    }
+    if names.is_empty() {
+        return Err(RebuildRefusal::Invalid);
+    }
+    Ok(names)
+}
+
+/// The W&B id a rebuild publishes to. It follows from the id it replaces and the
+/// list's SHA256, so a restart resumes the same new Run, and another list, or the
+/// same list after another, gives another id.
+pub fn rebuild_wandb_id(
+    workspace: &str,
+    scope: &str,
+    previous_wandb_id: &str,
+    sha256: &str,
+) -> Result<String> {
+    Ok(digest(&json!([
+        "wandb-rebuild",
+        workspace,
+        scope,
+        previous_wandb_id,
+        sha256
+    ]))?[..32]
+        .to_owned())
+}
+
+/// Remove every observation named in `excluded` from one journal payload, as a
+/// rebuilt W&B Run publishes it. Other kinds are unchanged. A metric row left with
+/// no observation stays, so its sequence still proves the Run's history.
+pub fn exclude_observations(
+    payload: &mut Value,
+    excluded: &std::collections::BTreeSet<String>,
+) -> usize {
+    let kind = &payload["kind"];
+    if kind != "metrics" && kind != DERIVED_KIND {
+        return 0;
+    }
+    let Some(observations) = payload
+        .get_mut("observations")
+        .and_then(Value::as_array_mut)
+    else {
+        return 0;
+    };
+    let before = observations.len();
+    observations.retain(|item| {
+        !item["name"]
+            .as_str()
+            .is_some_and(|name| excluded.contains(name))
+    });
+    before - observations.len()
+}
+
 fn evaluation(config: &Value) -> Result<Option<&Map<String, Value>>> {
     let config = config
         .as_object()
@@ -708,6 +796,43 @@ mod tests {
         assert_eq!(
             derived_observations(&wide, &config),
             Err(DerivedRefusal::TooLarge)
+        );
+    }
+    #[test]
+    fn an_exclusion_list_is_exact_names_one_per_line() {
+        let names = rebuild_names(b"loss/old\n\n  eval/* \r\nloss/old\n").unwrap();
+        assert_eq!(
+            names.into_iter().collect::<Vec<_>>(),
+            vec!["eval/*".to_owned(), "loss/old".to_owned()]
+        );
+        let bad: [&[u8]; 4] = [b"", b"\n \n", b"a\x01b\n", b"\xff\n"];
+        for bad in bad {
+            assert_eq!(rebuild_names(bad), Err(RebuildRefusal::Invalid));
+        }
+        let many: String = (0..=REBUILD_MAX_NAMES).map(|i| format!("m{i}\n")).collect();
+        assert_eq!(
+            rebuild_names(many.as_bytes()),
+            Err(RebuildRefusal::TooLarge)
+        );
+        let wide = vec![b'a'; REBUILD_MAX_BYTES + 1];
+        assert_eq!(rebuild_names(&wide), Err(RebuildRefusal::TooLarge));
+
+        let excluded = rebuild_names(b"loss/old\n").unwrap();
+        let mut payload = json!({"kind":"metrics","observations":[{"name":"loss/old","value":1},{"name":"loss","value":2}]});
+        assert_eq!(exclude_observations(&mut payload, &excluded), 1);
+        assert_eq!(payload["observations"], json!([{"name":"loss","value":2}]));
+        let mut lifecycle = json!({"kind":"lifecycle","data":{"name":"loss/old"}});
+        assert_eq!(exclude_observations(&mut lifecycle, &excluded), 0);
+        let a = rebuild_wandb_id("w", "s", "old", &"a".repeat(64)).unwrap();
+        assert_eq!(a.len(), 32);
+        assert_eq!(
+            a,
+            rebuild_wandb_id("w", "s", "old", &"a".repeat(64)).unwrap()
+        );
+        assert_ne!(a, rebuild_wandb_id("w", "s", &a, &"a".repeat(64)).unwrap());
+        assert_ne!(
+            a,
+            rebuild_wandb_id("w", "s", "old", &"b".repeat(64)).unwrap()
         );
     }
     #[test]

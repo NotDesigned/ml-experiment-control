@@ -786,6 +786,60 @@ mod tests {
             assert_eq!(response.headers()["x-ml-expd-error-code"], code);
         }
     }
+    /// The W&B rebuild route checks its own body before it needs a cloud service.
+    #[tokio::test]
+    async fn wandb_rebuild_route_refuses_a_wrong_request_before_any_state_is_read() {
+        let (_temp, state) = http_effect::tests::state();
+        let uri = "/api/runs/demo/train/attempts/attempt-001/wandb-rebuilds";
+        let names = "loss/old\n";
+        let sha256 = {
+            use sha2::Digest;
+            format!("{:x}", sha2::Sha256::digest(names.as_bytes()))
+        };
+        let exact = "REBUILD demo/train/attempt-001";
+        let oversized = "x".repeat(3 * 1024 * 1024);
+        for (body, status, code) in [
+            (
+                json!({"sha256":sha256,"names":names,"confirmation":exact}),
+                501,
+                "CLOUD_NOT_CONFIGURED",
+            ),
+            (
+                json!({"sha256":sha256,"names":names,"confirmation":"REBUILD"}),
+                422,
+                "INVALID_WANDB_REBUILD_REQUEST",
+            ),
+            (
+                json!({"sha256":"0".repeat(64),"names":names,"confirmation":exact}),
+                422,
+                "WANDB_REBUILD_DIGEST_MISMATCH",
+            ),
+            (
+                json!({"sha256":sha256,"names":oversized,"confirmation":exact}),
+                413,
+                "WANDB_REBUILD_LIST_TOO_LARGE",
+            ),
+        ] {
+            let request = Request::builder()
+                .method(Method::POST)
+                .uri(uri)
+                .header("authorization", format!("Bearer {TOKEN}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap();
+            let response = app(
+                Auth {
+                    token: TOKEN.into(),
+                },
+                state.api.clone(),
+            )
+            .oneshot(request)
+            .await
+            .unwrap();
+            assert_eq!(response.status().as_u16(), status, "{code}");
+            assert_eq!(response.headers()["x-ml-expd-error-code"], code);
+        }
+    }
     /// A server with no object store behind an executor says so in the one code a
     /// client takes to mean "send through the server", and only to an authorized caller.
     #[tokio::test]
@@ -951,6 +1005,7 @@ mod schema_tests {
                 || path == "/api/projects/{project}/local-runs"
                 || path == "/api/local-runs/{project}/{run}/metrics"
                 || path.ends_with("/derived-metrics")
+                || path.ends_with("/wandb-rebuilds")
                 || path.starts_with("/api/submissions/")
                     && path != "/api/submissions/{identity}"
                     && path != "/api/submissions/{identity}/progress"
@@ -997,6 +1052,7 @@ mod schema_tests {
             "/api/local-runs/{project}/{run}",
             "/api/local-runs/{project}/{run}/metrics",
             "/api/runs/{project}/{run}/attempts/{attempt}/derived-metrics",
+            "/api/runs/{project}/{run}/attempts/{attempt}/wandb-rebuilds",
         ] {
             assert!(paths.contains_key(path), "missing native contract: {path}");
         }

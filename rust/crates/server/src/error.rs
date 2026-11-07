@@ -370,6 +370,26 @@ impl From<crate::backends::cloud::Error> for Error {
                     "DERIVED_METRICS_INVALID",
                     "every nonblank line must be one JSON metric record with name, value and unit; nothing was stored",
                 ),
+                ("WANDB_REBUILD_PUBLICATION_NOT_FINISHED", _) => (
+                    409,
+                    "WANDB_REBUILD_PUBLICATION_NOT_FINISHED",
+                    "a W&B rebuild needs an Attempt whose W&B Run holds every record and is finished; nothing was changed",
+                ),
+                ("WANDB_REBUILD_RUN_NOT_ENDED", _) => (
+                    409,
+                    "WANDB_REBUILD_RUN_NOT_ENDED",
+                    "a W&B rebuild needs an Attempt whose Run has ended; nothing was changed",
+                ),
+                ("WANDB_REBUILD_LIST_TOO_LARGE", _) => (
+                    413,
+                    "WANDB_REBUILD_LIST_TOO_LARGE",
+                    "an exclusion list holds at most 5000 names and 256 KiB",
+                ),
+                ("WANDB_REBUILD_NAMES_INVALID", _) => (
+                    422,
+                    "WANDB_REBUILD_NAMES_INVALID",
+                    "an exclusion list is UTF-8 text with one full metric name per line and at least one name; nothing was changed",
+                ),
                 ("PREPARATION_ID_REQUIRED", _) => (
                     409,
                     "PREPARATION_ID_REQUIRED",
@@ -442,6 +462,10 @@ mod tests {
             ("DERIVED_METRIC_NAME_CONFLICT", 409),
             ("DERIVED_BATCH_TOO_LARGE", 413),
             ("DERIVED_METRICS_INVALID", 422),
+            ("WANDB_REBUILD_PUBLICATION_NOT_FINISHED", 409),
+            ("WANDB_REBUILD_RUN_NOT_ENDED", 409),
+            ("WANDB_REBUILD_LIST_TOO_LARGE", 413),
+            ("WANDB_REBUILD_NAMES_INVALID", 422),
             ("OSS_DATASET_READ_FAILED", 503),
             ("OSS_DATASET_VERIFICATION_FAILED", 422),
         ] {

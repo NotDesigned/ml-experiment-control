@@ -12,10 +12,12 @@ pub(crate) fn routes() -> axum::Router<std::sync::Arc<crate::AppState>> {
     http::routes()
         .merge(sync_http::routes())
         .merge(derived_http::routes())
+        .merge(rebuild_http::routes())
 }
 pub use engine::{Continue, ExternalExecutors, Service};
 
 mod debug_http;
 mod derived_http;
+mod rebuild_http;
 mod sync_http;
 pub(crate) use debug_http::routes as debug_routes;

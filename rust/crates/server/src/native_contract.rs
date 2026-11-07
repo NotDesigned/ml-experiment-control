@@ -146,6 +146,15 @@ pub(crate) fn extend(document: &mut Value) {
         )),
     );
     insert(
+        "/api/runs/{project}/{run}/attempts/{attempt}/wandb-rebuilds",
+        "post",
+        "Publish one Attempt again to a new W&B Run, from its training journal and derived batches in sequence order, without every observation whose metric name is in the exclusion list (one full name per line, at most 5000 names and 256 KiB). Only an Attempt whose Run ended and whose W&B Run holds every record and is finished. The scope is bound to the new W&B id, made from the old id and the list's SHA256; the old W&B Run is never changed or deleted. The list of the latest rebuild again returns it and changes nothing; another list starts another rebuild from the current id. The list, its SHA256, both ids and the excluded names with their counts are kept and shown by the Run's tracking status. The training journal, derived batches and result archive are unchanged.",
+        Some(object(
+            &["sha256", "names", "confirmation"],
+            json!({"sha256":{"type":"string","description":"Lowercase SHA256 of the UTF-8 names text"},"names":{"type":"string","description":"The exclusion list: one full metric name per line; blank lines are ignored"},"confirmation":{"type":"string","description":"REBUILD {project}/{run}/{attempt}"}}),
+        )),
+    );
+    insert(
         "/api/projects/{project}/datasets/{executor}/{asset}/publications/{request}/provider-diagnostics/refresh",
         "post",
         "Explicitly ask the provider for the reason, pods, events and bounded log tail (optional lines=1..2000) of one data copy and its read-only diagnostic. Read-only at the provider; nothing is stored.",

@@ -11,6 +11,9 @@ There is no required accuracy, perplexity or project-specific metric vocabulary.
 For existing local training, see [local attachment](#attach-metrics-from-local-training).
 To add evaluations computed after a cloud Run ended, see
 [derived metrics](#add-derived-metrics-to-an-ended-run).
+To remove metric names from what W&B shows for a finished Attempt, see
+[W&B rebuilds](wandb.md#rebuild-a-finished-wb-run-without-some-metrics);
+records here never change.
 
 ## Record and query
 

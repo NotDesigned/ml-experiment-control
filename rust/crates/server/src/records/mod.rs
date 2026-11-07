@@ -4,7 +4,7 @@
 mod store;
 pub use store::{
     DerivedBatch, EventRow, ImportSummary, RecordGuard, RemoteHistoryEvidence, RemoteObservation,
-    Store,
+    Store, WandbRebuild,
 };
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -40,6 +40,8 @@ pub enum Error {
     NotEnded,
     #[error("a derived metric reuses a training-time metric name of this Attempt")]
     DerivedNameConflict,
+    #[error("a W&B rebuild requires a finished W&B publication of every record")]
+    RebuildNotFinished,
     #[error("invalid record storage metadata: {0}")]
     Invalid(&'static str),
 }

@@ -557,6 +557,38 @@ fn derived_metrics_have_their_own_command_with_an_exact_confirmation() {
 }
 
 #[test]
+fn a_wandb_rebuild_has_its_own_command_with_an_exact_confirmation() {
+    let temp = tempfile::tempdir().unwrap();
+    let help = command(temp.path())
+        .args(["run", "rebuild-wandb", "--help"])
+        .output()
+        .unwrap();
+    assert!(help.status.success());
+    let text = String::from_utf8(help.stdout).unwrap();
+    for option in [
+        "--project",
+        "--run",
+        "--attempt",
+        "--exclude-names",
+        "--confirmation",
+    ] {
+        assert!(text.contains(option), "{option}");
+    }
+    let missing = command(temp.path())
+        .args([
+            "run",
+            "rebuild-wandb",
+            "--project",
+            "demo",
+            "--run",
+            "train",
+        ])
+        .output()
+        .unwrap();
+    assert!(!missing.status.success());
+}
+
+#[test]
 fn local_attachment_has_official_help_and_watch_finish_are_exclusive() {
     let temp = tempfile::tempdir().unwrap();
     let help = command(temp.path())
