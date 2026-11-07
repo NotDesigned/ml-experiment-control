@@ -1152,7 +1152,11 @@ fn a_stored_run_without_scheduling_keeps_its_hash_and_stays_guaranteed() {
             helper::sha256_bytes(&serde_json::to_vec(&docs.run).unwrap()),
             helper::sha256_bytes(&serde_json::to_vec(&docs.attempt).unwrap()),
         ],
-        ["PIN_REQUEST", "PIN_RUN", "PIN_ATTEMPT"]
+        [
+            "sha256:db9d37e274e10ac9bb938ff02f228a08bb1b79e7d920e33203e6e87d6f7a9bc3",
+            "sha256:c01ddeac059e774761ba32311d9426b92ab901c87aa7f4594501075d60ffd932",
+            "sha256:b5f870cec9c3b88a3289680c207c6d8f4817c5676c72c16523543d6248738ce2",
+        ]
     );
     assert_eq!(
         compile(pai::Allocation::default()).allocation,
