@@ -15,9 +15,14 @@ import socket
 import socketserver
 import struct
 import subprocess
+import sys
+import traceback
 import uuid
 
 from dockerfile_parse import DockerfileParser
+
+from experiment_control.backends.pai_api import PaiError
+from experiment_control.redaction import redact_line
 
 from .storage import atomic_json
 from .dockerfile_build import INTERNAL
@@ -33,7 +38,7 @@ CONFIG_KEYS = frozenset({
     "registry_auth_file", "registry_auth_hosts", "registry_blob_hosts", "docker", "skopeo",
     "ephemeral_buildkit", "buildkit_image", "buildkit_http_proxy", "buildkit_network",
     "build_storage_path", "build_expansion_factor", "build_reserve_bytes", "build_min_free_inodes",
-    "pai_dsw", "sensecore_mirror"})
+    "pai_dsw", "sensecore_mirror", "slurm_mirror"})
 
 
 def check_config(config: dict) -> None:
@@ -242,6 +247,16 @@ class ImageBuilder:
             raise ValueError("OCI packaging failed; check registry access and base image availability") from exc
 
 
+def failure_reply(exc):
+    """The journal says where and why; the caller gets a code it can show a person."""
+    frames = [Path(frame.filename).name + ":" + str(frame.lineno) for frame in traceback.extract_tb(exc.__traceback__)]
+    print("image packaging request failed: " + type(exc).__name__ + ": " + redact_line(str(exc))[:500]
+          + " at " + " < ".join(reversed(frames[-6:])), file=sys.stderr, flush=True)
+    code = exc.code if isinstance(exc, PaiError) else "BUILD_REQUEST_FAILED"
+    return {"error": "image packaging request failed", "code": code,
+            "details": {"error_class": type(exc).__name__}}
+
+
 class BuilderServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
     daemon_threads = True
 
@@ -274,8 +289,8 @@ class Handler(BaseHTTPRequestHandler):
         except ApplicationError as exc:
             status, result = exc.status_code, {"error": exc.code, "code": exc.code, "status_code": exc.status_code,
                                               "details": {"publication_uncertain": True, "scheduler_submitted": False}}
-        except Exception:
-            status, result = 409, {"error": "image packaging request failed"}
+        except Exception as exc:
+            status, result = 409, failure_reply(exc)
         self.reply(status, result)
 
     def reply(self, status, result):
@@ -300,7 +315,9 @@ def main():
     if args.check:
         return
     socket_path = Path(config["socket"])
-    socket_path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+    socket_path.parent.mkdir(parents=True, exist_ok=True)
+    # The service's UMask would otherwise lock the client group out of a new directory.
+    socket_path.parent.chmod(0o750)
     os.chown(socket_path.parent, 0, config["client_gid"])
     socket_path.unlink(missing_ok=True)
     with BuilderServer(str(socket_path), Handler) as server:

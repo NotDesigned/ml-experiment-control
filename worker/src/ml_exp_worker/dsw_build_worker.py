@@ -21,6 +21,17 @@ class Engine(http.client.HTTPConnection):
         self.sock.connect('/var/docker/proxy/docker-proxy.sock')
 
 
+def readable(event):
+    """One Docker event as a person reads it. Per-layer byte counts are left out."""
+    if isinstance(event.get('stream'), str):
+        return event['stream'].rstrip()
+    if event.get('error') or event.get('errorDetail'):
+        return json.dumps(event)
+    if event.get('progressDetail') or 'aux' in event or not isinstance(event.get('status'), str):
+        return None
+    return event['status'] + (' ' + event['id'] if isinstance(event.get('id'), str) else '')
+
+
 def request(method, path, body=None, headers=None, *, stream=False, timeout=600):
     connection = Engine('localhost', timeout=timeout)
     try:
@@ -39,7 +50,9 @@ def request(method, path, body=None, headers=None, *, stream=False, timeout=600)
             if len(line) > 65536 or size > 2 * 1024**2:
                 raise ValueError('DSW build log exceeds its bound')
             event = json.loads(line)
-            print(json.dumps(event), flush=True)
+            text = readable(event)
+            if text:
+                print(text, flush=True)
             if event.get('error') or event.get('errorDetail'):
                 raise ValueError('DSW Docker build or publication failed')
     finally:

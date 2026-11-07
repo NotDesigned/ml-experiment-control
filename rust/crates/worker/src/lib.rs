@@ -22,6 +22,7 @@ pub mod datasets;
 pub mod managed;
 #[cfg(unix)]
 mod process;
+pub mod retry;
 #[cfg(unix)]
 pub mod slurm;
 

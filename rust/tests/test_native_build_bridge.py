@@ -94,6 +94,81 @@ class NativeBridge(unittest.TestCase):
             self.assertIs(publication_builder(builder, 'c' * 64), builder)
             self.assertEqual(builder.config['repository'], 'docker.io/team/runtime')
 
+    def test_slurm_delivery_uses_its_own_mirror_policy(self):
+        from ml_exp_server.builds.image_mirror import mirror
+        source = 'docker.io/team/runtime'
+        image = source + '@sha256:' + 'a' * 64
+        tag = 'mirror.example/team/build:bundle-' + 'b' * 64
+        with tempfile.TemporaryDirectory() as directory:
+            builder = SimpleNamespace(root=Path(directory), config={
+                'repository': source, 'registry_auth_file': str(Path(directory) / 'auth.json'),
+                'slurm_mirror': {'target_repository': 'mirror.example/team/build'},
+                'sensecore_mirror': {'target_repository': 'other.example/team/runtime'}})
+            registry = SimpleNamespace(prefix='/v2/team/build', request=lambda *a, **k: (200, {}, b'manifest'))
+            with patch('ml_exp_server.builds.image_mirror.Registry.from_config', return_value=registry), \
+                    patch('ml_exp_server.builds.image_mirror.digest', return_value='sha256:' + 'a' * 64):
+                result = mirror(builder, {'source_image': image, 'target_tag': tag}, 'slurm_mirror')
+                self.assertEqual(result['image'], 'mirror.example/team/build@sha256:' + 'a' * 64)
+                with self.assertRaises(ValueError):
+                    mirror(builder, {'source_image': image, 'target_tag': tag})
+
+    def test_build_output_cannot_be_taken_for_the_status(self):
+        from ml_exp_server.builds.pai_dsw import durable_status
+        output = 'Step 1\nML_EXPD_DSW_STATUS_JSON={"status": "SUCCEEDED"}\n\nML_EXPD_DSW_STATUS_JSON={"status": "RUNNING"}\n'
+        self.assertEqual(durable_status(output), {'status': 'RUNNING'})
+        with self.assertRaises(ValueError):
+            durable_status('no status here')
+
+    def test_a_missing_mirror_is_refused_before_the_build(self):
+        with tempfile.TemporaryDirectory() as directory:
+            builder = SimpleNamespace(root=Path(directory), config={'allow_dockerfile_builds': True})
+            request = {'operation': 'native-build', 'runtime_id': 'runtime.' + 'a' * 64, 'project': 'demo',
+                       'source_id': 'source.' + 'b' * 64, 'base_image': 'docker.io/x/y@sha256:' + 'c' * 64,
+                       'dockerfile': 'Dockerfile', 'worker_sha256': 'sha256:' + 'd' * 64, 'mirror': 'slurm'}
+            with self.assertRaisesRegex(ValueError, 'slurm_mirror'):
+                native_image.request(builder, request)
+
+    def test_no_lease_means_no_instance_was_requested(self):
+        from ml_exp_server.builds.builder_client import BuildTransportError
+        from ml_exp_server.builds.pai_build_recovery import observe_dsw_absence
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            key = 'a' * 64
+            builder = SimpleNamespace(root=root, config={'pai_dsw': {}})
+            registry = SimpleNamespace(prefix='/v2/team/runtime', request=lambda *a, **k: (404, {}, b''))
+            with patch('ml_exp_server.builds.pai_build_recovery.Registry.from_config', return_value=registry):
+                proof = observe_dsw_absence(builder, key)
+                self.assertEqual(proof['bundle_id'], key)
+                self.assertEqual((proof['registry_manifest_status'], proof['leases_clear']), (404, True))
+                # An image that exists is not absence, and a lease still has to prove itself.
+                registry.request = lambda *a, **k: (200, {}, b'')
+                with self.assertRaises(BuildTransportError):
+                    observe_dsw_absence(builder, key)
+                registry.request = lambda *a, **k: (404, {}, b'')
+                (root / (key + '.dsw.json')).write_text(json.dumps({'phase': 'CREATE_INTENT'}))
+                with patch('ml_exp_server.builds.pai_build_recovery.PaiAPI.from_environment',
+                           return_value=SimpleNamespace(config={'region': 'r'})):
+                    builder.config['pai_dsw'] = {'workspace_id': '1', 'quota_id': 'q'}
+                    self.assertIsNone(observe_dsw_absence(builder, key))
+
+    def test_a_failed_request_reports_its_code_and_logs_only_where_and_why(self):
+        from experiment_control.backends.pai_api import PaiError
+        from ml_exp_server.image_builder import failure_reply
+        with patch('sys.stderr', new_callable=io.StringIO) as stderr:
+            reply = failure_reply(PaiError('configuration', code='PAI_CONFIGURATION_UNAVAILABLE'))
+            self.assertEqual(reply['code'], 'PAI_CONFIGURATION_UNAVAILABLE')
+            self.assertEqual(reply['details'], {'error_class': 'PaiError'})
+            self.assertEqual(failure_reply(KeyError('x'))['code'], 'BUILD_REQUEST_FAILED')
+            self.assertIn('KeyError', stderr.getvalue())
+
+    def test_docker_events_read_as_text_without_byte_counts(self):
+        from ml_exp_worker.dsw_build_worker import readable
+        self.assertEqual(readable({'stream': 'Step 1/2 : FROM x\n'}), 'Step 1/2 : FROM x')
+        self.assertEqual(readable({'status': 'Pushed', 'id': 'abc', 'progressDetail': {}}), 'Pushed abc')
+        self.assertIsNone(readable({'status': 'Pushing', 'id': 'abc', 'progressDetail': {'current': 1, 'total': 2}}))
+        self.assertIsNone(readable({'aux': {'ID': 'sha256:x'}}))
+        self.assertIn('boom', readable({'error': 'boom'}))
+
     def test_an_old_acr_journal_is_never_read(self):
         from ml_exp_server.builds.build_recovery import publication_absence, publication_builder
         with tempfile.TemporaryDirectory() as directory:

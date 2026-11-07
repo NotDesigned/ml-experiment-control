@@ -49,7 +49,8 @@ fn packet(package: &Package, state: &mut State) -> Result<Packet> {
     let config_sha256 = ml_exp_core::slurm::helper::sha256_bytes(
         &serde_json::to_vec(config).map_err(|_| Error::Configuration)?,
     );
-    let outputs = Directory::open(&config.output_path(), false).map_err(|_| Error::Storage);
+    let outputs =
+        Directory::open(&config.output_path(), false).map_err(crate::managed::storage_failure!());
     let (mut stdout, mut stderr, metrics, history) = match outputs {
         Ok(outputs) => (
             observations::window(&outputs, "stdout.log"),
@@ -64,7 +65,7 @@ fn packet(package: &Package, state: &mut State) -> Result<Packet> {
                     worker.phase == Phase::Finished,
                     &config_sha256,
                 )
-                .map_err(|_| Error::Storage)?
+                .map_err(crate::managed::storage_failure!())?
             },
         ),
         Err(_) if worker.phase == Phase::Prepared && state.cursor.is_none() => (
@@ -96,17 +97,17 @@ fn packet(package: &Package, state: &mut State) -> Result<Packet> {
             None => None,
             Some(context) => {
                 let state_root = Directory::open(Path::new(&context.state_root), false)
-                    .map_err(|_| Error::Storage)?;
+                    .map_err(crate::managed::storage_failure!())?;
                 if state_root
                     .entry_exists(OsStr::new("checkpoint.ready.json"))
-                    .map_err(|_| Error::Storage)?
+                    .map_err(crate::managed::storage_failure!())?
                 {
                     let before = state_root
                         .read_regular(
                             OsStr::new("checkpoint.ready.json"),
                             ml_exp_core::checkpoints::MANIFEST_LIMIT as u64,
                         )
-                        .map_err(|_| Error::Storage)?;
+                        .map_err(crate::managed::storage_failure!())?;
                     let ready = serde_json::Value::Object(
                         ml_exp_core::json::mapping(&before).map_err(|_| Error::Binding)?,
                     );
@@ -122,7 +123,7 @@ fn packet(package: &Package, state: &mut State) -> Result<Packet> {
                                     OsStr::new("checkpoint.ready.json"),
                                     ml_exp_core::checkpoints::MANIFEST_LIMIT as u64,
                                 )
-                                .map_err(|_| Error::Storage)?
+                                .map_err(crate::managed::storage_failure!())?
                         {
                             return Err(Error::Uncertain);
                         }
@@ -172,10 +173,12 @@ fn packet(package: &Package, state: &mut State) -> Result<Packet> {
 fn save(root: &Directory, state: &State) -> Result<()> {
     let bytes = serde_json::to_vec(state).map_err(|_| Error::Configuration)?;
     if bytes.len() > exchange::MAX_BYTES + 1024 * 1024 {
-        return Err(Error::Storage);
+        return Err(crate::managed::storage_refused!(
+            "exchange state is too large"
+        ));
     }
     root.replace_regular(OsStr::new(STATE), &bytes)
-        .map_err(|_| Error::Storage)
+        .map_err(crate::managed::storage_failure!())
 }
 pub trait Transport {
     fn send(&self, channel: &exchange::Channel, packet: &Packet) -> Result<Ack>;
@@ -235,7 +238,8 @@ impl Transport for Https {
 /// This can run alone on a CPU collector without invoking a training process.
 pub fn once(package: &Package, transport: &impl Transport) -> Result<bool> {
     package.validate().map_err(|_| Error::Configuration)?;
-    let root = Directory::open(&package.config.attempt_root, false).map_err(|_| Error::Storage)?;
+    let root = Directory::open(&package.config.attempt_root, false)
+        .map_err(crate::managed::storage_failure!())?;
     let _lock = root
         .lock(
             OsStr::new(".cloud-exchange.lock"),
@@ -248,20 +252,20 @@ pub fn once(package: &Package, transport: &impl Transport) -> Result<bool> {
             if error.kind() == std::io::ErrorKind::WouldBlock {
                 Error::Busy
             } else {
-                Error::Storage
+                Error::storage(concat!(file!(), ":", line!()), &error)
             }
         })?;
     let sha = crate::cloud::package_sha(package)?;
     let mut state: State = if root
         .entry_exists(OsStr::new(STATE))
-        .map_err(|_| Error::Storage)?
+        .map_err(crate::managed::storage_failure!())?
     {
         let bytes = root
             .read_regular(
                 OsStr::new(STATE),
                 (exchange::MAX_BYTES + 1024 * 1024) as u64,
             )
-            .map_err(|_| Error::Storage)?;
+            .map_err(crate::managed::storage_failure!())?;
         serde_json::from_value(serde_json::Value::Object(
             ml_exp_core::json::mapping(&bytes).map_err(|_| Error::Binding)?,
         ))

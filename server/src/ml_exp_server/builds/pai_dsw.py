@@ -42,6 +42,15 @@ def file_sha(path):
     return value.hexdigest()
 
 
+def durable_status(output):
+    """The status is printed after the build's own output, which can contain anything."""
+    lines = [line.removeprefix("ML_EXPD_DSW_STATUS_JSON=") for line in output.splitlines()
+             if line.startswith("ML_EXPD_DSW_STATUS_JSON=")]
+    if not lines:
+        raise ValueError("DSW durable build status is unavailable")
+    return json.loads(lines[-1])
+
+
 class DswPublisher:
     def __init__(self, builder):
         self.builder, self.config = builder, builder.config["pai_dsw"]
@@ -65,7 +74,7 @@ class DswPublisher:
         source = Path(source)
         if source.stat().st_size <= 512 * 1024:
             self.cli(["dsw", "instance", "cp", str(source), "dsw:" + target,
-                      "--instance", self.instance], private, timeout=180)
+                      "--instance", self.instance], private, timeout=180, quiet=True)
             return
         parts = []
         with tempfile.TemporaryDirectory(prefix="dsw-parts-", dir=self.builder.root) as directory:
@@ -75,7 +84,7 @@ class DswPublisher:
                     path = Path(directory) / ("payload" + suffix)
                     path.write_bytes(chunk)
                     self.cli(["dsw", "instance", "cp", str(path), "dsw:" + target + suffix,
-                              "--instance", self.instance], private, timeout=180)
+                              "--instance", self.instance], private, timeout=180, quiet=True)
                     parts.append(target + suffix)
                     path.unlink()
         code = ("from pathlib import Path; import hashlib; "
@@ -122,12 +131,11 @@ class DswPublisher:
                     "s=root/'status.json'; state=json.loads(s.read_text()) if s.exists() else {'status':'RUNNING'}; "
                     "state['log_offset']=offset; print('\\nML_EXPD_DSW_STATUS_JSON='+json.dumps(state))")
             try:
-                output = self.cli(["dsw", "instance", "exec", self.instance, "--code", code], private, timeout=45)
-                lines = [line.removeprefix("ML_EXPD_DSW_STATUS_JSON=") for line in output.splitlines()
-                         if line.startswith("ML_EXPD_DSW_STATUS_JSON=")]
-                if len(lines) != 1:
-                    raise ValueError("DSW durable build status is unavailable")
-                state = json.loads(lines[0])
+                output = self.cli(["dsw", "instance", "exec", self.instance, "--code", code], private, timeout=45,
+                                  quiet=True)
+                self.write_log("\n".join(line for line in output.splitlines()
+                                         if not line.startswith("ML_EXPD_DSW_STATUS_JSON=")))
+                state = durable_status(output)
                 if not isinstance(state, dict):
                     raise ValueError("DSW durable build status is not an object")
                 position = state["log_offset"]
@@ -183,26 +191,36 @@ class DswPublisher:
             raise ValueError("DSW builder ownership or zero-GPU identity differs")
         return value
 
-    def cli(self, args, private, *, timeout=120):
+    def cli(self, args, private, *, timeout=120, quiet=False):
+        """A quiet call is logged only if it fails; its caller decides what a person sees."""
         env = {**os.environ, "PAI_CONFIG_DIR": str(private)}
         result = run_process([self.config.get("pai_bin", "/usr/local/bin/pai"),
                               "--profile", "ml-expd", "--region", self.api.config["region"], *args],
                              env=env, text=True, timeout=timeout)
-        text = result.stdout + "\n" + result.stderr
-        text = self.log_output(text)
+        text = self.redacted(result.stdout + "\n" + result.stderr)
+        if not quiet or result.returncode:
+            self.write_log(text)
         if result.returncode:
             raise ValueError("DSW transfer or remote build failed; inspect bounded builder logs")
         return text
 
-    def log_output(self, text):
+    def redacted(self, text):
         for key in ("access_key_id", "access_key_secret", "security_token"):
             if self.api.config.get(key):
                 text = text.replace(self.api.config[key], "[redacted]")
         for secret in self.secrets:
             text = text.replace(secret, "[redacted]")
         text = re.sub(r"(https?://[^\s?]+)\?[^\s]+", r"\1?[redacted]", text)
-        text = "\n".join(redact_line(line)[:8192] for line in text.splitlines())[-2*1024**2:]
-        log = BUILD_LOG.get()
+        return "\n".join(redact_line(line)[:8192] for line in text.splitlines())[-2*1024**2:]
+
+    def log_output(self, text):
+        text = self.redacted(text)
+        self.write_log(text)
+        return text
+
+    def write_log(self, text):
+        text = "\n".join(line for line in text.splitlines() if line.strip())
+        log = BUILD_LOG.get() if text else None
         if log:
             with Path(log).open("a") as f:
                 f.write(text + "\n")

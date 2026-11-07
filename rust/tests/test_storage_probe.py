@@ -17,7 +17,8 @@ import probe  # noqa: E402
 class Probe(unittest.TestCase):
     def run_both(self, directory, output):
         children = [subprocess.Popen(
-            [sys.executable, str(PROBE), "--dir", str(directory), "--role", role, "--timeout", "60"],
+            [sys.executable, str(PROBE), "--dir", str(directory), "--role", role, "--timeout", "60",
+             "--race-rounds", "3"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             env={**os.environ, "OUTPUT_DIR": str(output)}) for role in "ab"]
         results = []
@@ -42,16 +43,29 @@ class Probe(unittest.TestCase):
                 self.assertEqual(result["findings"]["inode"], "same")
                 self.assertGreater(result["stat_per_second"], 0)
                 self.assertTrue(result["command_chain"])
+                for name in probe.CREATORS:
+                    self.assertIn("exactly one wins", result["findings"][f"race_{name}"])
             self.assertTrue((output / "storage-probe-a.json").exists())
             self.assertTrue((output / "storage-probe-b.json").exists())
-            leftovers = [path.name for path in (root / "ml-exp-storage-probe").iterdir()
+            leftovers = [path.name for path in (root / "ml-exp-storage-probe" / "default").iterdir()
                          if path.name.startswith("stat-")]
             self.assertEqual(leftovers, [], "the stat files are cleaned up")
 
     def base(self):
         same = {"inode": 1, "device": 1, "size": 1, "mtime_ns": 1, "ctime_ns": 1}
         return {"same_host": False, "lock_held_by_a": "refused", "lock_held_by_b": "refused",
-                "same_file": {"mine": same, "theirs": dict(same)}, "euid": 1000, "stat_per_second": 5}
+                "same_file": {"mine": same, "theirs": dict(same)}, "euid": 1000, "stat_per_second": 5, "races": {}}
+
+    def test_a_race_is_only_good_if_exactly_one_side_wins(self):
+        finding = lambda mine, theirs: probe.race_finding({"mine": mine, "theirs": theirs})
+        self.assertIn("exactly one", finding(["won", "lost"], ["lost", "won"]))
+        self.assertIn("both won 1", finding(["won"], ["won"]))
+        self.assertIn("neither won 1", finding(["lost"], ["lost"]))
+        self.assertIn("UNSUPPORTED", finding(["EINVAL"], ["EINVAL"]))
+
+    def test_the_worker_token_stays_out_of_the_report(self):
+        self.assertEqual(probe.masked(["worker", "--package-token", "secret", "--x", "y"]),
+                         ["worker", "--package-token", "[redacted]", "--x", "y"])
 
     def test_a_good_result_reads_as_good(self):
         findings = probe.verdict(self.base())

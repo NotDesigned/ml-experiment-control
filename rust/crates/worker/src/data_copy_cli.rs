@@ -1,13 +1,19 @@
 //! A zero-GPU copy job only unpacks its image's fixed archive to the approved
 //! persistent data store. The callback contains a receipt, never dataset bytes.
 use clap::Parser;
-use ml_exp_core::datasets::import::{Config, DataChannel, Source};
+use ml_exp_core::datasets::{
+    Receipt,
+    import::{Config, DataChannel, Source},
+};
 use std::{
     ffi::OsString,
     io::Read,
     path::PathBuf,
     process::ExitCode,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 const MAX_CONFIG_BYTES: usize = 8 * 1024 * 1024;
 #[derive(Parser)]
@@ -48,6 +54,74 @@ fn termination_flag() -> std::io::Result<Arc<AtomicBool>> {
         signal_hook::flag::register(signal, Arc::clone(&flag))?;
     }
     Ok(flag)
+}
+enum ReadyFailure {
+    Again(String),
+    Final(String),
+}
+fn post_ready(
+    http: &reqwest::blocking::Client,
+    channel: &DataChannel,
+    receipt: &Receipt,
+) -> Result<(), ReadyFailure> {
+    let body =
+        serde_json::to_vec(receipt).map_err(|error| ReadyFailure::Final(error.to_string()))?;
+    let response = http
+        .post(format!("{}/ready", channel.url))
+        .bearer_auth(&channel.token)
+        .header("Content-Type", "application/json")
+        .body(body)
+        .send()
+        .map_err(|error| ReadyFailure::Again(error.without_url().to_string()))?;
+    let status = response.status().as_u16();
+    if status != 200 {
+        let text = format!("DATA_READY_CALLBACK_HTTP_{status}");
+        return Err(if ml_exp_worker::retry::may_pass(status) {
+            ReadyFailure::Again(text)
+        } else {
+            ReadyFailure::Final(text)
+        });
+    }
+    let mut bytes = Vec::new();
+    response
+        .take(1025)
+        .read_to_end(&mut bytes)
+        .map_err(|error| ReadyFailure::Again(error.to_string()))?;
+    let ack: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|error| ReadyFailure::Again(error.to_string()))?;
+    if ack["asset_id"] != receipt.asset_id || ack["status"] != "READY" {
+        return Err(ReadyFailure::Final("data ready callback differs".into()));
+    }
+    Ok(())
+}
+/// The copy is complete by now, and the server accepts an identical receipt again.
+fn confirm_ready(
+    http: &reqwest::blocking::Client,
+    channel: &DataChannel,
+    receipt: &Receipt,
+    cancelled: &AtomicBool,
+) -> Result<(), String> {
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        match post_ready(http, channel, receipt) {
+            Ok(()) => return Ok(()),
+            Err(ReadyFailure::Final(text)) => return Err(text),
+            Err(ReadyFailure::Again(text))
+                if attempt >= ml_exp_worker::retry::ATTEMPTS
+                    || cancelled.load(Ordering::Relaxed) =>
+            {
+                return Err(text);
+            }
+            Err(ReadyFailure::Again(text)) => {
+                eprintln!(
+                    "data ready callback attempt {attempt} failed: {}; trying again",
+                    experiment_redact::redact_line(&text)
+                );
+                std::thread::sleep(ml_exp_worker::retry::delay(attempt));
+            }
+        }
+    }
 }
 pub fn main_from(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     let args = match Args::try_parse_from(args) {
@@ -98,21 +172,7 @@ pub fn main_from(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             .connect_timeout(std::time::Duration::from_secs(10))
             .timeout(std::time::Duration::from_secs(60))
             .build()?;
-        let response = http
-            .post(format!("{}/ready", channel.url))
-            .bearer_auth(&channel.token)
-            .header("Content-Type", "application/json")
-            .body(serde_json::to_vec(&receipt)?)
-            .send()?;
-        if response.status() != 200 {
-            return Err(format!("DATA_READY_CALLBACK_HTTP_{}", response.status().as_u16()).into());
-        }
-        let mut bytes = Vec::new();
-        response.take(1025).read_to_end(&mut bytes)?;
-        let ack: serde_json::Value = serde_json::from_slice(&bytes)?;
-        if ack["asset_id"] != receipt.asset_id || ack["status"] != "READY" {
-            return Err("data ready callback differs".into());
-        }
+        confirm_ready(&http, &channel, &receipt, &cancelled)?;
         Ok(())
     })();
     match result {

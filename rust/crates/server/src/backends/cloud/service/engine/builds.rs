@@ -269,10 +269,16 @@ impl Service {
                 uncertain: false,
             });
         }
-        let mirror = self
-            .backends
-            .get(&record.definition.executor)
-            .is_some_and(|b| matches!(b.adapter.profile, cloud::adapter::Profile::Sensecore(_)));
+        // SenseCore and the Slurm gateways cannot pull from the main registry.
+        let executor = &record.definition.executor;
+        let mirror = if settings.slurm.contains_key(executor) {
+            json!("slurm")
+        } else {
+            json!(self.backends.get(executor).is_some_and(|b| matches!(
+                b.adapter.profile,
+                cloud::adapter::Profile::Sensecore(_)
+            )))
+        };
         let payload = json!({"operation":format!("native-{operation}"),"runtime_id":record.runtime_id,"project":record.project,"source_id":record.definition.source_id,
             "base_image":record.definition.base_image,"dockerfile":record.definition.dockerfile,"worker_sha256":record.worker_sha256,"mirror":mirror});
         let timeout = if operation == "build" { 7200 } else { 30 };

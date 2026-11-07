@@ -28,7 +28,7 @@ Project and executor are only defaults; see [configuration](configuration.md).
 ## Run a repository
 
 The repository needs a Dockerfile whose external `FROM` lines are pinned by digest;
-`ml-exp get /api/environments` lists approved bases, and the
+`docker buildx imagetools inspect IMAGE` prints the digest to pin, and the
 [Dockerfile rules](builds.md#dockerfile-contract) say what else is required. The code
 reads where to write from its environment:
 
@@ -71,6 +71,8 @@ ml-exp results    # download and verify the results
 ml-exp cancel     # ask, then stop it
 ml-exp retry      # ask, then run it again; --checkpoint resumes from one
 ```
+
+`results`, `cancel` and `retry` act on your latest submission unless given `--run NAME`.
 
 **Running it again.** The job's identity comes from the directory name, the code and the
 settings, so repeating the same command goes back to the same job and sends nothing new.

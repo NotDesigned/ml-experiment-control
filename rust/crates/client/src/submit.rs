@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::{
     collections::BTreeMap,
+    ffi::OsStr,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -245,10 +246,69 @@ pub struct Latest {
     pub unsettled: bool,
 }
 const LATEST: &str = "latest.json";
+const RUNS: &str = "runs";
 /// Only a convenience: failing to save this must not disturb a submission.
 fn remember(directory: &Path, latest: &Latest) {
-    if let Ok(bytes) = serde_json::to_vec(latest) {
-        let _ = ml_exp_io::write_atomic(&directory.join(LATEST), &bytes, false);
+    let Ok(bytes) = serde_json::to_vec(latest) else {
+        return;
+    };
+    // Whatever this acted on is now the latest, even if it was named. Each Run also keeps
+    // its own record, so it can still be named after a newer one.
+    let root = records_root(directory);
+    let _ = ml_exp_io::write_atomic(&root.join(LATEST), &bytes, false);
+    let own = run_records(root, &latest.project, &latest.run_id);
+    if std::fs::create_dir_all(&own).is_ok() {
+        let _ = ml_exp_io::write_atomic(&own.join(LATEST), &bytes, false);
+    }
+}
+fn run_records(root: &Path, project: &str, run: &str) -> PathBuf {
+    root.join(RUNS).join(project).join(run)
+}
+/// The directory holding the latest record, given it or a named Run's records beneath it.
+fn records_root(directory: &Path) -> &Path {
+    let mut above = directory.ancestors();
+    match (above.nth(2), above.next()) {
+        (Some(runs), Some(root)) if runs.file_name() == Some(OsStr::new(RUNS)) => root,
+        _ => directory,
+    }
+}
+/// Where the record of a named Run is kept, for the commands that act on the latest
+/// one by default. `--project` is only needed when two Projects used the same Run name.
+pub fn run_directory(directory: &Path, project: Option<&str>, run: &str) -> Result<PathBuf, Error> {
+    let runs = directory.join(RUNS);
+    let valid = |id: &str| {
+        ml_exp_core::identity::validate_id(id)
+            .map(|_| ())
+            .map_err(|_| Error::Submit(format!("{id} is not a valid name")))
+    };
+    valid(run)?;
+    let unknown = || {
+        Error::Submit(format!(
+            "this machine has no record of submitting {run}; `ml-exp run --help` acts on a \
+             Submission by its ID"
+        ))
+    };
+    if let Some(project) = project {
+        valid(project)?;
+        let found = runs.join(project).join(run);
+        return if found.join(LATEST).is_file() {
+            Ok(found)
+        } else {
+            Err(unknown())
+        };
+    }
+    let mut found: Vec<PathBuf> = std::fs::read_dir(&runs)
+        .map_err(|_| unknown())?
+        .flatten()
+        .map(|entry| entry.path().join(run))
+        .filter(|path| path.join(LATEST).is_file())
+        .collect();
+    match found.len() {
+        0 => Err(unknown()),
+        1 => Ok(found.remove(0)),
+        _ => Err(Error::Submit(format!(
+            "more than one Project has a Run named {run}; say which with --project"
+        ))),
     }
 }
 pub fn latest(directory: &Path) -> Result<Latest, Error> {
@@ -378,7 +438,7 @@ pub fn base_image(dockerfile: &str) -> Result<String, Error> {
             if !pinned(image) {
                 return Err(refused(format!(
                     "FROM {image} must be pinned as IMAGE@sha256:DIGEST; \
-                     `ml-exp get /api/environments` lists approved bases"
+                     `docker buildx imagetools inspect IMAGE` prints the digest"
                 )));
             }
             last = Some(image.to_owned());
@@ -390,7 +450,7 @@ pub fn base_image(dockerfile: &str) -> Result<String, Error> {
     last.ok_or_else(|| {
         refused(
             "the Dockerfile needs a FROM pinned as IMAGE@sha256:DIGEST; \
-             `ml-exp get /api/environments` lists approved bases"
+             `docker buildx imagetools inspect IMAGE` prints the digest"
                 .into(),
         )
     })
@@ -752,21 +812,25 @@ fn stopped(view: &Value, builder_idle: bool) -> Option<String> {
         };
         let code = cause["code"].as_str().unwrap_or("UNKNOWN");
         if matches!(code, "BUILD_RECEIPT_MISSING" | "NATIVE_BUILD_RPC_UNCERTAIN") {
-            return builder_idle.then(|| {
+            // Proof that nothing was left means it is not running, whatever was last seen.
+            return (builder_idle || runtime["retry_safe"] == true).then(|| {
                 format!(
                     "the image build is not running and left no result ({code}), so its outcome \
-                     is unresolved. See {logs}. Running this command again checks once more; \
-                     changing the code or the Dockerfile starts a new build"
+                     is unresolved. See {logs}. Running this command again checks once more \
+                     and builds again if nothing was left behind; changing the code or the \
+                     Dockerfile starts a new build"
                 )
             });
         }
         let reason = cause["details"]["reason"]
             .as_str()
+            .or(cause["details"]["error_class"].as_str())
             .map(|reason| format!(" ({reason})"))
             .unwrap_or_default();
         return Some(format!(
-            "the image build failed with {code}{reason}. See {logs}; \
-             changing the code or the Dockerfile starts a new build"
+            "the image build failed with {code}{reason}. See {logs}. Running this command \
+             again builds again if nothing was left behind; changing the code or the \
+             Dockerfile starts a new build"
         ));
     }
     if view["data"]["new_request_allowed"] == true {
@@ -776,6 +840,12 @@ fn stopped(view: &Value, builder_idle: bool) -> Option<String> {
         );
     }
     None
+}
+/// What an earlier command's build left behind is proven safe to start over. One
+/// command does this once: a build that fails while it watches is reported, not repeated.
+fn may_build_again(view: &Value) -> bool {
+    let runtime = &view["runtime"];
+    runtime["retry_safe"] == true && !runtime["build_error"].is_null()
 }
 /// The Runtime still being built, if any. Progress is read for this one.
 fn building(view: &Value) -> Option<&str> {
@@ -1194,16 +1264,23 @@ pub fn run(
     {
         let current = show(client, id, &health)?;
         if may_exist(&current["status"]) {
-            // A later `retry` of this Run stays the latest; this must not move it back.
-            let known = latest(state_directory).is_ok_and(|newest| {
-                newest.run_id == identity.run_id && newest.submission_id.is_some()
-            });
-            if !known {
-                remember(
-                    state_directory,
-                    &latest_for(spec, &identity.run_id, Some(id), false),
-                );
-            }
+            // A later `retry` of this Run stays its record; this must not move it back.
+            let known = latest(&run_records(
+                state_directory,
+                &spec.project,
+                &identity.run_id,
+            ))
+            .ok()
+            .or_else(|| {
+                latest(state_directory)
+                    .ok()
+                    .filter(|newest| newest.run_id == identity.run_id)
+            })
+            .filter(|record| record.submission_id.is_some());
+            remember(
+                state_directory,
+                &known.unwrap_or_else(|| latest_for(spec, &identity.run_id, Some(id), false)),
+            );
             let current = observe(client, id, current, &health)?;
             let current = watch(
                 client,
@@ -1493,7 +1570,7 @@ fn read_dockerfile(directory: &Path, name: &str) -> Result<String, Error> {
     let missing = || {
         Error::Submit(format!(
             "{} needs a Dockerfile starting with FROM IMAGE@sha256:DIGEST; \
-             `ml-exp get /api/environments` lists approved bases",
+             `docker buildx imagetools inspect IMAGE` prints the digest",
             directory.display()
         ))
     };
@@ -1526,8 +1603,9 @@ fn publish(
         .ok_or(Error::Response)
 }
 
-/// Repeat the same safe continue until a Submission exists. A failure stops here
-/// rather than being retried: continue would start a failed build again.
+/// Repeat the same safe continue until a Submission exists. A failure that happens
+/// here stops here rather than being retried: continue would start it again. Only what
+/// an earlier command left is started over, once, by the next continue.
 fn prepared(
     client: &Client,
     spec: &Spec,
@@ -1544,6 +1622,7 @@ fn prepared(
     let mut build = BuildView::default();
     let mut builder_idle = false;
     let mut tick = 0;
+    let mut first_view = true;
     loop {
         if tick % ADVANCE_EVERY == 0 {
             match preparations::advance(client, &spec.project, id, &confirmation) {
@@ -1552,7 +1631,9 @@ fn prepared(
                     if let Some(submission) = view["submission"]["submission_id"].as_str() {
                         return Ok(submission.to_owned());
                     }
-                    if let Some(reason) = stopped(&view, builder_idle) {
+                    if std::mem::take(&mut first_view) && may_build_again(&view) {
+                        (hooks.progress)("the last build left nothing behind; building again");
+                    } else if let Some(reason) = stopped(&view, builder_idle) {
                         return Err(Error::Submit(format!(
                             "{reason}. No training job was submitted"
                         )));
@@ -2082,6 +2163,63 @@ mod tests {
     }
     fn stopped_now(view: &Value) -> Option<String> {
         stopped(view, false)
+    }
+    #[test]
+    fn an_earlier_run_can_still_be_named() {
+        let root = tempfile::tempdir().unwrap();
+        let record = |project: &str, run: &str| Latest {
+            project: project.into(),
+            run_id: run.into(),
+            submission_id: Some(format!("action-{run}")),
+            unsettled: false,
+        };
+        remember(root.path(), &record("demo", "first"));
+        remember(root.path(), &record("demo", "second"));
+        remember(root.path(), &record("other", "second"));
+        assert_eq!(latest(root.path()).unwrap().project, "other");
+        let first = run_directory(root.path(), None, "first").unwrap();
+        assert_eq!(latest(&first).unwrap().run_id, "first");
+        assert!(
+            run_directory(root.path(), None, "second").is_err(),
+            "ambiguous"
+        );
+        let second = run_directory(root.path(), Some("demo"), "second").unwrap();
+        assert_eq!(latest(&second).unwrap().project, "demo");
+        assert!(run_directory(root.path(), Some("demo"), "absent").is_err());
+        assert!(run_directory(root.path(), Some(".."), "first").is_err());
+        // Acting on a named Run makes it the latest, without another copy beneath it.
+        let mut newer = record("demo", "first");
+        newer.submission_id = Some("action-retry".into());
+        remember(&first, &newer);
+        assert!(!first.join(RUNS).exists());
+        assert_eq!(latest(root.path()).unwrap(), newer);
+        assert_eq!(latest(&first).unwrap(), newer);
+    }
+    #[test]
+    fn proof_that_nothing_was_left_ends_the_wait_within_one_command() {
+        let view = json!({"project":"demo","runtime":{"status":"PREPARED","retry_safe":true,
+            "runtime_id":"runtime.x","build_error":{"code":"BUILD_RECEIPT_MISSING"}}});
+        assert!(
+            stopped(&view, false).is_some(),
+            "the next continue would build again"
+        );
+    }
+    #[test]
+    fn only_a_proven_failure_may_build_again() {
+        let view = |safe| json!({"runtime":{"retry_safe":safe,"build_error":{"code":"X"}}});
+        assert!(may_build_again(&view(true)));
+        assert!(!may_build_again(&view(false)));
+        assert!(
+            !may_build_again(&json!({"runtime":{"retry_safe":true,"build_error":null}})),
+            "a fresh Runtime has nothing to recover from"
+        );
+    }
+    #[test]
+    fn a_failure_with_no_reason_shows_its_error_class() {
+        let view = json!({"runtime":{"status":"RECONCILE_REQUIRED","runtime_id":"runtime.x",
+            "build_error":{"code":"BUILD_REQUEST_FAILED","details":{"error_class":"KeyError"}}}});
+        let text = stopped_now(&view).unwrap();
+        assert!(text.contains("BUILD_REQUEST_FAILED (KeyError)"), "{text}");
     }
     #[test]
     fn a_missing_receipt_waits_until_the_builder_says_it_is_idle() {

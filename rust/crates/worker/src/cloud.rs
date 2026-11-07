@@ -150,11 +150,11 @@ fn same_or_new(
 ) -> managed::Result<()> {
     if directory
         .entry_exists(name)
-        .map_err(|_| managed::Error::Storage)?
+        .map_err(crate::managed::storage_failure!())?
     {
         let original = directory
             .read_regular(name, MAX_PACKAGE_BYTES as u64)
-            .map_err(|_| managed::Error::Storage)?;
+            .map_err(crate::managed::storage_failure!())?;
         if original != bytes {
             return Err(managed::Error::Binding);
         }
@@ -165,21 +165,21 @@ fn same_or_new(
     }
     directory
         .require_private()
-        .map_err(|_| managed::Error::Storage)
+        .map_err(crate::managed::storage_failure!())
 }
 fn child(directory: &Directory, name: &str) -> managed::Result<Directory> {
     let result = if directory
         .entry_exists(OsStr::new(name))
-        .map_err(|_| managed::Error::Storage)?
+        .map_err(crate::managed::storage_failure!())?
     {
         directory.child(OsStr::new(name), false)
     } else {
         directory.create_new_child(OsStr::new(name))
     }
-    .map_err(|_| managed::Error::Storage)?;
+    .map_err(crate::managed::storage_failure!())?;
     result
         .require_private()
-        .map_err(|_| managed::Error::Storage)?;
+        .map_err(crate::managed::storage_failure!())?;
     Ok(result)
 }
 /// Verify the native executable against the trusted published-image receipt.
@@ -196,9 +196,9 @@ pub fn prepare(package: &Package, runtime: &BTreeMap<String, String>) -> managed
         .map_err(|_| managed::Error::Configuration)?;
     crate::cloud_storage::prepare(package)?;
     let binding = package.config.binding()?;
-    let root = Directory::open(&package.root, false).map_err(|_| managed::Error::Storage)?;
+    let root = Directory::open(&package.root, false).map_err(crate::managed::storage_failure!())?;
     root.require_private()
-        .map_err(|_| managed::Error::Storage)?;
+        .map_err(crate::managed::storage_failure!())?;
     let project = child(&root, &binding.identity.project)?;
     let run = child(&project, &binding.identity.run_id)?;
     let package_name = format!("{}.package.json", binding.identity.attempt_id);
@@ -223,7 +223,7 @@ pub fn prepare(package: &Package, runtime: &BTreeMap<String, String>) -> managed
     )?;
     if run
         .entry_exists(OsStr::new(&binding.identity.attempt_id))
-        .map_err(|_| managed::Error::Storage)?
+        .map_err(crate::managed::storage_failure!())?
     {
         // Existing-but-incomplete initialization stays uncertain. No repair or
         // overwrite of the original environment, phase or launch identity.
@@ -233,7 +233,7 @@ pub fn prepare(package: &Package, runtime: &BTreeMap<String, String>) -> managed
     }
     let attempt = run
         .child(OsStr::new(&binding.identity.attempt_id), false)
-        .map_err(|_| managed::Error::Storage)?;
+        .map_err(crate::managed::storage_failure!())?;
     child(&attempt, "state")?;
     Ok(())
 }
@@ -246,8 +246,8 @@ pub fn run(
     let original = managed::inspect(&package.config)?;
     if original.phase == managed::Phase::Finished {
         let _ = crate::cloud_exchange::drain(package, cancelled);
-        if package.result_upload && crate::cloud_artifacts::publish(package).is_err() {
-            eprintln!("ML_EXPD_RESULTS=DEFERRED; retained on backend storage");
+        if package.result_upload {
+            report_deferred(crate::cloud_artifacts::publish(package));
         }
         return Ok(original);
     }
@@ -296,11 +296,16 @@ pub fn run(
     if !delivered {
         eprintln!("ML_EXPD_EXCHANGE=DEFERRED; retained on backend storage");
     }
-    if result.is_ok() && package.result_upload && crate::cloud_artifacts::publish(package).is_err()
-    {
-        eprintln!("ML_EXPD_RESULTS=DEFERRED; retained on backend storage");
+    if result.is_ok() && package.result_upload {
+        report_deferred(crate::cloud_artifacts::publish(package));
     }
     result
+}
+/// The job's outcome does not depend on this, and the reason is all anyone will have.
+fn report_deferred(published: managed::Result<()>) {
+    if let Err(error) = published {
+        eprintln!("ML_EXPD_RESULTS=DEFERRED; retained on backend storage: {error}");
+    }
 }
 pub fn package_sha(package: &Package) -> managed::Result<String> {
     package

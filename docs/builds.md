@@ -10,7 +10,6 @@ can be used by any configured training backend.
 Clients upload code with a Dockerfile. The server validates it, appends frozen
 source at `/ml-expd/source`, which becomes the working directory, plus the trusted
 worker at `/usr/local/bin/ml-exp-worker-rs`, and publishes the resulting image. The client does not upload a prebuilt Docker image through this workflow.
-`GET /api/environments` lists approved pinned bases, not alternative builders.
 
 ```dockerfile
 FROM REGISTRY/BASE@sha256:ACTUAL_64_HEX_DIGEST
@@ -170,6 +169,10 @@ executor, so configure `sensecore_mirror` on the builder. Its fields are
 `repository`, and optional `target_auth_hosts` and `target_blob_hosts`. The builder
 copies with Skopeo and verifies the digest; repeated requests reuse the copy. No API
 setting is involved, and image layers do not pass through the API disk.
+
+Runtimes for a Slurm executor work the same way through `slurm_mirror`, with the same
+fields, because a gateway may not reach the main registry. Point it at a registry the
+gateway can reach and whose login is in the helper's `registry_auth_file`.
 
 ## Local BuildKit storage
 

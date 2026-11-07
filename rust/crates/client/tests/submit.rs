@@ -609,7 +609,7 @@ fn a_missing_dockerfile_is_explained_before_anything_is_sent() {
     let error = files.run(&fake, true, &mut asked).unwrap_err();
     let text = error.to_string();
     assert!(
-        text.contains("Dockerfile") && text.contains("/api/environments"),
+        text.contains("Dockerfile") && text.contains("imagetools inspect"),
         "{text}"
     );
     assert!(asked.is_empty());
@@ -1241,6 +1241,32 @@ fn retry_finishes_a_prepared_attempt_rather_than_starting_another() {
     assert_eq!(value["status"], "VERIFIED");
     assert_eq!(fake.count("POST", "/retry"), 0);
     assert_eq!(fake.count("POST", "/execute"), 2);
+}
+
+#[test]
+fn repeating_submit_keeps_a_retry_even_after_another_run_became_the_latest() {
+    let files = Files::new();
+    let fake = Fake::start(ended());
+    submitted_train(&files, &fake);
+    let states = files.root.path().join("states");
+    submit::retry(&fake.client(), &states, None, quiet(&mut |_| Ok(true))).unwrap();
+    let retried = submit::latest(&states).unwrap();
+    assert!(retried.submission_id.is_some());
+    // Another Run is submitted from this machine.
+    std::fs::write(
+        states.join("latest.json"),
+        r#"{"project":"demo","run_id":"other","submission_id":"action-other","unsettled":false}"#,
+    )
+    .unwrap();
+    fake.world.lock().unwrap().preparation_submission = Some(ID);
+    submitted_train(&files, &fake);
+    assert_eq!(
+        submit::latest(&states).unwrap(),
+        retried,
+        "the newer attempt is kept"
+    );
+    let named = submit::run_directory(&states, None, &retried.run_id).unwrap();
+    assert_eq!(submit::latest(&named).unwrap(), retried);
 }
 
 #[test]
