@@ -5,14 +5,23 @@ use crate::{
 };
 use axum::{
     Router,
-    body::Bytes,
+    body::{Body, Bytes},
     extract::{DefaultBodyLimit, Path, RawQuery, State},
-    http::HeaderMap,
-    response::Response,
+    http::{HeaderMap, HeaderValue, header},
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use ml_exp_core::cloud::exchange::{MAX_BYTES, Packet};
-use std::sync::Arc;
+use std::{
+    io,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+    time::{Duration, Instant},
+};
+use tokio::sync::mpsc;
+/// A worker that stops reading must not hold a transfer slot for ever.
+const CODE_TRANSFER: Duration = Duration::from_secs(15 * 60);
 pub(crate) fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route(
@@ -22,6 +31,14 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
         .route(
             "/api/worker-exchange/{project}/{run}/{attempt}/package",
             get(worker_read),
+        )
+        .route(
+            "/api/worker-exchange/{project}/{run}/{attempt}/code",
+            get(worker_read),
+        )
+        .route(
+            "/api/worker-exchange/{project}/{run}/{attempt}/code-content",
+            get(code_content),
         )
         .route(
             "/api/worker-exchange/{project}/{run}/{attempt}/datasets/{asset}/{part}",
@@ -72,12 +89,161 @@ async fn worker_read(
         let cloud = api.cloud_only()?;
         if uri.path().ends_with("/package") {
             cloud.worker_package(&project, &run, &attempt, &token)
+        } else if uri.path().ends_with("/code") {
+            cloud.worker_code(&project, &run, &attempt, &token)
         } else {
             cloud.worker_diagnostic_status(&project, &run, &attempt, &token)
         }
         .map_err(Into::into)
     })
     .await
+}
+struct Receiver(mpsc::Receiver<io::Result<Bytes>>);
+impl futures_core::Stream for Receiver {
+    type Item = io::Result<Bytes>;
+    fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.get_mut().0.poll_recv(context)
+    }
+}
+fn send_code(
+    sender: &mpsc::Sender<io::Result<Bytes>>,
+    mut item: io::Result<Bytes>,
+    deadline: Instant,
+) -> io::Result<()> {
+    loop {
+        match sender.try_send(item) {
+            Ok(()) => return Ok(()),
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                return Err(io::Error::other("the worker went away"));
+            }
+            Err(mpsc::error::TrySendError::Full(back)) => {
+                if Instant::now() >= deadline {
+                    return Err(io::Error::other("the worker stopped reading"));
+                }
+                item = back;
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
+}
+/// Streamed from sealed files, so a large source neither sits in this server's memory
+/// nor holds one of the slots ordinary requests wait for. The worker checks every byte.
+async fn code_content(
+    State(state): State<Arc<AppState>>,
+    Path((project, run, attempt)): Path<(String, String, String)>,
+    RawQuery(raw): RawQuery,
+    headers: HeaderMap,
+) -> Response {
+    if api::no_parameters(raw.as_deref()).is_err() {
+        return http_effect::failure(Error {
+            status: 422,
+            code: "INVALID_WORKER_EXCHANGE",
+            detail: "worker reads take no query parameters",
+        });
+    }
+    let values: Vec<_> = headers.get_all("authorization").iter().collect();
+    let token = if values.len() == 1 {
+        values[0]
+            .to_str()
+            .ok()
+            .and_then(|s| s.strip_prefix("Bearer "))
+            .map(str::to_owned)
+    } else {
+        None
+    };
+    let Some(token) = token else {
+        return http_effect::failure(Error {
+            status: 401,
+            code: "WORKER_AUTH_REQUIRED",
+            detail: "Attempt worker authentication required",
+        });
+    };
+    let Some(api) = state.api.clone() else {
+        return http_effect::failure(Error {
+            status: 501,
+            code: "LOCAL_SERVICES_NOT_CONFIGURED",
+            detail: "local experiment services are not configured",
+        });
+    };
+    let cloud = match api.cloud_only() {
+        Ok(cloud) => cloud,
+        Err(error) => return http_effect::failure(error),
+    };
+    // The token can only be derived from the saved Action, so anyone can make this read
+    // it. It takes a slot as other worker reads do, kept until the read really ends.
+    let Ok(authorizing_slot) = state.effect_slots.clone().try_acquire_owned() else {
+        let mut response = http_effect::failure(Error {
+            status: 429,
+            code: "READ_BUSY",
+            detail: "local operation concurrency limit reached",
+        });
+        response
+            .headers_mut()
+            .insert("retry-after", HeaderValue::from_static("1"));
+        return response;
+    };
+    let authorizing = cloud.clone();
+    let task = tokio::task::spawn_blocking(move || {
+        let _slot = authorizing_slot;
+        authorizing.worker_code_grant(&project, &run, &attempt, &token)
+    });
+    let grant = match tokio::time::timeout(Duration::from_secs(35), task).await {
+        Ok(Ok(Ok(grant))) => grant,
+        Ok(Ok(Err(error))) => return http_effect::failure(error.into()),
+        _ => {
+            return http_effect::failure(Error {
+                status: 503,
+                code: "CODE_STREAM_UNAVAILABLE",
+                detail: "the code could not be read yet; try again",
+            });
+        }
+    };
+    let Ok(permit) = state.data_slots.clone().try_acquire_owned() else {
+        let mut response = http_effect::failure(Error {
+            status: 429,
+            code: "CODE_TRANSFER_BUSY",
+            detail: "code transfer concurrency limit reached; try again",
+        });
+        response
+            .headers_mut()
+            .insert("retry-after", HeaderValue::from_static("1"));
+        return response;
+    };
+    let task = tokio::task::spawn_blocking(move || cloud.worker_code_content(&grant));
+    let content = match tokio::time::timeout(Duration::from_secs(35), task).await {
+        Ok(Ok(Ok(content))) => content,
+        Ok(Ok(Err(error))) => return http_effect::failure(error.into()),
+        _ => {
+            return http_effect::failure(Error {
+                status: 503,
+                code: "CODE_STREAM_UNAVAILABLE",
+                detail: "the code could not be read yet; try again",
+            });
+        }
+    };
+    let bytes = content.bytes;
+    let (sender, receiver) = mpsc::channel(2);
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let deadline = Instant::now() + CODE_TRANSFER;
+        let sent = content.each_chunk(|chunk| send_code(&sender, Ok(chunk.into()), deadline));
+        // Ending early with an error tells the worker it did not receive everything.
+        if let Err(error) = sent {
+            let _ = send_code(&sender, Err(io::Error::other(error)), deadline);
+        }
+    });
+    let mut response = Body::from_stream(Receiver(receiver)).into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/octet-stream"),
+    );
+    response
+        .headers_mut()
+        .insert(header::CONTENT_LENGTH, HeaderValue::from(bytes));
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 async fn artifact(
     State(state): State<Arc<AppState>>,

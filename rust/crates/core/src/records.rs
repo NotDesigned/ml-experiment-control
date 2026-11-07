@@ -137,6 +137,7 @@ fn frozen_binding(run: &Value, raw_sha256: &str, route: Value) -> Result<Value> 
         "seed",
         "native_datasets",
         "local_execution",
+        "code_source_id",
     ]
     .iter()
     .filter_map(|k| original.get(*k).map(|v| ((*k).into(), v.clone())))

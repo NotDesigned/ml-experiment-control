@@ -206,7 +206,10 @@ pub(crate) fn creation_failure(cause: slurm::Error) -> Error {
     let mut error = Error::from(cause);
     match error.status {
         // The caller can act on this one, so it keeps its own code.
-        422 if error.code == "DATASET_MANIFESTS_TOO_LARGE" => {}
+        422 if matches!(
+            error.code,
+            "DATASET_MANIFESTS_TOO_LARGE" | "CODE_DELIVERY_UNSUPPORTED"
+        ) => {}
         422 => {
             // The detail stays: which check refused it is the only thing to act on.
             error.code = "RUN_CREATION_REJECTED";

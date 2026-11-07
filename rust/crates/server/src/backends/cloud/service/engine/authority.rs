@@ -192,6 +192,31 @@ impl Service {
             .map(|p| p.raw_sha256)
             .map_err(why!(cloud::Error::evidence()))
     }
+    /// The code must be there and small enough before anything is spent on it.
+    pub(super) fn check_code(&self, project: &str, code: &str) -> cloud::Result<()> {
+        self.sources.check_code(project, code).map_err(|error| {
+            if error.code == "CODE_SOURCE_TOO_LARGE" {
+                cloud::Error {
+                    code: error.code.into(),
+                    http_status: Some(422),
+                    uncertain: false,
+                }
+            } else {
+                crate::why::record(file!(), line!(), &error.code);
+                cloud::Error::evidence()
+            }
+        })
+    }
+    pub(super) fn check_code_worker(&self, runtime: &run::Runtime) -> cloud::Result<()> {
+        if self.builds.as_ref().map(|b| &b.worker_sha256) != Some(&runtime.worker_sha256) {
+            return Err(cloud::Error {
+                code: "CODE_DELIVERY_WORKER_OUTDATED".into(),
+                http_status: Some(422),
+                uncertain: false,
+            });
+        }
+        Ok(())
+    }
     pub(super) fn documents(
         &self,
         project: &str,
@@ -221,6 +246,9 @@ impl Service {
             .sources
             .read(project, &runtime.source_id)
             .map_err(why!(cloud::Error::evidence()))?;
+        if let Some(code) = &request.code_source_id {
+            self.check_code(project, code)?;
+        }
         let target = backend.definition.target()?;
         let data_root = backend.definition.data_root()?;
         let datasets = request

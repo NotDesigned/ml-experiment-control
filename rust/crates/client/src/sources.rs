@@ -24,6 +24,8 @@ pub struct PreparedArchive {
     pub paths: Vec<String>,
     /// Paths, executable bits and contents, so it does not change with the compression.
     pub content_sha256: String,
+    /// The sum of the file sizes when this side packed it.
+    pub expanded_bytes: u64,
 }
 /// Callers cannot replace the route, length, or archive identity after planning.
 #[derive(Clone, Debug)]
@@ -242,6 +244,7 @@ pub fn inspect_archive(mut file: File) -> Result<PreparedArchive, Error> {
         sha256,
         bytes,
         paths: Vec::new(),
+        expanded_bytes: 0,
     })
 }
 fn same_metadata(before: &std::fs::Metadata, after: &std::fs::Metadata) -> bool {
@@ -439,6 +442,147 @@ fn refused(path: &str, why: &str) -> Error {
     ))
 }
 
+/// These members of an archive already packed, so what the image is built from is the
+/// same snapshot as the code, whatever has happened to the directory since. The Dockerfile
+/// is the text its instructions were read from, or the choice of files means nothing.
+pub fn pack_subset(
+    whole: &PreparedArchive,
+    files: &[String],
+    dockerfile: (&str, &str),
+) -> Result<PreparedArchive, Error> {
+    let chosen: std::collections::BTreeSet<&str> = files.iter().map(String::as_str).collect();
+    let mut source = &whole.file;
+    source.seek(SeekFrom::Start(0)).map_err(|_| packing())?;
+    let writer = BoundedWriter {
+        file: tempfile::tempfile().map_err(|_| packing())?,
+        bytes: 0,
+    };
+    let compressed = flate2::GzBuilder::new()
+        .mtime(0)
+        .write(writer, flate2::Compression::default());
+    let mut output = tar::Builder::new(compressed);
+    let mut content = Sha256::new();
+    let mut paths = Vec::new();
+    let mut expanded = 0_u64;
+    let mut input = tar::Archive::new(flate2::read::GzDecoder::new(source));
+    for entry in input.entries().map_err(|_| packing())? {
+        let mut entry = entry.map_err(|_| packing())?;
+        let path = entry
+            .path()
+            .ok()
+            .and_then(|path| path.to_str().map(str::to_owned))
+            .ok_or_else(packing)?;
+        if !chosen.contains(path.as_str()) {
+            continue;
+        }
+        let size = entry.size();
+        let executable = entry.header().mode().map_err(|_| packing())? & 0o111 != 0;
+        let mut body = Vec::new();
+        if path == dockerfile.0 {
+            entry.read_to_end(&mut body).map_err(|_| packing())?;
+            if body != dockerfile.1.as_bytes() {
+                return Err(Error::Submit(
+                    "the source changed while preparing, and nothing was sent. \
+                     Run this command again"
+                        .into(),
+                ));
+            }
+        }
+        let mut header = member_header(executable, size);
+        content.update(path.as_bytes());
+        content.update([0, u8::from(executable)]);
+        content.update(size.to_le_bytes());
+        let mut buffered = &body[..];
+        let reader: &mut dyn Read = if path == dockerfile.0 {
+            &mut buffered
+        } else {
+            &mut entry
+        };
+        let mut hashing = Hashing {
+            inner: reader,
+            digest: &mut content,
+        };
+        output
+            .append_data(&mut header, &path, &mut hashing)
+            .map_err(|_| packing())?;
+        expanded += size;
+        paths.push(path);
+    }
+    if paths.len() != chosen.len() {
+        return Err(packing());
+    }
+    let writer = output
+        .into_inner()
+        .and_then(flate2::write::GzEncoder::finish)
+        .map_err(|_| packing())?;
+    writer.file.sync_all().map_err(|_| packing())?;
+    source.seek(SeekFrom::Start(0)).map_err(|_| packing())?;
+    let mut prepared = inspect_archive(writer.file)?;
+    prepared.paths = paths;
+    prepared.content_sha256 = format!("{:x}", content.finalize());
+    prepared.expanded_bytes = expanded;
+    Ok(prepared)
+}
+fn member_header(executable: bool, size: u64) -> tar::Header {
+    let mut header = tar::Header::new_gnu();
+    header.set_entry_type(tar::EntryType::Regular);
+    header.set_uid(0);
+    header.set_gid(0);
+    header.set_mtime(0);
+    header.set_mode(if executable { 0o500 } else { 0o400 });
+    header.set_size(size);
+    header.set_cksum();
+    header
+}
+/// Whether a listing of these files fits what a job can read, as a safe overestimate:
+/// a file's fields and its escaped path, or the server would refuse it after the upload.
+pub fn listing_fits(paths: &[String]) -> bool {
+    let bytes: usize = paths
+        .iter()
+        .map(|path| 2 * path.len() + 256)
+        .fold(0, usize::saturating_add);
+    bytes <= source_contract::MAX_CODE_LISTING_BYTES
+}
+/// The source ID the server will compute for these files, without sending anything.
+pub fn local_source_id(directory: &Path, files: &[String]) -> std::io::Result<String> {
+    use source_contract::{TreeEntry, TreeKind, TreePlan};
+    let mut parents = std::collections::BTreeSet::new();
+    let mut entries = Vec::new();
+    for path in files {
+        let mut child = path.as_str();
+        while let Some((parent, _)) = child.rsplit_once('/') {
+            parents.insert(parent.to_owned());
+            child = parent;
+        }
+        let metadata = std::fs::symlink_metadata(directory.join(path))?;
+        #[cfg(unix)]
+        let executable = {
+            use std::os::unix::fs::MetadataExt;
+            metadata.mode() & 0o111 != 0
+        };
+        #[cfg(not(unix))]
+        let executable = false;
+        entries.push(TreeEntry {
+            path: path.clone(),
+            kind: TreeKind::File {
+                size: metadata.len(),
+                executable,
+            },
+        });
+    }
+    entries.extend(parents.into_iter().map(|path| TreeEntry {
+        path,
+        kind: TreeKind::Directory,
+    }));
+    let plan = TreePlan::new(entries, &policy()).map_err(std::io::Error::other)?;
+    source_contract::tree_source_id(plan, |path, offset, len| {
+        let mut file = File::open(directory.join(path))?;
+        file.seek(SeekFrom::Start(offset))?;
+        let mut bytes = vec![0; len];
+        file.read_exact(&mut bytes)?;
+        Ok(bytes)
+    })
+}
 /// Pack regular files only, with stable order, gzip mtime zero and normalized
 /// tar ownership/timestamps. Executable intent is retained; repository code is
 /// never run. The initial names and file metadata are rechecked before success,
@@ -657,5 +801,6 @@ pub fn pack_directory(path: &Path) -> Result<PreparedArchive, Error> {
     let mut prepared = inspect_archive(writer.file)?;
     prepared.paths = entries.into_iter().map(|entry| entry.path).collect();
     prepared.content_sha256 = format!("{:x}", content.finalize());
+    prepared.expanded_bytes = expanded;
     Ok(prepared)
 }

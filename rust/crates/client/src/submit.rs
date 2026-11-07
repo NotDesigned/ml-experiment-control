@@ -2,9 +2,10 @@
 //! Every step is an existing operation. The identity comes from the inputs, so the
 //! same command finds the same Submission again and never sends a second job.
 use crate::{
-    Client, Error, observation, preparations, presentation, read, runtime, sources, submissions,
+    Client, Error, dockerfile, observation, preparations, presentation, read, runtime, sources,
+    submissions,
 };
-use ml_exp_core::{canonical, identity, preparation};
+use ml_exp_core::{canonical, cloud::build, identity, preparation};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::{
@@ -139,6 +140,13 @@ pub fn spec(
         return Err(Error::Submit(
             "run.runtime_id is not used by `submit`, which builds from the directory; \
              use `ml-exp run start` to reuse a Runtime"
+                .into(),
+        ));
+    }
+    if file.run.extra.contains_key("code_source_id") {
+        return Err(Error::Submit(
+            "run.code_source_id is not used by `submit`, which packs the directory; \
+             use `ml-exp run start` to fix one"
                 .into(),
         ));
     }
@@ -371,7 +379,7 @@ pub fn parse_data(value: &str) -> Result<(String, String), String> {
 }
 
 /// One instruction per entry: continuations joined, comments gone, as the builder reads them.
-fn instructions(dockerfile: &str) -> Vec<String> {
+pub(crate) fn instructions(dockerfile: &str) -> Vec<String> {
     let mut all = Vec::new();
     let mut current = String::new();
     for line in dockerfile.lines().map(str::trim) {
@@ -717,7 +725,7 @@ fn slug(name: &str) -> String {
 }
 
 /// What the user agrees to. It must show everything that decides the spend.
-pub fn summary(spec: &Spec, plan: &Plan, files: usize) -> String {
+pub fn summary(spec: &Spec, plan: &Plan, files: usize, environment: &str) -> String {
     let mut lines = vec![
         format!("Run {}", plan.run_id),
         format!("  executor  {}", plan.executor),
@@ -727,6 +735,7 @@ pub fn summary(spec: &Spec, plan: &Plan, files: usize) -> String {
             "  source    {files} files from {}",
             spec.directory.display()
         ),
+        format!("  environment {environment}"),
         format!(
             "  resources {} GPU, {} CPU, {} GB",
             plan.gpus, plan.cpus, plan.memory_gb
@@ -749,7 +758,12 @@ pub fn summary(spec: &Spec, plan: &Plan, files: usize) -> String {
     lines.join("\n")
 }
 
-fn request(spec: &Spec, plan: &Plan, source_id: &str) -> Result<preparation::Request, Error> {
+fn request(
+    spec: &Spec,
+    plan: &Plan,
+    source_id: &str,
+    code_source_id: Option<&str>,
+) -> Result<preparation::Request, Error> {
     let mut run = json!({
         "run_id": plan.run_id,
         "executor": plan.executor,
@@ -770,6 +784,9 @@ fn request(spec: &Spec, plan: &Plan, source_id: &str) -> Result<preparation::Req
     }
     if let Value::Object(run) = &mut run {
         run.extend(spec.extra.clone());
+    }
+    if let Some(code) = code_source_id {
+        run["code_source_id"] = json!(code);
     }
     let request: preparation::Request = serde_json::from_value(json!({
         "request_id": plan.request_id,
@@ -1306,8 +1323,14 @@ pub fn run(
             ));
         }
     }
-    let plan = match &saved {
-        Some(view) => frozen(identity, view)?,
+    let (plan, delivery) = match &saved {
+        Some(view) => (
+            frozen(identity, view)?,
+            Delivery {
+                environment: None,
+                line: saved_environment(view, archive.paths.len()),
+            },
+        ),
         None => {
             let executors = client.get("/api/executors")?;
             let rows = executors["executors"]
@@ -1322,7 +1345,8 @@ pub fn run(
                     plan.executor
                 )));
             }
-            plan
+            let delivery = deliver(client, spec, &plan, &dockerfile, &archive, executor)?;
+            (plan, delivery)
         }
     };
     if health["scheduler_mutations"] != true {
@@ -1330,7 +1354,8 @@ pub fn run(
             "the server does not allow submissions right now; nothing was sent",
         ));
     }
-    if !(hooks.confirm)(&summary(spec, &plan, archive.paths.len()))? {
+    let question = summary(spec, &plan, archive.paths.len(), &delivery.line);
+    if !(hooks.confirm)(&question)? {
         return Err(Error::Observation("not submitted; nothing was sent"));
     }
     remember(
@@ -1341,8 +1366,21 @@ pub fn run(
     // record from a request that never arrived must not stop this one.
     if saved.is_none() {
         let _ = std::fs::remove_file(&state);
-        let source_id = publish(client, spec, archive, &health, hooks.progress)?;
-        let request = request(spec, &plan, &source_id)?;
+        let (source_id, code_source_id) = match delivery.environment {
+            Some(environment) => {
+                let what = "uploading code";
+                let code = publish(client, spec, archive, what, &health, hooks.progress)?;
+                let what = "uploading what the Dockerfile uses";
+                let source = publish(client, spec, environment, what, &health, hooks.progress)?;
+                (source, Some(code))
+            }
+            None => {
+                let what = "uploading source";
+                let source = publish(client, spec, archive, what, &health, hooks.progress)?;
+                (source, None)
+            }
+        };
+        let request = request(spec, &plan, &source_id, code_source_id.as_deref())?;
         preparations::prepare(client, &spec.project, &request, &state, &health)?;
     }
     let id = prepared(client, spec, &plan, &health, &mut hooks)?;
@@ -1499,7 +1537,9 @@ pub fn retry(
         let question = format!(
             "Run {} again after {attempt}, from {}\n  resources {resources}\n  spend     up to {spend} more GPU hours",
             latest.run_id,
-            checkpoint.as_deref().unwrap_or("the start"),
+            checkpoint
+                .as_deref()
+                .unwrap_or("the start it was frozen with"),
         );
         if !(hooks.confirm)(&question)? {
             return Err(Error::Observation("not submitted; nothing was sent"));
@@ -1586,18 +1626,134 @@ fn read_dockerfile(directory: &Path, name: &str) -> Result<String, Error> {
     std::fs::read_to_string(&path).map_err(|_| missing())
 }
 
+/// Whether the code leaves the image, and how the question puts it. `environment` is the
+/// archive to build from when it does, and the whole directory is the code either way.
+struct Delivery {
+    environment: Option<sources::PreparedArchive>,
+    line: String,
+}
+/// Decided only by the directory and the executor, so a repeat decides the same.
+fn deliver(
+    client: &Client,
+    spec: &Spec,
+    plan: &Plan,
+    dockerfile: &str,
+    archive: &sources::PreparedArchive,
+    executor: &Value,
+) -> Result<Delivery, Error> {
+    use dockerfile::Split;
+    let files = archive.paths.len();
+    let worker = executor["capabilities"]["code_delivery"]["worker_sha256"].as_str();
+    let mib = |bytes: u64| bytes / (1024 * 1024);
+    let split = match worker {
+        None => Split::Whole("this executor keeps code in the image".into()),
+        // Too large to go with a job is no reason to stop one that works from the image.
+        Some(_) if archive.expanded_bytes > ml_exp_core::sources::MAX_CODE_BYTES => {
+            Split::Whole(format!(
+                "the code is {} MiB and only {} MiB can go with a job; move large files to data \
+                 with `ml-exp data upload` to stop rebuilding on every change",
+                mib(archive.expanded_bytes),
+                mib(ml_exp_core::sources::MAX_CODE_BYTES),
+            ))
+        }
+        Some(_) if !sources::listing_fits(&archive.paths) => {
+            Split::Whole("the list of files is too long to go with a job".into())
+        }
+        Some(_) if spec.extra.contains_key("data_preparation") => {
+            Split::Whole("data_preparation needs its code in the image".into())
+        }
+        Some(_) => dockerfile::split(dockerfile, &spec.dockerfile, &archive.paths),
+    };
+    let built_from = match &split {
+        Split::Files(paths) => paths.as_slice(),
+        Split::Whole(_) => archive.paths.as_slice(),
+    };
+    let reused =
+        worker.is_some_and(|worker| environment_ready(client, spec, plan, built_from, worker));
+    Ok(match split {
+        Split::Files(paths) => {
+            let line = if reused {
+                format!("reused; {files} code files go with the job")
+            } else {
+                format!(
+                    "will be built from {} files; {files} code files go with the job",
+                    paths.len()
+                )
+            };
+            Delivery {
+                environment: Some(sources::pack_subset(
+                    archive,
+                    &paths,
+                    (spec.dockerfile.as_str(), dockerfile),
+                )?),
+                line,
+            }
+        }
+        Split::Whole(why) => Delivery {
+            environment: None,
+            line: if reused {
+                format!("reused; its {files} files hold the code, because {why}")
+            } else if worker.is_none() {
+                format!("built with the code, {files} files, because {why}")
+            } else {
+                format!("will be built with the code, {files} files, because {why}")
+            },
+        },
+    })
+}
+/// Only for the question, so anything it cannot learn reads as a build to come.
+fn environment_ready(
+    client: &Client,
+    spec: &Spec,
+    plan: &Plan,
+    files: &[String],
+    worker: &str,
+) -> bool {
+    let id = sources::local_source_id(&spec.directory, files)
+        .ok()
+        .and_then(|source_id| {
+            build::Definition {
+                source_id,
+                executor: plan.executor.clone(),
+                base_image: plan.base_image.clone(),
+                dockerfile: spec.dockerfile.clone(),
+            }
+            .id(&spec.project, worker)
+            .ok()
+        });
+    id.is_some_and(|id| {
+        client
+            .get(&format!("/api/projects/{}/runtimes/{id}", spec.project))
+            .is_ok_and(|view| view["status"] == "READY")
+    })
+}
+/// A saved preparation already decided, and the server has what it decided.
+fn saved_environment(view: &Value, files: usize) -> String {
+    let state = if view["runtime"]["status"] == "READY" {
+        "reused"
+    } else {
+        "is being built"
+    };
+    if view["frozen"]["code_source_id"].is_string() {
+        format!("{state}; {files} code files go with the job")
+    } else {
+        format!("{state}; its {files} files hold the code")
+    }
+}
+
 /// Identical bytes have one receipt, so a previous upload is simply reused.
 fn publish(
     client: &Client,
     spec: &Spec,
     archive: sources::PreparedArchive,
+    what: &str,
     health: &Value,
     progress: &mut dyn FnMut(&str),
 ) -> Result<String, Error> {
     let receipt = match sources::lookup_archive(client, &spec.project, &archive.sha256, health) {
         Ok(receipt) => receipt,
         Err(Error::Http(failure)) if failure.status == 404 => {
-            progress("uploading source");
+            progress(what);
             let plan = sources::plan_archive(&spec.project, &archive.sha256, archive.bytes)?;
             sources::upload(client, &plan, archive.file, health)?
         }
@@ -1840,8 +1996,10 @@ mod tests {
             &with_env,
             &planned(&with_env),
             &format!("source.{}", "2".repeat(64)),
+            None,
         )
         .unwrap();
+        assert!(!request.run.contains_key("code_source_id"));
         assert_eq!(request.run["env"]["KEY"], "value");
         let mut reserved = spec();
         reserved.env.insert("OUTPUT_DIR".into(), "x".into());
@@ -1871,6 +2029,22 @@ mod tests {
         for text in ["train", "=asset.abc", "train=./data"] {
             assert!(parse_data(text).is_err(), "{text}");
         }
+    }
+    #[test]
+    fn an_experiment_file_cannot_fix_the_code_source() {
+        let file = br#"{"run":{"executor":"pai","command":["train"],"code_source_id":"source.x"}}"#;
+        let refused = spec_of(
+            Options {
+                project: Some("p".into()),
+                gpus: Some(1),
+                walltime_seconds: Some(60),
+                ..Options::default()
+            },
+            Some(file),
+        )
+        .err()
+        .unwrap();
+        assert!(refused.to_string().contains("code_source_id"), "{refused}");
     }
     #[test]
     fn the_base_image_is_the_last_external_from() {

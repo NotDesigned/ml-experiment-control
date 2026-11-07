@@ -314,6 +314,227 @@ fn cloud_authorship_refuses_dataset_manifests_over_their_budget() {
     assert_eq!(refused.0, crate::datasets::ManifestsTooLarge::CAUSE);
 }
 
+/// One Run authored and compiled through the real functions.
+fn compiled(code: Option<&str>, attempt: &str) -> (Value, action::Execution) {
+    compiled_from(code, attempt, None)
+}
+fn compiled_from(
+    code: Option<&str>,
+    attempt: &str,
+    checkpoint: Option<&Value>,
+) -> (Value, action::Execution) {
+    let runtime = run::Runtime {
+        runtime_id: format!("runtime.{}", "1".repeat(64)),
+        source_id: job().source_id,
+        image: job().image,
+        source_dir: "/workspace".into(),
+        worker_path: "/opt/ml-expd/worker".into(),
+        worker_sha256: format!("sha256:{}", "d".repeat(64)),
+    };
+    let mut request = json!({"run_id":"train","runtime_id":runtime.runtime_id,"executor":"pai-h200",
+        "command":["python","train.py"],"resources":{"gpus":1,"cpus":8,"memory_gb":64},
+        "walltime_seconds":3600,"seed":42,"env":{"PYTHONPATH":"src"}});
+    if let Some(code) = code {
+        request["code_source_id"] = json!(code);
+    }
+    if let Some(checkpoint) = checkpoint {
+        request["resume_from"] = json!({"run_id":"earlier","attempt_id":"attempt-001",
+            "checkpoint_id":checkpoint["checkpoint_id"]});
+    }
+    let request: run::Create = serde_json::from_value(request).unwrap();
+    let digest = format!("sha256:{}", "a".repeat(64));
+    let root = "/mnt/workspace/ml-expd/runs";
+    let mut docs = run::documents(
+        "demo",
+        &request,
+        &runtime,
+        run::Authority {
+            project_sha256: &digest,
+            source_receipt_sha256: &digest,
+            profile_sha256: &digest,
+            tracking_route: &json!({"enabled":false}),
+            target: &helper::Target {
+                backend_id: "pai-h200".into(),
+                profile_sha256: digest.clone(),
+                storage_scope: digest.clone(),
+            },
+            run_root: root,
+            data_root: "/mnt/workspace/ml-expd/datasets",
+            datasets: &[],
+            checkpoint,
+        },
+        "2026-10-29T00:00:00Z",
+    )
+    .unwrap();
+    let storage = json!({"mount":"/mnt/workspace","runs":root,
+        "datasets":"/mnt/workspace/ml-expd/datasets"});
+    docs.run["native_cloud"]["storage"] = storage.clone();
+    docs.attempt["native_cloud"]["storage"] = storage;
+    let mut attempt_document = docs.attempt.clone();
+    if attempt != "attempt-001" {
+        let first = crate::first_submission::native::Binding {
+            project: "demo".into(),
+            run_id: "train".into(),
+            attempt_id: "attempt-001".into(),
+            project_sha256: digest.clone(),
+            run_sha256: helper::sha256_bytes(&serde_json::to_vec(&docs.run).unwrap()),
+            attempt_sha256: helper::sha256_bytes(&serde_json::to_vec(&docs.attempt).unwrap()),
+            source_receipt_sha256: digest.clone(),
+            backend_config_sha256: digest.clone(),
+        };
+        let request = crate::first_submission::native::retry::Request {
+            confirmation: "RETRY action-0123456789abcdef".into(),
+            resume_from: None,
+            restart_from: Some(crate::first_submission::native::retry::StartFrom {
+                run_id: "train".into(),
+                attempt_id: "attempt-001".into(),
+            }),
+            max_gpu_hours: 1.,
+            reason: "again".into(),
+        };
+        attempt_document = retry::plan(
+            &docs.run,
+            retry::Receipt {
+                contract: retry::CONTRACT.into(),
+                parent_action: "action-0123456789abcdef".into(),
+                parent_binding: first,
+                parent_job_sha256: digest.clone(),
+                termination: JobObservation {
+                    job_id: "dlc-original".into(),
+                    provider_state: "Failed".into(),
+                    state: crate::state::RunState::Failed,
+                    queue: None,
+                },
+                request_sha256: request.identity("action-0123456789abcdef").unwrap(),
+                request,
+                reserved_gpu_seconds: 3600,
+                created_at: "2026-10-31T00:00:03Z".into(),
+            },
+            &Value::Null,
+        )
+        .unwrap();
+    }
+    let binding = crate::first_submission::native::Binding {
+        project: "demo".into(),
+        run_id: "train".into(),
+        attempt_id: attempt.into(),
+        project_sha256: digest.clone(),
+        run_sha256: helper::sha256_bytes(&serde_json::to_vec(&docs.run).unwrap()),
+        attempt_sha256: helper::sha256_bytes(&serde_json::to_vec(&attempt_document).unwrap()),
+        source_receipt_sha256: digest.clone(),
+        backend_config_sha256: digest.clone(),
+    };
+    let execution = run::execution(
+        &docs.run,
+        &attempt_document,
+        binding,
+        &runtime,
+        root,
+        &"0".repeat(32),
+        pai::Allocation::Guaranteed,
+        exchange::Channel {
+            url: format!("https://api.example/api/worker-exchange/demo/train/{attempt}"),
+            token: "e".repeat(64),
+        },
+    )
+    .map_err(|error| error.0)
+    .unwrap();
+    (docs.run, execution)
+}
+#[test]
+fn a_retry_of_a_resumed_run_compiles_the_same_restore_and_a_plain_run_starts_from_zero() {
+    let state_root = "/mnt/workspace/ml-expd/runs/demo/earlier/attempt-001/state";
+    let context = crate::checkpoints::Context {
+        project: "demo".into(),
+        run_id: "earlier".into(),
+        attempt_id: "attempt-001".into(),
+        source_id: job().source_id,
+        image_id: format!("sha256:{}", "b".repeat(64)),
+        storage_scope: format!("sha256:{}", "a".repeat(64)),
+        state_root: state_root.into(),
+    };
+    let ready = json!({"step":4,"files":[
+        {"path":"checkpoints/step-4/state.bin","bytes":7,"sha256":"a".repeat(64)}
+    ]});
+    let mut document = crate::checkpoints::document(&context, &ready).unwrap();
+    document["status"] = json!("REGISTERED");
+    document["verification"] = json!("worker-sha256");
+    document["registered_at"] = json!("2026-10-29T00:00:00Z");
+    let resume = |attempt: &str| {
+        let (_, execution) = compiled_from(None, attempt, Some(&document));
+        execution.package().unwrap().manifest.environment
+    };
+    assert_eq!(resume("attempt-001")["RESUME_STEP"], "4");
+    let retried = resume("attempt-002");
+    assert_eq!(retried["RESUME_STEP"], "4");
+    assert_eq!(retried["RESUME_CHECKPOINT_ID"], document["checkpoint_id"]);
+    assert_eq!(
+        retried["RESUME_DIR"],
+        format!("{state_root}/checkpoints/step-4")
+    );
+    let (_, plain) = compiled(None, "attempt-002");
+    let plain = plain.package().unwrap();
+    assert!(plain.config.checkpoint_restore.is_none());
+    assert!(!plain.manifest.environment.contains_key("RESUME_STEP"));
+}
+#[test]
+fn delivered_code_moves_only_the_working_directory_and_is_per_attempt() {
+    let code = format!("source.{}", "c".repeat(64));
+    let (plain_run, plain) = compiled(None, "attempt-001");
+    let plain = plain.package().unwrap();
+    assert_eq!(plain.manifest.workdir, "/workspace");
+    assert!(plain.code_source_id.is_none());
+    assert!(!plain.manifest.environment.contains_key("SOURCE_DIR"));
+    assert!(plain_run.get("code_source_id").is_none());
+    assert!(
+        plain_run["evaluation"]["protocol"]
+            .get("code_source_id")
+            .is_none()
+    );
+    assert!(
+        !serde_json::to_string(&plain)
+            .unwrap()
+            .contains("code_source_id"),
+        "absent means the frozen package keeps its old bytes"
+    );
+
+    let (run, first) = compiled(Some(&code), "attempt-001");
+    let first = first.package().unwrap();
+    let expected = "/mnt/workspace/ml-expd/runs/demo/train/attempt-001/code";
+    assert_eq!(first.manifest.workdir, expected);
+    assert_eq!(first.config.workdir.to_str().unwrap(), expected);
+    assert_eq!(first.manifest.environment["SOURCE_DIR"], expected);
+    assert_eq!(first.manifest.environment["PYTHONDONTWRITEBYTECODE"], "1");
+    assert_eq!(first.manifest.environment["PYTHONPATH"], "src");
+    assert_eq!(first.code_source_id.as_deref(), Some(code.as_str()));
+    // The same image: only the source the Run names for its code differs.
+    assert_eq!(run["source_id"], plain_run["source_id"]);
+    assert_eq!(run["container"], plain_run["container"]);
+    assert_eq!(run["code_source_id"], code);
+    assert_eq!(run["evaluation"]["protocol"]["code_source_id"], code);
+    assert_ne!(
+        run["evaluation"]["protocol_id"],
+        plain_run["evaluation"]["protocol_id"]
+    );
+
+    // A retry keeps the code and gets a directory of its own.
+    let (_, second) = compiled(Some(&code), "attempt-002");
+    let second = second.package().unwrap();
+    assert_eq!(
+        second.manifest.workdir,
+        "/mnt/workspace/ml-expd/runs/demo/train/attempt-002/code"
+    );
+    assert_eq!(second.code_source_id.as_deref(), Some(code.as_str()));
+
+    // A package altered after compiling cannot pass as one that was compiled.
+    let mut moved = first.clone();
+    moved.manifest.workdir = "/workspace".into();
+    assert!(moved.validate().is_err());
+    let mut unset = first.clone();
+    unset.manifest.environment.remove("PYTHONDONTWRITEBYTECODE");
+    assert!(unset.validate().is_err());
+}
+
 #[test]
 fn dlc_resources_idle_permission_personal_mounts_and_frozen_ownership_are_explicit() {
     let p = pai();

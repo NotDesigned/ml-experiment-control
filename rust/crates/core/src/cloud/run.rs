@@ -124,6 +124,9 @@ pub fn documents(
     if let Some(reference) = &request.resume_from {
         protocol["resume_from"] = json!(reference);
     }
+    if let Some(code) = &request.code_source_id {
+        protocol["code_source_id"] = json!(code);
+    }
     let protocol_id = digest(&protocol)?;
     // Validate arbitrary project schemas without inventing scientific metrics.
     crate::metrics::MetricSchema::from_value(&request.metrics_schema.to_value())
@@ -159,6 +162,10 @@ pub fn documents(
     }
     if let Some(policy) = &request.scheduling {
         run["native_cloud"]["scheduling"] = json!(policy);
+    }
+    // An Attempt is a copy of this document, so a retry or a resume keeps this code.
+    if let Some(code) = &request.code_source_id {
+        run["code_source_id"] = json!(code);
     }
     let mut attempt = run.clone();
     attempt["attempt_id"] = json!("attempt-001");
@@ -213,12 +220,25 @@ pub fn execution(
         super::retry::validate_attempt(run, attempt, &binding)?;
     }
     let request:Request=serde_json::from_value(json!({"run_id":run_id,"runtime_id":runtime.runtime_id,"executor":run["backend"]["executor"],"command":run["command"],"resources":run["resources"],"walltime_seconds":run["native_cloud"]["walltime_seconds"],"seed":run["seed"]})).map_err(|_|Error("cloud Run resources"))?;
+    let code = run
+        .get("code_source_id")
+        .map(|value| value.as_str().ok_or(Error("frozen code source")))
+        .transpose()?;
+    // The launch identity is bound, so where the code lives is decided here and not
+    // when it arrives. Each Attempt has its own copy.
+    let workdir = match code {
+        Some(_) => format!(
+            "{root}/{project}/{run_id}/{attempt_id}/{}",
+            super::launch::CODE
+        ),
+        None => runtime.source_dir.clone(),
+    };
     let mut package = super::launch::compile(super::launch::Input {
         root,
         project,
         run: run_id,
         attempt: attempt_id,
-        workdir: &runtime.source_dir,
+        workdir: &workdir,
         argv: &request.command,
         timeout_seconds: request.walltime_seconds,
         worker_sha256: &runtime.worker_sha256,
@@ -229,6 +249,13 @@ pub fn execution(
     package.manifest.environment.extend(
         crate::environment::from_document(run).map_err(|_| Error("frozen Run environment"))?,
     );
+    if let Some(code) = code {
+        package.code_source_id = Some(code.into());
+        package.manifest.environment.extend([
+            ("SOURCE_DIR".to_owned(), workdir.clone()),
+            ("PYTHONDONTWRITEBYTECODE".to_owned(), "1".to_owned()),
+        ]);
+    }
     package.checkpoint_context = Some(crate::checkpoints::Context {
         project: project.clone(),
         run_id: run_id.clone(),
@@ -263,7 +290,11 @@ pub fn execution(
             .as_str()
             .ok_or(Error("frozen data root"))?,
         datasets,
-        attempt.get("native_checkpoint").cloned(),
+        // A retry from the start freezes this as null, which is no checkpoint at all.
+        attempt
+            .get("native_checkpoint")
+            .filter(|value| !value.is_null())
+            .cloned(),
     )?;
     if let Some(value) = run.get("data_preparation") {
         let plan = crate::data_preparation::Plan {

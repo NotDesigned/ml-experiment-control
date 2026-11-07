@@ -1,6 +1,36 @@
 use super::*;
 impl Service {
+    /// A new Run with delivered code needs a worker that knows how to fetch it, and only
+    /// the current one is known to. A Run already created stays valid across upgrades.
     pub fn create_run(
+        &self,
+        project: &str,
+        request: run::Create,
+        now: &str,
+    ) -> cloud::Result<Value> {
+        if request.code_source_id.is_some() {
+            let runtime = self.runtime(project, &request.executor, &request.runtime_id)?;
+            self.check_new_code_run(project, &request.run_id, &runtime)?;
+        }
+        self.author_run(project, request, now)
+    }
+    /// Only when this is about to create the Run: one that exists keeps its worker.
+    pub(super) fn check_new_code_run(
+        &self,
+        project: &str,
+        run: &str,
+        runtime: &run::Runtime,
+    ) -> cloud::Result<()> {
+        if self
+            .authority(project, run)?
+            .entry_exists(OsStr::new(run))
+            .map_err(io)?
+        {
+            return Ok(());
+        }
+        self.check_code_worker(runtime)
+    }
+    pub(super) fn author_run(
         &self,
         project: &str,
         request: run::Create,

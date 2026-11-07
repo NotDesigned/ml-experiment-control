@@ -5,4 +5,4 @@ mod service;
 mod store;
 pub use ml_exp_core::sources::{Metadata, Policy};
 pub use service::Service;
-pub use store::{Error, Store};
+pub use store::{CodeContent, Error, Store};

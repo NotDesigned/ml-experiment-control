@@ -8,16 +8,63 @@ can be used by any configured training backend.
 ## Dockerfile contract
 
 Clients upload code with a Dockerfile. The server validates it, appends frozen
-source at `/ml-expd/source`, which becomes the working directory, plus the trusted
+source at `/ml-expd/source`, which is the working directory unless code is delivered
+separately, plus the trusted
 worker at `/usr/local/bin/ml-exp-worker-rs`, and publishes the resulting image. The client does not upload a prebuilt Docker image through this workflow.
 
 ```dockerfile
 FROM REGISTRY/BASE@sha256:ACTUAL_64_HEX_DIGEST
-WORKDIR /workspace
-# Install frozen dependencies here, before frequently changing source.
-# RUN python3 -m pip install ...
-COPY . /workspace
+WORKDIR /opt/app
+# Only the files that decide the dependencies, so changing code builds nothing.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --no-install-project
 ```
+
+Run it with `--env PYTHONPATH=src`, or however your code finds its packages: the
+Dockerfile above installs what the code needs and not the code itself.
+
+### Code delivered to the job
+
+On a PAI or SenseCore executor, `ml-exp submit` reads the `COPY` and `ADD` sources of the
+Dockerfile, and uploads those files, the Dockerfile and its `.dockerignore` variants as
+the environment. Docker can only see what these instructions name, so a file the
+Dockerfile uses cannot be missed. The image's identity depends only on those files, so
+changing other code gives a new Run of the same Runtime, with no rebuild and no new
+command.
+
+The whole directory is uploaded as well, as the Run's code, frozen with the Run. It holds
+the Dockerfile and the lock file too, so editing one of those changes both the Runtime and
+the code source; only the reverse is free:
+
+- The worker downloads it before training, into `ATTEMPT_ROOT/code`, and checks every
+  file against the source's identity. A file that differs is named in the job's error, and
+  training does not start. A repeat of the same Attempt reuses a tree it has proven, or
+  refuses; it never overwrites one.
+- That directory is the working directory and `SOURCE_DIR`. `/ml-expd/source` is not the
+  code path in this case: it holds only the environment files.
+- The directory is read-only and `PYTHONDONTWRITEBYTECODE=1` is set. Write to `OUTPUT_DIR`
+  and `STATE_DIR`. `--env` cannot set these two names for such a Run.
+- A retry or a checkpoint resume keeps the original code, in a new directory of its own.
+- The code that goes with a job is at most 64 MiB of files and 20,000 entries. A larger
+  directory is not refused: it stays in the image and any change builds it again, and the
+  question says so. Move large files to data with [`ml-exp data upload`](data.md) to avoid
+  that. A Run named by hand with `code_source_id` over the limit is refused.
+- Choosing a Runtime by hand with `code_source_id` needs one built with the current worker.
+
+The whole directory stays in the image, as `COPY . /workspace` asks, and nothing is
+delivered separately, when the Dockerfile uses any of these, because what it reads cannot
+then be known for certain: a source of `.`, a glob, a variable, a path outside the
+directory, `ADD` from a URL, `RUN --mount`, a heredoc or `ONBUILD`. The same holds for a
+source that is not among the uploaded files, for a Run with `data_preparation`, whose job
+may start before any Attempt has code, and on a Slurm executor. `COPY --from` is another
+stage and does not count. The question before submitting says which applies, and why.
+
+A base image with its own `ONBUILD COPY` cannot be seen from here. It would see only the
+environment files, so name what it needs in your Dockerfile, or avoid such a base.
+
+`ml-exp status` shows the Runtime and the code source a Run was made from, under
+`identity` with `--json`. To name a code source yourself, set `run.code_source_id` in the
+experiment file of `ml-exp run start`.
 
 Replace the placeholder with the image digest. Any registry/repository may be
 used; ML-Expd does not filter image origins. Private images need credentials on
@@ -47,8 +94,8 @@ checks no minimum version.
 - A `data_preparation` script, unless its `interpreter` names something else.
 
 Managed ENTRYPOINT/CMD replace client startup commands; configure scientific
-argv with Runtime `entrypoint` and Run `arguments`. Code is copied into the
-image, never overlaid by a second checkout on Slurm. The CPU data-copy base
+argv with Runtime `entrypoint` and Run `arguments`. On Slurm, code is copied into the
+image, never overlaid by a second checkout. The CPU data-copy base
 additionally needs glibc/Bash; Alpine is unsuitable for that ACP payload.
 
 ## Publication and reuse

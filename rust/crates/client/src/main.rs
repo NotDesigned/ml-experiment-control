@@ -142,7 +142,7 @@ For every field and each separate step, see `ml-exp run start` and `ml-exp run e
         /// Only needed when two Projects used the same Run name.
         #[arg(long, requires = "run")]
         project: Option<String>,
-        /// A checkpoint from `ml-exp run checkpoints`. From the start unless given.
+        /// A checkpoint from `ml-exp run checkpoints`. From the Run's frozen start unless given.
         #[arg(long)]
         checkpoint: Option<String>,
         /// Skip the question. Required without a terminal.

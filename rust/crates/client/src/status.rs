@@ -582,6 +582,16 @@ impl Flow {
             "verification":{"status":get_or(&self.collection,"verification",json!("NOT_OBSERVED"))},"progress":progress,
             "queue":otherwise(&queue,Value::Null),"worker":{"state":worker["state"],"observed_at":worker["as_of"],"stale":get_or(&worker,"stale",json!(true))},
             "model":model_view,"input_delivery":self.progress["input_delivery"],"worker_phase":self.progress["worker_phase"]});
+        // What the frozen Run says it was made from, for telling results apart.
+        let run = &self.run["manifest"]["metadata"];
+        if run["source_id"].is_string() {
+            let mut identity = json!({"environment_source_id":run["source_id"],
+                "runtime_id":run["container"]["runtime_id"],"image_id":run["image_id"]});
+            if run["code_source_id"].is_string() {
+                identity["code_source_id"] = run["code_source_id"].clone();
+            }
+            value["identity"] = identity;
+        }
         if self.details {
             value["evidence"] = Value::Object(self.evidence);
         }

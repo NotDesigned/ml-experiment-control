@@ -8,6 +8,9 @@ use std::collections::BTreeMap;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
+/// A refusal the caller can act on, so it keeps its own words at the HTTP boundary.
+pub const CODE_DELIVERY_UNSUPPORTED: &str =
+    "code_source_id is not supported on a Slurm executor yet; keep the code in the image";
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Scheduling {
@@ -49,6 +52,10 @@ pub struct Request {
     pub wandb: Option<crate::tracking::WandbOptions>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduling: Option<Scheduling>,
+    /// Code delivered to each Attempt instead of baked into the image. Absent, the
+    /// Run works from the image and its identity is what it always was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_source_id: Option<String>,
 }
 impl Request {
     pub fn from_slice(bytes: &[u8]) -> Result<Self> {
@@ -60,6 +67,22 @@ impl Request {
     }
     pub fn validate(&self, project: &str) -> Result<()> {
         crate::environment::validate(&self.env).map_err(|_| Error("Run environment"))?;
+        if let Some(code) = &self.code_source_id {
+            crate::sources::validate_source_id(code).map_err(|_| Error("code source"))?;
+            // A preparation job may run before any Attempt exists, so it has no
+            // delivered code to read: its script stays in the image.
+            if self.data_preparation.is_some() {
+                return Err(Error("data_preparation needs its code in the image"));
+            }
+            // Reserved only here: old stored Runs may hold these names.
+            if self.env.contains_key("SOURCE_DIR")
+                || self.env.contains_key("PYTHONDONTWRITEBYTECODE")
+            {
+                return Err(Error(
+                    "SOURCE_DIR and PYTHONDONTWRITEBYTECODE are set by the platform for delivered code",
+                ));
+            }
+        }
         if let Some(preparation) = &self.data_preparation {
             preparation
                 .validate()
@@ -143,6 +166,9 @@ pub fn plan(
     request.validate(project)?;
     if request.scheduling.is_some() {
         return Err(Error("cloud scheduling requires a cloud executor"));
+    }
+    if request.code_source_id.is_some() {
+        return Err(Error(CODE_DELIVERY_UNSUPPORTED));
     }
     OffsetDateTime::parse(now, &Rfc3339).map_err(|_| Error("creation time"))?;
     if request.executor != profile.target.backend_id || request.runtime_id != runtime.runtime_id {
@@ -496,6 +522,113 @@ mod tests {
         .err()
         .unwrap();
         assert_eq!(refused.0, crate::datasets::ManifestsTooLarge::CAUSE);
+    }
+    #[test]
+    fn an_absent_code_source_changes_nothing_and_a_present_one_is_bound() {
+        let parsed: Request = serde_json::from_value(request()).unwrap();
+        assert!(
+            serde_json::to_value(&parsed)
+                .unwrap()
+                .get("code_source_id")
+                .is_none()
+        );
+        // Pinned: this is the identity of a Run stored before the field existed.
+        assert_eq!(
+            parsed.identity("demo").unwrap(),
+            canonical::protocol_identity(&json!({"project":"demo","request":{
+                "run_id":"trial","runtime_id":format!("runtime.{}","1".repeat(64)),
+                "executor":"slurm-test","command":["python","train.py"],
+                "resources":parsed.resources,"walltime_seconds":300,"seed":42,
+                "parameters":{},"evaluation":{},"metrics_schema":parsed.metrics_schema}}))
+            .unwrap()
+        );
+        let code = |digit: &str| {
+            let mut value = request();
+            value["code_source_id"] = json!(format!("source.{}", digit.repeat(64)));
+            serde_json::from_value::<Request>(value).unwrap()
+        };
+        assert_ne!(
+            code("a").identity("demo").unwrap(),
+            parsed.identity("demo").unwrap()
+        );
+        assert_ne!(
+            code("a").identity("demo").unwrap(),
+            code("b").identity("demo").unwrap()
+        );
+        let mut bad = code("a");
+        bad.code_source_id = Some("source.short".into());
+        assert!(bad.validate("demo").is_err());
+        for name in ["SOURCE_DIR", "PYTHONDONTWRITEBYTECODE"] {
+            let mut reserved = code("a");
+            reserved.env.insert(name.into(), "x".into());
+            assert!(reserved.validate("demo").is_err(), "{name}");
+            // Without delivery these stay ordinary names, as in old stored Runs.
+            let mut plain = parsed.clone();
+            plain.env.insert(name.into(), "x".into());
+            assert!(plain.validate("demo").is_ok(), "{name}");
+        }
+        let mut preparing = code("a");
+        preparing.data_preparation = serde_json::from_value(json!({"script":"fetch.py"})).unwrap();
+        assert!(preparing.validate("demo").is_err());
+    }
+    #[test]
+    fn a_slurm_run_refuses_delivered_code_with_a_clear_cause() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let target = slurm::helper::Target {
+            backend_id: "slurm-test".into(),
+            profile_sha256: digest.clone(),
+            storage_scope: digest.clone(),
+        };
+        let profile = Profile {
+            target,
+            ssh_alias: "cluster".into(),
+            partition: "gpu".into(),
+            account: "team".into(),
+            qos: "normal".into(),
+            gpu_type: "h200".into(),
+            mount_root: "/shared".into(),
+            run_root: "/shared/runs".into(),
+            data_root: "/shared/datasets".into(),
+            max_gpus: 8,
+            max_cpus: 64,
+            max_memory_gb: 512,
+            max_walltime_seconds: 86400,
+        };
+        let runtime = Runtime {
+            runtime_id: format!("runtime.{}", "1".repeat(64)),
+            source_id: format!("source.{}", "2".repeat(64)),
+            image_id: digest.clone(),
+            sif_path: "/shared/images/code.sif".into(),
+            sif_sha256: digest.clone(),
+            oci_image: format!("registry.example/team/code@{digest}"),
+            worker: slurm::managed::Runtime {
+                program: "/opt/ml-expd/worker".into(),
+                base_environment: BTreeMap::new(),
+                runtime_environment: Vec::new(),
+            },
+            source_dir: "/workspace".into(),
+        };
+        let mut value = request();
+        value["code_source_id"] = json!(format!("source.{}", "3".repeat(64)));
+        let request: Request = serde_json::from_value(value).unwrap();
+        let refused = plan(
+            "demo",
+            &request,
+            &profile,
+            &runtime,
+            Authority {
+                project_sha256: &digest,
+                source_receipt_sha256: &digest,
+                backend_config_sha256: &digest,
+                checkpoint: None,
+                datasets: &[],
+                tracking_route: None,
+            },
+            "2026-10-29T00:00:00Z",
+        )
+        .err()
+        .unwrap();
+        assert_eq!(refused.0, CODE_DELIVERY_UNSUPPORTED);
     }
     #[test]
     fn optional_cloud_policy_is_identity_bound_and_omission_preserves_original_bytes() {
