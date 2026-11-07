@@ -172,7 +172,12 @@ fn a_worker_that_cannot_start_says_why_until_it_first_reports() {
         .recv_timeout(std::time::Duration::from_secs(10))
         .expect("server startup");
     let client = ml_exp_client::Client::new(&format!("http://{address}"), token.into()).unwrap();
-    let health = client.health().unwrap();
+    // A cloud-only server does not offer progress, which a server with Slurm does.
+    let mut health = client.health().unwrap();
+    health["capabilities"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("execution-progress.v1"));
     let http = reqwest::blocking::Client::new();
     let post = |credential: Option<&str>, path: &str, body: Vec<u8>| {
         let request = http
