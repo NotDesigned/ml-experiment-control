@@ -57,6 +57,10 @@ class Deploy(unittest.TestCase):
         self.lock = self.base / "publisher.lock"
         self.lock.touch()
         self.server_log = self.base / "server.log"
+        self.registry = self.base / "registry"
+        (self.registry / "cloud-submissions/slots").mkdir(parents=True)
+        (self.base / "reads.json").write_text(json.dumps({"registry_root": str(self.registry)}))
+        (self.base / "server.json").write_text(json.dumps({"read_config": str(self.base / "reads.json")}))
         token = self.base / "token"
         token.write_text("secret\n")
 
@@ -163,7 +167,17 @@ class Deploy(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.version(), "1.1.0")
         worker = "sha256:" + digest(self.root / "bin/ml-exp-worker-rs")
-        self.assertEqual(json.loads(self.cloud.read_text())["builds"]["worker_sha256"], worker)
+        pinned = json.loads(self.cloud.read_text())["builds"]
+        self.assertEqual(pinned["worker_sha256"], worker)
+        # Where a job fetches the worker its Run froze, from this release and the next.
+        store = Path(pinned["worker_store"])
+        self.assertEqual(store, self.root.resolve() / "workers")
+        first = store / worker.removeprefix("sha256:")
+        self.assertEqual(digest(first), worker.removeprefix("sha256:"))
+        self.assertEqual(first.stat().st_mode & 0o777, 0o555)
+        self.assertEqual(self.deploy(self.bundle("1.2.0"), "--apply").returncode, 0)
+        self.assertTrue(first.exists())
+        self.assertEqual(len(list(store.iterdir())), 2)
         self.assertEqual(self.cloud.stat().st_mode & 0o777, 0o600)
         self.assertEqual(json.loads((self.root / "DEPLOYED.json").read_text())["source_commit"], "c" * 40)
         self.assertTrue((self.site / "ml_exp_worker/new.py").exists())
@@ -184,6 +198,53 @@ class Deploy(unittest.TestCase):
         self.assertTrue((self.site / "ml_exp_worker/old.py").exists())
         self.assertFalse((self.site / "ml_exp_worker/new.py").exists())
         self.assertEqual(self.calls()[-1], "start api.service")
+
+    def test_rollback_past_worker_bootstrap_names_what_to_remove_first(self):
+        self.assertEqual(self.deploy(self.bundle("1.1.0"), "--apply").returncode, 0)
+        slots = self.registry / "cloud-submissions/slots"
+        definition = {"source_id": "source." + "2" * 64, "executor": "dlc",
+                      "base_image": "registry.example/base@sha256:" + "3" * 64, "dockerfile": "Dockerfile"}
+        # The identity Rust computes, pinned in its own tests.
+        bootstrap = "runtime.cedceae7140394af7a554cc33f1e5c9320d090eadcdd8a3f1629113c53f83e4f"
+        (slots / f"{bootstrap}.runtime.json").write_text(json.dumps(
+            {"project": "demo", "runtime_id": bootstrap, "definition": definition}))
+        older = "runtime." + "1" * 64
+        (slots / f"{older}.runtime.json").write_text(json.dumps(
+            {"project": "demo", "runtime_id": older, "definition": definition}))
+        result = self.run_tool("--rollback")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"{bootstrap}.runtime.json", result.stderr)
+        self.assertNotIn(f"{older}.runtime.json", result.stderr)
+        self.assertEqual(self.version(), "1.1.0")
+        (slots / f"{bootstrap}.runtime.json").unlink()
+        (slots / "preparation-a.setup.json").write_text(json.dumps({"runtime_identity": "worker-bootstrap.v1"}))
+        result = self.run_tool("--rollback")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("preparation-a.setup.json", result.stderr)
+        (slots / "preparation-a.setup.json").unlink()
+        self.assertEqual(self.run_tool("--rollback").returncode, 0)
+        self.assertEqual(self.version(), "1.0.0")
+
+    def test_a_later_rollback_needs_no_such_check(self):
+        self.assertEqual(self.deploy(self.bundle("1.1.0"), "--apply").returncode, 0)
+        self.assertEqual(self.deploy(self.bundle("1.2.0"), "--apply").returncode, 0)
+        (self.base / "server.json").unlink()
+        self.assertEqual(self.run_tool("--rollback").returncode, 0)
+        self.assertEqual(self.version(), "1.1.0")
+
+    def test_a_damaged_stored_worker_is_replaced(self):
+        spec = importlib.util.spec_from_file_location("deploy_native_under_test", TOOL)
+        tool = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(tool)
+        worker = digest(self.root / "bin/ml-exp-worker-rs")
+        tool.retain_worker(self.root)
+        stored = self.root / "workers" / worker
+        self.assertEqual(digest(stored), worker)
+        stored.unlink()
+        stored.write_text("damaged")
+        tool.retain_worker(self.root)
+        self.assertEqual(digest(stored), worker)
+        self.assertEqual(stored.stat().st_mode & 0o777, 0o555)
 
     def test_explicit_rollback_restores_previous_release(self):
         self.assertEqual(self.deploy(self.bundle("1.1.0"), "--apply").returncode, 0)
@@ -402,7 +463,7 @@ class Deploy(unittest.TestCase):
         tool = self.tool()
         before = self.cloud.stat()
         with patch.object(os, "chown") as chown:
-            tool.pin_worker({"cloud_config": str(self.cloud)}, "sha256:new")
+            tool.pin_worker(self.root, {"cloud_config": str(self.cloud)}, "sha256:new")
         self.assertEqual(chown.call_args.args[1:], (before.st_uid, before.st_gid))
         self.assertEqual(self.cloud.stat().st_mode & 0o777, 0o600)
         self.assertEqual(json.loads(self.cloud.read_text())["builds"]["worker_sha256"], "sha256:new")

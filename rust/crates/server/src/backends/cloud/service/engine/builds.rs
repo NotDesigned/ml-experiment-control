@@ -2,13 +2,20 @@
 //! is a separate Python process; its narrow native-image recipe receipt cannot
 //! be mistaken for another image.
 use super::*;
-use ml_exp_core::cloud::{build::Definition, run::Runtime};
+use ml_exp_core::cloud::{
+    build::{BOOTSTRAP, Definition},
+    run::Runtime,
+};
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
     pub socket: std::path::PathBuf,
     pub peer_uid: u32,
     pub worker_sha256: String,
+    /// Every release's worker, each file named by its hash, for jobs to fetch the one their
+    /// Run froze. Without it new Runtimes keep naming their worker, as they always did.
+    #[serde(default)]
+    pub worker_store: Option<std::path::PathBuf>,
     pub data_base_image: Option<String>,
     #[serde(default)]
     pub slurm: std::collections::BTreeMap<String, Materializer>,
@@ -50,6 +57,10 @@ impl Settings {
     pub fn validate(&self) -> cloud::Result<()> {
         if !ml_exp_core::managed::absolute(&self.socket)
             || !helper::valid_digest(&self.worker_sha256)
+            || self
+                .worker_store
+                .as_ref()
+                .is_some_and(|store| !ml_exp_core::managed::absolute(store))
         {
             return Err(cloud::Error::configuration());
         }
@@ -84,6 +95,13 @@ impl Drop for Activity {
         if let Ok(mut active) = self.active.lock() {
             active.remove(&self.id);
         }
+    }
+}
+pub(super) fn worker_unavailable() -> cloud::Error {
+    cloud::Error {
+        code: "WORKER_BINARY_UNAVAILABLE".into(),
+        http_status: Some(409),
+        uncertain: false,
     }
 }
 fn name(id: &str) -> cloud::Result<String> {
@@ -132,9 +150,49 @@ fn only_fresh_exact_deleted_dsw_proof_grants_runtime_retry() {
     }
     assert!(!retry_proven(&Value::Null, &id));
 }
+fn bootstraps(record: &Record) -> bool {
+    record
+        .definition
+        .id(&record.project, BOOTSTRAP)
+        .is_ok_and(|id| id == record.runtime_id)
+}
 impl Service {
     pub fn has_builds(&self) -> bool {
         self.builds.is_some()
+    }
+    /// `Some` where a new Runtime on this executor can bootstrap: PAI and SenseCore, once a
+    /// server holds the workers to serve. Slurm builds and materializes per Runtime, and its
+    /// jobs have no exchange to fetch from, so its identity stays the worker's hash.
+    pub(super) fn bootstrap_identity(&self, executor: &str) -> Option<&'static str> {
+        let settings = self.builds.as_ref()?;
+        (settings.worker_store.is_some()
+            && self.has_exchange()
+            && self.accepts(executor)
+            && !settings.slurm.contains_key(executor))
+        .then_some(BOOTSTRAP)
+    }
+    /// Told by the stored identity, which a record cannot disagree with. A Runtime named in
+    /// a backend's configuration has no record, and is built with the worker it names.
+    pub(super) fn runtime_bootstraps(&self, project: &str, id: &str) -> cloud::Result<bool> {
+        if !self.runtime_recorded(id)? {
+            return Ok(false);
+        }
+        Ok(bootstraps(&self.build_record(project, id)?))
+    }
+    /// What a new Run on this Runtime freezes, so that the Run shows which worker it ran
+    /// with. Refused here rather than when a job starts if no job could fetch it.
+    pub(super) fn worker_for_new_run(
+        &self,
+        project: &str,
+        runtime: &str,
+    ) -> cloud::Result<Option<String>> {
+        if !self.runtime_bootstraps(project, runtime)? {
+            return Ok(None);
+        }
+        let settings = self.builds.as_ref().ok_or_else(worker_unavailable)?;
+        // Hashing about 8 MiB is cheap beside a job that could not start.
+        self.stored_worker(&settings.worker_sha256)?;
+        Ok(Some(settings.worker_sha256.clone()))
     }
     pub fn runtimes(&self, project: &str) -> cloud::Result<Value> {
         self.project_hash(project)?;
@@ -158,11 +216,12 @@ impl Service {
             .map_err(why!(cloud::Error::evidence()))?;
         if record.project != project
             || record.runtime_id != id
-            || record
-                .definition
-                .id(project, &record.worker_sha256)
-                .map_err(why!(cloud::Error::evidence()))?
-                != id
+            || !bootstraps(&record)
+                && record
+                    .definition
+                    .id(project, &record.worker_sha256)
+                    .map_err(why!(cloud::Error::evidence()))?
+                    != id
             || canonical::protocol_identity(
                 &self
                     .sources
@@ -191,9 +250,22 @@ impl Service {
             .active_builds
             .lock()
             .is_ok_and(|s| s.contains(&record.runtime_id));
-        json!({"project":record.project,"runtime_id":record.runtime_id,"source_id":record.definition.source_id,"executor":record.definition.executor,
+        let mut view = json!({"project":record.project,"runtime_id":record.runtime_id,"source_id":record.definition.source_id,"executor":record.definition.executor,
         "status":if record.runtime.is_some()&&(!self.builds.as_ref().is_some_and(|s|s.slurm.contains_key(&record.definition.executor))||record.slurm_runtime.is_some()){"READY"}else if active{"EXECUTING"}else if record.started{"RECONCILE_REQUIRED"}else{"PREPARED"},"runtime":record.runtime,"slurm_runtime":record.slurm_runtime,"build_error":record.diagnostic,
-        "retry_safe":!record.started&&!active,"scheduler_submitted":false,"confirmation":format!("BUILD {}",record.runtime_id)})
+        "retry_safe":!record.started&&!active,"scheduler_submitted":false,"confirmation":format!("BUILD {}",record.runtime_id)});
+        // An upgrade gave a stuck build a new identity. This one keeps its identity, and
+        // nothing here can prove that a build left nothing behind, so a person must.
+        if view["status"] == "RECONCILE_REQUIRED" && bootstraps(record) {
+            view["operator_step"] = json!(format!(
+                "An operator must act if reconciling does not settle this: confirm that no builder is running and that tag bundle-{} is not in the registry, then remove {}.runtime.json from cloud-submissions/slots in the registry root; the next attempt starts over",
+                record
+                    .runtime_id
+                    .strip_prefix("runtime.")
+                    .unwrap_or(&record.runtime_id),
+                record.runtime_id,
+            ));
+        }
+        view
     }
     pub fn runtime(&self, project: &str, executor: &str, id: &str) -> cloud::Result<Runtime> {
         if let Some(runtime) = self
@@ -228,7 +300,11 @@ impl Service {
             .read(project, &definition.source_id)
             .map_err(why!(cloud::Error::evidence()))?;
         let id = definition
-            .id(project, &settings.worker_sha256)
+            .id(
+                project,
+                self.bootstrap_identity(&definition.executor)
+                    .unwrap_or(&settings.worker_sha256),
+            )
             .map_err(why!(cloud::Error::configuration()))?;
         if self
             .slots
@@ -251,6 +327,14 @@ impl Service {
         };
         write(&self.slots, &name(&record.runtime_id)?, &record)?;
         Ok(self.build_view(&record))
+    }
+    pub(super) fn runtime_recorded(&self, id: &str) -> cloud::Result<bool> {
+        self.slots.entry_exists(OsStr::new(&name(id)?)).map_err(io)
+    }
+    /// What `build_view` shows of a Runtime whose record does not exist yet.
+    pub(super) fn unrecorded_runtime(project: &str, id: &str) -> Value {
+        json!({"project":project,"runtime_id":id,"status":"PREPARED","retry_safe":true,
+            "scheduler_submitted":false,"confirmation":format!("BUILD {id}")})
     }
     pub fn runtime_status(&self, project: &str, id: &str) -> cloud::Result<Value> {
         Ok(self.build_view(&self.build_record(project, id)?))
@@ -387,6 +471,13 @@ impl Service {
         }
         if record.started || self.active_builds.lock().is_ok_and(|s| s.contains(id)) {
             return Ok(self.build_view(&record));
+        }
+        // Its identity does not depend on the worker, and only the current one can be
+        // embedded, so one prepared before an upgrade is built with the one after it.
+        if bootstraps(&record) {
+            if let Some(settings) = &self.builds {
+                record.worker_sha256 = settings.worker_sha256.clone();
+            }
         }
         record.started = true;
         record.diagnostic = Some(json!({"code":"BUILD_EXECUTING","retry_safe":false}));

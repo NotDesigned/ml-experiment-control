@@ -5,6 +5,8 @@ use crate::{launch, managed};
 use std::path::PathBuf;
 
 pub const MAX_PACKAGE_BYTES: usize = 8 * 1024 * 1024;
+/// The largest worker a job may fetch; a release's is about 8 MiB.
+pub const MAX_WORKER_BYTES: u64 = 64 * 1024 * 1024;
 /// Under the Attempt root: where delivered code lives and the working directory.
 pub const CODE: &str = "code";
 

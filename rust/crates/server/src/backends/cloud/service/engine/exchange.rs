@@ -117,6 +117,38 @@ pub struct CodeGrant {
     project: String,
     source: String,
 }
+pub struct WorkerGrant {
+    worker: String,
+}
+/// An open file of the store whose hash has been proven, read through that same handle.
+pub struct WorkerContent {
+    pub bytes: u64,
+    file: std::fs::File,
+}
+impl WorkerContent {
+    pub fn each_chunk(
+        self,
+        mut send: impl FnMut(Vec<u8>) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        use std::io::Read;
+        let mut file = self.file.take(self.bytes);
+        let mut sent = 0;
+        loop {
+            let mut chunk = vec![0; 256 * 1024];
+            let count = file.read(&mut chunk)?;
+            if count == 0 {
+                break;
+            }
+            chunk.truncate(count);
+            send(chunk)?;
+            sent += count as u64;
+        }
+        if sent != self.bytes {
+            return Err(std::io::Error::other("the worker file became shorter"));
+        }
+        Ok(())
+    }
+}
 impl Service {
     pub fn synchronize(
         &self,
@@ -284,6 +316,62 @@ impl Service {
         self.sources
             .code_content(&grant.project, &grant.source)
             .map_err(why!(cloud::Error::evidence()))
+    }
+    /// Proof that this token may read this Attempt's worker, before a transfer is begun.
+    /// A request names no worker, so a token reaches only the one its Attempt froze.
+    pub fn worker_binary_grant(
+        &self,
+        project: &str,
+        run: &str,
+        attempt: &str,
+        token: &str,
+    ) -> cloud::Result<WorkerGrant> {
+        Ok(WorkerGrant {
+            worker: self
+                .worker_authorized(project, run, attempt, token)?
+                .worker_sha256,
+        })
+    }
+    /// From the configured store only, with a name that is a validated hash, and refused
+    /// unless the file really has that hash.
+    pub fn worker_binary(&self, grant: &WorkerGrant) -> cloud::Result<WorkerContent> {
+        self.stored_worker(&grant.worker)
+    }
+    pub(super) fn stored_worker(&self, worker: &str) -> cloud::Result<WorkerContent> {
+        use sha2::Digest;
+        use std::io::{Read, Seek};
+        let unavailable = super::builds::worker_unavailable;
+        let store = self
+            .builds
+            .as_ref()
+            .and_then(|settings| settings.worker_store.as_ref())
+            .ok_or_else(unavailable)?;
+        if !helper::valid_digest(worker) {
+            return Err(unavailable());
+        }
+        let name = worker.strip_prefix("sha256:").ok_or_else(unavailable)?;
+        let mut file = Directory::open(store, false)
+            .and_then(|directory| directory.open_regular_read(OsStr::new(name)))
+            .map_err(why!(unavailable()))?;
+        let bytes = file.metadata().map_err(why!(unavailable()))?.len();
+        if bytes > ml_exp_core::cloud::launch::MAX_WORKER_BYTES {
+            return Err(unavailable());
+        }
+        let mut hasher = Sha256::new();
+        let mut buffer = vec![0; 256 * 1024];
+        loop {
+            let count = file.read(&mut buffer).map_err(why!(unavailable()))?;
+            if count == 0 {
+                break;
+            }
+            hasher.update(&buffer[..count]);
+        }
+        if format!("{:x}", hasher.finalize()) != name {
+            crate::why::record(file!(), line!(), &"a stored worker differs from its name");
+            return Err(unavailable());
+        }
+        file.rewind().map_err(why!(unavailable()))?;
+        Ok(WorkerContent { bytes, file })
     }
     pub fn has_exchange(&self) -> bool {
         self.exchange.is_some()

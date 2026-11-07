@@ -84,11 +84,21 @@ def parsed(version):
     return tuple(int(part) for part in version.split("."))
 
 
+def fsync_path(path):
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def replace_file(source, destination, mode):
     temporary = destination.with_name(f".{destination.name}.deploy")
     shutil.copyfile(source, temporary)
     temporary.chmod(mode)
+    fsync_path(temporary)
     os.replace(temporary, destination)
+    fsync_path(destination.parent)
 
 
 def download(url, destination):
@@ -239,9 +249,23 @@ def install_tree(source, destination):
             path.unlink()
 
 
+def retain_worker(root):
+    """A queued job or a retry asks for the worker its Run froze, even after an upgrade."""
+    store = root / "workers"
+    store.mkdir(exist_ok=True)
+    store.chmod(0o755)
+    worker = root / "bin/ml-exp-worker-rs"
+    digest = sha256(worker)
+    target = store / digest
+    # The server refuses a stored file that is not what its name says, so one is replaced.
+    if not target.is_file() or target.is_symlink() or sha256(target) != digest:
+        replace_file(worker, target, 0o555)
+
+
 def install(root, settings, source):
     for name in BINARIES:
         replace_file(source / "bin" / name, root / "bin" / name, 0o755)
+    retain_worker(root)
     site = Path(settings["python_site_packages"])
     for package in PACKAGES:
         install_tree(source / "python" / package, site / package)
@@ -255,13 +279,16 @@ def replace_config(temporary, path):
     os.replace(temporary, path)
 
 
-def pin_worker(settings, digest):
-    """New builds embed this worker; existing Runtimes keep their frozen hash."""
+def pin_worker(root, settings, digest):
+    """New builds embed this worker and new Runs freeze it; existing Runtimes and Runs keep theirs."""
     path = Path(settings["cloud_config"])
     config = json.loads(path.read_text())
-    if (config.get("builds") or {}).get("worker_sha256") in (None, digest):
+    builds = config.get("builds") or {}
+    store = str(root / "workers")
+    if builds.get("worker_sha256") is None or (builds["worker_sha256"] == digest and builds.get("worker_store") == store):
         return
     config["builds"]["worker_sha256"] = digest
+    config["builds"]["worker_store"] = store
     temporary = path.with_name(f".{path.name}.deploy")
     temporary.write_text(json.dumps(config, indent=2) + "\n")
     replace_config(temporary, path)
@@ -303,9 +330,35 @@ def record(root, version, commit, action):
     return value
 
 
+def bootstrap_state(settings):
+    """Files in the cloud state that a release without worker bootstrap cannot read."""
+    reads = json.loads(Path(settings["server_config"]).read_text())["read_config"]
+    registry = json.loads(Path(reads).read_text())["registry_root"]
+    found = []
+    for path in sorted((Path(registry) / "cloud-submissions/slots").glob("*.json")):
+        if path.name.endswith(".runtime.json"):
+            value = json.loads(path.read_text())
+            text = json.dumps(["native-image-recipe.v1", value["project"], value["definition"],
+                               "worker-bootstrap.v1"],
+                              sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+            if value["runtime_id"] == "runtime." + hashlib.sha256(text.encode()).hexdigest():
+                found.append(path)
+        elif path.name.endswith(".setup.json") and "runtime_identity" in json.loads(path.read_text()):
+            found.append(path)
+    return found
+
+
 def rollback(root, settings, timeout):
     if not (root / "previous/bin/ml-expd-rs").is_file():
         raise Refused("no previous installation is retained")
+    previous = json.loads((root / "previous/cloud_config.json").read_text())
+    if not (previous.get("builds") or {}).get("worker_store"):
+        found = bootstrap_state(settings)
+        if found:
+            raise Refused(
+                "the retained release cannot read Runtimes or preparations made with worker "
+                "bootstrap. Remove these files first, and know that Runs on those Runtimes "
+                "will not be readable by it either: " + ", ".join(str(path) for path in found))
     with publishers_stopped(settings):
         version = restore_previous(root, settings)
     start(settings)
@@ -362,7 +415,7 @@ def first_install(root, settings, args):
         (root / "bin").mkdir(exist_ok=True)
         (root / "bin").chmod(0o755)
         install(root, settings, unpacked)
-        pin_worker(settings, worker)
+        pin_worker(root, settings, worker)
     try:
         start(settings)
         wait_healthy(settings, version, args.health_timeout)
@@ -397,7 +450,7 @@ def deploy(root, settings, args):
         with publishers_stopped(settings):
             try:
                 install(root, settings, unpacked)
-                pin_worker(settings, plan["worker_sha256"])
+                pin_worker(root, settings, plan["worker_sha256"])
             except OSError:
                 restore_previous(root, settings)
                 raise

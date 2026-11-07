@@ -275,6 +275,11 @@ impl From<crate::backends::cloud::Error> for Error {
                     "CODE_DELIVERY_WORKER_OUTDATED",
                     "this Runtime's worker is not the current one, and may not know how to fetch delivered code; build the Runtime again",
                 ),
+                ("WORKER_BINARY_UNAVAILABLE", _) => (
+                    409,
+                    "WORKER_BINARY_UNAVAILABLE",
+                    "this server does not hold the worker this Attempt froze, or its copy differs; check builds.worker_store",
+                ),
                 ("CODE_DELIVERY_UNSUPPORTED", _) => (
                     422,
                     "CODE_DELIVERY_UNSUPPORTED",
@@ -393,6 +398,7 @@ mod tests {
             ("CODE_SOURCE_TOO_LARGE", 422),
             ("CODE_DELIVERY_UNSUPPORTED", 422),
             ("CODE_DELIVERY_WORKER_OUTDATED", 422),
+            ("WORKER_BINARY_UNAVAILABLE", 409),
             ("DEBUG_MACHINE_LIMIT", 409),
             ("ARTIFACTS_ADMINISTRATIVELY_REMOVED", 410),
             ("ARTIFACT_NOT_PUBLISHED", 409),

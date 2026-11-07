@@ -323,6 +323,14 @@ fn compiled_from(
     attempt: &str,
     checkpoint: Option<&Value>,
 ) -> (Value, action::Execution) {
+    compiled_with_worker(code, attempt, checkpoint, None)
+}
+fn compiled_with_worker(
+    code: Option<&str>,
+    attempt: &str,
+    checkpoint: Option<&Value>,
+    worker: Option<&str>,
+) -> (Value, action::Execution) {
     let runtime = run::Runtime {
         runtime_id: format!("runtime.{}", "1".repeat(64)),
         source_id: job().source_id,
@@ -370,6 +378,10 @@ fn compiled_from(
         "datasets":"/mnt/workspace/ml-expd/datasets"});
     docs.run["native_cloud"]["storage"] = storage.clone();
     docs.attempt["native_cloud"]["storage"] = storage;
+    if let Some(worker) = worker {
+        docs.run["native_cloud"]["worker_sha256"] = json!(worker);
+        docs.attempt["native_cloud"]["worker_sha256"] = json!(worker);
+    }
     let mut attempt_document = docs.attempt.clone();
     if attempt != "attempt-001" {
         let first = crate::first_submission::native::Binding {
@@ -915,4 +927,215 @@ fn provider_diagnostics_select_reason_and_bound_tails_without_private_fields() {
     let tail = pai::diagnostic_tail(&json!(many), 200);
     assert!(tail.iter().all(|line| line.len() <= 4096));
     assert!(tail.iter().map(|line| line.len() + 1).sum::<usize>() <= 256 * 1024);
+}
+
+fn recipe() -> build::Definition {
+    build::Definition {
+        source_id: format!("source.{}", "2".repeat(64)),
+        executor: "dlc".into(),
+        base_image: format!("registry.example/base@sha256:{}", "3".repeat(64)),
+        dockerfile: "Dockerfile".into(),
+    }
+}
+#[test]
+fn a_stored_runtime_keeps_its_identity_and_a_new_one_no_longer_names_a_worker() {
+    // Written out, because a Runtime already stored and built has exactly this ID.
+    let worker = format!("sha256:{}", "d".repeat(64));
+    assert_eq!(
+        recipe().id("demo", &worker).unwrap(),
+        "runtime.67501929549274141554354c79703bc0c4a6721ed5aca203e8ef6a6775b0b95c"
+    );
+    assert_eq!(
+        recipe().id("demo", build::BOOTSTRAP).unwrap(),
+        "runtime.cedceae7140394af7a554cc33f1e5c9320d090eadcdd8a3f1629113c53f83e4f"
+    );
+    assert!(recipe().id("demo", "anything else").is_err());
+    assert!(recipe().id("demo", "worker-bootstrap.v2").is_err());
+}
+#[test]
+fn a_run_on_a_bootstrapping_runtime_freezes_its_worker_and_any_other_is_unchanged() {
+    let (run, execution) = compiled(None, "attempt-001");
+    assert!(run["native_cloud"].get("worker_sha256").is_none());
+    let image = format!("sha256:{}", "d".repeat(64));
+    assert_eq!(execution.launch_package.worker_sha256, image);
+    assert!(
+        !serde_json::to_string(&*execution.launch_package)
+            .unwrap()
+            .contains("bootstrap")
+    );
+    assert_eq!(execution.job.command[0], "/opt/ml-expd/worker");
+    // Frozen, it is what the package requires, on a retry as well: the command that
+    // starts the job still names the worker in the image.
+    let frozen = format!("sha256:{}", "e".repeat(64));
+    for attempt in ["attempt-001", "attempt-002"] {
+        let (run, execution) = compiled_with_worker(None, attempt, None, Some(&frozen));
+        assert_eq!(run["native_cloud"]["worker_sha256"], frozen.as_str());
+        assert_eq!(execution.launch_package.worker_sha256, frozen);
+        assert_eq!(execution.job.command[0], "/opt/ml-expd/worker");
+    }
+}
+
+#[test]
+fn a_client_can_ask_after_a_bootstrap_version_it_does_not_know() {
+    let later = recipe().offered_id("demo", "worker-bootstrap.v2").unwrap();
+    assert_ne!(later, recipe().id("demo", build::BOOTSTRAP).unwrap());
+    assert_eq!(
+        recipe().offered_id("demo", build::BOOTSTRAP).unwrap(),
+        recipe().id("demo", build::BOOTSTRAP).unwrap()
+    );
+    assert!(recipe().offered_id("demo", "something else").is_err());
+}
+/// What a worker in an already published image is asked to read. If this has to change, the
+/// images out there cannot do it: raise `build::BOOTSTRAP`, which rebuilds them, and keep
+/// recognising the old value. Adding a field fails to compile here, by design.
+#[test]
+fn the_bootstrap_contract_is_pinned() {
+    use crate::{
+        artifacts::FileReceipt,
+        data_preparation,
+        datasets::{self, import},
+    };
+    assert_eq!(build::BOOTSTRAP, "worker-bootstrap.v1");
+    let digest = format!("sha256:{}", "a".repeat(64));
+    let target = helper::Target {
+        backend_id: "pai".into(),
+        profile_sha256: digest.clone(),
+        storage_scope: digest.clone(),
+    };
+    let file = FileReceipt {
+        path: "f".into(),
+        bytes: 1,
+        sha256: digest.clone(),
+    };
+    let definition = datasets::Definition {
+        sha256: digest.clone(),
+        archive_bytes: 2,
+        files: vec![file],
+    };
+    let data_channel = import::DataChannel {
+        url: "https://x/d".into(),
+        token: "t".into(),
+    };
+    let channel = exchange::Channel {
+        url: "https://x/e".into(),
+        token: "u".into(),
+    };
+    let config = import::Config {
+        root: "/r".into(),
+        target,
+        project: "demo".into(),
+        definition,
+        source: import::Source::File { path: "/p".into() },
+        timeout_seconds: 3,
+    };
+    let storage = launch::StorageLayout {
+        mount: "/m".into(),
+        runs: "/m/r".into(),
+        datasets: "/m/d".into(),
+    };
+    let plan = data_preparation::Plan {
+        contract: data_preparation::CONTRACT.into(),
+        request: data_preparation::Request {
+            script: "s".into(),
+            interpreter: "python3".into(),
+            arguments: vec!["a".into()],
+            timeout_seconds: 4,
+            expected_content_sha256: Some(digest.clone()),
+        },
+        source_id: "source".into(),
+        image: "image".into(),
+        cache_root: "/c".into(),
+        mounted_root: "/m".into(),
+        workdir: "/w".into(),
+        env: BTreeMap::from([("K".to_owned(), "V".to_owned())]),
+        require_cached: true,
+    };
+    assert_eq!(
+        serde_json::to_value(&config).unwrap(),
+        json!({"root":"/r","project":"demo","timeout_seconds":3,"source":{"kind":"file","path":"/p"},
+            "target":{"backend_id":"pai","profile_sha256":digest,"storage_scope":digest},
+            "definition":{"sha256":digest,"archive_bytes":2,
+                "files":[{"path":"f","bytes":1,"sha256":digest}]}})
+    );
+    assert_eq!(
+        serde_json::to_value(&data_channel).unwrap(),
+        json!({"url":"https://x/d","token":"t"})
+    );
+    assert_eq!(
+        serde_json::to_value(&channel).unwrap(),
+        json!({"url":"https://x/e","token":"u"})
+    );
+    assert_eq!(
+        serde_json::to_value(&storage).unwrap(),
+        json!({"mount":"/m","runs":"/m/r","datasets":"/m/d"})
+    );
+    assert_eq!(
+        serde_json::to_value(&plan).unwrap(),
+        json!({"contract":data_preparation::CONTRACT,"source_id":"source","image":"image",
+            "cache_root":"/c","mounted_root":"/m","workdir":"/w","env":{"K":"V"},
+            "require_cached":true,"request":{"script":"s","interpreter":"python3",
+                "arguments":["a"],"timeout_seconds":4,"expected_content_sha256":digest}})
+    );
+    // Written out with no `..`, so that a new field stops this compiling.
+    let import::Config {
+        root: _,
+        target: _,
+        project: _,
+        definition: _,
+        source,
+        timeout_seconds: _,
+    } = config;
+    match source {
+        import::Source::DatasetParts { channel: _ }
+        | import::Source::ExchangeParts { channel: _ }
+        | import::Source::File { path: _ }
+        | import::Source::Https {
+            url: _,
+            allowed_hosts: _,
+        } => {}
+    }
+    let import::DataChannel { url: _, token: _ } = data_channel;
+    let exchange::Channel { url: _, token: _ } = channel;
+    let launch::StorageLayout {
+        mount: _,
+        runs: _,
+        datasets: _,
+    } = storage;
+    let data_preparation::Plan {
+        contract: _,
+        request,
+        source_id: _,
+        image: _,
+        cache_root: _,
+        mounted_root: _,
+        workdir: _,
+        env: _,
+        require_cached: _,
+    } = plan;
+    let data_preparation::Request {
+        script: _,
+        interpreter: _,
+        arguments: _,
+        timeout_seconds: _,
+        expected_content_sha256: _,
+    } = request;
+    // How the job's own launcher calls the image's worker, and how a job starts.
+    let launcher = include_str!("materialize.py");
+    assert!(
+        launcher
+            .contains(r#"[worker, "data-import", "--config", path, "--bundle-output", archive]"#)
+    );
+    assert!(launcher.contains(
+        r#"[worker, "data-copy", "--config", path, "--channel-json", channel, "--storage-json", storage]"#
+    ));
+    let (_, execution) = compiled(None, "attempt-001");
+    assert_eq!(execution.job.command[1], "cloud-launch");
+    assert_eq!(
+        execution.job.command[2..]
+            .iter()
+            .step_by(2)
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["--package-url", "--package-token", "--package-sha256"]
+    );
 }

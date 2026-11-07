@@ -207,8 +207,15 @@ impl Service {
             }
         })
     }
-    pub(super) fn check_code_worker(&self, runtime: &run::Runtime) -> cloud::Result<()> {
-        if self.builds.as_ref().map(|b| &b.worker_sha256) != Some(&runtime.worker_sha256) {
+    /// A Runtime that bootstraps runs the current worker whatever it was built with.
+    pub(super) fn check_code_worker(
+        &self,
+        project: &str,
+        runtime: &run::Runtime,
+    ) -> cloud::Result<()> {
+        if self.builds.as_ref().map(|b| &b.worker_sha256) != Some(&runtime.worker_sha256)
+            && !self.runtime_bootstraps(project, &runtime.runtime_id)?
+        {
             return Err(cloud::Error {
                 code: "CODE_DELIVERY_WORKER_OUTDATED".into(),
                 http_status: Some(422),
@@ -335,20 +342,36 @@ impl Service {
             documents.attempt["native_cloud"]["data_preparation_before_job"] = json!(before_job);
         }
         let root = self.authority(project, &request.run_id)?;
-        // Authorship freezes this provisioning plan. A missing or conflicting plan
-        // in an existing Run is evidence of a problem and is never repaired.
-        if root.entry_exists(OsStr::new(&request.run_id)).map_err(io)?
-            && read(
+        let existing = if root.entry_exists(OsStr::new(&request.run_id)).map_err(io)? {
+            Some(read(
                 &root.child(OsStr::new(&request.run_id), false).map_err(io)?,
                 "manifest.json",
-            )?["native_cloud"]
-                .get("storage")
-                != Some(&json!(storage))
+            )?)
+        } else {
+            None
+        };
+        // Authorship freezes this provisioning plan. A missing or conflicting plan
+        // in an existing Run is evidence of a problem and is never repaired.
+        if existing
+            .as_ref()
+            .is_some_and(|run| run["native_cloud"].get("storage") != Some(&json!(storage)))
         {
             return Err(cloud::Error::evidence());
         }
         documents.run["native_cloud"]["storage"] = json!(storage);
         documents.attempt["native_cloud"]["storage"] = json!(storage);
+        // A Run keeps the worker it was created with, through every upgrade and retry. One
+        // created without any, on an image that cannot bootstrap, stays without.
+        let worker = match &existing {
+            Some(run) => run["native_cloud"].get("worker_sha256").cloned(),
+            None => self
+                .worker_for_new_run(project, &request.runtime_id)?
+                .map(Value::from),
+        };
+        if let Some(worker) = worker {
+            documents.run["native_cloud"]["worker_sha256"] = worker.clone();
+            documents.attempt["native_cloud"]["worker_sha256"] = worker;
+        }
         if let Some(selected) = selected {
             documents.run["native_cloud"]["profile"] = json!(selected);
             documents.attempt["native_cloud"]["profile"] =
