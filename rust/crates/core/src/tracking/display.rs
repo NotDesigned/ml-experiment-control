@@ -258,7 +258,7 @@ pub fn curve_record(event: &Value, display: &Value) -> Result<Value> {
     let kind = object(payload)?
         .get("kind")
         .ok_or(Error::Display("event kind"))?;
-    if kind != "metrics" {
+    if kind != "metrics" && kind != crate::records::DERIVED_KIND {
         return Ok(json!({}));
     }
     let observations = payload

@@ -195,6 +195,74 @@ fn normalized_metric_source(
         json!({"kind":"metrics","observations":metrics::observations_typed(record,schema,protocol,Some(source))?}),
     )
 }
+/// The journal kind of a post-hoc record. Training-time readers select `metrics`,
+/// so a derived record never joins a training history, a result or a validation.
+pub const DERIVED_KIND: &str = "derived_metrics";
+/// One derived batch: far above the few hundred records an evaluation writes,
+/// and well inside the 8 MiB HTTP body once the text is JSON-escaped.
+pub const DERIVED_MAX_RECORDS: usize = 5000;
+pub const DERIVED_MAX_BYTES: usize = 2 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DerivedRefusal {
+    /// More records or bytes than one batch may hold.
+    TooLarge,
+    /// No record, or a line that is not one complete explicit metric record.
+    Invalid,
+}
+
+/// One complete derived JSONL file, all or nothing. Each line is one explicit
+/// record with `name`, `value` and `unit`, validated under the frozen schema as
+/// worker records are. Unlike a worker stream, a bad line refuses the batch.
+pub fn derived_observations(
+    bytes: &[u8],
+    config: &Value,
+) -> std::result::Result<Vec<Value>, DerivedRefusal> {
+    if bytes.len() > DERIVED_MAX_BYTES {
+        return Err(DerivedRefusal::TooLarge);
+    }
+    let mut observations = Vec::new();
+    for line in bytes.split(|byte| *byte == b'\n') {
+        if line.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        if observations.len() >= DERIVED_MAX_RECORDS {
+            return Err(DerivedRefusal::TooLarge);
+        }
+        if line.len() > 65536 {
+            return Err(DerivedRefusal::Invalid);
+        }
+        let parsed = metric_line::parse(line).ok_or(DerivedRefusal::Invalid)?;
+        if ["name", "value", "unit"]
+            .iter()
+            .any(|key| !parsed.has_field(key))
+        {
+            return Err(DerivedRefusal::Invalid);
+        }
+        let record = parsed.observation().ok_or(DerivedRefusal::Invalid)?;
+        let payload = normalized_metric_source(&record, config, "derived-post-hoc")
+            .map_err(|_| DerivedRefusal::Invalid)?;
+        let items = payload["observations"]
+            .as_array()
+            .filter(|items| items.len() == 1 && items[0]["name"].is_string())
+            .ok_or(DerivedRefusal::Invalid)?;
+        observations.extend(items.iter().cloned());
+    }
+    if observations.is_empty() {
+        return Err(DerivedRefusal::Invalid);
+    }
+    Ok(observations)
+}
+
+/// The journal's own end of a Run: the lifecycle the W&B publisher finishes on.
+pub fn ended(lifecycle: &Value) -> bool {
+    lifecycle["phase"] == "METRICS_DRAINED"
+        && matches!(
+            lifecycle["state"].as_str(),
+            Some("SUCCEEDED" | "FAILED" | "CANCELLED" | "TIMEOUT")
+        )
+}
+
 fn evaluation(config: &Value) -> Result<Option<&Map<String, Value>>> {
     let config = config
         .as_object()
@@ -599,5 +667,56 @@ mod tests {
         ] {
             assert!(source.contains(written), "{written}");
         }
+    }
+    #[test]
+    fn a_derived_file_is_all_explicit_records_or_refused() {
+        let config = json!({});
+        let line = r#"{"name":"eval/fid","value":3.5,"unit":"fid","step":100}"#;
+        let text = format!("{line}\n\n{line}\n");
+        let observations = derived_observations(text.as_bytes(), &config).unwrap();
+        assert_eq!(observations.len(), 2);
+        assert_eq!(observations[0]["name"], "eval/fid");
+        assert_eq!(observations[0]["step"], 100);
+        assert_eq!(observations[0]["status"], "VALID");
+        assert_eq!(observations[0]["source"], "derived-post-hoc");
+        for bad in [
+            "",
+            "\n",
+            "not json\n",
+            r#"{"name":"x","value":1}"#,
+            r#"{"name":"","value":1,"unit":"fid"}"#,
+        ] {
+            assert_eq!(
+                derived_observations(bad.as_bytes(), &config),
+                Err(DerivedRefusal::Invalid),
+                "{bad}"
+            );
+        }
+        let many = format!("{line}\n").repeat(DERIVED_MAX_RECORDS + 1);
+        assert_eq!(
+            derived_observations(many.as_bytes(), &config),
+            Err(DerivedRefusal::TooLarge)
+        );
+        let exact = format!("{line}\n").repeat(DERIVED_MAX_RECORDS);
+        assert_eq!(
+            derived_observations(exact.as_bytes(), &config)
+                .unwrap()
+                .len(),
+            DERIVED_MAX_RECORDS
+        );
+        let wide = vec![b' '; DERIVED_MAX_BYTES + 1];
+        assert_eq!(
+            derived_observations(&wide, &config),
+            Err(DerivedRefusal::TooLarge)
+        );
+    }
+    #[test]
+    fn only_a_drained_terminal_lifecycle_has_ended() {
+        let lifecycle = |phase: &str, state: &str| json!({"phase":phase,"state":state});
+        assert!(ended(&lifecycle("METRICS_DRAINED", "SUCCEEDED")));
+        assert!(ended(&lifecycle("METRICS_DRAINED", "FAILED")));
+        assert!(!ended(&lifecycle("TRAINING", "RUNNING")));
+        assert!(!ended(&lifecycle("METRICS_DRAINED", "UNKNOWN")));
+        assert!(!ended(&json!({})));
     }
 }

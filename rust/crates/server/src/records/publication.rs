@@ -81,7 +81,10 @@ impl Store {
                 return Err(Error::Invalid("publisher journal prefix"));
             }
             for row in rows {
-                if row.payload["kind"] == "metrics" {
+                // Derived rows chart and summarize like any record; their names
+                // never overlap a training-time metric of the same Attempt.
+                let kind = &row.payload["kind"];
+                if kind == "metrics" || kind == records::DERIVED_KIND {
                     for item in row.payload["observations"]
                         .as_array()
                         .ok_or(Error::Invalid("metric array"))?

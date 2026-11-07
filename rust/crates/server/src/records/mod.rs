@@ -3,7 +3,8 @@
 //! No HTTP, provider, scheduler or scientific payload file access.
 mod store;
 pub use store::{
-    EventRow, ImportSummary, RecordGuard, RemoteHistoryEvidence, RemoteObservation, Store,
+    DerivedBatch, EventRow, ImportSummary, RecordGuard, RemoteHistoryEvidence, RemoteObservation,
+    Store,
 };
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -35,6 +36,10 @@ pub enum Error {
     Scope,
     #[error("remote confirmation does not prove the frozen publication identity and sequence")]
     Confirmation,
+    #[error("derived metrics require an Attempt whose Run has ended")]
+    NotEnded,
+    #[error("a derived metric reuses a training-time metric name of this Attempt")]
+    DerivedNameConflict,
     #[error("invalid record storage metadata: {0}")]
     Invalid(&'static str),
 }

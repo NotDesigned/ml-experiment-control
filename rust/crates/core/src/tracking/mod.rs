@@ -45,6 +45,14 @@ pub fn history_record(
                 .map_err(|_| Error::Display("event encoding"))?
         ),
     );
+    // A post-hoc row says so on W&B, beside the batch it came from.
+    if event["payload"]["kind"] == crate::records::DERIVED_KIND {
+        record.insert("ml_expd/source".into(), json!("derived"));
+        record.insert(
+            "ml_expd/derived_sha256".into(),
+            event["payload"]["batch_sha256"].clone(),
+        );
+    }
     if event["payload"]["kind"] == "lifecycle" {
         for (key, value) in event["payload"]["data"]
             .as_object()

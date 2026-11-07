@@ -350,6 +350,26 @@ impl From<crate::backends::cloud::Error> for Error {
                     "DATA_COPY_RUNTIME_REQUIRED",
                     "PAI data publication requires an existing READY Runtime",
                 ),
+                ("DERIVED_RUN_NOT_ENDED", _) => (
+                    409,
+                    "DERIVED_RUN_NOT_ENDED",
+                    "derived metrics need an Attempt whose Run has ended and drained its metrics; nothing was stored",
+                ),
+                ("DERIVED_METRIC_NAME_CONFLICT", _) => (
+                    409,
+                    "DERIVED_METRIC_NAME_CONFLICT",
+                    "a derived metric reuses a training-time metric name of this Attempt; rename it, nothing was stored",
+                ),
+                ("DERIVED_BATCH_TOO_LARGE", _) => (
+                    413,
+                    "DERIVED_BATCH_TOO_LARGE",
+                    "a derived batch holds at most 5000 records and 2 MiB; split the file",
+                ),
+                ("DERIVED_METRICS_INVALID", _) => (
+                    422,
+                    "DERIVED_METRICS_INVALID",
+                    "every nonblank line must be one JSON metric record with name, value and unit; nothing was stored",
+                ),
                 ("PREPARATION_ID_REQUIRED", _) => (
                     409,
                     "PREPARATION_ID_REQUIRED",
@@ -418,6 +438,10 @@ mod tests {
             ("ARTIFACTS_ADMINISTRATIVELY_REMOVED", 410),
             ("ARTIFACT_NOT_PUBLISHED", 409),
             ("OSS_DATASET_SCOPE_DENIED", 422),
+            ("DERIVED_RUN_NOT_ENDED", 409),
+            ("DERIVED_METRIC_NAME_CONFLICT", 409),
+            ("DERIVED_BATCH_TOO_LARGE", 413),
+            ("DERIVED_METRICS_INVALID", 422),
             ("OSS_DATASET_READ_FAILED", 503),
             ("OSS_DATASET_VERIFICATION_FAILED", 422),
         ] {

@@ -707,6 +707,19 @@ impl Service {
                         .as_i64()
                         .ok_or_else(cloud::Error::evidence)?
             );
+            // Post-hoc batches are listed apart from the training journal.
+            let id = scope["id"].as_str().ok_or_else(cloud::Error::evidence)?;
+            let batches = records
+                .derived_batches(&guard, id)
+                .map_err(why!(cloud::Error::evidence()))?;
+            if !batches.is_empty() {
+                scope["derived_batches"] = json!(
+                    batches
+                        .iter()
+                        .map(crate::records::DerivedBatch::document)
+                        .collect::<Vec<_>>()
+                );
+            }
             if route["enabled"] == true {
                 scope["url"] = json!(format!(
                     "https://wandb.ai/{}/{}/runs/{}",

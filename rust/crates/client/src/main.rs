@@ -706,6 +706,17 @@ enum Run {
         #[arg(long, default_value_t = 200)]
         lines: u32,
     },
+    /// Add post-hoc metrics to an ended Attempt as one separate batch; W&B shows them on its Run.
+    AppendDerived {
+        #[command(flatten)]
+        target: Target,
+        /// JSONL, one record per line with name, value and unit.
+        #[arg(long)]
+        metrics: PathBuf,
+        /// APPEND PROJECT/RUN/ATTEMPT; a wrong value prints the exact one.
+        #[arg(long)]
+        confirmation: String,
+    },
     /// Query arbitrary declared metrics with their original context and units.
     Metrics {
         #[command(flatten)]
@@ -722,6 +733,7 @@ impl Run {
             Self::Status { target, .. }
             | Self::Logs { target, .. }
             | Self::Diagnose { target, .. }
+            | Self::AppendDerived { target, .. }
             | Self::Metrics { target, .. } => Some(target),
             _ => None,
         }
@@ -1614,6 +1626,17 @@ fn run(mut args: Args) -> Result<(), Box<dyn std::error::Error>> {
                             saved.as_ref(),
                             target.selection(),
                             read::View::Logs { stream, lines },
+                        )?),
+                        Run::AppendDerived {
+                            target,
+                            metrics,
+                            confirmation,
+                        } => Output::Json(ml_exp_client::derived::append(
+                            &client,
+                            saved.as_ref(),
+                            target.selection(),
+                            &metrics,
+                            &confirmation,
                         )?),
                         Run::Diagnose { target, lines } => {
                             let value = read::provider_diagnostics(

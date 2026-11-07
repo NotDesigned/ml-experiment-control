@@ -726,6 +726,60 @@ mod tests {
             assert_eq!(response.status().as_u16(), status);
         }
     }
+    /// The derived-metrics route checks its own body before it needs a cloud service.
+    #[tokio::test]
+    async fn derived_metrics_route_refuses_a_wrong_request_before_any_state_is_read() {
+        let (_temp, state) = http_effect::tests::state();
+        let uri = "/api/runs/demo/train/attempts/attempt-001/derived-metrics";
+        let records = "{\"name\":\"eval/fid\",\"value\":3.5,\"unit\":\"fid\"}\n";
+        let sha256 = {
+            use sha2::Digest;
+            format!("{:x}", sha2::Sha256::digest(records.as_bytes()))
+        };
+        let exact = "APPEND demo/train/attempt-001";
+        let oversized = "x".repeat(9 * 1024 * 1024);
+        for (body, status, code) in [
+            (
+                json!({"sha256":sha256,"records":records,"confirmation":exact}),
+                501,
+                "CLOUD_NOT_CONFIGURED",
+            ),
+            (
+                json!({"sha256":sha256,"records":records,"confirmation":"APPEND"}),
+                422,
+                "INVALID_DERIVED_METRICS_REQUEST",
+            ),
+            (
+                json!({"sha256":"0".repeat(64),"records":records,"confirmation":exact}),
+                422,
+                "DERIVED_METRICS_DIGEST_MISMATCH",
+            ),
+            (
+                json!({"sha256":sha256,"records":oversized,"confirmation":exact}),
+                413,
+                "DERIVED_BATCH_TOO_LARGE",
+            ),
+        ] {
+            let request = Request::builder()
+                .method(Method::POST)
+                .uri(uri)
+                .header("authorization", format!("Bearer {TOKEN}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap();
+            let response = app(
+                Auth {
+                    token: TOKEN.into(),
+                },
+                state.api.clone(),
+            )
+            .oneshot(request)
+            .await
+            .unwrap();
+            assert_eq!(response.status().as_u16(), status, "{code}");
+            assert_eq!(response.headers()["x-ml-expd-error-code"], code);
+        }
+    }
     /// A server with no object store behind an executor says so in the one code a
     /// client takes to mean "send through the server", and only to an authorized caller.
     #[tokio::test]
@@ -890,6 +944,7 @@ mod schema_tests {
                 || path == "/api/projects/{project}/runs"
                 || path == "/api/projects/{project}/local-runs"
                 || path == "/api/local-runs/{project}/{run}/metrics"
+                || path.ends_with("/derived-metrics")
                 || path.starts_with("/api/submissions/")
                     && path != "/api/submissions/{identity}"
                     && path != "/api/submissions/{identity}/progress"
@@ -934,6 +989,7 @@ mod schema_tests {
             "/api/projects/{project}/local-runs",
             "/api/local-runs/{project}/{run}",
             "/api/local-runs/{project}/{run}/metrics",
+            "/api/runs/{project}/{run}/attempts/{attempt}/derived-metrics",
         ] {
             assert!(paths.contains_key(path), "missing native contract: {path}");
         }
