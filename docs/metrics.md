@@ -1,5 +1,8 @@
 # Metrics: curves, results and provenance
 
+`METRICS_PATH` is `OUTPUT_DIR/metrics.jsonl`, so it is already part of the results. Do not copy
+it into `OUTPUT_DIR` yourself: copying a file onto itself fails.
+
 Experiment code defines and computes metrics. ML-Expd stores arbitrary named
 measurements with units and context, validates their declared schema and exposes
 them through the API. Optional W&B publication uses the same accepted records.

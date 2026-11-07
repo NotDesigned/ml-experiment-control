@@ -149,7 +149,9 @@ pub fn download(
     let reused = match std::fs::symlink_metadata(&output) {
         Ok(m) => {
             if !m.is_file() || m.file_type().is_symlink() {
-                return Err(invalid());
+                return Err(Error::Observation(
+                    "--output must name a file to write the archive to, not a directory or link",
+                ));
             }
             true
         }
