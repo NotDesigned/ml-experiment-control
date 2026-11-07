@@ -71,8 +71,8 @@ fn compiled(parent: &Job, lineage: &Value, config: &Value, script: &str) -> clou
 }
 /// The provider's account of one job, read through the adapter and outbox that own
 /// it. `None` says no provider job is recorded, so there is nothing to ask about.
-fn provider_read(
-    adapter: &Adapter<Shared>,
+fn provider_read<T: cloud::adapter::Transport>(
+    adapter: &Adapter<T>,
     outbox: &Outbox,
     job: &Job,
     lines: u32,
@@ -352,14 +352,12 @@ impl Service {
         let prepared = self
             .saved_attempt(project, run, attempt)?
             .ok_or_else(missing)?;
-        let backend = self
-            .backends
-            .get(&prepared.execution.backend_id)
-            .ok_or_else(cloud::Error::configuration)?;
         let mut result = json!({"project":project,"run_id":run,"attempt_id":attempt,
             "backend":prepared.execution.backend_id,"provider_read":false});
+        // A SenseCore Run freezes the cluster chosen for it, which the executor's own
+        // profile does not name, so only the Run's own adapter can read its job.
         let read = provider_read(
-            &backend.adapter,
+            &self.execution_adapter(&prepared.execution)?,
             &self.outbox,
             &prepared.execution.job,
             lines,
