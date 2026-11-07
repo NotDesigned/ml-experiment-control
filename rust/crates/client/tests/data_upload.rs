@@ -24,7 +24,7 @@ fn upload(files: usize) -> Error {
     }
     let client = Client::new("http://127.0.0.1:9", "source-test-secret".into()).unwrap();
     let health = json!({"capabilities":["native-datasets.v1"]});
-    datasets::send(&client, "demo", "slurm", directory.path(), &health, false).unwrap_err()
+    datasets::upload(&client, "demo", "slurm", directory.path(), &health, false).unwrap_err()
 }
 
 #[test]
