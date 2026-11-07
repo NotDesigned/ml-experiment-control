@@ -2013,9 +2013,17 @@ mod tests {
     fn the_preemption_note_appears_only_where_a_preemption_is_possible() {
         let note = |allocation, provider: Value| idle_note(allocation, &provider);
         let failed = |used: Value| json!({"provider_state":"Failed","used_idle":used});
-        assert!(note(None, failed(json!(true))).unwrap().contains("ran on idle"));
+        assert!(
+            note(None, failed(json!(true)))
+                .unwrap()
+                .contains("ran on idle")
+        );
         assert_eq!(note(Some("allow_idle"), failed(json!(false))), None);
-        assert!(note(Some("allow_idle"), failed(Value::Null)).unwrap().contains("could use"));
+        assert!(
+            note(Some("allow_idle"), failed(Value::Null))
+                .unwrap()
+                .contains("could use")
+        );
         assert_eq!(note(Some("guaranteed"), failed(Value::Null)), None);
         assert_eq!(note(None, failed(Value::Null)), None);
         let stopped = json!({"provider_state":"Stopped","used_idle":true});

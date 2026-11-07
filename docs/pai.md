@@ -79,9 +79,9 @@ and Slurm refuses `scheduling` altogether.
 it: provider restart is off, and running again is your explicit `ml-exp retry`. A long
 Run should write checkpoints to `STATE_DIR` often enough to lose little. PAI reports no
 preempted state: such a job reads as `FAILED` or `CANCELLED`, the same as a failure or
-a cancellation, and this service cannot tell them apart. `ml-exp submit` says so when
-a job that could use idle resources ends that way. The provider's own reason may or may
-not say more.
+a cancellation. `ml-exp submit` says so when a job that ran on idle resources ends that
+way, using `UseOversoldResource`, and says nothing for a job you stopped. The provider's
+own reason, shown beside the note, may or may not say more.
 
 `max_gpu_hours` is unchanged by the allocation. It bounds GPU count times duration for
 one Attempt, whichever resources it runs on, and it is not a bill. A retry is a new
