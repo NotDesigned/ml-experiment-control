@@ -717,6 +717,17 @@ enum Run {
         #[arg(long)]
         confirmation: String,
     },
+    /// Publish a finished Attempt again to a new W&B Run without some metric names; deletes no W&B Run.
+    RebuildWandb {
+        #[command(flatten)]
+        target: Target,
+        /// One full metric name per line, matched exactly; blank lines are ignored.
+        #[arg(long)]
+        exclude_names: PathBuf,
+        /// REBUILD PROJECT/RUN/ATTEMPT; a wrong value prints the exact one.
+        #[arg(long)]
+        confirmation: String,
+    },
     /// Query arbitrary declared metrics with their original context and units.
     Metrics {
         #[command(flatten)]
@@ -734,6 +745,7 @@ impl Run {
             | Self::Logs { target, .. }
             | Self::Diagnose { target, .. }
             | Self::AppendDerived { target, .. }
+            | Self::RebuildWandb { target, .. }
             | Self::Metrics { target, .. } => Some(target),
             _ => None,
         }
@@ -1636,6 +1648,17 @@ fn run(mut args: Args) -> Result<(), Box<dyn std::error::Error>> {
                             saved.as_ref(),
                             target.selection(),
                             &metrics,
+                            &confirmation,
+                        )?),
+                        Run::RebuildWandb {
+                            target,
+                            exclude_names,
+                            confirmation,
+                        } => Output::Json(ml_exp_client::wandb_rebuild::rebuild(
+                            &client,
+                            saved.as_ref(),
+                            target.selection(),
+                            &exclude_names,
                             &confirmation,
                         )?),
                         Run::Diagnose { target, lines } => {

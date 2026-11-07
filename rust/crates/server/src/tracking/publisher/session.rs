@@ -44,6 +44,8 @@ pub(super) struct Session {
     idle: BTreeMap<String, i64>,
     watches: BTreeMap<String, Watch>,
     projections: BTreeMap<String, tracking::Projection>,
+    /// The W&B id each scope's entries above are about.
+    bound: BTreeMap<String, String>,
     pub(super) settle: Duration,
 }
 impl Default for Session {
@@ -55,6 +57,7 @@ impl Default for Session {
             idle: BTreeMap::new(),
             watches: BTreeMap::new(),
             projections: BTreeMap::new(),
+            bound: BTreeMap::new(),
             settle: SETTLE,
         }
     }
@@ -84,6 +87,20 @@ impl Session {
         self.idle.retain(|scope, _| scopes.contains(scope));
         self.watches.retain(|scope, _| scopes.contains(scope));
         self.projections.retain(|scope, _| scopes.contains(scope));
+        self.bound.retain(|scope, _| scopes.contains(scope));
+    }
+    /// A scope a W&B rebuild moved to another id keeps nothing of the old Run:
+    /// not its display, its idle mark, its remote evidence or its reservations.
+    pub(super) fn rebind(&mut self, scope: &str, wandb_id: &str) {
+        if self.bound.get(scope).is_some_and(|bound| bound == wandb_id) {
+            return;
+        }
+        self.bound.insert(scope.into(), wandb_id.into());
+        self.held.remove(scope);
+        self.backlog.remove(scope);
+        self.idle.remove(scope);
+        self.watches.remove(scope);
+        self.projections.remove(scope);
     }
     /// An equal share per Run with work, so a large backlog can hold only its
     /// share of the rows in flight while a live Run keeps its own.

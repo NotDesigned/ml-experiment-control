@@ -21,6 +21,7 @@ pub mod submissions;
 pub mod submit;
 pub mod transport;
 pub mod update;
+pub mod wandb_rebuild;
 pub mod watch;
 
 pub use config::{ConnectionPlan, Settings, TokenSource, normalize_url};

@@ -1202,3 +1202,370 @@ fn a_deleted_wandb_run_is_never_recreated_and_its_scope_stops() {
     assert_eq!(after["finishes"], before["finishes"]);
     assert_eq!(fixture.status(&scope)["status"], "REMOTE_RUN_MISSING");
 }
+
+const EXCLUDED: &str = "loss/old\neval/old\n\nnever/seen\n";
+
+/// Each step writes `loss` and, in a row of its own, the name the client wants gone.
+fn append_named(fixture: &Fixture, scope: &str, steps: std::ops::RangeInclusive<u64>) {
+    let guard = fixture.store.guard("demo", "train").unwrap();
+    let mut events = Vec::new();
+    for step in steps {
+        for (id, name) in [("m", "loss"), ("o", "loss/old")] {
+            events.push(Event {
+                event_id: format!("{id}{step}"),
+                payload: normalized_metric(
+                    &json!({"name":name,"unit":"nats/token","step":step,"value":step as f64 / 4.0}),
+                    &json!({}),
+                )
+                .unwrap(),
+            });
+        }
+    }
+    fixture.store.append(&guard, scope, &events).unwrap();
+}
+
+fn append_derived_text(fixture: &Fixture, scope: &str, text: &str) {
+    use sha2::{Digest, Sha256};
+    let guard = fixture.store.guard("demo", "train").unwrap();
+    let observations =
+        ml_exp_core::records::derived_observations(text.as_bytes(), &json!({})).unwrap();
+    let sha256 = format!("{:x}", Sha256::digest(text.as_bytes()));
+    fixture
+        .store
+        .append_derived(
+            &guard,
+            scope,
+            &sha256,
+            "2026-11-07T00:00:00Z",
+            &observations,
+        )
+        .unwrap();
+}
+
+/// What the HTTP route stores for one exclusion list.
+fn rebuild_with(
+    fixture: &Fixture,
+    scope: &str,
+    names: &str,
+    provider_ended: bool,
+) -> crate::records::Result<(crate::records::WandbRebuild, bool)> {
+    use sha2::{Digest, Sha256};
+    let guard = fixture.store.guard("demo", "train").unwrap();
+    let sha256 = format!("{:x}", Sha256::digest(names.as_bytes()));
+    fixture.store.rebuild_wandb(
+        &guard,
+        scope,
+        &sha256,
+        names,
+        "2026-11-07T12:00:00Z",
+        provider_ended,
+    )
+}
+
+fn end(fixture: &Fixture, scope: &str, state: &str) {
+    let guard = fixture.store.guard("demo", "train").unwrap();
+    let end = json!({"kind":"lifecycle","data":{"phase":"METRICS_DRAINED","state":state}});
+    fixture
+        .store
+        .append(
+            &guard,
+            scope,
+            &[Event {
+                event_id: "terminal".into(),
+                payload: end,
+            }],
+        )
+        .unwrap();
+}
+
+/// A finished Attempt whose old W&B Run holds `loss/old` and `eval/old`.
+fn finished_with_old_names(state: &str, flags: Value) -> (Fixture, String, String) {
+    let mut fixture = Fixture::new(flags);
+    let scope = fixture.scope("train");
+    append_named(&fixture, &scope, 1..=4);
+    end(&fixture, &scope, state);
+    until_finished(&mut fixture, &scope);
+    append_derived_text(
+        &fixture,
+        &scope,
+        "{\"name\":\"eval/fid\",\"value\":3.0,\"unit\":\"fid\",\"step\":1}\n\
+         {\"name\":\"eval/old\",\"value\":9.0,\"unit\":\"fid\",\"step\":1}\n\
+         {\"name\":\"eval/fid\",\"value\":2.5,\"unit\":\"fid\",\"step\":2}\n",
+    );
+    until_finished(&mut fixture, &scope);
+    let old = fixture.status(&scope)["wandb_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let cloud = fixture.cloud();
+    assert!(cloud["runs"][&old]["summary"].get("loss/old").is_some());
+    (fixture, scope, old)
+}
+
+/// Every sequence once on `rows`, and no trace of an excluded name.
+fn assert_rebuilt_rows(rows: &[Value], total: i64) {
+    let mut sequences: Vec<_> = rows
+        .iter()
+        .map(|row| row["ml_expd/sequence"].as_i64().unwrap())
+        .collect();
+    sequences.sort();
+    assert_eq!(sequences, (1..=total).collect::<Vec<_>>());
+    for row in rows {
+        for name in ["loss/old", "eval/old"] {
+            assert!(row.get(name).is_none(), "{row}");
+            assert!(!row.to_string().contains(name), "{row}");
+        }
+    }
+    let count = |name: &str| rows.iter().filter(|row| row.get(name).is_some()).count();
+    assert_eq!(count("loss"), 4);
+    assert_eq!(count("eval/fid"), 2);
+    // A row whose only metric was excluded keeps its sequence and identity.
+    let empty = rows
+        .iter()
+        .find(|row| row["ml_expd/event_id"] == "o1")
+        .unwrap();
+    assert_eq!(empty["ml_expd/kind"], "metrics");
+    assert_eq!(
+        empty
+            .as_object()
+            .unwrap()
+            .keys()
+            .filter(|key| !key.starts_with("ml_expd/") && *key != "_step")
+            .count(),
+        0
+    );
+}
+
+fn exercise_rebuild(state: &str, remote_state: &str) {
+    let (mut fixture, scope, old) = finished_with_old_names(state, json!({}));
+    let before = fixture.cloud();
+    let total = fixture.status(&scope)["total"].as_i64().unwrap();
+    assert_eq!(total, 12);
+    let training = {
+        let guard = fixture.store.guard("demo", "train").unwrap();
+        fixture.store.metric_records(&guard, "attempt-001").unwrap()
+    };
+
+    let (rebuild, created) = rebuild_with(&fixture, &scope, EXCLUDED, false).unwrap();
+    assert!(created);
+    assert_eq!(rebuild.previous_wandb_id, old);
+    assert_ne!(rebuild.wandb_id, old);
+    let document = rebuild.document();
+    assert_eq!(document["status"], "PUBLISHING");
+    assert_eq!(document["names"], 3);
+    assert_eq!(document["excluded"], json!({"eval/old":1,"loss/old":4}));
+    assert_eq!(document["excluded_observations"], 5);
+    assert_eq!(document["unmatched_names"], json!(["never/seen"]));
+    assert_eq!(document["emptied_rows"], 5);
+    assert_eq!(document["previous_wandb_run_deleted"], false);
+    let status = fixture.status(&scope);
+    assert_eq!(status["wandb_id"], rebuild.wandb_id.as_str());
+    assert_eq!(status["confirmed"], 0);
+    assert!(candidate_scopes(&fixture.store).unwrap().contains(&scope));
+    // The scope is still the same scope to every writer.
+    {
+        let guard = fixture.store.guard("demo", "train").unwrap();
+        assert_eq!(fixture.store.scope(&guard, "attempt-001").unwrap(), scope);
+    }
+
+    until_finished(&mut fixture, &scope);
+    let after = fixture.cloud();
+    let new = &after["runs"][&rebuild.wandb_id];
+    assert_eq!(new["state"], remote_state);
+    assert_eq!(new["name"], "train/attempt-001");
+    assert_eq!(after["runs"][&old]["name"], "train/attempt-001");
+    assert_eq!(after["runs"].as_object().unwrap().len(), 2);
+    // The old W&B Run was not opened, written or finished again.
+    assert_eq!(after["runs"][&old], before["runs"][&old]);
+    assert_eq!(after["finishes"], before["finishes"].as_i64().unwrap() + 1);
+    let rows = fixture.rows(&scope);
+    assert_eq!(rows.len() as i64, total);
+    assert_eq!(
+        after["logs"],
+        before["logs"].as_i64().unwrap() + total,
+        "each row is sent once"
+    );
+    assert_rebuilt_rows(&rows, total);
+    for name in ["loss/old", "eval/old"] {
+        assert!(new["summary"].get(name).is_none());
+        assert!(new["definitions"].get(name).is_none());
+    }
+    assert_eq!(new["summary"]["loss"], 1.0);
+    assert_eq!(new["summary"]["eval/fid"], 2.5);
+    let finished = fixture.status(&scope);
+    assert_eq!(finished["status"], "FINISHED");
+    assert_eq!(finished["confirmed"], total);
+    assert!(!candidate_scopes(&fixture.store).unwrap().contains(&scope));
+    {
+        let guard = fixture.store.guard("demo", "train").unwrap();
+        let rebuilds = fixture.store.wandb_rebuilds(&guard, &scope).unwrap();
+        assert_eq!(rebuilds.len(), 1);
+        assert_eq!(rebuilds[0].document()["status"], "FINISHED");
+        // The journal still holds every excluded record.
+        assert_eq!(
+            fixture.store.metric_records(&guard, "attempt-001").unwrap(),
+            training
+        );
+    }
+
+    // The same list again is the same rebuild: nothing is sent or opened.
+    let (again, created) = rebuild_with(&fixture, &scope, EXCLUDED, false).unwrap();
+    assert!(!created);
+    assert_eq!(again.wandb_id, rebuild.wandb_id);
+    assert_eq!(fixture.visit(&scope).unwrap(), Next::Idle);
+    let repeated = fixture.cloud();
+    assert_eq!(repeated["logs"], after["logs"]);
+    assert_eq!(repeated["inits"], after["inits"]);
+
+    // A later derived batch goes to the new W&B Run only.
+    append_derived_text(
+        &fixture,
+        &scope,
+        "{\"name\":\"eval/late\",\"value\":1.5,\"unit\":\"fid\",\"step\":4}\n\
+         {\"name\":\"eval/old\",\"value\":8.0,\"unit\":\"fid\",\"step\":4}\n",
+    );
+    until_finished(&mut fixture, &scope);
+    let late = fixture.cloud();
+    assert_eq!(late["runs"][&old], before["runs"][&old]);
+    assert_eq!(late["runs"][&rebuild.wandb_id]["state"], remote_state);
+    let rows = fixture.rows(&scope);
+    assert_eq!(rows.len() as i64, total + 2);
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row.get("eval/late").is_some())
+            .count(),
+        1
+    );
+    assert!(rows.iter().all(|row| !row.to_string().contains("eval/old")));
+
+    // Another list starts from the current id, never from the old one.
+    let (second, created) = rebuild_with(&fixture, &scope, "eval/late\n", false).unwrap();
+    assert!(created);
+    assert_eq!(second.ordinal, 2);
+    assert_eq!(second.previous_wandb_id, rebuild.wandb_id);
+    assert!(![old.as_str(), rebuild.wandb_id.as_str()].contains(&second.wandb_id.as_str()));
+    // A third list waits until that publication has finished.
+    assert!(matches!(
+        rebuild_with(&fixture, &scope, "loss\n", false),
+        Err(crate::records::Error::RebuildNotFinished)
+    ));
+    // The list in progress repeats as itself.
+    assert!(
+        !rebuild_with(&fixture, &scope, "eval/late\n", false)
+            .unwrap()
+            .1
+    );
+}
+
+#[test]
+fn a_rebuild_publishes_a_new_finished_wandb_run_without_the_excluded_names() {
+    exercise_rebuild("SUCCEEDED", "finished");
+}
+
+#[test]
+fn a_rebuild_of_a_failed_run_ends_its_new_wandb_run_failed() {
+    exercise_rebuild("FAILED", "failed");
+}
+
+#[test]
+fn a_rebuild_needs_a_finished_publication_and_an_ended_run() {
+    let mut fixture = Fixture::new(json!({}));
+    let scope = fixture.scope("train");
+    append_named(&fixture, &scope, 1..=2);
+    // Running, published but not finished.
+    until_synced(&mut fixture, &scope);
+    assert!(matches!(
+        rebuild_with(&fixture, &scope, EXCLUDED, false),
+        Err(crate::records::Error::RebuildNotFinished)
+    ));
+    // Ended, but its last rows are not yet on W&B.
+    end(&fixture, &scope, "SUCCEEDED");
+    assert!(matches!(
+        rebuild_with(&fixture, &scope, EXCLUDED, false),
+        Err(crate::records::Error::RebuildNotFinished)
+    ));
+    until_finished(&mut fixture, &scope);
+    // A derived batch not yet published.
+    append_derived_text(
+        &fixture,
+        &scope,
+        "{\"name\":\"eval/fid\",\"value\":3.0,\"unit\":\"fid\",\"step\":1}\n",
+    );
+    assert!(matches!(
+        rebuild_with(&fixture, &scope, EXCLUDED, false),
+        Err(crate::records::Error::RebuildNotFinished)
+    ));
+    let guard = fixture.store.guard("demo", "train").unwrap();
+    assert!(
+        fixture
+            .store
+            .wandb_rebuilds(&guard, &scope)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(fixture.cloud()["runs"].as_object().unwrap().len(), 1);
+}
+
+#[test]
+fn a_run_the_provider_ended_is_rebuilt_only_with_that_proof() {
+    let mut fixture = Fixture::new(json!({}));
+    let scope = fixture.scope("train");
+    append_named(&fixture, &scope, 1..=2);
+    for _ in 0..12 {
+        fixture.visit_ended(&scope, "PREEMPTED").unwrap();
+    }
+    assert_eq!(fixture.status(&scope)["status"], "FINISHED");
+    // The journal never recorded the end of this Run.
+    assert!(matches!(
+        rebuild_with(&fixture, &scope, "loss/old\n", false),
+        Err(crate::records::Error::NotEnded)
+    ));
+    let (rebuild, _) = rebuild_with(&fixture, &scope, "loss/old\n", true).unwrap();
+    for _ in 0..12 {
+        fixture.visit_ended(&scope, "PREEMPTED").unwrap();
+    }
+    assert_eq!(fixture.status(&scope)["status"], "FINISHED");
+    let cloud = fixture.cloud();
+    assert_eq!(cloud["runs"][&rebuild.wandb_id]["state"], "failed");
+    let rows = fixture.rows(&scope);
+    assert_eq!(rows.len(), 4);
+    assert!(rows.iter().all(|row| row.get("loss/old").is_none()));
+}
+
+#[test]
+fn a_rebuild_interrupted_by_a_restart_resumes_the_same_new_run_without_duplicates() {
+    let (mut fixture, scope, old) = finished_with_old_names("SUCCEEDED", json!({}));
+    let total = fixture.status(&scope)["total"].as_i64().unwrap();
+    let before = fixture.cloud();
+    let (rebuild, _) = rebuild_with(&fixture, &scope, EXCLUDED, false).unwrap();
+    // The new Run is created and every row handed to the SDK, which then dies
+    // with the server before W&B shows any of them.
+    fixture.edit_cloud(|data| data["hidden"] = json!(true));
+    fixture.visit(&scope).unwrap();
+    let sent = before["logs"].as_i64().unwrap() + total;
+    assert_eq!(fixture.cloud()["logs"], sent);
+    assert!(fixture.cloud()["runs"].get(&rebuild.wandb_id).is_some());
+    fixture.restart();
+    fixture.edit_cloud(|data| data["hidden"] = json!(false));
+    // After a restart the rebuild is the same: same list, same new id.
+    let (again, created) = rebuild_with(&fixture, &scope, EXCLUDED, false).unwrap();
+    assert!(!created);
+    assert_eq!(again.wandb_id, rebuild.wandb_id);
+    assert_eq!(
+        fixture.status(&scope)["wandb_id"],
+        rebuild.wandb_id.as_str()
+    );
+    // Nothing is sent again on one observation of their absence.
+    fixture.visit(&scope).unwrap();
+    assert_eq!(fixture.cloud()["logs"], sent);
+    until_finished(&mut fixture, &scope);
+    let after = fixture.cloud();
+    assert_eq!(after["runs"].as_object().unwrap().len(), 2, "no third Run");
+    assert_eq!(after["runs"][&old], before["runs"][&old]);
+    assert_eq!(after["runs"][&rebuild.wandb_id]["state"], "finished");
+    assert_eq!(after["logs"], sent + total, "only the lost rows, once");
+    assert!(fixture.state(&scope).get("duplicate_rows").is_none());
+    let rows = fixture.rows(&scope);
+    assert_eq!(rows.len() as i64, total);
+    assert_rebuilt_rows(&rows, total);
+}

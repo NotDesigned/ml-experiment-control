@@ -708,15 +708,30 @@ impl Service {
                         .ok_or_else(cloud::Error::evidence)?
             );
             // Post-hoc batches are listed apart from the training journal.
-            let id = scope["id"].as_str().ok_or_else(cloud::Error::evidence)?;
+            let id = scope["id"]
+                .as_str()
+                .ok_or_else(cloud::Error::evidence)?
+                .to_owned();
             let batches = records
-                .derived_batches(&guard, id)
+                .derived_batches(&guard, &id)
                 .map_err(why!(cloud::Error::evidence()))?;
             if !batches.is_empty() {
                 scope["derived_batches"] = json!(
                     batches
                         .iter()
                         .map(crate::records::DerivedBatch::document)
+                        .collect::<Vec<_>>()
+                );
+            }
+            // Each W&B rebuild keeps the id it replaced, which is never deleted.
+            let rebuilds = records
+                .wandb_rebuilds(&guard, &id)
+                .map_err(why!(cloud::Error::evidence()))?;
+            if !rebuilds.is_empty() {
+                scope["wandb_rebuilds"] = json!(
+                    rebuilds
+                        .iter()
+                        .map(crate::records::WandbRebuild::document)
                         .collect::<Vec<_>>()
                 );
             }

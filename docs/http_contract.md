@@ -222,6 +222,7 @@ changing source, parameters or restore reference requires a new Run.
 | `POST /api/submissions/S/acknowledge` | Confirm verified local files and release |
 | `GET /api/runs/P/R/tracking` | Frozen [W&B](wandb.md) destination and publication status |
 | `POST /api/runs/P/R/attempts/A/derived-metrics` | Add one post-hoc JSONL file to an ended Attempt as a separate [derived batch](metrics.md#add-derived-metrics-to-an-ended-run) |
+| `POST /api/runs/P/R/attempts/A/wandb-rebuilds` | Publish a finished Attempt again to a new W&B Run without the metric names of one [exclusion list](wandb.md#rebuild-a-finished-wb-run-without-some-metrics) |
 
 The signed object GET carries no API token. Validate archive and file hashes,
 then follow the ticket's acknowledgement contract. Signed URLs are temporary;

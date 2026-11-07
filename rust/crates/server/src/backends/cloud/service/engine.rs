@@ -468,6 +468,7 @@ mod derived;
 mod diagnostics;
 mod exchange;
 mod observation;
+mod rebuild;
 mod retry;
 pub mod startup_failure;
 mod synchronization;
