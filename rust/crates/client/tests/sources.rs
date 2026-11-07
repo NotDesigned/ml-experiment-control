@@ -693,3 +693,17 @@ fn a_symlink_back_into_the_repository_is_refused_rather_than_walked() {
         .to_string();
     assert!(text.contains("up") && text.contains("symlink"), "{text}");
 }
+
+#[test]
+fn an_ignored_directory_is_refused_for_what_it_is() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    git(root, &["init", "-q"]);
+    std::fs::write(root.join(".gitignore"), "outputs/\n").unwrap();
+    let inside = root.join("outputs/job");
+    std::fs::create_dir_all(&inside).unwrap();
+    std::fs::write(inside.join("train.py"), "print(1)\n").unwrap();
+    let text = sources::pack_directory(&inside).err().unwrap().to_string();
+    assert!(text.contains(".gitignore"), "{text}");
+    assert!(!text.contains("stable regular directory"), "{text}");
+}

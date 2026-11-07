@@ -621,6 +621,13 @@ pub fn pack_directory(path: &Path) -> Result<PreparedArchive, Error> {
     let root = Directory::open(&normalized, false).map_err(|_| packing())?;
     let limits = policy();
     let selection = git_selection(&normalized)?;
+    if selection.as_ref().is_some_and(|s| s.files.is_empty()) {
+        return Err(Error::Submit(format!(
+            "git lists no files in {}: it is empty or .gitignore covers all of it. Stop \
+             ignoring it, or move it outside the repository",
+            normalized.display()
+        )));
+    }
     // Ignored names are not part of the source, so they neither count nor must stay still.
     let visible = |relative: &str, names: Vec<OsString>| -> Vec<OsString> {
         match &selection {
