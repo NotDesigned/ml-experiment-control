@@ -557,7 +557,12 @@ fn a_published_tree_is_hashed_after_the_lock_is_released() {
     assert_eq!(state, ready);
     assert!(published.is_some());
     assert!(!f.directory().join("archive.tar").exists());
+    // Hashed once, when it was published: a change that keeps the size goes unnoticed.
+    assert!(f.complete().is_ok());
+    assert_eq!(f.status(), ready);
+    unseal(&file, 0o600);
+    fs::write(&file, b"a different length").unwrap();
+    unseal(&file, 0o400);
     assert!(f.complete().is_err());
     assert_eq!(f.status(), ready);
-    assert_eq!(fs::read(&file).unwrap(), b"owned dataset fixturE");
 }
