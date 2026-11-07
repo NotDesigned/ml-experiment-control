@@ -27,17 +27,9 @@ pub fn verify_inventory(root: &Directory, files: &[FileReceipt], sealed: bool) -
         if sealed {
             require_sealed(&file)?;
         }
-        let before = file.metadata()?;
+        // The digest decides. A shared filesystem moves times on a file nobody changed.
         let (digest, size) = artifacts::hash(&mut file)?;
-        let after = file.metadata()?;
-        if size != record.bytes
-            || digest != record.sha256
-            || before.len() != after.len()
-            || before.mtime() != after.mtime()
-            || before.mtime_nsec() != after.mtime_nsec()
-            || before.ctime() != after.ctime()
-            || before.ctime_nsec() != after.ctime_nsec()
-        {
+        if size != record.bytes || digest != record.sha256 {
             return Err(invalid());
         }
     }

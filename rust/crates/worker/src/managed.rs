@@ -545,7 +545,9 @@ pub fn run(config: &Config, cancelled: &AtomicBool) -> Result<Observation> {
     for dataset in &config.datasets {
         let root = Directory::open(std::path::Path::new(&dataset.receipt.root), false)
             .map_err(crate::managed::storage_failure!())?;
-        ml_exp_io::datasets::verify(&root, &dataset.receipt.definition, true)
+        // A READY tree had every byte hashed when it was published, once per store.
+        // Rereading a large dataset at each job start held GPUs idle.
+        ml_exp_io::datasets::verify_file_sizes(&root, &dataset.receipt.definition)
             .map_err(|_| Error::Binding)?;
     }
     // This fsync completes before any spawn attempt. Any later error leaves a
