@@ -3577,3 +3577,91 @@ fn complete_does_not_hold_the_service_lock_while_it_reads() {
         );
     });
 }
+
+/// Through the real service to what a job would be created with, for a Run stored with
+/// no `scheduling` and for one that froze a choice, on the first Attempt and on a retry.
+#[test]
+fn a_retry_asks_for_the_allocation_its_run_froze() {
+    for (scheduling, expected) in [
+        (None, "guaranteed"),
+        (Some(json!({"allocation":"allow_idle"})), "allow_idle"),
+    ] {
+        let f = Fixture::new(Kind::Pai);
+        let service = f.open();
+        let mut request = json!({"run_id":"train","runtime_id":f.runtime.runtime_id,
+            "executor":f.executor,"command":["python","train.py"],
+            "resources":{"gpus":1,"cpus":8,"memory_gb":64},"walltime_seconds":300,"seed":42});
+        if let Some(scheduling) = scheduling {
+            request["scheduling"] = scheduling;
+        }
+        service
+            .create_run("demo", serde_json::from_value(request).unwrap(), T_CREATE)
+            .unwrap();
+        let slot = |attempt: &str| -> Value {
+            let name = native::attempt_slot("demo", "train", attempt).unwrap();
+            let path = f
+                .settings
+                .registry_root
+                .join("cloud-submissions/slots")
+                .join(format!("{name}.json"));
+            serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
+        };
+        let prepared = f.prepare(&service, "train");
+        let action = prepared["submission_id"].as_str().unwrap().to_owned();
+        let first = slot("attempt-001");
+        assert_eq!(first["execution"]["allocation"], expected);
+        let execution: Execution = serde_json::from_value(first["execution"].clone()).unwrap();
+        f.provider.bind(&execution.job);
+        f.execute(&service, &action).unwrap();
+        f.provider.world().terminal = true;
+        let retried = service
+            .retry(
+                &action,
+                retry_request("train"),
+                T_RECONCILE,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        assert_eq!(retried["attempt_id"], "attempt-002");
+        f.prepare(&service, "train");
+        assert_eq!(slot("attempt-002")["execution"]["allocation"], expected);
+    }
+}
+#[test]
+fn a_preparation_shows_the_allocation_it_will_ask_for_and_sensecore_has_no_choice() {
+    let c = CopyFixture::new(Kind::Pai, 3);
+    let view = c
+        .open()
+        .experiment_prepare("demo", dataset_setup(&c), None)
+        .unwrap();
+    assert_eq!(
+        view["frozen"]["allocation"], "guaranteed",
+        "saved before there was a choice"
+    );
+
+    let c = CopyFixture::new(Kind::Pai, 3);
+    let mut chosen = dataset_setup(&c);
+    chosen
+        .run
+        .insert("scheduling".into(), json!({"allocation":"allow_idle"}));
+    let view = c.open().experiment_prepare("demo", chosen, None).unwrap();
+    assert_eq!(view["frozen"]["allocation"], "allow_idle");
+
+    let c = CopyFixture::new(Kind::Sensecore, 3);
+    let view = c
+        .open()
+        .experiment_prepare("demo", dataset_setup(&c), None)
+        .unwrap();
+    assert!(view["frozen"].get("allocation").is_none());
+    let c = CopyFixture::new(Kind::Sensecore, 3);
+    let mut chosen = dataset_setup(&c);
+    chosen
+        .run
+        .insert("scheduling".into(), json!({"allocation":"allow_idle"}));
+    let refused = c
+        .open()
+        .experiment_prepare("demo", chosen, None)
+        .unwrap_err();
+    assert_eq!(refused.code, "INVALID_CLOUD_REQUEST");
+    assert_eq!(c.provider.creates(), 0);
+}
