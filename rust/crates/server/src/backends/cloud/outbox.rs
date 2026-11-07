@@ -4,20 +4,29 @@
 use super::{
     Error, Result,
     adapter::{Adapter, Handle, Profile, Transport, job_digest},
+    lock_diagnostics,
 };
 use ml_exp_core::{
     canonical,
     cloud::{Job, JobObservation, pai::Allocation},
 };
-use ml_exp_io::directory::{Directory, FileLock, LockOptions, Wait};
+use ml_exp_io::directory::{Directory, LockOptions, Wait};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     ffi::OsStr,
     path::Path,
     sync::atomic::{AtomicBool, Ordering},
+    time::{Duration, Instant},
 };
 const LOCK: &str = ".cloud-effects.lock";
+/// How long a caller waits for `.cloud-effects.lock` before CLOUD_EFFECT_BUSY.
+/// Reads and observation commits hold it for file I/O only. Create, stop and a
+/// handle-less find still hold it across their provider calls, so this covers an
+/// ordinary provider round trip (seconds) with room to spare; a call that runs
+/// toward the configured HTTP timeout still yields the same busy error. It stays
+/// well below the 30 s and longer HTTP budgets of the clients and the server.
+const LOCK_WAIT: Duration = Duration::from_secs(10);
 const MARKER: &str = ".cloud-effects.json";
 const FORMAT: &str = "native-cloud-effects.v1";
 #[derive(Serialize, Deserialize)]
@@ -53,9 +62,10 @@ impl From<&Error> for ErrorDocument {
 }
 pub struct Outbox {
     directory: Directory,
+    holder: lock_diagnostics::Holder,
 }
 /// Proof that the caller holds `.cloud-effects.lock`.
-type Guard = FileLock;
+type Guard = lock_diagnostics::Guard;
 impl Outbox {
     pub fn initialize(path: &Path) -> Result<()> {
         let directory = Directory::open(path, false).map_err(why!(Error::configuration()))?;
@@ -98,19 +108,39 @@ impl Outbox {
         directory
             .open_regular_read(OsStr::new(LOCK))
             .map_err(why!(Error::configuration()))?;
-        Ok(Self { directory })
+        Ok(Self {
+            directory,
+            holder: lock_diagnostics::Holder::new("cloud-effects-lock"),
+        })
     }
-    fn lock(&self) -> Result<Guard> {
-        self.directory
-            .lock(OsStr::new(LOCK), LockOptions::default())
-            .map_err(why_lock!(
-                Error {
-                    code: "CLOUD_EFFECT_BUSY".into(),
-                    http_status: Some(503),
-                    uncertain: false,
+    /// `label` names the caller in the lock diagnostics; it is a static string.
+    fn lock(&self, label: &'static str) -> Result<Guard> {
+        let locked = self.directory.lock(
+            OsStr::new(LOCK),
+            LockOptions {
+                wait: Wait::Until {
+                    deadline: Instant::now() + LOCK_WAIT,
+                    cancelled: None,
                 },
-                Error::evidence()
-            ))
+                ..Default::default()
+            },
+        );
+        match locked {
+            Ok(lock) => Ok(self.holder.acquired(lock, label)),
+            Err(cause) => {
+                if cause.kind() == std::io::ErrorKind::WouldBlock {
+                    self.holder.busy(label);
+                }
+                Err((why_lock!(
+                    Error {
+                        code: "CLOUD_EFFECT_BUSY".into(),
+                        http_status: Some(503),
+                        uncertain: false,
+                    },
+                    Error::evidence()
+                ))(cause))
+            }
+        }
     }
     pub fn slot(job: &Job) -> Result<String> {
         job.validate().map_err(why!(Error::configuration()))?;
@@ -179,7 +209,7 @@ impl Outbox {
         guard: &dyn Fn() -> Result<()>,
     ) -> Result<Value> {
         guard()?;
-        let _lock = self.lock()?;
+        let _lock = self.lock("outbox.prepare")?;
         profile.validate()?;
         job.validate().map_err(why!(Error::configuration()))?;
         match profile {
@@ -235,7 +265,7 @@ impl Outbox {
         self.view(&entry)
     }
     pub fn status(&self, job: &Job) -> Result<Value> {
-        let _lock = self.lock()?;
+        let _lock = self.lock("outbox.status")?;
         let entry = self.load(&Self::slot(job)?)?;
         if entry.job != *job {
             return Err(Error::evidence());
@@ -243,7 +273,7 @@ impl Outbox {
         self.view(&entry)
     }
     pub fn optional_status(&self, job: &Job) -> Result<Option<Value>> {
-        let _lock = self.lock()?;
+        let _lock = self.lock("outbox.optional_status")?;
         let name = Self::slot(job)?;
         if !self
             .directory
@@ -261,7 +291,7 @@ impl Outbox {
     /// The job as first recorded in this job's slot. Read-only, and never a reason
     /// to create: `prepare` still refuses any job that differs from this record.
     pub fn recorded_job(&self, job: &Job) -> Result<Option<Job>> {
-        let _lock = self.lock()?;
+        let _lock = self.lock("outbox.recorded_job")?;
         let name = Self::slot(job)?;
         if !self
             .directory
@@ -292,7 +322,7 @@ impl Outbox {
         cancelled: &AtomicBool,
     ) -> Result<Value> {
         guard()?;
-        let lock = self.lock()?;
+        let lock = self.lock("outbox.execute")?;
         let slot = Self::slot(job)?;
         let mut entry = self.load(&slot)?;
         self.check(&entry, adapter, job, allocation)?;
@@ -331,24 +361,38 @@ impl Outbox {
         cancelled: &AtomicBool,
     ) -> Result<Value> {
         guard()?;
-        let lock = self.lock()?;
-        let mut entry = self.load(&Self::slot(job)?)?;
+        let slot = Self::slot(job)?;
+        let lock = self.lock("outbox.reconcile")?;
+        let mut entry = self.load(&slot)?;
         self.check(&entry, adapter, job, allocation)?;
         if !entry.started {
             return self.view(&entry);
         }
-        let outcome = if let Some(handle) = &entry.handle {
-            adapter
-                .observe(job, handle, cancelled)
-                .map(|o| (Some(handle.clone()), Some(o)))
+        let (lock, outcome) = if let Some(handle) = entry.handle.clone() {
+            // A recorded handle is only read: no find and no create can follow
+            // here. The lock is released for the provider GET, and the reply is
+            // committed only if the entry is still exactly the record read, so a
+            // concurrent stop, find or observation is never overwritten.
+            let read = serde_json::to_value(&entry).map_err(why!(Error::evidence()))?;
+            drop(lock);
+            let observed = adapter.observe(job, &handle, cancelled);
+            let lock = self.lock("outbox.reconcile.commit")?;
+            entry = self.load(&slot)?;
+            self.check(&entry, adapter, job, allocation)?;
+            if serde_json::to_value(&entry).map_err(why!(Error::evidence()))? != read {
+                return self.view(&entry);
+            }
+            (lock, observed.map(|o| (Some(handle), Some(o))))
         } else {
-            adapter.find(job, cancelled).and_then(|handle| {
+            // Finding a handle stays under the lock, exactly as every effect does.
+            let outcome = adapter.find(job, cancelled).and_then(|handle| {
                 let observation = handle
                     .as_ref()
                     .map(|h| adapter.observe(job, h, cancelled))
                     .transpose()?;
                 Ok((handle, observation))
-            })
+            });
+            (lock, outcome)
         };
         match outcome {
             Ok((handle, observation)) => {
@@ -385,7 +429,7 @@ impl Outbox {
         cancelled: &AtomicBool,
     ) -> Result<Value> {
         guard()?;
-        let lock = self.lock()?;
+        let lock = self.lock("outbox.stop")?;
         let mut entry = self.load(&Self::slot(job)?)?;
         self.check(&entry, adapter, job, allocation)?;
         if confirmation != format!("STOP {}", Self::slot(job)?) {

@@ -23,8 +23,8 @@ CRATES = Path("rust/crates")
 SERVER = CRATES / "server/src"
 
 PINS = {
-    "rust/crates/server/src/backends/cloud/outbox.rs": "2f5313a8fd332e73e6c4ee00fe2ba67767c0dffd43d9cde6943da2f05399b811",
-    "rust/crates/server/src/backends/cloud/outbox/tests.rs": "344524e4d7c583888421fad37f38ec95b3efded3809bbe3e83627f4e3df88826",
+    "rust/crates/server/src/backends/cloud/outbox.rs": "33eac20279e79291741ad3a7e11e2547e14cfc7c4b8eff96f8264395e0de899a",
+    "rust/crates/server/src/backends/cloud/outbox/tests.rs": "8814a4ca4cdd1fa542e08932443ddec0ed24e69f46cad0c82ae33698b24dc273",
     "rust/crates/server/src/backends/cloud/action.rs": "a09c4a78734245d578dbbbaa75c62a86e0ee2a49f81737c100e4cc5e2d7123dc",
     "rust/crates/server/src/backends/slurm/action.rs": "15ad4038d8525dde13d1439c97faa1475bc371e078603f3c8eb1ab0444b609ba",
     "rust/crates/server/src/backends/slurm/transport.rs": "1be44752888a9c93cbd7d4ac81643ab3c2977f7c345e61f8e36410ca60c9af5c",

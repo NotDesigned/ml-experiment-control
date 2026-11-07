@@ -4,6 +4,7 @@ use crate::{
         self, Client, Credentials,
         action::Runner,
         adapter::{Adapter, Shared},
+        lock_diagnostics,
         outbox::Outbox,
     },
     deletion::RunFence,
@@ -282,7 +283,7 @@ impl Service {
             builds: config.builds,
             active_builds: Default::default(),
             debug: config.debug.map(debug::Runtime::open).transpose()?,
-            lock_holder: Default::default(),
+            lock_holder: lock_diagnostics::Holder::new("cloud-lock"),
             polling: config.polling,
         })
     }
@@ -477,7 +478,6 @@ pub(super) mod builds;
 mod derived;
 mod diagnostics;
 mod exchange;
-mod lock_diagnostics;
 mod observation;
 mod rebuild;
 mod retry;
