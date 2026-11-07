@@ -19,14 +19,14 @@ pub(super) struct Saved {
     pub(super) copy_storage: Option<ml_exp_core::cloud::launch::StorageLayout>,
     pub(super) copy_status: Option<Value>,
     pub(super) diagnostic: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     /// How many times parts were removed. An observation made before a removal says
     /// nothing about what is stored after it, so it cannot accept or remove anything.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub(super) discards: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) import_source: Option<datasets::oss::Import>,
 }
-/// How many wrong parts one call removes while it holds the service lock.
+/// How many wrong parts one call removes.
 const MAX_DISCARDED_PARTS: usize = 64;
 fn is_zero(value: &u64) -> bool {
     *value == 0
@@ -389,7 +389,13 @@ impl Service {
                     // A direct PUT that was never recorded left other bytes, and nothing
                     // can overwrite them. Without this, --via-server could not recover.
                     Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
-                        self.dataset_discard_parts(project, executor, &asset, &[number])?;
+                        self.dataset_discard_parts(
+                            project,
+                            executor,
+                            &asset,
+                            &[number],
+                            saved.discards,
+                        )?;
                         put().map_err(io)?;
                     }
                     other => other.map_err(io)?,
@@ -445,7 +451,13 @@ impl Service {
                     if wrong.is_empty() {
                         return Err(refused("DATASET_ARCHIVE_REFUSED"));
                     }
-                    self.dataset_discard_parts(project, executor, &asset, &wrong, saved.discards)?;
+                    self.dataset_discard_parts(
+                        project,
+                        executor,
+                        &asset,
+                        &wrong,
+                        saved.discards,
+                    )?;
                     return Err(refused("DATASET_PART_REJECTED"));
                 }
                 return Ok(Self::data_view(saved));
