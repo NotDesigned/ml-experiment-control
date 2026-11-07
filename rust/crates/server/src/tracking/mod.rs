@@ -1,5 +1,6 @@
-//! Optional W&B shell. Credentials and SDK effects stay outside pure reducers;
-//! canonical record acceptance never depends on cloud publication success.
+//! Optional W&B and MLflow shells. Credentials and SDK effects stay outside pure
+//! reducers; canonical record acceptance never depends on cloud publication success.
+pub mod mlflow;
 mod publisher;
 mod transport;
 use ml_exp_core::tracking::{RoutingSettings, WandbOptions, WandbSettings};
@@ -69,10 +70,14 @@ impl Config {
         }
         Ok(())
     }
+    /// The W&B part of a `tracking_config` file. Its `mlflow` block is read by
+    /// [`Settings::load`]; a file without W&B fields is not a W&B configuration.
     pub fn load(path: &Path) -> Result<Self> {
-        let bytes =
-            ml_exp_io::read_private(path, 16384, true).map_err(why!(Error::Configuration))?;
-        let mapping = ml_exp_core::json::mapping(&bytes).map_err(why!(Error::Configuration))?;
+        let mut mapping = read_mapping(path)?;
+        mapping.remove("mlflow");
+        Self::from_mapping(mapping)
+    }
+    fn from_mapping(mapping: serde_json::Map<String, Value>) -> Result<Self> {
         let config: Self =
             serde_json::from_value(Value::Object(mapping)).map_err(why!(Error::Configuration))?;
         if config.schema_version != 1
@@ -84,6 +89,48 @@ impl Config {
         WandbOptions::from_value(&json!({"entity":config.entity,"project":config.project}))
             .map_err(why!(Error::Configuration))?;
         Ok(config)
+    }
+}
+fn read_mapping(path: &Path) -> Result<serde_json::Map<String, Value>> {
+    let bytes = ml_exp_io::read_private(path, 16384, true).map_err(why!(Error::Configuration))?;
+    ml_exp_core::json::mapping(&bytes).map_err(why!(Error::Configuration))
+}
+/// Both optional destinations of one private `tracking_config` file. The W&B
+/// fields stay where they always were; an optional `mlflow` block adds MLflow.
+/// A file holding only `schema_version` and `mlflow` configures no W&B publisher.
+pub struct Settings {
+    pub wandb: Option<Config>,
+    pub mlflow: Option<mlflow::Config>,
+}
+impl Settings {
+    pub fn load(path: &Path) -> Result<Self> {
+        let mut mapping = read_mapping(path)?;
+        let mlflow = mapping
+            .remove("mlflow")
+            .map(mlflow::Config::from_value)
+            .transpose()
+            .map_err(|_| Error::Configuration)?;
+        let wandb = if mlflow.is_some() && mapping.keys().all(|key| key == "schema_version") {
+            if mapping.get("schema_version") != Some(&json!(1)) {
+                return Err(Error::Configuration);
+            }
+            None
+        } else {
+            Some(Config::from_mapping(mapping)?)
+        };
+        Ok(Self { wandb, mlflow })
+    }
+    /// Local validation only: no SDK start and no MLflow request.
+    pub fn check_references(&self) -> Result<()> {
+        if let Some(wandb) = &self.wandb {
+            wandb.check_references()?;
+        }
+        if let Some(mlflow) = &self.mlflow {
+            mlflow
+                .check_references()
+                .map_err(|_| Error::Configuration)?;
+        }
+        Ok(())
     }
 }
 impl Runtime {

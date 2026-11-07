@@ -179,6 +179,9 @@ pub struct RoutingSettings {
     pub credentials_configured: bool,
     pub resolved_entity: Option<String>,
     pub project: Option<String>,
+    /// Present only when the operator configured MLflow. Absent, every route is
+    /// exactly what it was before MLflow support.
+    pub mlflow: Option<MlflowRouting>,
 }
 impl Default for RoutingSettings {
     fn default() -> Self {
@@ -188,8 +191,34 @@ impl Default for RoutingSettings {
             credentials_configured: false,
             resolved_entity: None,
             project: None,
+            mlflow: None,
         }
     }
+}
+
+/// Server MLflow defaults without credentials or the server address. A Run
+/// freezes the decision and the experiment name, as it freezes its W&B route.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MlflowRouting {
+    pub enabled: bool,
+    pub experiment_prefix: String,
+    /// When set, only these ML-Expd projects publish to MLflow.
+    pub projects: Option<BTreeSet<String>>,
+}
+/// The frozen MLflow part of a Run's route: one MLflow experiment per project.
+pub fn mlflow_route(settings: &MlflowRouting, project: &str) -> Value {
+    let reason = if !settings.enabled {
+        Some("DISABLED_BY_SERVER")
+    } else if settings
+        .projects
+        .as_ref()
+        .is_some_and(|projects| !projects.contains(project))
+    {
+        Some("PROJECT_NOT_SELECTED")
+    } else {
+        None
+    };
+    json!({"enabled":reason.is_none(),"reason":reason,"experiment":format!("{}{project}",settings.experiment_prefix)})
 }
 pub fn resolve(options: Option<&WandbOptions>, settings: &RoutingSettings, project: &str) -> Value {
     let default = WandbOptions::default();
@@ -210,7 +239,12 @@ pub fn resolve(options: Option<&WandbOptions>, settings: &RoutingSettings, proje
     } else {
         None
     };
-    json!({"requested":options.enabled,"enabled":reason.is_none(),"reason":reason,"entity":entity,"project":options.project.as_deref().filter(|value|!value.is_empty()).or(settings.project.as_deref().filter(|value|!value.is_empty())).unwrap_or(project)})
+    let mut route = json!({"requested":options.enabled,"enabled":reason.is_none(),"reason":reason,"entity":entity,"project":options.project.as_deref().filter(|value|!value.is_empty()).or(settings.project.as_deref().filter(|value|!value.is_empty())).unwrap_or(project)});
+    // W&B options never change the MLflow decision: each destination stands alone.
+    if let Some(mlflow) = &settings.mlflow {
+        route["mlflow"] = mlflow_route(mlflow, project);
+    }
+    route
 }
 pub fn resolve_preparation(
     options: Option<&WandbOptions>,
@@ -225,7 +259,12 @@ pub fn resolve_preparation(
         entity: options.and_then(|v| v.entity.clone()),
         project: options.and_then(|v| v.project.clone()),
     };
-    resolve(Some(&selected), settings, project)
+    // A preparation Run is build and data progress, never an MLflow run.
+    let mut route = resolve(Some(&selected), settings, project);
+    if let Some(route) = route.as_object_mut() {
+        route.remove("mlflow");
+    }
+    route
 }
 
 pub fn finite_parameters(value: &Value) -> Result<&Value> {

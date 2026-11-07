@@ -255,6 +255,9 @@ Point `tracking_config` in the deployment file at a private JSON file with
 `api_key_file`, and optional `entity`, `project` and `enabled`. Platform metrics
 work without it. See [W&B](wandb.md).
 
+An optional `mlflow` block in the same file publishes to an MLflow tracking server
+as well, or instead when the W&B fields are left out. See [MLflow](mlflow.md).
+
 ## Verify
 
 Verify as the service account and through the public HTTPS endpoint:

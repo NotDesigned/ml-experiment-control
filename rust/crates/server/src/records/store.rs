@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS derived_batches (scope TEXT,sha256 TEXT,submitted_at 
 CREATE TABLE IF NOT EXISTS wandb_rebuilds (scope TEXT,ordinal INTEGER,sha256 TEXT NOT NULL,names TEXT NOT NULL,
  audit TEXT NOT NULL,old_wandb_id TEXT NOT NULL,new_wandb_id TEXT NOT NULL UNIQUE,requested_at TEXT NOT NULL,
  finished_at TEXT,previous_state TEXT,PRIMARY KEY(scope,ordinal),UNIQUE(scope,old_wandb_id,sha256));
+CREATE TABLE IF NOT EXISTS mlflow_publications (scope TEXT PRIMARY KEY,state TEXT NOT NULL);
 "#;
 /// Training-time records and post-hoc derived batches share one sequence, so the
 /// publisher proves both the same way; only publication reads them together.
@@ -596,6 +597,8 @@ mod derived;
 #[path = "rebuild.rs"]
 mod rebuild;
 pub use rebuild::WandbRebuild;
+#[path = "mlflow.rs"]
+mod mlflow;
 #[path = "publication.rs"]
 mod publication;
 
@@ -687,7 +690,7 @@ impl Store {
     }
     pub fn run_scopes(&self, guard: &RecordGuard<'_>) -> Result<Vec<Value>> {
         self.require_guard(guard)?;
-        let value = self.database.read_only(|connection| -> Result<_> {
+        let mut value: Vec<Value> = self.database.read_only(|connection| -> Result<_> {
             let mut statement = connection.prepare(&format!(
                 "SELECT s.*,{} AS total FROM scopes s WHERE project=? AND run=?",
                 self.total_sql("s.id")
@@ -697,6 +700,7 @@ impl Store {
                 .collect::<std::result::Result<_, _>>()?;
             Ok(value)
         })?;
+        self.attach_mlflow(guard, &mut value)?;
         self.require_guard(guard)?;
         Ok(value)
     }

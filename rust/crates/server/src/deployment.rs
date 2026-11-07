@@ -181,8 +181,8 @@ impl Settings {
             })?;
         }
         if let Some(path) = &self.tracking_config {
-            crate::tracking::Config::load(path)
-                .and_then(|c| c.check_references())
+            crate::tracking::Settings::load(path)
+                .and_then(|settings| settings.check_references())
                 .map_err(why!(at("tracking_config")))?;
         }
         let parent = ml_exp_io::directory::Directory::open(

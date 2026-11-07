@@ -5,7 +5,8 @@ it into `OUTPUT_DIR` yourself: copying a file onto itself fails.
 
 Experiment code defines and computes metrics. ML-Expd stores arbitrary named
 measurements with units and context, validates their declared schema and exposes
-them through the API. Optional W&B publication uses the same accepted records.
+them through the API. Optional [W&B](wandb.md) and [MLflow](mlflow.md) publication
+use the same accepted records.
 There is no required accuracy, perplexity or project-specific metric vocabulary.
 
 For existing local training, see [local attachment](#attach-metrics-from-local-training).
@@ -179,7 +180,8 @@ curve; complete records are the live delivery path.
 Accepted metrics survive result archive ACK/release. The canonical journal and
 independent publication cursors remain in `tracking/outbox.sqlite`;
 this is not a second copy of weights or datasets. See [W&B](wandb.md) for display,
-publication confirmation and the distinction between curves and final results.
+publication confirmation and the distinction between curves and final results, and
+[MLflow](mlflow.md) for how the same records reach an MLflow server.
 
 ## Add derived metrics to an ended Run
 

@@ -243,13 +243,21 @@ async fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
-    let tracking = match args
+    let (wandb, mlflow) = match args
         .tracking_config
         .as_deref()
-        .map(|path| {
-            ml_exp_server::tracking::Config::load(path)
-                .and_then(ml_exp_server::tracking::Runtime::open)
-        })
+        .map(ml_exp_server::tracking::Settings::load)
+        .transpose()
+    {
+        Ok(Some(settings)) => (settings.wandb, settings.mlflow),
+        Ok(None) => (None, None),
+        Err(error) => {
+            eprintln!("{error}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let tracking = match wandb
+        .map(ml_exp_server::tracking::Runtime::open)
         .transpose()
     {
         Ok(runtime) => runtime,
@@ -261,6 +269,25 @@ async fn main() -> std::process::ExitCode {
     if let Some(error) = tracking.as_ref().and_then(|runtime| runtime.diagnostic()) {
         eprintln!("optional W&B publisher: {error}");
     }
+    let mlflow = match mlflow
+        .map(ml_exp_server::tracking::mlflow::Runtime::open)
+        .transpose()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("optional MLflow publisher: {error}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    // Without W&B settings the W&B route is what it always was without them.
+    let routing =
+        (tracking.is_some() || mlflow.is_some()).then(|| ml_exp_core::tracking::RoutingSettings {
+            mlflow: mlflow.as_ref().map(|runtime| runtime.routing()),
+            ..tracking
+                .as_ref()
+                .map(|runtime| runtime.routing().clone())
+                .unwrap_or_default()
+        });
     let (reads, polling) = match args.read_config.as_deref() {
         Some(path) => {
             let path = path.to_owned();
@@ -269,7 +296,6 @@ async fn main() -> std::process::ExitCode {
             let submission = args.submission_config.clone();
             let cloud = args.cloud_config.clone();
             let administration = args.administration;
-            let routing = tracking.as_ref().map(|runtime| runtime.routing().clone());
             let opened = tokio::task::spawn_blocking(move || {
                 open_api(
                     &path,
@@ -390,11 +416,28 @@ async fn main() -> std::process::ExitCode {
         },
         None => None,
     };
+    let mlflow_publisher = match mlflow.filter(|runtime| runtime.enabled()) {
+        Some(runtime) => match ml_exp_server::tracking::mlflow::Publisher::start(
+            reads
+                .as_ref()
+                .cloned()
+                .expect("tracking requires configured native services"),
+            runtime,
+        ) {
+            Ok(publisher) => Some(publisher),
+            Err(error) => {
+                eprintln!("optional MLflow publisher: {error}");
+                None
+            }
+        },
+        None => None,
+    };
     // Flush W&B sessions as soon as a stop is asked for, not after the last HTTP
     // connection has drained: a slow client must not use up systemd's stop limit.
     let (stopping, stop_publisher) = tokio::sync::oneshot::channel::<()>();
     let publisher_stopped = tokio::task::spawn_blocking(move || {
         let _ = stop_publisher.blocking_recv();
+        drop(mlflow_publisher);
         drop(publisher);
     });
     let result = axum::serve(listener, ml_exp_server::app(auth, reads))
