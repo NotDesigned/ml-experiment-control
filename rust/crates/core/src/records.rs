@@ -809,7 +809,10 @@ mod tests {
         for bad in bad {
             assert_eq!(rebuild_names(bad), Err(RebuildRefusal::Invalid));
         }
-        let many: String = (0..=REBUILD_MAX_NAMES).map(|i| format!("m{i}\n")).collect();
+        let many = (0..=REBUILD_MAX_NAMES)
+            .map(|i| format!("m{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         assert_eq!(
             rebuild_names(many.as_bytes()),
             Err(RebuildRefusal::TooLarge)
