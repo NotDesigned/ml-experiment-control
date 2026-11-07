@@ -409,7 +409,10 @@ impl<T: Transport> Adapter<T> {
             if index == 0 {
                 let now = time::OffsetDateTime::now_utc().unix_timestamp();
                 match self.sensecore_offline_logs(job, handle, lines, now, cancelled) {
-                    Ok(logs) => view["logs"] = json!(pai::diagnostic_tail(&json!(logs.text), lines as usize)),
+                    Ok(logs) => {
+                        view["logs"] =
+                            json!(pai::diagnostic_tail(&json!(logs.text), lines as usize))
+                    }
                     Err(error) => view["logs_error"] = failure(error),
                 }
             }

@@ -1,6 +1,6 @@
 //! SenseCore ACP REST compiler and exact scoped pool/job evidence.
-use super::*;
 use super::pai::{clipped, provider_text};
+use super::*;
 use crate::state::RunState;
 use std::collections::BTreeSet;
 
