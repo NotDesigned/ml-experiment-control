@@ -2,8 +2,8 @@
 
 Datasets, source code, persistent checkpoints and exported results have separate
 identities and lifecycles. Downloading results does not remove datasets or
-checkpoint state. The API stores transfer metadata and bounded part buffers;
-large dataset payloads live on backend storage or the configured object store.
+checkpoint state. The API stores transfer metadata and, for parts sent through it,
+bounded part buffers; large dataset payloads live on backend storage or the configured object store.
 
 ## Storage model
 
@@ -12,7 +12,8 @@ personal CPFS on PAI. A Run's `STATE_DIR` and `OUTPUT_DIR` and every verified da
 tree live there, and it is the only storage training reads and writes.
 
 On cloud backends, objects in OSS carry dataset parts and result archives between the
-client and primary storage. The platform moves those objects through signed part URLs.
+client and primary storage. The platform and the client move those objects through
+signed part URLs, so a dataset's bytes do not pass through the API host.
 Training code never reads or writes there, and no OSS path is mounted. Slurm uses no
 object store: parts arrive over SSH and its archive stays on shared storage.
 
@@ -32,10 +33,48 @@ ml-exp data show --project study --executor pai-h200 --asset asset.ACTUAL_HASH
 ```
 
 The native client creates a deterministic plain tar in a temporary local file,
-then sends 16 MiB parts. It needs client-side space for that archive. Repeating
-an upload of unchanged bytes queries the same asset and skips accepted parts;
-there are no `--state` or `--resume` options on `data upload`. Keep the returned
-asset ID when a response is lost. A changed file creates a different identity.
+then sends 16 MiB parts, holding about one part in memory on the direct path. It needs
+client-side space for that archive. Repeating an upload of unchanged bytes queries the
+same asset and skips accepted parts; there are no `--state` or `--resume` options on
+`data upload`. Keep the returned asset ID when a response is lost. A changed file
+creates a different identity.
+
+### Direct upload
+
+On PAI and SenseCore the client sends each part straight to OSS. For each part it asks
+the server for a ticket, a signed PUT for that one object of that Project, executor,
+asset and part. A ticket lasts 300 seconds and cannot overwrite: it is valid only with
+`x-oss-forbid-overwrite`, which is inside its signature. The client checks that the URL
+is HTTPS on `*.aliyuncs.com`, has no user information and names that part, and it never
+prints one. Each failing part is tried up to 12 times with a fresh ticket, waiting up
+to a minute between attempts.
+
+| Situation | What happens |
+| --- | --- |
+| The server is older and offers no tickets | The whole upload goes through the server |
+| The executor has no object store (Slurm) | The whole upload goes through the server, chosen before any part is sent |
+| OSS cannot be reached, or refuses | The upload stops and says so. Repeat it to resume, or add `--via-server` to send the remaining parts through the server. It never changes path by itself once parts are moving |
+
+`--via-server` works anywhere, and both paths record the same parts, so one can finish
+what the other started.
+
+The signature does not cover the bytes, and the server does not read a part back when
+it records it: it checks that the object exists at the exact size. So during an upload,
+`parts` lists what the client claims. Nothing can use that. Only `complete` makes an
+asset `ARCHIVED`, by reading the whole archive and checking the archive hash, every
+member and every part against its record, and only `ARCHIVED` assets give out read
+tickets. A wrong part means `complete` answers 409 `DATASET_PART_REJECTED`, removes that
+part and accepts nothing, and repeating the upload sends it again. If every part
+matches its record and the archive still does not match the asset, the answer is 409
+`DATASET_ARCHIVE_REFUSED`, nothing is removed because no part can be blamed, and
+changing any file makes a new asset. That needs a client that hashed other bytes than
+it packed, which `ml-exp` does only if its own disk corrupts the file.
+
+`complete` holds no lock while it reads, but it reads everything within one request.
+An archive that takes longer than the 1230-second limit reports an uncertain outcome
+while the read continues on the server; inspect the asset, then repeat the upload.
+
+### Using an asset
 
 Run inputs use the ordinary native `data` field:
 
@@ -47,6 +86,10 @@ The worker supplies `DATASETS_JSON`, mapping each input name to its verified
 shared-storage directory. Training code reads the named directory from this map.
 See [paths in the job](#paths-in-the-job).
 
+The server reads the whole archive once, at `complete`. A large archive can outlast
+the request, and the read goes on. A repeat during it answers 409 `DATASET_VERIFYING`,
+and `data upload` waits and asks again.
+
 `ARCHIVED` means the uploaded archive passed verification. `READY` additionally
 means the selected backend has a verified shared-storage tree. These states are
 not interchangeable.
@@ -54,8 +97,8 @@ not interchangeable.
 | Backend | Delivery before training |
 | --- | --- |
 | Slurm | Client → bounded API buffer → connected SSH gateway → shared storage. Offline compute nodes read the shared cache. |
-| SenseCore | Client → bounded API buffer → OSS objects → CCR data image, built from those objects on a PAI DSW → debug CPU ACP → NAS. A CPU receipt establishes readiness. |
-| PAI | Client → bounded API buffer → personal OSS objects → verified personal CPFS cache. Import runs before training, optionally in a separate CPU job. |
+| SenseCore | Client → signed PUT to OSS objects (`--via-server`: through a bounded API buffer) → CCR data image, built from those objects on a PAI DSW → debug CPU ACP → NAS. A CPU receipt establishes readiness. |
+| PAI | Client → signed PUT to personal OSS objects (`--via-server`: through a bounded API buffer) → verified personal CPFS cache. Import runs before training, optionally in a separate CPU job. |
 
 A cache is scoped to its executor/storage identity. An asset's presence on one
 backend does not prove readiness on another. Partial trees and hash mismatches
@@ -232,7 +275,13 @@ filesystem mounts remain disabled; CPFS supplies the training filesystem.
 
 - `GET/POST /api/projects/P/datasets/E`: list assets or begin a definition.
 - `GET /api/projects/P/datasets/E/A`: retained state.
-- `PUT /api/projects/P/datasets/E/A/parts/NUMBER/SHA256`: exact raw part bytes.
+- `PUT /api/projects/P/datasets/E/A/parts/NUMBER/SHA256`: exact raw part bytes, through
+  the server. Older clients use this, and it stays.
+- `POST /api/projects/P/datasets/E/A/upload-ticket`: `part` and `sha256`; one part's
+  signed PUT. 422 `DATASET_DIRECT_UPLOAD_UNSUPPORTED` means this executor has no object
+  store. Health lists `native-dataset-direct-upload.v1` when the server has tickets.
+- `POST /api/projects/P/datasets/E/A/part-uploaded`: `part` and `sha256`; record a part
+  sent with a ticket, once the object exists at its exact size.
 - `POST /api/projects/P/datasets/E/A/complete`: verify the uploaded archive.
 - `POST /api/projects/P/datasets/E/A/publish`: explicit backend preparation.
 - `GET/POST /api/projects/P/datasets/E/A/publications/REQUEST/diagnostic`:
@@ -241,7 +290,7 @@ filesystem mounts remain disabled; CPFS supplies the training filesystem.
 - `POST /api/projects/P/datasets/E/A/download-ticket`: one part's private ticket.
 
 Part numbers start at zero. Identical parts are idempotent; changed bytes cannot
-replace an accepted part. The native policy uses 16 MiB parts and at most 65,536
+replace an accepted part, and a part removed by `complete` was never accepted. The native policy uses 16 MiB parts and at most 65,536
 parts, subject to file-inventory bounds and actual destination capacity. No
 4 GiB total-size limit or desktop staging is required. Metadata, hashes and
 backend-specific readiness remain separate from payload retention.

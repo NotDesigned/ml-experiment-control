@@ -250,6 +250,21 @@ impl From<crate::backends::cloud::Error> for Error {
                     "OSS_DATASET_VERIFICATION_FAILED",
                     "OSS dataset tar, archive SHA256, byte count or member inventory is invalid",
                 ),
+                ("DATASET_PART_NOT_STORED", _) => (
+                    409,
+                    "DATASET_PART_NOT_STORED",
+                    "the object store has no such part yet; repeat the same upload",
+                ),
+                ("DATASET_PART_REJECTED", _) => (
+                    409,
+                    "DATASET_PART_REJECTED",
+                    "a stored part differs from what was claimed, so the archive was not accepted and that part was removed; repeat the same upload to send it again",
+                ),
+                ("DATASET_ARCHIVE_REFUSED", _) => (
+                    409,
+                    "DATASET_ARCHIVE_REFUSED",
+                    "every part matches its record but the archive does not match this asset, so it was not accepted; the uploaded parts are wrong as a whole, and changing any file makes a new asset",
+                ),
                 ("INPUT_NOT_READY", _) => (
                     409,
                     "INPUT_NOT_READY",

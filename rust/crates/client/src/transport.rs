@@ -71,6 +71,23 @@ impl Client {
         }
         Ok(response)
     }
+    /// One attempt at a signed PUT. Like a download it gets no API bearer and follows no
+    /// redirect. The failure text comes from `without_url`, because a ticket must never
+    /// be printed. Answers with the status, which the caller judges.
+    pub(crate) fn put_object(
+        &self,
+        uri: &url::Url,
+        part: &crate::datasets::Part,
+    ) -> Result<u16, String> {
+        self.http
+            .put(uri.clone())
+            .header("x-oss-forbid-overwrite", "true")
+            .timeout(Duration::from_secs(600))
+            .body(reqwest::blocking::Body::sized(part.reader(), part.len()))
+            .send()
+            .map(|response| response.status().as_u16())
+            .map_err(|error| error.without_url().to_string())
+    }
     pub(crate) fn send_dataset(
         &self,
         plan: &crate::datasets::Plan,
@@ -343,6 +360,35 @@ mod tests {
             assert!(request.len() < 8192);
         }
         String::from_utf8(request).unwrap().to_lowercase()
+    }
+
+    #[test]
+    fn a_signed_put_carries_its_bytes_and_no_override_but_not_the_api_token() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let thread = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let request = read_request(&mut socket);
+            assert!(request.starts_with("put /key?signature=secret http/1.1"));
+            assert!(request.contains("x-oss-forbid-overwrite: true\r\n"));
+            assert!(request.contains("content-length: 5\r\n"));
+            assert!(!request.contains("authorization"));
+            assert!(!request.contains("native-test"));
+            let mut body = [0; 5];
+            socket.read_exact(&mut body).unwrap();
+            assert_eq!(&body, b"bytes");
+            socket
+                .write_all(b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/leak\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .unwrap();
+        });
+        let client = Client::new("http://127.0.0.1:9", "native-test".into()).unwrap();
+        let uri = url::Url::parse(&format!("http://{address}/key?signature=secret")).unwrap();
+        let part = crate::datasets::Part::new(b"bytes".to_vec());
+        assert_eq!(client.put_object(&uri, &part), Ok(302));
+        thread.join().unwrap();
+        // Nothing listens now, and the failure does not repeat the signed URL.
+        let failure = client.put_object(&uri, &part).unwrap_err();
+        assert!(!failure.contains("secret"), "{failure}");
     }
 
     #[test]

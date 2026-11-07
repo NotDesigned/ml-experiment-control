@@ -59,6 +59,11 @@ For every field and each separate step, see `ml-exp run start` and `ml-exp run e
         /// An environment variable for the job, as KEY=VALUE.
         #[arg(long, value_parser = ml_exp_client::submit::parse_env)]
         env: Vec<(String, String)>,
+        /// PAI only: `allow_idle` (the default for a job with GPUs) may also use idle
+        /// resources and can be preempted; `idle_only` uses only those; `guaranteed` uses
+        /// only the quota. A different choice is a different job.
+        #[arg(long, value_parser = ["guaranteed", "allow_idle", "idle_only"])]
+        allocation: Option<String>,
         /// 0 unless given.
         #[arg(long)]
         seed: Option<i64>,
@@ -286,6 +291,8 @@ enum Data {
         #[arg(long)]
         runtime: Option<String>,
     },
+    /// Upload a directory. On PAI and SenseCore the parts go straight to object storage;
+    /// Slurm has none and an older server may not offer it, so those go through the server.
     Upload {
         #[arg(long)]
         project: String,
@@ -293,6 +300,9 @@ enum Data {
         executor: String,
         #[arg(long)]
         directory: PathBuf,
+        /// Send the parts through the server, when object storage cannot be reached.
+        #[arg(long)]
+        via_server: bool,
     },
     Show {
         #[arg(long)]
@@ -1221,6 +1231,7 @@ fn run(mut args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     memory,
                     data,
                     env,
+                    allocation,
                     seed,
                     run,
                     dockerfile,
@@ -1251,6 +1262,7 @@ fn run(mut args: Args) -> Result<(), Box<dyn std::error::Error>> {
                             run_id: run,
                             data,
                             env,
+                            allocation,
                         },
                         file.as_deref(),
                         settings.project.as_deref(),
@@ -1365,7 +1377,15 @@ fn run(mut args: Args) -> Result<(), Box<dyn std::error::Error>> {
                             project,
                             executor,
                             directory,
-                        } => datasets::upload(&client, &project, &executor, &directory, &health)?,
+                            via_server,
+                        } => datasets::upload(
+                            &client,
+                            &project,
+                            &executor,
+                            &directory,
+                            &health,
+                            via_server,
+                        )?,
                         Data::Show {
                             project,
                             executor,

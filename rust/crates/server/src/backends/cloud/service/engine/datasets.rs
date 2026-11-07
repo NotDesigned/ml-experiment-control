@@ -19,10 +19,61 @@ pub(super) struct Saved {
     pub(super) copy_storage: Option<ml_exp_core::cloud::launch::StorageLayout>,
     pub(super) copy_status: Option<Value>,
     pub(super) diagnostic: Option<Value>,
+    /// How many times parts were removed. An observation made before a removal says
+    /// nothing about what is stored after it, so it cannot accept or remove anything.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub(super) discards: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) import_source: Option<datasets::oss::Import>,
 }
+/// How many wrong parts one call removes.
+const MAX_DISCARDED_PARTS: usize = 64;
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+/// Assets whose archive one request is reading now. That read can outlast its request,
+/// and it holds request slots, so a repeat is told to wait rather than read it again.
+#[derive(Default)]
+pub(super) struct Verifying(Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>);
+struct Verification {
+    names: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
+    name: String,
+}
+impl Verifying {
+    fn begin(&self, name: &str) -> cloud::Result<Verification> {
+        let mut names = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
+        if !names.insert(name.to_owned()) {
+            return Err(refused("DATASET_VERIFYING"));
+        }
+        Ok(Verification {
+            names: self.0.clone(),
+            name: name.to_owned(),
+        })
+    }
+}
+impl Drop for Verification {
+    fn drop(&mut self) {
+        self.names
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .remove(&self.name);
+    }
+}
+fn refused(code: &str) -> cloud::Error {
+    cloud::Error {
+        code: code.into(),
+        http_status: Some(409),
+        uncertain: false,
+    }
+}
 impl Service {
+    /// A real socket for tests of the object store requests. Configuration cannot reach this.
+    #[doc(hidden)]
+    pub fn redirect_objects_for_tests(&mut self, origin: String) {
+        if let Some(objects) = &mut self.objects {
+            objects.redirect_for_tests(origin);
+        }
+    }
     pub fn dataset_list(&self, project: &str, executor: &str) -> cloud::Result<Value> {
         self.project_hash(project)?;
         if !self.backends.contains_key(executor) {
@@ -291,6 +342,7 @@ impl Service {
                     copy_intent: None,
                     copy_status: None,
                     diagnostic: None,
+                    discards: 0,
                     import_source: None,
                 });
             }
@@ -319,10 +371,12 @@ impl Service {
                     return Ok(Self::data_view(saved));
                 }
                 drop(lock);
-                self.objects
+                let objects = self
+                    .objects
                     .as_ref()
-                    .ok_or_else(cloud::Error::configuration)?
-                    .put_data(
+                    .ok_or_else(cloud::Error::configuration)?;
+                let put = || {
+                    objects.put_data(
                         project,
                         executor,
                         &state.definition,
@@ -330,7 +384,22 @@ impl Service {
                         &sha256,
                         payload,
                     )
-                    .map_err(io)?;
+                };
+                match put() {
+                    // A direct PUT that was never recorded left other bytes, and nothing
+                    // can overwrite them. Without this, --via-server could not recover.
+                    Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                        self.dataset_discard_parts(
+                            project,
+                            executor,
+                            &asset,
+                            &[number],
+                            saved.discards,
+                        )?;
+                        put().map_err(io)?;
+                    }
+                    other => other.map_err(io)?,
+                }
                 let _lock = self.lock()?;
                 saved = self
                     .data_saved(project, executor, &asset)?
@@ -356,13 +425,34 @@ impl Service {
                     return Err(cloud::Error::evidence());
                 }
                 if !saved.archive_verified {
+                    let _verification = self.verifying.begin(&name)?;
                     drop(lock);
-                    self.objects
+                    let objects = self
+                        .objects
                         .as_ref()
-                        .ok_or_else(cloud::Error::configuration)?
-                        .verify_data(project, executor, &saved.state.definition)
+                        .ok_or_else(cloud::Error::configuration)?;
+                    if objects
+                        .verify_data(project, executor, &saved.state)
+                        .map_err(io)?
+                    {
+                        return self.dataset_archive_verified(
+                            project,
+                            executor,
+                            &asset,
+                            &saved.state,
+                            saved.discards,
+                        );
+                    }
+                    // Nothing is accepted. Each wrong part is removed so that the repeat
+                    // can send it again, since a PUT can never replace it.
+                    let wrong = objects
+                        .wrong_data_parts(project, executor, &saved.state)
                         .map_err(io)?;
-                    return self.dataset_archive_verified(project, executor, &asset, &saved.state);
+                    if wrong.is_empty() {
+                        return Err(refused("DATASET_ARCHIVE_REFUSED"));
+                    }
+                    self.dataset_discard_parts(project, executor, &asset, &wrong, saved.discards)?;
+                    return Err(refused("DATASET_PART_REJECTED"));
                 }
                 return Ok(Self::data_view(saved));
             }
@@ -376,6 +466,151 @@ impl Service {
             .map_err(io)?;
         Ok(Self::data_view(saved))
     }
+    /// A signed PUT of one part, after the same checks a part through this server has.
+    /// The record comes from `dataset_part_uploaded`, and `complete` proves the bytes.
+    pub fn dataset_upload_ticket(
+        &self,
+        project: &str,
+        executor: &str,
+        asset: &str,
+        part: u64,
+        sha256: &str,
+    ) -> cloud::Result<Value> {
+        let saved = self
+            .data_saved(project, executor, asset)?
+            .ok_or_else(missing)?;
+        if saved.archive_verified {
+            return Err(cloud::Error::evidence());
+        }
+        self.part_record(&saved.state, part, sha256)?;
+        self.objects
+            .as_ref()
+            .ok_or_else(cloud::Error::configuration)?
+            .data_upload_ticket(project, executor, &saved.state.definition, part)
+            .map_err(io)
+    }
+    fn part_record(
+        &self,
+        state: &State,
+        part: u64,
+        sha256: &str,
+    ) -> cloud::Result<ml_exp_core::multipart::PartRecord> {
+        let record = ml_exp_core::multipart::PartRecord {
+            sha256: sha256.into(),
+            bytes: state
+                .definition
+                .part_size(part)
+                .map_err(why!(cloud::Error::configuration()))?,
+        };
+        state
+            .record_part(part, record.clone())
+            .map_err(why!(cloud::Error::evidence()))?;
+        Ok(record)
+    }
+    /// A direct PUT finished. A HEAD shows the object exists at the exact size, without
+    /// reading it back on this small host; the lock is not held for it. The record is
+    /// what the client claims until `complete` reads every byte. A resume skips it, and
+    /// nothing else can use it: every reader of the parts needs `archive_verified`.
+    pub fn dataset_part_uploaded(
+        &self,
+        project: &str,
+        executor: &str,
+        asset: &str,
+        part: u64,
+        sha256: &str,
+    ) -> cloud::Result<Value> {
+        let saved = self
+            .data_saved(project, executor, asset)?
+            .ok_or_else(missing)?;
+        let record = self.part_record(&saved.state, part, sha256)?;
+        if saved.archive_verified || saved.state.parts.contains_key(&part) {
+            return Ok(Self::data_view(saved));
+        }
+        let size = self
+            .objects
+            .as_ref()
+            .ok_or_else(cloud::Error::configuration)?
+            .data_part_size(project, executor, &saved.state.definition, part)
+            .map_err(io)?;
+        match size {
+            None => return Err(refused("DATASET_PART_NOT_STORED")),
+            Some(size) if size != record.bytes => {
+                self.dataset_discard_parts(project, executor, asset, &[part], saved.discards)?;
+                return Err(refused("DATASET_PART_REJECTED"));
+            }
+            Some(_) => {}
+        }
+        let _lock = self.lock()?;
+        let mut saved = self
+            .data_saved(project, executor, asset)?
+            .ok_or_else(missing)?;
+        saved.state = saved
+            .state
+            .record_part(part, record)
+            .map_err(why!(cloud::Error::evidence()))?;
+        self.slots
+            .replace_regular(
+                OsStr::new(&Self::data_name(project, executor, asset)?),
+                &encode(&saved)?,
+            )
+            .map_err(io)?;
+        Ok(Self::data_view(saved))
+    }
+    /// Remove parts refused as wrong, so that a repeat can send them again. Once the
+    /// archive is verified its parts are in use, and no earlier observation removes one.
+    /// `observed` is the count the refusal was read under. If anything was removed since,
+    /// the part may already be a new one, so nothing happens and the repeat looks again.
+    ///
+    /// Only a few go per call, because each DELETE can take minutes. The lock is not held
+    /// for them: raising the count first ends every read that started earlier, and a
+    /// record outliving its object is safe, since `complete` calls a missing part wrong.
+    fn dataset_discard_parts(
+        &self,
+        project: &str,
+        executor: &str,
+        asset: &str,
+        wrong: &[u64],
+        observed: u64,
+    ) -> cloud::Result<()> {
+        let name = Self::data_name(project, executor, asset)?;
+        let definition = {
+            let _lock = self.lock()?;
+            let mut current = self
+                .data_saved(project, executor, asset)?
+                .ok_or_else(missing)?;
+            if current.archive_verified || current.state.ready.is_some() {
+                return Err(cloud::Error::evidence());
+            }
+            if current.discards != observed {
+                return Ok(());
+            }
+            current.discards += 1;
+            self.slots
+                .replace_regular(OsStr::new(&name), &encode(&current)?)
+                .map_err(io)?;
+            current.state.definition
+        };
+        let objects = self
+            .objects
+            .as_ref()
+            .ok_or_else(cloud::Error::configuration)?;
+        let removing = &wrong[..wrong.len().min(MAX_DISCARDED_PARTS)];
+        for part in removing {
+            objects
+                .delete_data(project, executor, &definition, *part)
+                .map_err(io)?;
+        }
+        let _lock = self.lock()?;
+        let mut current = self
+            .data_saved(project, executor, asset)?
+            .ok_or_else(missing)?;
+        for part in removing {
+            current.state.parts.remove(part);
+        }
+        self.slots
+            .replace_regular(OsStr::new(&name), &encode(&current)?)
+            .map_err(io)
+    }
     /// Record a verification that ran with the lock released. Anything else may have
     /// happened meanwhile, including a copy job starting, so only the flag is set, on
     /// the record as it stands now. Writing back the older snapshot would erase that
@@ -387,12 +622,13 @@ impl Service {
         executor: &str,
         asset: &str,
         verified: &State,
+        discards: u64,
     ) -> cloud::Result<Value> {
         let _lock = self.lock()?;
         let mut current = self
             .data_saved(project, executor, asset)?
             .ok_or_else(missing)?;
-        if current.state != *verified {
+        if current.state != *verified || current.discards != discards {
             return Err(cloud::Error::evidence());
         }
         current.archive_verified = true;
@@ -448,5 +684,23 @@ impl Service {
             .ok_or_else(cloud::Error::configuration)?
             .data_ticket(project, &prepared.execution.backend_id, definition, part)
             .map_err(io)
+    }
+}
+
+#[cfg(test)]
+mod verifying_tests {
+    use super::*;
+
+    #[test]
+    fn a_second_read_of_one_archive_waits_and_others_do_not() {
+        let verifying = Verifying::default();
+        let first = verifying.begin("a").unwrap();
+        assert_eq!(
+            verifying.begin("a").err().unwrap().code,
+            "DATASET_VERIFYING"
+        );
+        drop(verifying.begin("b").unwrap());
+        drop(first);
+        verifying.begin("a").unwrap();
     }
 }

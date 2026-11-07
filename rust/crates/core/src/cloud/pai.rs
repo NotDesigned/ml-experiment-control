@@ -14,6 +14,25 @@ pub enum Allocation {
     IdleOnly,
 }
 impl Allocation {
+    /// What a new Run asks for when nobody chose. This is read only where a Run is
+    /// authored, which then freezes it. `Default` stays `Guaranteed`, because a stored
+    /// Run or preparation with no `scheduling` ran as, and keeps meaning, exactly that.
+    /// A job with no GPU is left guaranteed: idle resources are about GPUs, and it has
+    /// nothing to gain from being preempted.
+    pub fn for_new_run(gpus: u32) -> Self {
+        if gpus == 0 {
+            Self::Guaranteed
+        } else {
+            Self::AllowIdle
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Guaranteed => "guaranteed",
+            Self::AllowIdle => "allow_idle",
+            Self::IdleOnly => "idle_only",
+        }
+    }
     pub fn oversold(self) -> &'static str {
         match self {
             Self::Guaranteed => "ForbiddenQuotaOverSold",
@@ -454,7 +473,8 @@ pub(super) fn provider_text(value: &Value) -> Value {
 /// The provider's own account of a job, selected field by field so that
 /// environment, credentials and command never leave the provider response.
 pub fn diagnostic_job(row: &Value) -> Value {
-    json!({"provider_state":provider_text(&row["Status"]),"sub_status":provider_text(&row["SubStatus"]),
+    json!({"used_idle":row["UseOversoldResource"].as_bool(),
+        "provider_state":provider_text(&row["Status"]),"sub_status":provider_text(&row["SubStatus"]),
         "reason_code":provider_text(&row["ReasonCode"]),"reason_message":provider_text(&row["ReasonMessage"]),
         "created_at":provider_text(&row["GmtCreateTime"]),"running_at":provider_text(&row["GmtRunningTime"]),
         "failed_at":provider_text(&row["GmtFailedTime"]),"finished_at":provider_text(&row["GmtFinishTime"])})

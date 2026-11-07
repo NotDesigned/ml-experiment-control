@@ -27,6 +27,7 @@ pub mod operations;
 pub mod polling;
 pub mod projects;
 pub mod records;
+pub mod retry;
 pub mod slurm;
 pub mod sources;
 pub mod state;
