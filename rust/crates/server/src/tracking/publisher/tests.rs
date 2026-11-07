@@ -570,6 +570,17 @@ impl Fixture {
             &self.flag,
         )
     }
+    /// A visit once the provider has proven the Attempt ended in `state`.
+    fn visit_ended(&mut self, scope: &str, state: &str) -> Result<Next> {
+        publish_ended(
+            &self.store,
+            &self.runtime,
+            &mut self.session,
+            scope,
+            Some(state),
+            &self.flag,
+        )
+    }
     fn status(&self, scope: &str) -> Value {
         let parsed = Scope::parse(scope).unwrap();
         let guard = self.store.guard("demo", &parsed.run).unwrap();
@@ -1073,4 +1084,121 @@ fn a_derived_batch_reaches_the_same_finished_wandb_run_which_ends_finished_again
 #[test]
 fn a_derived_batch_for_a_failed_run_leaves_its_wandb_run_failed_again() {
     exercise_derived_batch("FAILED", "failed");
+}
+
+/// Visit until the scope is synced and idle, with no terminal evidence.
+fn until_synced(fixture: &mut Fixture, scope: &str) {
+    for _ in 0..12 {
+        if fixture.status(scope)["status"] == "SYNCED"
+            && fixture.visit(scope).unwrap() == Next::Idle
+        {
+            return;
+        }
+        fixture.visit(scope).unwrap();
+    }
+    panic!("publication did not sync: {}", fixture.status(scope));
+}
+
+/// A preempted or killed job never writes METRICS_DRAINED. Once the provider proves it
+/// ended, its W&B Run is finished as failed, with no new row and no invented event.
+#[test]
+fn a_job_the_provider_ended_finishes_its_wandb_run_as_failed_without_new_rows() {
+    let mut fixture = Fixture::new(json!({}));
+    let scope = fixture.scope("train");
+    fixture.append(&scope, 1..=3);
+    {
+        let guard = fixture.store.guard("demo", "train").unwrap();
+        let running = json!({"kind":"lifecycle","data":{"phase":"TRAINING","state":"RUNNING"}});
+        fixture
+            .store
+            .append(
+                &guard,
+                &scope,
+                &[Event {
+                    event_id: "running".into(),
+                    payload: running,
+                }],
+            )
+            .unwrap();
+    }
+    until_synced(&mut fixture, &scope);
+    let total = fixture.status(&scope)["total"].clone();
+    let id = fixture.status(&scope)["wandb_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let before = fixture.cloud();
+    assert_eq!(before["runs"][&id]["state"], "running");
+    assert_eq!(before["finishes"], 0);
+    // Still running as far as the provider knows: nothing finishes.
+    assert_eq!(fixture.visit(&scope).unwrap(), Next::Idle);
+    assert_eq!(fixture.cloud()["finishes"], 0);
+
+    let mut finished = false;
+    for _ in 0..12 {
+        if fixture.status(&scope)["status"] == "FINISHED"
+            && fixture.visit_ended(&scope, "PREEMPTED").unwrap() == Next::Idle
+        {
+            finished = true;
+            break;
+        }
+        fixture.visit_ended(&scope, "PREEMPTED").unwrap();
+    }
+    assert!(finished, "{}", fixture.status(&scope));
+    let after = fixture.cloud();
+    assert_eq!(after["runs"][&id]["state"], "failed");
+    assert_eq!(after["finishes"], 1);
+    assert_eq!(after["logs"], before["logs"], "no row is sent again");
+    let status = fixture.status(&scope);
+    assert_eq!(status["total"], total, "no event is invented");
+    assert_eq!(status["confirmed"], total);
+    assert!(!candidate_scopes(&fixture.store).unwrap().contains(&scope));
+    // Finished: later visits cost nothing.
+    assert_eq!(
+        fixture.visit_ended(&scope, "PREEMPTED").unwrap(),
+        Next::Idle
+    );
+    assert_eq!(fixture.cloud()["finishes"], 1);
+    fixture.assert_each_record_once(&scope, 3);
+}
+
+/// A person deleted the W&B Run. The publisher never recreates it: the scope says so
+/// and stops, and later visits make no W&B request.
+#[test]
+fn a_deleted_wandb_run_is_never_recreated_and_its_scope_stops() {
+    let mut fixture = Fixture::new(json!({}));
+    let scope = fixture.scope("train");
+    fixture.append(&scope, 1..=2);
+    until_synced(&mut fixture, &scope);
+    let id = fixture.status(&scope)["wandb_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    fixture.append(&scope, 3..=3);
+    fixture.restart();
+    fixture.edit_cloud(|data| {
+        data["runs"].as_object_mut().unwrap().remove(&id);
+    });
+    let before = fixture.cloud();
+    assert_eq!(fixture.visit(&scope).unwrap(), Next::Idle);
+    let status = fixture.status(&scope);
+    assert_eq!(status["status"], "REMOTE_RUN_MISSING");
+    assert_eq!(status["error"], "WANDB_REMOTE_RUN_MISSING");
+    assert_eq!(status["confirmed"], 2);
+    assert!(!candidate_scopes(&fixture.store).unwrap().contains(&scope));
+    for _ in 0..3 {
+        assert_eq!(fixture.visit(&scope).unwrap(), Next::Idle);
+        assert_eq!(
+            fixture.visit_ended(&scope, "PREEMPTED").unwrap(),
+            Next::Idle
+        );
+    }
+    fixture.restart();
+    assert_eq!(fixture.visit(&scope).unwrap(), Next::Idle);
+    let after = fixture.cloud();
+    assert!(after["runs"].get(&id).is_none(), "never recreated");
+    assert_eq!(after["inits"], before["inits"]);
+    assert_eq!(after["logs"], before["logs"]);
+    assert_eq!(after["finishes"], before["finishes"]);
+    assert_eq!(fixture.status(&scope)["status"], "REMOTE_RUN_MISSING");
 }

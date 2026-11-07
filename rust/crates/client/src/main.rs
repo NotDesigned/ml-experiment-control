@@ -1710,8 +1710,18 @@ fn report(value: serde_json::Value, json: bool) -> Result<Output, Box<dyn std::e
         Output::Json(value) => println!("{}", serde_json::to_string_pretty(&value)?),
         Output::Text(text) => println!("{text}"),
     }
-    Err(reason.into())
+    Err(Box::new(Reported(reason)))
 }
+/// A failure whose complete output is already on stdout, so `--json` adds no second
+/// document for it.
+#[derive(Debug)]
+struct Reported(String);
+impl std::fmt::Display for Reported {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for Reported {}
 /// Show what will be spent and ask, once. No terminal means no one can answer.
 fn confirm(summary: &str, yes: bool) -> Result<bool, ml_exp_client::Error> {
     use std::io::{IsTerminal, Write};
@@ -1751,9 +1761,15 @@ fn client() -> std::process::ExitCode {
     if std::env::args().nth(1).as_deref() == Some("--help-all") {
         return help_all();
     }
-    match run(Args::parse()) {
+    let args = Args::parse();
+    let json = args.json;
+    match run(args) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
+            // A caller parsing stdout still reads one document; the exit stays non-zero.
+            if json && !error.is::<Reported>() {
+                println!("{}", ml_exp_client::error_document(&*error));
+            }
             eprintln!("{error}");
             std::process::ExitCode::FAILURE
         }

@@ -66,17 +66,24 @@ impl Service {
             let Some(name) = name.to_str() else {
                 continue;
             };
-            // Preparation slot names are a single raw SHA256 plus .json;
-            // progress/history/caches cannot be mistaken for an Action.
-            let Some(id) = name.strip_suffix(".json") else {
-                continue;
-            };
-            if ml_exp_core::sources::validate_archive_digest(id).is_err() {
+            if !preparation_slot(name) {
                 continue;
             }
             let prepared: Prepared =
                 serde_json::from_value(super::engine::read(&self.slots, name)?)
                     .map_err(why!(crate::backends::cloud::Error::evidence()))?;
+            // A slot holds only the Attempt its name was derived from.
+            let binding = &prepared.execution.binding;
+            if ml_exp_core::first_submission::native::attempt_slot(
+                &binding.project,
+                &binding.run_id,
+                &binding.attempt_id,
+            )
+            .ok()
+            .is_none_or(|slot| format!("{slot}.json") != name)
+            {
+                continue;
+            }
             let action = prepared.plan["action_id"]
                 .as_str()
                 .ok_or_else(crate::backends::cloud::Error::evidence)?;
@@ -100,5 +107,47 @@ impl Service {
             }
         }
         Ok(result)
+    }
+}
+/// A first Attempt's preparation is a raw SHA256 plus `.json`; a retry's adds its
+/// Attempt, as in `<sha256>.attempt-002.json`. Progress, history, exchange and other
+/// files beside them cannot be mistaken for an Action.
+fn preparation_slot(name: &str) -> bool {
+    let Some(stem) = name.strip_suffix(".json") else {
+        return false;
+    };
+    let (digest, attempt) = match stem.split_once('.') {
+        Some((digest, attempt)) => (digest, Some(attempt)),
+        None => (stem, None),
+    };
+    ml_exp_core::sources::validate_archive_digest(digest).is_ok()
+        && attempt.is_none_or(|attempt| {
+            attempt != "attempt-001"
+                && ml_exp_core::first_submission::native::retry::number(attempt).is_ok()
+        })
+}
+#[cfg(test)]
+mod tests {
+    use super::preparation_slot;
+    #[test]
+    fn retry_preparations_are_candidates_and_their_companions_are_not() {
+        let digest = "a".repeat(64);
+        assert!(preparation_slot(&format!("{digest}.json")));
+        assert!(preparation_slot(&format!("{digest}.attempt-002.json")));
+        assert!(preparation_slot(&format!("{digest}.attempt-120.json")));
+        for name in [
+            format!("{digest}.attempt-001.json"),
+            format!("{digest}.attempt-2.json"),
+            format!("{digest}.attempt-002.json.exchange.json"),
+            format!("{digest}.attempt-002.startup-failure.json"),
+            format!("{digest}.json.artifacts.json"),
+            format!("{digest}.startup-failure.json"),
+            "prepared-action-0123456789abcdef.json".into(),
+            format!("dataset-{digest}.json"),
+            format!("runtime.{digest}.runtime.json"),
+            "capacity-pai-h200.json".into(),
+        ] {
+            assert!(!preparation_slot(&name), "{name}");
+        }
     }
 }

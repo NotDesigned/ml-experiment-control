@@ -797,4 +797,30 @@ impl crate::tracking::Source for Service {
         self.exchange_records(&prepared)
             .map_err(why!(crate::tracking::Error::Identity))
     }
+    /// The scheduler outbox's last provider observation, only where it proves the job
+    /// is over (SenseCore's CANCELLED for a job that may still run proves nothing).
+    /// Nothing is fetched: the observer and client refreshes keep it current.
+    fn provider_terminal(
+        &self,
+        project: &str,
+        run: &str,
+        attempt: &str,
+    ) -> Result<Option<String>, crate::tracking::Error> {
+        let Some(prepared) = self
+            .saved_attempt(project, run, attempt)
+            .map_err(why!(crate::tracking::Error::Identity))?
+        else {
+            return Ok(None);
+        };
+        let Some(state) = self
+            .outbox
+            .optional_status(&prepared.execution.job)
+            .map_err(why!(crate::tracking::Error::Storage))?
+        else {
+            return Ok(None);
+        };
+        Ok(super::sync_jobs::proven_terminal(&state)
+            .map_err(why!(crate::tracking::Error::Storage))?
+            .and_then(|_| state["observation"]["state"].as_str().map(Into::into)))
+    }
 }
