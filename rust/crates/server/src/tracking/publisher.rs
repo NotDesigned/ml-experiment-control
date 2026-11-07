@@ -76,6 +76,10 @@ struct Saved {
     /// Nothing was lost, and a W&B row cannot be removed, so this only reports it.
     #[serde(default, skip_serializing_if = "is_zero")]
     duplicate_rows: u64,
+    /// W&B no longer has a Run this scope had opened: a person deleted it. It is
+    /// never recreated, so the scope stops here and shows why.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    remote_missing: bool,
 }
 fn at_most_one(value: &u32) -> bool {
     *value <= 1
@@ -94,6 +98,16 @@ pub trait Source: Send + Sync {
     fn tracking_journal(&self, project: &str, run: &str) -> Result<Store>;
     fn publication_scopes(&self, store: &Store) -> Result<BTreeSet<String>> {
         candidate_scopes(store)
+    }
+    /// The terminal state the provider has proven for this Attempt, so its worker
+    /// can no longer write. None while it may still run, or with no provider.
+    fn provider_terminal(
+        &self,
+        _project: &str,
+        _run: &str,
+        _attempt: &str,
+    ) -> Result<Option<String>> {
+        Ok(None)
     }
 }
 impl Source for crate::backends::slurm::service::Service {
@@ -144,6 +158,13 @@ impl Source for crate::api::Api {
         self.submissions()
             .ok_or(Error::Configuration)
             .and_then(|s| Source::tracking_journal(&*s, project, run))
+    }
+    fn provider_terminal(&self, project: &str, run: &str, attempt: &str) -> Result<Option<String>> {
+        if self.run_kind(project, run).map_err(why!(Error::Identity))? != RunKind::Cloud {
+            return Ok(None);
+        }
+        let service = self.cloud().ok_or(Error::Configuration)?;
+        Source::provider_terminal(&*service, project, run, attempt)
     }
 }
 impl Publisher {
@@ -218,6 +239,9 @@ fn candidate_scopes(store: &Store) -> Result<BTreeSet<String>> {
                 .publication_state(&guard, id)
                 .map_err(why!(Error::Storage))?;
             let confirmed = scope["confirmed"].as_i64().ok_or(Error::Identity)?;
+            if saved.as_ref().is_some_and(|s| s["remote_missing"] == true) {
+                continue;
+            }
             if !saved.is_some_and(|s| s["remote_finished"] == true)
                 || store
                     .derived_after(&guard, id, confirmed)
@@ -269,13 +293,35 @@ fn publish_scope(
     let _authority = service
         .tracking_journal(&parsed.project, &parsed.run)
         .map_err(why!(Error::Publication("JOURNAL_AUTHORITY_UNAVAILABLE")))?;
-    publish_bound(store, runtime, session, scope, cancelled)
+    // Only a gate on finishing: an unreadable provider record leaves rows publishing.
+    let ended = parsed.attempt.as_str().and_then(|attempt| {
+        service
+            .provider_terminal(&parsed.project, &parsed.run, attempt)
+            .ok()
+            .flatten()
+    });
+    publish_ended(store, runtime, session, scope, ended.as_deref(), cancelled)
 }
+#[cfg(test)]
 fn publish_bound(
     store: &Store,
     runtime: &Runtime,
     session: &mut Session,
     scope: &str,
+    cancelled: &AtomicBool,
+) -> Result<Next> {
+    publish_ended(store, runtime, session, scope, None, cancelled)
+}
+/// `ended` is the provider's proven terminal state of the scope's Attempt. A job the
+/// provider stopped (preempted, killed, timed out) never writes METRICS_DRAINED, yet
+/// its worker can no longer write either, so its W&B Run is finished as failed once
+/// every journal row is confirmed. No lifecycle event is invented for it.
+fn publish_ended(
+    store: &Store,
+    runtime: &Runtime,
+    session: &mut Session,
+    scope: &str,
+    ended: Option<&str>,
     cancelled: &AtomicBool,
 ) -> Result<Next> {
     let parsed = Scope::parse(scope).map_err(why!(Error::Identity))?;
@@ -295,7 +341,8 @@ fn publish_bound(
         .ok_or(Error::Identity)?;
     let confirmed = status["confirmed"].as_i64().ok_or(Error::Identity)?;
     let total = store.total(&guard, scope).map_err(why!(Error::Storage))?;
-    if session.is_idle(scope, total) {
+    // An ended Attempt is looked at until it is finished, though its journal is still.
+    if ended.is_none() && session.is_idle(scope, total) {
         return Ok(Next::Idle);
     }
     let mut saved: Saved = store
@@ -305,6 +352,10 @@ fn publish_bound(
         .transpose()
         .map_err(why!(Error::Identity))?
         .unwrap_or_default();
+    if saved.remote_missing {
+        session.mark_idle(scope, total);
+        return Ok(Next::Idle);
+    }
     if saved.remote_finished {
         // A finished W&B Run is resumed only for derived rows added after the Run
         // ended. It is then published, proven and finished again like any other.
@@ -357,15 +408,35 @@ fn publish_bound(
     } else {
         json!({})
     };
-    let terminal = lifecycle["phase"] == "METRICS_DRAINED"
+    let drained = lifecycle["phase"] == "METRICS_DRAINED"
         && matches!(
             lifecycle["state"].as_str(),
             Some("SUCCEEDED" | "FAILED" | "CANCELLED" | "TIMEOUT")
-        )
-        && through == total;
+        );
+    let terminal = (drained || ended.is_some()) && through == total;
     let mut job = json!({"operation":"observe","api_key":runtime.key,"route":binding["route"],"wandb_id":status["wandb_id"],"scope":status,"config":binding["config"],"confirmed":confirmed,"through":through,
         "open_session":!saved.finish_requested,"resume":if saved.ever_opened||confirmed>0||!saved.state.sent.is_empty(){"must"}else{"allow"}});
-    let remote = session.open(runtime)?.call(&job, cancelled)?;
+    let remote = match session.open(runtime)?.call(&job, cancelled) {
+        // A Run this scope opened before is gone. Recreating it would publish a
+        // partial copy under the same name, so the scope stops and says why.
+        Err(Error::SdkRequest(code @ "WANDB_REMOTE_RUN_MISSING")) if job["resume"] == "must" => {
+            saved.remote_missing = true;
+            let (at, _) = crate::projects::transition_context().map_err(why!(Error::Storage))?;
+            save(
+                store,
+                &guard,
+                scope,
+                &saved,
+                "REMOTE_RUN_MISSING",
+                Some(code),
+                &at,
+            )?;
+            session.forget_watch(scope);
+            session.mark_idle(scope, total);
+            return Ok(Next::Idle);
+        }
+        result => result?,
+    };
     if remote["wandb_id"] != status["wandb_id"] || remote["route"] != binding["route"] {
         return Err(Error::Publication("REMOTE_RUN_IDENTITY_MISMATCH"));
     }
@@ -447,7 +518,7 @@ fn publish_bound(
         .actions
         .iter()
         .any(|action| matches!(action, PublicationAction::Finish { .. }));
-    let exit_code = if lifecycle["state"] == "SUCCEEDED" {
+    let exit_code = if drained && lifecycle["state"] == "SUCCEEDED" {
         0
     } else {
         1
