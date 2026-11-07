@@ -290,7 +290,11 @@ pub fn execution(
             .as_str()
             .ok_or(Error("frozen data root"))?,
         datasets,
-        attempt.get("native_checkpoint").cloned(),
+        // A retry from the start freezes this as null, which is no checkpoint at all.
+        attempt
+            .get("native_checkpoint")
+            .filter(|value| !value.is_null())
+            .cloned(),
     )?;
     if let Some(value) = run.get("data_preparation") {
         let plan = crate::data_preparation::Plan {
