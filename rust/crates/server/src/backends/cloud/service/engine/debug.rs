@@ -216,7 +216,11 @@ impl Service {
             .debug
             .as_ref()
             .ok_or_else(cloud::Error::configuration)?;
-        let profiles=runtime.profiles.iter().map(|(name,(profile,_))|json!({"name":name,"provider":"pai_dsw","delete_supported":true})).collect::<Vec<_>>();
+        let profiles = runtime
+            .profiles
+            .keys()
+            .map(|name| json!({"name":name,"provider":"pai_dsw","delete_supported":true}))
+            .collect::<Vec<_>>();
         Ok(
             json!({"enabled":runtime.enabled,"profiles":profiles,"machines":self.debug_records()?.iter().map(Self::debug_view).collect::<Vec<_>>()}),
         )
