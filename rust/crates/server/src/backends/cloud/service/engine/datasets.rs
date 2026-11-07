@@ -689,7 +689,10 @@ mod verifying_tests {
     fn a_second_read_of_one_archive_waits_and_others_do_not() {
         let verifying = Verifying::default();
         let first = verifying.begin("a").unwrap();
-        assert_eq!(verifying.begin("a").err().unwrap().code, "DATASET_VERIFYING");
+        assert_eq!(
+            verifying.begin("a").err().unwrap().code,
+            "DATASET_VERIFYING"
+        );
         drop(verifying.begin("b").unwrap());
         drop(first);
         verifying.begin("a").unwrap();
