@@ -23,6 +23,7 @@ use tokio::sync::mpsc;
 /// A worker that stops reading must not hold a transfer slot for ever.
 const CODE_TRANSFER: Duration = Duration::from_secs(15 * 60);
 type Cloud = crate::backends::cloud::service::Service;
+type Chunks<'a> = &'a mut dyn FnMut(Vec<u8>) -> io::Result<()>;
 pub(crate) fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route(
@@ -186,7 +187,7 @@ struct Transfer<G, C> {
     authorize: fn(&Cloud, &str, &str, &str, &str) -> crate::backends::cloud::Result<G>,
     open: fn(&Cloud, &G) -> crate::backends::cloud::Result<C>,
     bytes: fn(&C) -> u64,
-    send: fn(C, &mut dyn FnMut(Vec<u8>) -> io::Result<()>) -> io::Result<()>,
+    send: fn(C, Chunks<'_>) -> io::Result<()>,
 }
 /// Streamed from files, so a large one neither sits in this server's memory nor holds one
 /// of the slots ordinary requests wait for. The worker checks every byte.

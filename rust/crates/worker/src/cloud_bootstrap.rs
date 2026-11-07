@@ -136,7 +136,7 @@ pub fn fetch(url: &str, token: &str, expected: &str) -> Result<Vec<u8>> {
 fn install(directory: &Path, bytes: &[u8]) -> std::io::Result<PathBuf> {
     let mut random = [0u8; 16];
     getrandom::fill(&mut random).map_err(|error| std::io::Error::other(error.to_string()))?;
-    let name: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+    let name = &helper::sha256_bytes(&random)[7..39];
     let private = directory.join(format!("ml-expd-worker-{name}"));
     fs::DirBuilder::new().mode(0o700).create(&private)?;
     let path = private.join(PROGRAM);
