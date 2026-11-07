@@ -879,7 +879,8 @@ fn an_upgrade_needs_no_rebuild_and_an_attempt_fetches_only_the_worker_it_froze()
         .send()
         .unwrap()
     };
-    let executors: Value = get(Some(token), "/api/executors").json().unwrap();
+    let executors: Value =
+        serde_json::from_slice(&get(Some(token), "/api/executors").bytes().unwrap()).unwrap();
     assert_eq!(
         executors["executors"][0]["capabilities"]["code_delivery"]["runtime_identity"],
         BOOTSTRAP
