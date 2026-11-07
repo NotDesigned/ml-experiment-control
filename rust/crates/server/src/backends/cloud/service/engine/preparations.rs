@@ -182,6 +182,28 @@ impl Service {
         }
         Ok(saved)
     }
+    /// An upgrade changes the worker, and a Runtime can only be built with the current
+    /// one, so an unbuilt preparation frozen with the old one could never finish. Nothing
+    /// ran under the old identity, so it moves on, but only once its build is proven to
+    /// have left nothing behind. A built Runtime keeps the worker it was built with.
+    fn follow_current_worker(&self, saved: &mut Saved) -> cloud::Result<bool> {
+        let Some(current) = self.builds.as_ref().map(|s| &s.worker_sha256) else {
+            return Ok(false);
+        };
+        if saved.request.runtime.is_none() || &saved.worker_sha256 == current {
+            return Ok(false);
+        }
+        let old = saved
+            .request
+            .resolve(&saved.project, &saved.worker_sha256)
+            .map_err(why!(cloud::Error::evidence()))?;
+        let status = self.runtime_status(&saved.project, &old.runtime_id)?;
+        if status["runtime"].is_null() && status["retry_safe"] == true {
+            saved.worker_sha256 = current.clone();
+            return Ok(true);
+        }
+        Ok(false)
+    }
     fn setup_view(&self, saved: &Saved) -> cloud::Result<Value> {
         let id = saved
             .request
@@ -326,6 +348,7 @@ impl Service {
         if !self.enabled || confirmation != format!("PREPARE {id}") {
             return Err(cloud::Error::configuration());
         }
+        let moved;
         let saved = {
             let _lock = self.lock()?;
             let mut saved = self.setup_load(project, id)?;
@@ -333,11 +356,17 @@ impl Service {
                 return self.setup_view(&saved).map(Continue::View);
             }
             saved.started = true;
+            moved = self.follow_current_worker(&mut saved)?;
             self.slots
                 .replace_regular(OsStr::new(&name(id)?), &encode(&saved)?)
                 .map_err(io)?;
             saved
         };
+        if moved {
+            if let Some(definition) = &saved.request.runtime {
+                self.prepare_runtime(project, definition.clone())?;
+            }
+        }
         let run = saved
             .request
             .resolve(project, &saved.worker_sha256)
