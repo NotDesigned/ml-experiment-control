@@ -434,7 +434,7 @@ fn a_name_collision_in_one_history_row_reports_its_own_code() {
 }
 
 #[test]
-fn sdk_repeated_pages_require_identical_full_rows_and_reject_distinct_duplicate_rows() {
+fn sdk_repeats_of_a_record_are_counted_and_conflicting_rows_are_refused() {
     let root = tempfile::tempdir().unwrap();
     let cloud = root.path().join("cloud.json");
     fs::write(root.path().join("fake_sdk.py"), include_str!("fake_sdk.py")).unwrap();
@@ -448,15 +448,25 @@ fn sdk_repeated_pages_require_identical_full_rows_and_reject_distinct_duplicate_
         "route":{"entity":"fixture","project":"science"},"wandb_id":"original",
         "scope":{},"config":{},"confirmed":0,"through":2,"open_session":false,"resume":"must"});
     let mut sdk = Sdk::open(&wrapper).unwrap();
-    for flag in ["repeat_pages", "conflicting_page", "duplicate_sequence"] {
+    for flag in [
+        "repeat_pages",
+        "duplicate_sequence",
+        "conflicting_page",
+        "conflicting_sequence",
+    ] {
         let mut data = base.clone();
         data[flag] = json!(true);
         fs::write(&cloud, data.to_string()).unwrap();
         let observed = sdk.call(&job, &AtomicBool::new(false));
-        if flag == "repeat_pages" {
+        if flag == "repeat_pages" || flag == "duplicate_sequence" {
+            let observed = observed.unwrap();
             assert_eq!(
-                observed.unwrap()["evidence"]["history"],
+                observed["evidence"]["history"],
                 json!([{"sequence":2,"event_id":"m2"}])
+            );
+            assert_eq!(
+                observed["evidence"]["duplicate_rows"],
+                u64::from(flag == "duplicate_sequence")
             );
         } else {
             assert!(matches!(
@@ -745,7 +755,7 @@ fn a_restart_recovers_a_lost_tail_without_a_person_and_then_finishes() {
     assert_eq!(fixture.cloud()["logs"], 10);
     let state = fixture.state(&scope);
     assert_eq!(state["history_repair"]["source"], "automatic");
-    assert_eq!(state["history_repair"]["attempts"], 1);
+    assert!(state["history_repair"].get("attempts").is_none());
     assert_eq!(state["history_repair"]["events"]["3"], "m3");
     assert_eq!(state["history_repair"]["remote_confirmed"], false);
     assert_eq!(fixture.status(&scope)["status"], "REPAIR_ACK_PENDING");
@@ -802,25 +812,60 @@ fn the_default_settle_delay_holds_uncertain_rows_back() {
 }
 
 #[test]
-fn a_lost_repair_is_observed_then_retried_only_a_bounded_number_of_times() {
+fn a_lost_repair_is_observed_then_retried_for_as_long_as_it_stays_missing() {
     let mut fixture = Fixture::new(json!({"hidden":true}));
     let scope = fixture.scope("train");
     fixture.append(&scope, 1..=2);
     fixture.visit(&scope).unwrap();
-    for attempt in 1..=3 {
+    for attempt in 1..=5 {
         fixture.restart();
         fixture.visit(&scope).unwrap();
         assert_eq!(fixture.cloud()["logs"], 2 * attempt);
         fixture.visit(&scope).unwrap();
         assert_eq!(fixture.cloud()["logs"], 2 * attempt + 2);
-        assert_eq!(fixture.state(&scope)["history_repair"]["attempts"], attempt);
+        let saved = &fixture.state(&scope)["history_repair"]["attempts"];
+        assert_eq!(saved.as_u64().unwrap_or(1), attempt);
+        assert_eq!(fixture.status(&scope)["status"], "REPAIR_ACK_PENDING");
     }
-    fixture.restart();
-    for _ in 0..3 {
-        fixture.visit(&scope).unwrap();
-    }
-    assert_eq!(fixture.cloud()["logs"], 8, "the last attempt stays visible");
-    assert_eq!(fixture.status(&scope)["status"], "REPAIR_ACK_PENDING");
+}
+
+#[test]
+fn a_settle_clock_ends_when_the_child_is_lost_or_a_read_fails() {
+    let mut fixture = Fixture::new(json!({}));
+    let scope = fixture.scope("train");
+    fixture.append(&scope, 1..=1);
+    fixture.visit(&scope).unwrap();
+    let evidence = json!({"history":[]});
+    let session = &mut fixture.session;
+    assert!(session.stable_for(&scope, &evidence).is_none());
+    assert!(session.stable_for(&scope, &evidence).is_some());
+    session.lost();
+    assert!(session.stable_for(&scope, &evidence).is_none());
+    assert!(session.stable_for(&scope, &evidence).is_some());
+    record_failure(
+        &fixture.store,
+        &scope,
+        &mut fixture.session,
+        &Error::SdkRequest("WANDB_HISTORY_READ_FAILED"),
+    );
+    assert!(fixture.session.stable_for(&scope, &evidence).is_none());
+}
+
+#[test]
+fn a_saved_single_attempt_reads_as_an_older_server_wrote_it() {
+    let saved = |attempts| {
+        serde_json::to_value(HistoryRepair {
+            events: BTreeMap::new(),
+            attempted: true,
+            remote_confirmed: false,
+            attempts,
+            source: None,
+            at: None,
+        })
+        .unwrap()
+    };
+    assert!(saved(1).get("attempts").is_none());
+    assert_eq!(saved(2)["attempts"], 2);
 }
 
 #[test]

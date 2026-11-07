@@ -152,12 +152,16 @@ def dispatch(job):
                 if len(history) > bound:
                     raise ValueError("history bound")
                 history[physical] = (digest, sequence, row["ml_expd/event_id"])
-            ordered = sorted((item[1], item[2]) for item in history.values())
-            if len({item[0] for item in ordered}) != len(ordered):
-                raise ValueError("distinct physical rows repeat a sequence")
-            return [{"sequence": sequence, "event_id": event_id}
-                    for sequence, event_id in ordered], maximum
-        history, maximum = request('HISTORY_READ', history_rows)
+            # A repair that crossed a late delivery shows one record twice. It stays
+            # counted and does not stop the Run: W&B cannot remove a row, and nothing
+            # is lost. Two different events at one sequence is a real conflict.
+            records = {}
+            for _, sequence, event_id in history.values():
+                if records.setdefault(sequence, event_id) != event_id:
+                    raise ValueError("distinct events repeat a sequence")
+            return [{"sequence": sequence, "event_id": records[sequence]}
+                    for sequence in sorted(records)], maximum, len(history) - len(records)
+        history, maximum, duplicates = request('HISTORY_READ', history_rows)
         summary_keys = list(remote.summary.keys())
         if len(summary_keys) > 8192:
             raise ValueError("summary bound")
@@ -166,6 +170,7 @@ def dispatch(job):
                 "summary_keys": summary_keys,
                 "physical_next_step": max(0, (remote.lastHistoryStep if remote.lastHistoryStep is not None else -1) + 1), "evidence": {
                     "history": history,
+                    "duplicate_rows": duplicates,
                     "last_history_step": maximum - 1,
                     "display_version": remote.summary.get("ml_expd/display_version"),
                     "display_through": remote.summary.get("ml_expd/display_through")}}

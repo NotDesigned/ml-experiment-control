@@ -126,6 +126,9 @@ class Handle:
             rows += [{**rows[0], "curves/loss": -9}]
         if data.get("duplicate_sequence") and rows:
             rows += [{**rows[0], "_step": self.lastHistoryStep + 1}]
+        if data.get("conflicting_sequence") and rows:
+            rows += [{**rows[0], "_step": self.lastHistoryStep + 1,
+                      "ml_expd/event_id": "another"}]
         return rows
 
     def define_metric(self, name, **options):

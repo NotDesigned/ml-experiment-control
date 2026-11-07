@@ -66,9 +66,12 @@ impl Session {
         }
         self.sdk.as_mut().ok_or(Error::Transport)
     }
+    /// Killing the child can make rows it held arrive late. Their settle delay starts
+    /// from here: a scan unchanged since before the kill says nothing about after it.
     pub(super) fn lost(&mut self) {
         self.sdk = None;
         self.held.clear();
+        self.watches.clear();
     }
     pub(super) fn shutdown(&mut self) {
         if let Some(sdk) = self.sdk.as_mut() {

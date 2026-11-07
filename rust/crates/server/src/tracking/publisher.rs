@@ -40,7 +40,8 @@ struct HistoryRepair {
     attempted: bool,
     remote_confirmed: bool,
     // States saved before automatic recovery have none of these.
-    #[serde(default)]
+    // One is what `attempted` already says, so an older server can still load it.
+    #[serde(default, skip_serializing_if = "at_most_one")]
     attempts: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source: Option<String>,
@@ -71,6 +72,16 @@ struct Saved {
     history_repair: Option<HistoryRepair>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     repairs: Vec<RepairAudit>,
+    /// The most rows W&B has shown repeating a record: a repair crossed a late delivery.
+    /// Nothing was lost, and a W&B row cannot be removed, so this only reports it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    duplicate_rows: u64,
+}
+fn at_most_one(value: &u32) -> bool {
+    *value <= 1
+}
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 pub struct Publisher {
     _worker: Worker,
@@ -220,6 +231,8 @@ fn record_failure(store: &Store, scope: &str, session: &mut Session, error: &Err
     if matches!(error, Error::Transport | Error::SdkMissing) {
         session.lost();
     }
+    // Rows may have arrived unseen during a failed read, so the next scan starts over.
+    session.forget_watch(scope);
     let _ = failure(store, scope, error);
 }
 fn failure(store: &Store, scope: &str, error: &Error) -> Result<()> {
@@ -401,6 +414,9 @@ fn publish_bound(
     }
     saved.ever_opened = true;
     saved.state = plan.state;
+    saved.duplicate_rows = saved
+        .duplicate_rows
+        .max(remote["evidence"]["duplicate_rows"].as_u64().unwrap_or(0));
     if let Some(repair) = saved.history_repair.as_mut() {
         if repair.attempted
             && repair

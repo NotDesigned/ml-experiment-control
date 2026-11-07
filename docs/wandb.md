@@ -194,7 +194,8 @@ and send reservations, a repair record is saved (`history_repair`, with `source`
 `attempts` and time; older repairs are summarized in `repairs`), and only rows
 proven absent are appended to the original W&B Run. Status is `REPAIR_ACK_PENDING`
 until W&B shows them, and publication then continues. A repair that also goes
-missing is retried the same way, each time waiting longer, at most three times.
+missing is retried the same way, each time waiting twice as long, up to about three
+hours, and it does not give up. Losing the SDK child or a failed read restarts the delay.
 A session that shows no progress for ten minutes is closed, which flushes it,
 and is then treated the same way.
 
@@ -231,5 +232,12 @@ scientific step axes and confirm by normal remote evidence.
 
 What only a real W&B run can show: how long rows take to become visible, and so
 the real rate; that a resumed `crashed` Run ends `finished`; and whether three
-minutes always covers late delivery. A row delivered after its repair would appear
-twice, and history reads then fail visibly rather than confirm it.
+minutes always covers late delivery. A row delivered after its repair appears twice,
+which W&B cannot undo. Publication continues, and the state counts it as
+`duplicate_rows`. Only rows from the confirmed position on are read, so a repeat below
+that position goes uncounted. Two different events at one sequence still stop the Run
+with `WANDB_HISTORY_READ_FAILED`.
+
+Sixteen Runs keep a session open at once. A seventeenth closes the oldest inside its own
+call, and a slow close can lose the SDK child. Recovery is the same as above, so it costs
+delay and not records.

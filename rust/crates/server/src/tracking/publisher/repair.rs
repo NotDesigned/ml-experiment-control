@@ -3,7 +3,11 @@
 //! a row it has not first observed to be absent.
 use super::*;
 
-const MAX_ATTEMPTS: u32 = 3;
+/// Each attempt waits twice as long as the last, up to 64 settle delays. Nothing stops
+/// for good: an attempt can fail before sending a row, and no person is watching.
+fn settle_for(settle: Duration, attempts: u32) -> Duration {
+    settle.saturating_mul(1 << attempts.min(6))
+}
 
 pub(super) struct Visit<'a, 'g> {
     pub(super) store: &'a Store,
@@ -50,8 +54,8 @@ pub(super) fn await_reservations(
         .filter(|repair| repair.attempted && !repair.remote_confirmed)
         .map_or(0, |repair| repair.attempts.max(1));
     let repair_pending = ("REPAIR_ACK_PENDING", Some("REMOTE_REPAIR_ACK_PENDING"));
-    let settled = stable.is_some_and(|elapsed| elapsed >= session.settle * (attempts + 1));
-    if attempts >= MAX_ATTEMPTS || !settled {
+    let settled = stable.is_some_and(|elapsed| elapsed >= settle_for(session.settle, attempts));
+    if !settled {
         let (phase, error) = if attempts > 0 {
             repair_pending
         } else {
@@ -325,5 +329,20 @@ pub fn repair(
         }
         thread::sleep(Duration::from_secs(2));
         remote = sdk.call(&job, &flag)?;
+    }
+}
+
+#[cfg(test)]
+mod settle_tests {
+    use super::*;
+
+    #[test]
+    fn each_attempt_waits_longer_up_to_a_limit() {
+        let settle = Duration::from_secs(180);
+        assert_eq!(settle_for(settle, 0), settle);
+        assert_eq!(settle_for(settle, 1), settle * 2);
+        assert_eq!(settle_for(settle, 3), settle * 8);
+        assert_eq!(settle_for(settle, 6), settle * 64);
+        assert_eq!(settle_for(settle, 500), settle * 64);
     }
 }
