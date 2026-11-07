@@ -12,7 +12,7 @@ impl Service {
         if let Some(status) = self.prepare_script(project, run)? {
             return Ok(status);
         }
-        let _lock = self.lock()?;
+        let _lock = self.lock("actions.prepare")?;
         let attempt_id = self.current_attempt(project, run)?;
         let saved = self.saved_attempt(project, run, &attempt_id)?;
         let reused = saved.is_some();
@@ -115,7 +115,7 @@ impl Service {
                 uncertain: false,
             });
         }
-        let _lock = self.lock()?;
+        let _lock = self.lock("actions.execute")?;
         let prepared = self.load(action)?;
         let execution = &prepared.execution;
         let adapter = self.execution_adapter(execution)?;
@@ -186,7 +186,7 @@ impl Service {
         transition: &str,
         cancelled: &AtomicBool,
     ) -> cloud::Result<Value> {
-        let _lock = self.lock()?;
+        let _lock = self.lock("actions.reconcile")?;
         let prepared = self.load(action)?;
         let snapshot = self.actions.observe(action).map_err(op)?;
         if let Some(transition_value) =
@@ -219,7 +219,7 @@ impl Service {
             .fence
             .existing_observation_guard(&execution.job.project, &execution.job.run_id)
             .map_err(why!(cloud::Error::evidence()))?;
-        let lock = self.lock()?;
+        let lock = self.lock("actions.refresh")?;
         if self.actions.observe(action).map_err(op)?["execution"]["status"] != "VERIFIED" {
             return Err(cloud::Error::evidence());
         }
@@ -246,7 +246,7 @@ impl Service {
         if !self.enabled || confirmation != format!("CANCEL {action}") {
             return Err(cloud::Error::configuration());
         }
-        let _lock = self.lock()?;
+        let _lock = self.lock("actions.cancel")?;
         let prepared = self.load(action)?;
         let execution = &prepared.execution;
         if self.actions.observe(action).map_err(op)?["execution"]["status"] != "VERIFIED" {

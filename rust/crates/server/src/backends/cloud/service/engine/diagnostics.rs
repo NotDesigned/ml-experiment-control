@@ -387,7 +387,7 @@ impl Service {
         }
         .validate(action)
         .map_err(why!(cloud::Error::configuration()))?;
-        let _lock = self.lock()?;
+        let _lock = self.lock("diagnostics.sync_diagnostic")?;
         let prepared = self.load(action)?;
         let collector = self.backends[&prepared.execution.backend_id]
             .collector
@@ -421,7 +421,7 @@ impl Service {
     ) -> cloud::Result<Value> {
         ml_exp_core::submission::validate_submission_token(request)
             .map_err(why!(cloud::Error::configuration()))?;
-        let _lock = self.lock()?;
+        let _lock = self.lock("diagnostics.data_diagnostic")?;
         let saved = self
             .data_saved(project, executor, asset)?
             .ok_or_else(missing)?;
@@ -458,7 +458,7 @@ impl Service {
         attempt: &str,
         token: &str,
     ) -> cloud::Result<Value> {
-        let _lock = self.lock()?;
+        let _lock = self.lock("diagnostics.worker_diagnostic_status")?;
         let prepared = self.worker_authority(project, run, attempt, token)?;
         let exchange = self.exchange_saved(&prepared)?;
         let artifacts = self.artifact_saved(&prepared)?;

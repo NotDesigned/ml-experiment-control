@@ -292,7 +292,7 @@ impl Service {
         // Reserve the deterministic request slot before any build effect. A
         // repeated request ID with another payload is always a conflict.
         {
-            let _lock = self.lock()?;
+            let _lock = self.lock("preparations.experiment_prepare#1")?;
             if self
                 .slots
                 .entry_exists(OsStr::new(&name(&id)?))
@@ -318,7 +318,7 @@ impl Service {
         if let Some(definition) = &request.runtime {
             self.prepare_runtime(project, definition.clone())?;
         }
-        let _lock = self.lock()?;
+        let _lock = self.lock("preparations.experiment_prepare#2")?;
         if self
             .slots
             .entry_exists(OsStr::new(&name(&id)?))
@@ -389,7 +389,7 @@ impl Service {
         // The record comes before anything that points at it, and creating it twice is
         // harmless, so a busy lock or a stop at any point here recovers on the next continue.
         let needed = {
-            let _lock = self.lock()?;
+            let _lock = self.lock("preparations.experiment_continue#1")?;
             let mut saved = self.setup_load(project, id)?;
             if saved.submission.is_some() {
                 return self.setup_view(&saved).map(Continue::View);
@@ -404,7 +404,7 @@ impl Service {
             self.prepare_runtime(project, definition)?;
         }
         let (saved, still_needed) = {
-            let _lock = self.lock()?;
+            let _lock = self.lock("preparations.experiment_continue#2")?;
             let mut saved = self.setup_load(project, id)?;
             if saved.submission.is_some() {
                 return self.setup_view(&saved).map(Continue::View);
@@ -501,7 +501,7 @@ impl Service {
         id: &str,
         submission: Value,
     ) -> cloud::Result<Value> {
-        let _lock = self.lock()?;
+        let _lock = self.lock("preparations.experiment_finish")?;
         let mut saved = self.setup_load(project, id)?;
         if saved
             .submission
