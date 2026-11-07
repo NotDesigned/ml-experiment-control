@@ -124,7 +124,7 @@ impl Service {
         plan: &Plan,
         cursor: u64,
     ) -> cloud::Result<(bool, u64)> {
-        let _lock = self.lock()?;
+        let _lock = self.lock("maintenance.maintenance_release_object")?;
         let prepared = self.maintenance_original(action, plan)?;
         let Some(mut saved) = self.artifact_saved(&prepared)? else {
             return Ok((true, 0));

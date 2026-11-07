@@ -9,7 +9,7 @@ impl Service {
         request
             .validate(action)
             .map_err(why!(cloud::Error::configuration()))?;
-        let _lock = self.lock()?;
+        let _lock = self.lock("renewal.renew")?;
         let original = self.load(action)?;
         let b = &original.execution.binding;
         let latest = self

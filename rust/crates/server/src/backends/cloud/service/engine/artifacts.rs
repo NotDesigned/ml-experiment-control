@@ -167,7 +167,7 @@ impl Service {
         request: ArtifactRequest,
         now: &str,
     ) -> cloud::Result<Value> {
-        let lock = self.lock()?;
+        let lock = self.lock("artifacts.receive_artifacts#1")?;
         let prepared = self.worker_authority(project, run, attempt, token)?;
         let objects = self
             .objects
@@ -245,7 +245,7 @@ impl Service {
                     // for that answered every other job and command with BUSY.
                     drop(lock);
                     objects.verify(&saved.bundle.archive).map_err(io)?;
-                    let _lock = self.lock()?;
+                    let _lock = self.lock("artifacts.receive_artifacts#2")?;
                     let mut current = self
                         .artifact_saved(&prepared)?
                         .ok_or_else(cloud::Error::evidence)?;
@@ -348,7 +348,7 @@ impl Service {
         release: bool,
         now: &str,
     ) -> cloud::Result<Value> {
-        let lock = self.lock()?;
+        let lock = self.lock("artifacts.acknowledge_artifacts")?;
         let prepared = self.load(action)?;
         let mut saved = self.artifact_saved(&prepared)?.ok_or_else(missing)?;
         if saved.administrative_release.is_some() {

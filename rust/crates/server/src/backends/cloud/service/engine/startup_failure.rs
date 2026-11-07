@@ -61,7 +61,7 @@ impl Service {
             uncertain: false,
         };
         // The same lock as a worker packet, so a report never lands after one.
-        let _lock = self.lock()?;
+        let _lock = self.lock("startup_failure.receive_startup_failure")?;
         // Authentication precedes every read of what the report says.
         self.worker_authorized(project, run, attempt, token)?;
         let prepared = self

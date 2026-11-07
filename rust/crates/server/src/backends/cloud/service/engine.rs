@@ -67,6 +67,7 @@ pub struct Service {
     builds: Option<builds::Settings>,
     active_builds: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     debug: Option<debug::Runtime>,
+    lock_holder: lock_diagnostics::Holder,
     pub(super) polling: ml_exp_core::polling::Policy,
 }
 pub(super) fn op(error: operations::Error) -> cloud::Error {
@@ -281,6 +282,7 @@ impl Service {
             builds: config.builds,
             active_builds: Default::default(),
             debug: config.debug.map(debug::Runtime::open).transpose()?,
+            lock_holder: Default::default(),
             polling: config.polling,
         })
     }
@@ -309,26 +311,34 @@ impl Service {
     pub fn has_collectors(&self) -> bool {
         self.exchange.is_some() && self.backends.values().any(|b| b.collector.is_some())
     }
-    fn lock(&self) -> cloud::Result<FileLock> {
-        self.directory
-            .lock(
-                OsStr::new(LOCK),
-                LockOptions {
-                    wait: Wait::Until {
-                        deadline: std::time::Instant::now() + LOCK_WAIT,
-                        cancelled: None,
+    /// `label` names the caller in the lock diagnostics; it is a static string.
+    fn lock(&self, label: &'static str) -> cloud::Result<lock_diagnostics::Guard> {
+        let locked = self.directory.lock(
+            OsStr::new(LOCK),
+            LockOptions {
+                wait: Wait::Until {
+                    deadline: std::time::Instant::now() + LOCK_WAIT,
+                    cancelled: None,
+                },
+                ..Default::default()
+            },
+        );
+        match locked {
+            Ok(lock) => Ok(self.lock_holder.acquired(lock, label)),
+            Err(cause) => {
+                if cause.kind() == std::io::ErrorKind::WouldBlock {
+                    self.lock_holder.busy(label);
+                }
+                Err((why_lock!(
+                    cloud::Error {
+                        code: "CLOUD_RUN_BUSY".into(),
+                        http_status: Some(503),
+                        uncertain: false,
                     },
-                    ..Default::default()
-                },
-            )
-            .map_err(why_lock!(
-                cloud::Error {
-                    code: "CLOUD_RUN_BUSY".into(),
-                    http_status: Some(503),
-                    uncertain: false,
-                },
-                cloud::Error::evidence()
-            ))
+                    cloud::Error::evidence()
+                ))(cause))
+            }
+        }
     }
     fn attempt_slot(project: &str, run: &str, attempt: &str) -> cloud::Result<String> {
         Ok(format!(
@@ -467,6 +477,7 @@ pub(super) mod builds;
 mod derived;
 mod diagnostics;
 mod exchange;
+mod lock_diagnostics;
 mod observation;
 mod rebuild;
 mod retry;

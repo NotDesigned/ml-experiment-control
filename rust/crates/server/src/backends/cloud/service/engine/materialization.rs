@@ -21,7 +21,7 @@ impl Service {
             .as_ref()
             .ok_or_else(cloud::Error::configuration)?;
         let current = {
-            let _lock = self.lock()?;
+            let _lock = self.lock("materialization.materialize_pai#1")?;
             self.data_saved(project, executor, asset)?
                 .filter(|s| s.archive_verified)
                 .ok_or_else(missing)?
@@ -43,7 +43,7 @@ impl Service {
             None => None,
         };
         let saved = {
-            let _lock = self.lock()?;
+            let _lock = self.lock("materialization.materialize_pai#2")?;
             let mut saved = self
                 .data_saved(project, executor, asset)?
                 .filter(|s| s.archive_verified)
@@ -128,7 +128,7 @@ impl Service {
             &check,
             &AtomicBool::new(false),
         )?;
-        let _lock = self.lock()?;
+        let _lock = self.lock("materialization.materialize_pai#3")?;
         let mut saved = self
             .data_saved(project, executor, asset)?
             .ok_or_else(missing)?;

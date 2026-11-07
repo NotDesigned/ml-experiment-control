@@ -228,7 +228,7 @@ impl Service {
         Ok(Self::debug_view(&self.debug_load(id)?))
     }
     pub fn debug_create(&self, request: domain::Create, now: &str) -> cloud::Result<Value> {
-        let lock = self.lock()?;
+        let lock = self.lock("debug.debug_create")?;
         let runtime = self
             .debug
             .as_ref()
@@ -403,7 +403,7 @@ impl Service {
         result.map(Some)
     }
     pub fn debug_refresh(&self, id: &str, now: &str) -> cloud::Result<Value> {
-        let _lock = self.lock()?;
+        let _lock = self.lock("debug.debug_refresh")?;
         let mut saved = self.debug_load(id)?;
         if saved.deleted {
             return Ok(Self::debug_view(&saved));
@@ -680,7 +680,7 @@ impl Service {
         if confirmation != format!("{} {id}", if delete { "DELETE" } else { "STOP" }) {
             return Err(cloud::Error::configuration());
         }
-        let lock = self.lock()?;
+        let lock = self.lock("debug.debug_stop")?;
         let mut saved = self.debug_load(id)?;
         if delete
             && matches!(

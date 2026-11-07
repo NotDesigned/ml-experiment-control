@@ -105,7 +105,7 @@ impl Service {
         Ok(Some(saved))
     }
     pub fn sync_status(&self, action: &str, request_id: &str, now: &str) -> cloud::Result<Value> {
-        let _lock = self.lock()?;
+        let _lock = self.lock("synchronization.sync_status")?;
         let prepared = self.load(action)?;
         let request = Sync {
             request_id: request_id.into(),
@@ -147,7 +147,7 @@ impl Service {
         if !self.enabled || self.exchange.is_none() {
             return Err(cloud::Error::configuration());
         }
-        let lock = self.lock()?;
+        let lock = self.lock("synchronization.retry_sync")?;
         let prepared = self.load(action)?;
         if self.actions.observe(action).map_err(op)?["execution"]["status"] != "VERIFIED" {
             return Err(failed());

@@ -45,7 +45,7 @@ impl Service {
                 uncertain: false,
             });
         }
-        let _lock = self.lock()?;
+        let _lock = self.lock("authorship.author_run")?;
         let root = self.authority(project, &request.run_id)?;
         let exists = root.entry_exists(OsStr::new(&request.run_id)).map_err(io)?;
         let route = if exists {

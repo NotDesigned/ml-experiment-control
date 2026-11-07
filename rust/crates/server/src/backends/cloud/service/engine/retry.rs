@@ -22,7 +22,7 @@ impl Service {
                 uncertain: false,
             });
         }
-        let _lock = self.lock()?;
+        let _lock = self.lock("retry.retry")?;
         let parent = self.load(action)?;
         let binding = &parent.execution.binding;
         if request

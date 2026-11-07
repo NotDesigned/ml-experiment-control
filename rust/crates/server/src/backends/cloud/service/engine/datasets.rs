@@ -314,7 +314,7 @@ impl Service {
             | Command::Complete { asset_id }
             | Command::Status { asset_id } => asset_id.clone(),
         };
-        let lock = self.lock()?;
+        let lock = self.lock("datasets.dataset_transfer#1")?;
         let mut saved = self.data_saved(project, executor, &asset)?;
         if let Command::Begin { definition } = &command {
             definition
@@ -400,7 +400,7 @@ impl Service {
                     }
                     other => other.map_err(io)?,
                 }
-                let _lock = self.lock()?;
+                let _lock = self.lock("datasets.dataset_transfer#2")?;
                 saved = self
                     .data_saved(project, executor, &asset)?
                     .ok_or_else(missing)?;
@@ -540,7 +540,7 @@ impl Service {
             }
             Some(_) => {}
         }
-        let _lock = self.lock()?;
+        let _lock = self.lock("datasets.dataset_part_uploaded")?;
         let mut saved = self
             .data_saved(project, executor, asset)?
             .ok_or_else(missing)?;
@@ -574,7 +574,7 @@ impl Service {
     ) -> cloud::Result<()> {
         let name = Self::data_name(project, executor, asset)?;
         let definition = {
-            let _lock = self.lock()?;
+            let _lock = self.lock("datasets.dataset_discard_parts#1")?;
             let mut current = self
                 .data_saved(project, executor, asset)?
                 .ok_or_else(missing)?;
@@ -600,7 +600,7 @@ impl Service {
                 .delete_data(project, executor, &definition, *part)
                 .map_err(io)?;
         }
-        let _lock = self.lock()?;
+        let _lock = self.lock("datasets.dataset_discard_parts#2")?;
         let mut current = self
             .data_saved(project, executor, asset)?
             .ok_or_else(missing)?;
@@ -624,7 +624,7 @@ impl Service {
         verified: &State,
         discards: u64,
     ) -> cloud::Result<Value> {
-        let _lock = self.lock()?;
+        let _lock = self.lock("datasets.dataset_archive_verified")?;
         let mut current = self
             .data_saved(project, executor, asset)?
             .ok_or_else(missing)?;

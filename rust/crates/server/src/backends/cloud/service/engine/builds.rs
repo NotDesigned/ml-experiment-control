@@ -282,7 +282,7 @@ impl Service {
         record.runtime.ok_or_else(cloud::Error::evidence)
     }
     pub fn prepare_runtime(&self, project: &str, definition: Definition) -> cloud::Result<Value> {
-        let _lock = self.lock()?;
+        let _lock = self.lock("builds.prepare_runtime")?;
         let settings = self
             .builds
             .as_ref()
@@ -464,7 +464,7 @@ impl Service {
         id: &str,
         confirmation: &str,
     ) -> cloud::Result<Value> {
-        let lock = self.lock()?;
+        let lock = self.lock("builds.execute_runtime#1")?;
         let mut record = self.build_record(project, id)?;
         if !self.enabled || confirmation != format!("BUILD {id}") {
             return Err(cloud::Error::configuration());
@@ -504,7 +504,7 @@ impl Service {
                 let result = service.builder_call(&record, "build");
                 // A busy metadata lock cannot erase an uncertain effect. The saved
                 // intent remains reconcilable if receipt publication cannot commit.
-                if let Ok(_lock) = service.lock() {
+                if let Ok(_lock) = service.lock("builds.execute_runtime#2") {
                     if let Ok(mut current) = service.build_record(&project, &id) {
                         match result {
                             Ok((status, value)) => {
@@ -557,7 +557,7 @@ impl Service {
         if record.runtime.is_none() && record.started {
             let observed = encode(&record)?;
             let (status, value) = self.builder_call(&record, "reconcile")?;
-            let _lock = self.lock()?;
+            let _lock = self.lock("builds.reconcile_runtime")?;
             record = self.build_record(project, id)?;
             if encode(&record)? != observed
                 || self.active_builds.lock().is_ok_and(|s| s.contains(id))
@@ -674,7 +674,7 @@ impl Service {
             || !result.stdout.complete
             || result.stdout.truncated
         {
-            let _lock = self.lock()?;
+            let _lock = self.lock("builds.materialize_runtime#1")?;
             let mut current = self.build_record(project, id)?;
             if current.slurm_runtime.is_none() {
                 current.diagnostic = Some(json!({"code":"OCI_TO_SIF_UNCONFIRMED",
@@ -713,7 +713,7 @@ impl Service {
         {
             return Err(cloud::Error::evidence());
         }
-        let _lock = self.lock()?;
+        let _lock = self.lock("builds.materialize_runtime#2")?;
         let mut current = self.build_record(project, id)?;
         if current
             .slurm_runtime

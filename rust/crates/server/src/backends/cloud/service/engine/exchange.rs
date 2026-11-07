@@ -170,7 +170,7 @@ impl Service {
         if let Some(retry) = self.sync_recovery_request(action, &request.request_id)? {
             return self.retry_sync(action, &request.request_id, &retry, now, cancelled);
         }
-        let _lock = self.lock()?;
+        let _lock = self.lock("exchange.synchronize")?;
         let prepared = self.load(action)?;
         if self.actions.observe(action).map_err(op)?["execution"]["status"] != "VERIFIED" {
             return Err(cloud::Error::evidence());
@@ -462,7 +462,7 @@ impl Service {
             uncertain: false,
         };
         // Authentication precedes journal creation, packet processing and any write.
-        let _lock = self.lock()?;
+        let _lock = self.lock("exchange.receive")?;
         let prepared = self
             .saved_attempt(project, run, attempt)?
             .ok_or_else(denied)?;

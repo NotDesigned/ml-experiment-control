@@ -68,7 +68,7 @@ impl Service {
         token: &str,
         receipt: Receipt,
     ) -> cloud::Result<Value> {
-        let _lock = self.lock()?;
+        let _lock = self.lock("data_delivery.data_ready")?;
         let mut saved = self.data_auth(project, executor, asset, token, "ready")?;
         let definition = &self
             .backends
@@ -150,7 +150,7 @@ impl Service {
         status: u16,
         value: Value,
     ) -> cloud::Result<()> {
-        let _lock = self.lock()?;
+        let _lock = self.lock("data_delivery.accept_data_build")?;
         let mut saved = self
             .data_saved(project, executor, asset)?
             .ok_or_else(missing)?;
@@ -270,7 +270,7 @@ impl Service {
             recipe
                 .validate()
                 .map_err(why!(cloud::Error::configuration()))?;
-            let _lock = self.lock()?;
+            let _lock = self.lock("data_delivery.publish_dataset#1")?;
             saved = self
                 .data_saved(project, executor, asset)?
                 .ok_or_else(missing)?;
@@ -285,7 +285,7 @@ impl Service {
             }
         }
         if saved.image.is_none() {
-            let lock = self.lock()?;
+            let lock = self.lock("data_delivery.publish_dataset#2")?;
             saved = self
                 .data_saved(project, executor, asset)?
                 .ok_or_else(missing)?;
@@ -398,7 +398,7 @@ impl Service {
         };
         let job = job_for(request_id)?;
         {
-            let _lock = self.lock()?;
+            let _lock = self.lock("data_delivery.publish_dataset#3")?;
             saved = self
                 .data_saved(project, executor, asset)?
                 .ok_or_else(missing)?;
@@ -426,7 +426,7 @@ impl Service {
             &check,
             &AtomicBool::new(false),
         )?;
-        let _lock = self.lock()?;
+        let _lock = self.lock("data_delivery.publish_dataset#4")?;
         saved = self
             .data_saved(project, executor, asset)?
             .ok_or_else(missing)?;

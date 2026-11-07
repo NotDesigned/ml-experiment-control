@@ -68,7 +68,7 @@ impl Service {
             definition
         };
         {
-            let _lock = self.lock()?;
+            let _lock = self.lock("oss_import.import_oss_dataset")?;
             let mut saved = self
                 .data_saved(project, executor, &asset)?
                 .ok_or_else(missing)?;
