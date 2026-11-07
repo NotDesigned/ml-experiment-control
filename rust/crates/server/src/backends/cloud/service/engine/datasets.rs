@@ -451,13 +451,7 @@ impl Service {
                     if wrong.is_empty() {
                         return Err(refused("DATASET_ARCHIVE_REFUSED"));
                     }
-                    self.dataset_discard_parts(
-                        project,
-                        executor,
-                        &asset,
-                        &wrong,
-                        saved.discards,
-                    )?;
+                    self.dataset_discard_parts(project, executor, &asset, &wrong, saved.discards)?;
                     return Err(refused("DATASET_PART_REJECTED"));
                 }
                 return Ok(Self::data_view(saved));
