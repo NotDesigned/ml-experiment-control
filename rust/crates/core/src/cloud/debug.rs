@@ -50,11 +50,6 @@ pub enum Profile {
         image_id: String,
         access: Access,
     },
-    SensecoreCci {
-        profile: sensecore::Profile,
-        image: String,
-        network: Network,
-    },
 }
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -64,16 +59,6 @@ pub enum Access {
         nat_gateway_id: String,
         eip_id: String,
     },
-}
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Network {
-    pub eip_name: String,
-    pub eip_id: String,
-    pub nat_gateway_id: String,
-    pub external_ip: String,
-    pub external_port: u16,
-    pub tenant_id: String,
 }
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -151,51 +136,6 @@ impl Profile {
                     component(eip_id)?;
                 }
             }
-            Self::SensecoreCci {
-                profile,
-                image,
-                network,
-            } => {
-                profile.validate()?;
-                // A configured CPU debug pool and the existing personal NAS.
-                if profile.purpose == sensecore::Purpose::Training
-                    || !profile.storage_subdir.starts_with('/')
-                    || profile.storage_subdir[1..].contains('/')
-                    || profile.mount_path != "/data"
-                {
-                    return Err(Error("debug NAS scope"));
-                }
-                Job {
-                    project: "check".into(),
-                    run_id: "check".into(),
-                    attempt_id: "attempt-001".into(),
-                    submission_token: "0".repeat(32),
-                    source_id: format!("source.{}", "0".repeat(64)),
-                    image: image.clone(),
-                    command: vec!["true".into()],
-                    gpus: 0,
-                    cpus: 1,
-                    memory_gb: 1,
-                    max_time_seconds: 60,
-                    priority: 5,
-                    read_only_storage: false,
-                }
-                .validate()?;
-                for s in [
-                    &network.eip_name,
-                    &network.nat_gateway_id,
-                    &network.tenant_id,
-                ] {
-                    component(s)?;
-                }
-                let expected = profile.scope.path("eips", &network.eip_name)?;
-                if network.eip_id != expected
-                    || network.external_port < 1024
-                    || network.external_ip.parse::<std::net::Ipv4Addr>().is_err()
-                {
-                    return Err(Error("existing debug network"));
-                }
-            }
         }
         Ok(())
     }
@@ -208,7 +148,6 @@ impl Profile {
     pub fn recipe(&self, request: Create, now: &str) -> Result<Recipe> {
         let contract = match self {
             Self::PaiDsw { .. } => "native-debug-machine.v4",
-            Self::SensecoreCci { .. } => "native-debug-machine.v1",
         };
         self.validate()?;
         request.validate()?;
@@ -221,13 +160,6 @@ impl Profile {
                     && request.cpus <= profile.max_cpus
                     && request.memory_gb <= profile.max_memory_gb
                     && request.lease_seconds <= 14400 => {}
-            Self::SensecoreCci { profile, .. }
-                if (request.gpus, request.cpus, request.memory_gb)
-                    == (
-                        profile.worker_gpus,
-                        profile.worker_cpus,
-                        profile.worker_memory_gb,
-                    ) => {}
             _ => return Err(Error("debug resource policy")),
         }
         let identity = canonical::digest(&json!([contract, profile_sha256, request]))
@@ -238,7 +170,6 @@ impl Profile {
             // Ownership additionally binds the complete digest label and quota.
             name: match self {
                 Self::PaiDsw { .. } => format!("ml_exp_{}", &identity[..20]),
-                Self::SensecoreCci { .. } => format!("ml-expd-debug-{}", &identity[..32]),
             },
             identity: format!("debug.{identity}"),
             profile_sha256,
@@ -271,10 +202,6 @@ impl Profile {
                 product: Product::PaiDsw,
                 region: profile.region.clone(),
             },
-            Self::SensecoreCci { profile, .. } => Endpoint::Sensecore {
-                service: "cci".into(),
-                region: Some(profile.scope.region.clone()),
-            },
         };
         request(
             endpoint,
@@ -293,15 +220,6 @@ impl Profile {
                 id.map(|s| component(s).map(|s| format!("/{s}")))
                     .transpose()?
                     .unwrap_or_default()
-            )),
-            Self::SensecoreCci { profile, .. } => Ok(format!(
-                "/compute/cci/data/v2{}/apps{}",
-                profile.scope.workspace_path()?,
-                if id.is_some() {
-                    format!("/{}", recipe.name)
-                } else {
-                    String::new()
-                }
             )),
         }
     }
@@ -363,27 +281,13 @@ impl Profile {
                     "Labels":[{"Key":"ml-expd.debug","Value":recipe.identity}],"Datasets":mounts,"WorkspaceSource":"/mnt/ml-expd-personal","UserVpc":vpc,
                     "CredentialConfig":{"Enable":true,"AliyunEnvRoleKey":"0","Configs":[{"Key":"0","Type":"Role","Roles":[{"RoleArn":storage.role_arn,"RoleType":"service","AssumeRoleFor":account}]}]}})
             }
-            Self::SensecoreCci { profile, image, .. } => {
-                json!({"name":recipe.name,"display_name":recipe.identity,
-                "resource_pool":{"name":profile.cluster,"available_zone":profile.scope.zone,"vpc_id":profile.vpc_id},"replicas":1,
-                "template":{"resource_spec":{"name":profile.worker_spec},"containers":[{"name":"main","image_path":image,"resource_request":{"cpu":r.cpus.to_string(),"memory":format!("{}GiB",r.memory_gb)},
-                    "command":["/bin/sh","-c",startup(recipe)?],"env":[],"volume_mounts":[{"type":"PV_AFS","mount_path":profile.mount_path,"id":profile.storage_volume,"subdir":profile.storage_subdir}]}]},
-                "scheduling":{"priority":"NORMAL","quota_type":"RESERVED"},"termination_grace_period_seconds":15})
-            }
         };
-        let mut request = self.req(
+        self.req(
             Method::Post,
             "CreateInstance",
             self.path(recipe, None)?,
             Some(body),
-        )?;
-        if matches!(self, Self::SensecoreCci { .. }) {
-            request.query = BTreeMap::from([
-                ("app_name".into(), recipe.name.clone()),
-                ("request_id".into(), recipe.request.request_id.clone()),
-            ]);
-        }
-        Ok(request)
+        )
     }
     pub fn checked(&self, recipe: &Recipe, id: Option<&str>, row: &Value) -> Result<String> {
         self.check_recipe(recipe)?;
@@ -403,18 +307,6 @@ impl Profile {
                     .as_str()
                     .ok_or(Error("debug DSW identity"))?
             }
-            Self::SensecoreCci { profile, .. } => {
-                let expected = self.create(recipe)?.body.ok_or(Error("debug document"))?;
-                if row["name"] != recipe.name
-                    || row["ownership"]["user_id"] != profile.scope.user_id
-                    || !["display_name", "resource_pool", "template"]
-                        .iter()
-                        .all(|k| subset(&expected[k], &row[k]))
-                {
-                    return Err(Error("debug CCI ownership"));
-                }
-                row["uid"].as_str().ok_or(Error("debug CCI identity"))?
-            }
         };
         component(identifier)?;
         if id.is_some_and(|id| id != identifier) {
@@ -423,9 +315,6 @@ impl Profile {
         Ok(identifier.into())
     }
     pub fn stop(&self, recipe: &Recipe, id: &str, delete: bool) -> Result<Request> {
-        if delete && matches!(self, Self::SensecoreCci { .. }) {
-            return Err(Error("CCI stop only"));
-        }
         let path = self.path(recipe, Some(id))?;
         if delete {
             self.req(Method::Delete, "DeleteInstance", path, None)
@@ -437,21 +326,12 @@ impl Profile {
                     format!("{path}/stop"),
                     Some(json!({})),
                 ),
-                Self::SensecoreCci { .. } => self.req(
-                    Method::Post,
-                    "StopInstance",
-                    format!("{path}:stop"),
-                    Some(json!({})),
-                ),
             }
         }
     }
     pub fn terminal(&self, row: &Value) -> bool {
         match self {
             Self::PaiDsw { .. } => matches!(row["Status"].as_str(), Some("Stopped" | "Failed")),
-            Self::SensecoreCci { .. } => {
-                matches!(row["state"].as_str(), Some("SUSPENDED" | "FAILED"))
-            }
         }
     }
     pub fn provider_state<'a>(&self, row: &'a Value) -> Result<&'a str> {
@@ -486,7 +366,7 @@ impl Profile {
                 let port=route["Port"].as_u64().or_else(||route["Port"].as_str()?.parse().ok())?;
                 let host=route["Endpoint"].as_str()?;
                 (f["Name"]=="ssh"&&f["ForwardPort"]=="22"&&f["ConnectInfo"]["Phase"]=="Ready"&&port>0&&port<=65535&&host.len()<=253&&host.bytes().all(|b|b.is_ascii_alphanumeric()||b".-:".contains(&b))).then(||json!({"host":host,"port":port,"user":"root","access":key.to_lowercase()}))
-            }),Self::SensecoreCci{..}=>None,
+            }),
         }
     }
     pub fn timer(&self, recipe: &Recipe, id: &str, now: i64) -> Result<Request> {
@@ -506,104 +386,6 @@ impl Profile {
             format!("{}/shutdowntimer", self.path(recipe, Some(id))?),
             Some(json!({"RemainingTimeInMs":remaining})),
         )
-    }
-    pub fn service(&self, recipe: &Recipe, create: bool) -> Result<Request> {
-        let Self::SensecoreCci { profile, .. } = self else {
-            return Err(Error("CCI service"));
-        };
-        let base = format!(
-            "/compute/service/data/v2{}/services",
-            profile.scope.workspace_path()?
-        );
-        let mut r=self.req(if create{Method::Post}else{Method::Get},if create{"CreateService"}else{"GetService"},if create{base}else{format!("{base}/{}",recipe.name)},create.then(||json!({"name":recipe.name,"selector":{"app":recipe.name},"ports":[{"port":22,"target_port":22}]})))?;
-        if create {
-            r.query = BTreeMap::from([
-                ("name".into(), recipe.name.clone()),
-                ("request_id".into(), recipe.request.request_id.clone()),
-            ]);
-        }
-        Ok(r)
-    }
-    pub fn network(&self, recipe: &Recipe, operation: &str, id: &str) -> Result<Request> {
-        let Self::SensecoreCci {
-            profile, network, ..
-        } = self
-        else {
-            return Err(Error("CCI network"));
-        };
-        let hex = recipe
-            .identity
-            .strip_prefix("debug.")
-            .ok_or(Error("debug identity"))?;
-        let uid = format!(
-            "{}-{}-{}-{}-{}",
-            &hex[..8],
-            &hex[8..12],
-            &hex[12..16],
-            &hex[16..20],
-            &hex[20..32]
-        );
-        let path = format!(
-            "/network/eip/data/v1{}/dnatRules/{}",
-            network.eip_id, recipe.name
-        );
-        let mut body = json!({"name":recipe.name,"display_name":recipe.name,"id":format!("{}/dnatRules/{}",network.eip_id,recipe.name),"uid":uid,"resource_type":"network.eip.v1.dnatRule","zone":profile.scope.zone,
-            "creator_id":profile.scope.user_id,"owner_id":profile.scope.user_id,"tenant_id":network.tenant_id,"properties":{"external_ip":network.external_ip,"external_port":network.external_port.to_string(),"internal_port":"22","protocol":"tcp","eip_id":network.eip_id,"nat_gateway_id":network.nat_gateway_id,"internal_ip":"","internal_instance_name":"","internal_instance_type":"UNSPECIFIED"}});
-        if operation == "bind" {
-            body["properties"]["internal_instance_name"] = json!(id);
-            body["properties"]["internal_instance_type"] = json!("CCI_DEPLOYMENT_SERVICE");
-        }
-        let (method, suffix, payload) = match operation {
-            "get" => (Method::Get, "", None),
-            "create" => (Method::Post, "", Some(body)),
-            "bind" => (Method::Post, "/bind", Some(body)),
-            "unbind" => (Method::Post, "/unbind", Some(json!({}))),
-            "delete" => (Method::Delete, "", None),
-            _ => return Err(Error("debug network action")),
-        };
-        request(
-            Endpoint::Sensecore {
-                service: "network".into(),
-                region: Some(profile.scope.region.clone()),
-            },
-            method,
-            "DebugNetwork",
-            format!("{path}{suffix}"),
-            BTreeMap::new(),
-            payload,
-            method == Method::Get,
-        )
-    }
-    pub fn check_network(&self, recipe: &Recipe, id: &str, row: &Value) -> Result<bool> {
-        let expected = self
-            .network(recipe, "create", id)?
-            .body
-            .ok_or(Error("debug network identity"))?;
-        if !["name", "uid", "owner_id", "creator_id", "tenant_id"]
-            .iter()
-            .all(|k| expected[k] == row[k])
-            || ![
-                "external_ip",
-                "external_port",
-                "protocol",
-                "eip_id",
-                "nat_gateway_id",
-            ]
-            .iter()
-            .all(|k| expected["properties"][k] == row["properties"][k])
-        {
-            return Err(Error("debug network ownership"));
-        }
-        let target = row["properties"]["internal_instance_name"]
-            .as_str()
-            .unwrap_or("");
-        if !target.is_empty() && target != id {
-            return Err(Error("debug foreign network target"));
-        }
-        Ok(row["state"] == "ACTIVE"
-            && target == id
-            && row["properties"]["internal_port"] == "22"
-            && row["properties"]["internal_instance_type"] == "CCI_DEPLOYMENT_SERVICE")
     }
 }
 
@@ -642,23 +424,4 @@ pub fn lifecycle_reason<'a>(value: &'a Value, native: &str) -> Result<Option<&'a
         }
     }
     Ok(None)
-}
-pub fn subset(expected: &Value, actual: &Value) -> bool {
-    match expected {
-        Value::Object(m) => actual.as_object().is_some_and(|a| {
-            m.iter()
-                .all(|(k, v)| a.get(k).is_some_and(|a| subset(v, a)))
-        }),
-        Value::Array(m) => actual
-            .as_array()
-            .is_some_and(|a| m.len() == a.len() && m.iter().zip(a).all(|(e, a)| subset(e, a))),
-        _ => expected == actual,
-    }
-}
-fn startup(recipe: &Recipe) -> Result<String> {
-    let key = shell_join(&[recipe.request.ssh_public_key.clone()])?;
-    Ok(format!(
-        "set -eu\numask 077\ntest -x /usr/sbin/sshd\nmkdir -p /run/sshd /run/ml-expd-ssh\nprintf '%s\\n' {key} > /run/ml-expd-ssh/authorized_keys\nssh-keygen -q -t ed25519 -N '' -f /run/ml-expd-ssh/host_ed25519\ncat > /run/ml-expd-ssh/sshd_config <<'EOF'\nPort 22\nHostKey /run/ml-expd-ssh/host_ed25519\nAuthorizedKeysFile /run/ml-expd-ssh/authorized_keys\nPermitRootLogin prohibit-password\nPubkeyAuthentication yes\nAuthenticationMethods publickey\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nAllowUsers root\nSubsystem sftp internal-sftp\nEOF\nremaining=$(({} - $(date +%s)))\ntest \"$remaining\" -gt 0\nexec timeout \"$remaining\" /usr/sbin/sshd -D -e -f /run/ml-expd-ssh/sshd_config\n",
-        recipe.expires_at
-    ))
 }

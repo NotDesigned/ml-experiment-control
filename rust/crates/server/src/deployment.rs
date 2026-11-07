@@ -156,6 +156,8 @@ impl Settings {
                     if error.code == crate::backends::cloud::service::RUN_CREATION_REQUIRES_EXCHANGE
                     {
                         "cloud_run_creation_requires_exchange"
+                    } else if error.code == crate::backends::cloud::service::BACKEND_RETIRED {
+                        "cloud_backend_retired"
                     } else {
                         "cloud_config"
                     },
@@ -299,12 +301,40 @@ mod tests {
             "../../../deploy/reads.example.json"
         ))
         .unwrap();
-        for bytes in [
-            include_bytes!("../../../deploy/pai.example.json").as_slice(),
-            include_bytes!("../../../deploy/sensecore.example.json").as_slice(),
-        ] {
-            crate::backends::cloud::service::Settings::from_slice(bytes).unwrap();
+        crate::backends::cloud::service::Settings::from_slice(include_bytes!(
+            "../../../deploy/pai.example.json"
+        ))
+        .unwrap();
+        // SenseCore support was removed: any profile that still names it is refused
+        // with its own code, whichever role it has.
+        let pai: serde_json::Value =
+            serde_json::from_slice(include_bytes!("../../../deploy/pai.example.json")).unwrap();
+        let retired = json!({"provider":"sensecore"});
+        for field in ["profile", "collector", "data_copier"] {
+            let mut config = pai.clone();
+            config["backends"][0][field] = retired.clone();
+            let refused = crate::backends::cloud::service::Settings::from_slice(
+                &config.to_string().into_bytes(),
+            )
+            .err()
+            .unwrap();
+            assert_eq!(
+                refused.code,
+                crate::backends::cloud::service::BACKEND_RETIRED,
+                "{field}"
+            );
         }
+        let mut config = pai;
+        config["debug"] = json!({"max_active":1,"profiles":{"retired":{
+            "profile":{"provider":"sensecore_cci"},"credentials_file":"/private/retired.json"}}});
+        let refused =
+            crate::backends::cloud::service::Settings::from_slice(&config.to_string().into_bytes())
+                .err()
+                .unwrap();
+        assert_eq!(
+            refused.code,
+            crate::backends::cloud::service::BACKEND_RETIRED
+        );
         crate::backends::slurm::service::config::Settings::from_slice(include_bytes!(
             "../../../deploy/slurm.example.json"
         ))

@@ -21,10 +21,9 @@ impl Service {
         self.backends.iter().map(|(id,backend)|{
             let (kind,limits,allocation)=match &backend.adapter.profile {
                 cloud::adapter::Profile::Pai(p)=>("pai-dlc",json!({"gpus":p.max_gpus,"cpus":p.max_cpus,"memory_gb":p.max_memory_gb,"walltime_seconds":86400}),json!(["guaranteed","allow_idle","idle_only"])),
-                cloud::adapter::Profile::Sensecore(p)=>("sensecore",json!({"gpus":p.worker_gpus,"cpus":p.worker_cpus,"memory_gb":p.worker_memory_gb,"fixed_resources":true,"cluster":p.cluster}),json!(["guaranteed"])),
             };
             Ok(json!({"executor_id":id,"kind":kind,"enabled":self.enabled,"run_creation":self.creation,"limits":limits,"allocation_policies":allocation,"default_priority":5,
-                "capabilities":{"code_delivery":self.code_delivery(id),"oci_images":true,"persistent_checkpoints":true,"dataset_upload":self.has_datasets(),"data_image_copy":backend.data_copier.is_some(),"data_preparation":if kind=="pai-dlc"{json!("inside_job")}else if backend.data_copier.is_some(){json!("before_job")}else{Value::Null},"metrics":self.has_exchange(),"result_objects":self.has_artifacts(),"cpu_collection":backend.collector.is_some(),"capacity_query":true},"live_availability_checked":false}))
+                "capabilities":{"code_delivery":self.code_delivery(id),"oci_images":true,"persistent_checkpoints":true,"dataset_upload":self.has_datasets(),"data_image_copy":false,"data_preparation":"inside_job","metrics":self.has_exchange(),"result_objects":self.has_artifacts(),"cpu_collection":backend.collector.is_some(),"capacity_query":true},"live_availability_checked":false}))
         }).collect()
     }
     pub fn capacity(&self, executor: &str, refresh: bool, now: &str) -> cloud::Result<Value> {
@@ -62,9 +61,14 @@ impl Service {
                 capacity::view(old, now).map_err(why!(cloud::Error::evidence()))?
             ));
         }
-        let data=match &backend.adapter.profile {
-            cloud::adapter::Profile::Pai(profile)=>backend.adapter.pai_quota(&AtomicBool::new(false)).and_then(|row|ml_exp_core::cloud::pai::quota_view(profile,&row).map_err(why!(cloud::Error::evidence()))),
-            cloud::adapter::Profile::Sensecore(_)=>backend.adapter.sensecore_clusters(&AtomicBool::new(false)).map(|clusters|json!({"source":"sensecore-workspace","scope":"zone","clusters":clusters,"quota_is_free_capacity":false})),
+        let data = match &backend.adapter.profile {
+            cloud::adapter::Profile::Pai(profile) => backend
+                .adapter
+                .pai_quota(&AtomicBool::new(false))
+                .and_then(|row| {
+                    ml_exp_core::cloud::pai::quota_view(profile, &row)
+                        .map_err(why!(cloud::Error::evidence()))
+                }),
         };
         let next = capacity::refresh(old, data.map_err(why!("unavailable")), now)
             .map_err(why!(cloud::Error::evidence()))?;

@@ -44,7 +44,7 @@ For every field and each separate step, see `ml-exp run start` and `ml-exp run e
         #[arg(long)]
         project: Option<String>,
         /// Uses the saved executor unless given; `ml-exp backend` lists them. A prefix of
-        /// fixed shapes, such as `sensecore-n6ls`, takes the smallest shape that fits.
+        /// a family of fixed shapes takes the smallest shape that fits.
         #[arg(long)]
         executor: Option<String>,
         /// Sized from --gpus unless given. A fixed shape always runs whole.
@@ -291,7 +291,7 @@ enum Data {
         #[arg(long)]
         runtime: Option<String>,
     },
-    /// Upload a directory. On PAI and SenseCore the parts go straight to object storage;
+    /// Upload a directory. On PAI the parts go straight to object storage;
     /// Slurm has none and an older server may not offer it, so those go through the server.
     Upload {
         #[arg(long)]

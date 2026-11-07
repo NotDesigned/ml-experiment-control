@@ -28,10 +28,8 @@ scientific admission rules.
 - Metric-definition and W&B-series count caps, the separate 16 KiB W&B parameter
   cap, and comparison of the entire remote W&B config against a lossless local
   identity string. Publication retains destination identity and event ACKs.
-- The hardcoded CCI two-hour lease ceiling. The explicitly requested PAI DSW
-  four-hour and DLC twenty-four-hour limits remain.
 - Blanket exclusion of checkpoint files from an explicit result export.
-- Desktop Docker tunnels, remote Docker engines, desktop data staging and CCR
+- Desktop Docker tunnels, remote Docker engines, desktop data staging and
   HTTP blob relays. Builds use a CPU PAI DSW publishing to a configured registry
   or a local BuildKit engine. Payload
   transfers target backend storage with a bounded API buffer.

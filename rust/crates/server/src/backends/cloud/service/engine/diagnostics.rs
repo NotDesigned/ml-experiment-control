@@ -90,9 +90,6 @@ fn provider_read<T: cloud::adapter::Transport>(
         cloud::adapter::Profile::Pai(_) => {
             adapter.pai_provider_diagnostics(job, &handle, lines, &cancelled)
         }
-        cloud::adapter::Profile::Sensecore(_) => {
-            adapter.sensecore_provider_diagnostics(job, &handle, lines, &cancelled)
-        }
     }
     .map(Some)
 }
@@ -220,9 +217,7 @@ impl Service {
             if !execute {
                 return Err(missing());
             }
-            let cloud::adapter::Profile::Pai(profile) = &collector.profile else {
-                return Err(unavailable("READONLY_DIAGNOSTIC_UNSUPPORTED"));
-            };
+            let cloud::adapter::Profile::Pai(profile) = &collector.profile;
             if profile.storage.is_none() {
                 return Err(unavailable("READONLY_DIAGNOSTIC_STORAGE_REQUIRED"));
             }
@@ -309,11 +304,6 @@ impl Service {
             .ok_or_else(cloud::Error::configuration)?;
         let mut result = json!({"project":project,"executor":executor,"asset_id":asset,
             "request_id":request,"provider_read":false});
-        // SenseCore keeps no copy intent and has no collector, so this comes first.
-        if !matches!(backend.adapter.profile, cloud::adapter::Profile::Pai(_)) {
-            result["diagnostic"] = json!("PROVIDER_DIAGNOSTICS_UNSUPPORTED");
-            return Ok(result);
-        }
         let copy = self.copy_job_of_request(saved, project, executor, asset, request)?;
         let collector = backend
             .collector
@@ -358,8 +348,7 @@ impl Service {
         if let Some(failure) = self.startup_failure(&prepared)? {
             result["startup_failure"] = failure;
         }
-        // A SenseCore Run freezes the cluster chosen for it, which the executor's own
-        // profile does not name, so only the Run's own adapter can read its job.
+        // The Run's own adapter checks that the profile is the one it was submitted with.
         let read = provider_read(
             &self.execution_adapter(&prepared.execution)?,
             &self.outbox,
@@ -429,10 +418,6 @@ impl Service {
             .backends
             .get(executor)
             .ok_or_else(cloud::Error::configuration)?;
-        // SenseCore keeps no copy intent and has no collector, so this comes first.
-        if !matches!(backend.adapter.profile, cloud::adapter::Profile::Pai(_)) {
-            return Err(unavailable("READONLY_DIAGNOSTIC_UNSUPPORTED"));
-        }
         let parent = self.copy_job_of_request(saved, project, executor, asset, request)?;
         let (import, _) = ml_exp_core::cloud::data::materialization_inputs(&parent)
             .map_err(why!(cloud::Error::evidence()))?;

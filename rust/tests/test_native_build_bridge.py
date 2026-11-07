@@ -19,7 +19,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from ml_exp_server.builds import native_data, native_image
+from ml_exp_server.builds import native_image
 from ml_exp_server.data import registry_transport
 from ml_exp_server.dockerfile_build import inspect_dockerfile
 from ml_exp_server.projects.source_revisions import _tree_digest
@@ -103,15 +103,14 @@ class NativeBridge(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             builder = SimpleNamespace(root=Path(directory), config={
                 'repository': source, 'registry_auth_file': str(Path(directory) / 'auth.json'),
-                'slurm_mirror': {'target_repository': 'mirror.example/team/build'},
-                'sensecore_mirror': {'target_repository': 'other.example/team/runtime'}})
+                'slurm_mirror': {'target_repository': 'mirror.example/team/build'}})
             registry = SimpleNamespace(prefix='/v2/team/build', request=lambda *a, **k: (200, {}, b'manifest'))
             with patch('ml_exp_server.builds.image_mirror.Registry.from_config', return_value=registry), \
                     patch('ml_exp_server.builds.image_mirror.digest', return_value='sha256:' + 'a' * 64):
                 result = mirror(builder, {'source_image': image, 'target_tag': tag}, 'slurm_mirror')
                 self.assertEqual(result['image'], 'mirror.example/team/build@sha256:' + 'a' * 64)
                 with self.assertRaises(ValueError):
-                    mirror(builder, {'source_image': image, 'target_tag': tag})
+                    mirror(builder, {'source_image': image, 'target_tag': tag}, 'other_mirror')
 
     def test_build_output_cannot_be_taken_for_the_status(self):
         from ml_exp_server.builds.pai_dsw import durable_status
@@ -447,9 +446,14 @@ class NativeBridge(unittest.TestCase):
                 config = json.loads((repository / example).read_text())
                 self.assertEqual(config["socket"], "/run/ml-exp-builder/builder.sock")
                 ImageBuilder({**config, "state_root": directory})
-        for example in ("pai", "sensecore"):
-            config = json.loads((repository / f"rust/deploy/{example}.example.json").read_text())
-            self.assertEqual(config["builds"]["socket"], "/run/ml-exp-builder/builder.sock")
+        config = json.loads((repository / "rust/deploy/pai.example.json").read_text())
+        self.assertEqual(config["builds"]["socket"], "/run/ml-exp-builder/builder.sock")
+
+    def test_a_retired_sensecore_mirror_is_refused_by_name(self):
+        from ml_exp_server.image_builder import check_config
+        with self.assertRaisesRegex(ValueError, "sensecore_mirror is retired"):
+            check_config({"native_worker_bin": "/w", "native_source_root": "/s",
+                          "sensecore_mirror": {"target_repository": "other.example/team/runtime"}})
 
     def test_only_the_root_path_reaches_the_builder(self):
         import http.client
@@ -541,40 +545,6 @@ class NativeBridge(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "heredocs.*Dockerfile parser"):
                         inspect_dockerfile(root, "Dockerfile")
 
-    def test_data_publication_mirrors_exact_digest_and_reuses_receipt_without_copy(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            worker = root / "worker"
-            worker.write_bytes(b"owned worker fixture; must never execute")
-            raw = json.dumps({"mediaType": registry_transport.MANIFEST, "layers": []}).encode()
-            digest = "sha256:" + hashlib.sha256(raw).hexdigest()
-            source = "registry.example/team/build"
-            target = "mirror.example/team/runtime"
-            key = "1" * 64
-            recipe = {"project": "demo", "executor": "sensecore-test", "definition": {"archive_bytes": 17},
-                      "base_image": "registry.example/base@sha256:" + "2" * 64,
-                      "worker_sha256": "sha256:" + hashlib.sha256(worker.read_bytes()).hexdigest()}
-            value = {"operation": "native-data-get", "data_image_id": "data-image." + key,
-                     "recipe": recipe, "download": {"project": "demo", "definition": recipe["definition"],
-                        "target": {"backend_id": "sensecore-test"}, "source": {"kind": "dataset_parts"}}}
-            builder = SimpleNamespace(root=root, config={"repository": source, "native_worker_bin": str(worker),
-                "sensecore_mirror": {"source_repository": source, "target_repository": target}})
-            (root / (key + ".native-data-definition.json")).write_text(json.dumps(recipe))
-            calls = []
-            def observed(method, path, **kwargs):
-                calls.append((method, path))
-                return 200, {}, raw
-            registry = SimpleNamespace(prefix="/v2/team/runtime", request=observed)
-            with patch.object(native_image, "published_image", return_value=source + "@" + digest) as published, \
-                    patch.object(registry_transport.Registry, "from_config", return_value=registry), \
-                    patch.object(subprocess, "run", side_effect=AssertionError("verified mirror must not copy or create a job")):
-                result = native_data.request(builder, value)
-                self.assertEqual(result["image"], target + "@" + digest)
-                self.assertEqual(result["recipe"], recipe)
-                self.assertEqual(native_data.request(builder, value), result)
-                published.assert_called_once()
-            self.assertEqual(calls, [("GET", "/v2/team/runtime/manifests/data-" + key)])
-
     def test_progress_requires_a_live_lock_and_never_creates_one(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -626,37 +596,6 @@ class NativeBridge(unittest.TestCase):
         registry = SimpleNamespace(prefix="/v2/team/build", request=lambda *a, **k: (404, {}, b""))
         with patch.object(registry_transport.Registry, "from_config", return_value=registry):
             self.assertIsNone(native_image.published_image(builder, "bundle-" + "1" * 64, {}))
-
-    def test_data_staging_verifies_control_and_excludes_capability_from_context(self):
-        for broken in [False, True]:
-            with self.subTest(broken=broken), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                # This local executable stands in only for the already tested
-                # native importer. The stage program and its tar are real.
-                worker = b'#!/bin/sh\nprintf "verified dataset fixture" > "$5"\n'
-                with tarfile.open(root / "context.tar", "w") as archive:
-                    info = tarfile.TarInfo("worker-rs")
-                    info.size = len(worker)
-                    info.mode = 0o500
-                    archive.addfile(info, io.BytesIO(worker))
-                sha = hashlib.sha256((root / "context.tar").read_bytes()).hexdigest()
-                (root / "request.json").write_text(json.dumps({"context_sha256": "0" * 64 if broken else sha}))
-                (root / "download.json").write_text('synthetic-capability-must-not-enter-image')
-                script = native_data.stage_script(str(root), "sha256:" + hashlib.sha256(worker).hexdigest(), 1)
-                result = subprocess.run([sys.executable, "-O", "-c", script], capture_output=True)
-                status = json.loads((root / "data-stage-status.json").read_text())
-                self.assertFalse((root / "download.json").exists())
-                if broken:
-                    self.assertNotEqual(result.returncode, 0)
-                    self.assertEqual(status, {"status": "FAILED"})
-                else:
-                    self.assertEqual(result.returncode, 0, result.stderr.decode())
-                    self.assertEqual(status["status"], "SUCCEEDED")
-                    self.assertEqual(status["control"], sha)
-                    self.assertEqual(status["materialized"], hashlib.sha256((root / "context.tar").read_bytes()).hexdigest())
-                    with tarfile.open(root / "context.tar") as archive:
-                        self.assertEqual(archive.getnames(), ["worker-rs", "archive.tar"])
-                        self.assertNotIn(b"synthetic-capability", archive.extractfile("archive.tar").read())
 
 
 if __name__ == "__main__":

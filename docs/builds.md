@@ -25,7 +25,7 @@ Dockerfile above installs what the code needs and not the code itself.
 
 ### Code delivered to the job
 
-On a PAI or SenseCore executor, `ml-exp submit` reads the `COPY` and `ADD` sources of the
+On a PAI executor, `ml-exp submit` reads the `COPY` and `ADD` sources of the
 Dockerfile, and uploads those files, the Dockerfile and its `.dockerignore` variants as
 the environment. Docker can only see what these instructions name, so a file the
 Dockerfile uses cannot be missed. The image's identity depends only on those files, so
@@ -77,7 +77,7 @@ are supported; literal `<<` inside quoted strings or comments is permitted.
 Dockerfile size is at most 256 KiB; `ml-expd-build-internal` is reserved.
 ## The worker and upgrades
 
-On PAI and SenseCore, a server upgrade does not rebuild an environment. A Runtime's identity
+On PAI, a server upgrade does not rebuild an environment. A Runtime's identity
 names a constant, `worker-bootstrap.v1`, and not the worker in its image, so the same recipe
 finds the same Runtime after any number of releases. The worker in the image is a bootstrap:
 
@@ -119,7 +119,7 @@ preparation not yet built moves to the new identity; one built stays on the old.
 Slurm keeps today's identity and builds per worker, since its jobs have no exchange to fetch
 from and a SIF is materialized per Runtime. To follow later, a Slurm job would need a route to
 the worker, such as the gateway placing it on shared storage, and materialization keyed
-on the image rather than the worker. Data images (`native-data-*`) also still name the worker.
+on the image rather than the worker.
 
 See [platform checks](platform-checks.md) for the distinction between user
 requirements, implementation limits and additional platform policies under review.
@@ -127,9 +127,7 @@ requirements, implementation limits and additional platform policies under revie
 The final image does not need Python to train: jobs start the statically linked
 worker, so training
 code can use any language the image provides. The appended layer runs `chmod` through a shell, so the final stage needs
-`/bin/sh` and `chmod`. SenseCore ACP wraps the job in
-`timeout --signal=TERM --kill-after=30s`, so ACP images need a `timeout` accepting
-those options, such as GNU coreutils. Every backend needs access to its configured
+`/bin/sh` and `chmod`. Every backend needs access to its configured
 mount/workdir.
 
 `python3` must be on the image's `PATH` only for these optional jobs. The native code
@@ -142,8 +140,7 @@ checks no minimum version.
 
 Managed ENTRYPOINT/CMD replace client startup commands; configure scientific
 argv with Runtime `entrypoint` and Run `arguments`. On Slurm, code is copied into the
-image, never overlaid by a second checkout. The CPU data-copy base
-additionally needs glibc/Bash; Alpine is unsuitable for that ACP payload.
+image, never overlaid by a second checkout.
 
 ## Publication and reuse
 
@@ -257,15 +254,13 @@ Keep native OSS mounts unset: they remain provider-blocked. With a configured VP
 instance must match before credentials are uploaded. The builder does not
 create a NAT, EIP, security group or quota.
 
-The daemon asks for a same-digest CCR copy of every Runtime built for a SenseCore
-executor, so configure `sensecore_mirror` on the builder. Its fields are
-`target_repository`, plus `source_repository` when the source differs from the main
-`repository`, and optional `target_auth_hosts` and `target_blob_hosts`. The builder
-copies with Skopeo and verifies the digest; repeated requests reuse the copy. No API
-setting is involved, and image layers do not pass through the API disk.
-
-Runtimes for a Slurm executor work the same way through `slurm_mirror`, with the same
-fields, because a gateway may not reach the main registry. Point it at a registry the
+The daemon asks for a same-digest copy of every Runtime built for a Slurm executor,
+because a gateway may not reach the main registry, so configure `slurm_mirror` on the
+builder. Its fields are `target_repository`, plus `source_repository` when the source
+differs from the main `repository`, and optional `target_auth_hosts` and
+`target_blob_hosts`. The builder copies with Skopeo and verifies the digest; repeated
+requests reuse the copy. No API setting is involved, and image layers do not pass
+through the API disk. Point it at a registry the
 gateway can reach and whose login is in the helper's `registry_auth_file`.
 
 ## Local BuildKit storage

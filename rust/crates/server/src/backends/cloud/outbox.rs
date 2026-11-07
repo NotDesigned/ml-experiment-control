@@ -217,12 +217,6 @@ impl Outbox {
                 p.create(job, allocation)
                     .map_err(why!(Error::configuration()))?;
             }
-            Profile::Sensecore(p) => {
-                if allocation != Allocation::Guaranteed {
-                    return Err(Error::configuration());
-                }
-                p.create(job).map_err(why!(Error::configuration()))?;
-            }
         }
         let slot = Self::slot(job)?;
         let entry = if self

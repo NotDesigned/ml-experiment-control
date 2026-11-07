@@ -60,7 +60,7 @@ struct Args {
     /// Trusted native Slurm profiles and published-image receipts, never client input.
     #[arg(long, requires_all = ["read_config", "source_archives"], conflicts_with = "initialize_registry")]
     submission_config: Option<PathBuf>,
-    /// Independent approved PAI/SenseCore configuration; native HTTPS effects.
+    /// Independent approved PAI configuration; native HTTPS effects.
     #[arg(long,requires_all=["read_config","source_archives"],conflicts_with="initialize_registry")]
     cloud_config: Option<PathBuf>,
     /// Optional private official-cloud W&B credentials and SDK interpreter.

@@ -72,8 +72,7 @@ ml-exp submit . --gpus 8 --time 8h --allocation guaranteed -- python train.py
 Both job-level permission and policy are set. A node policy alone does not enable
 idle resources. `UseOversoldResource` reports actual allocation, not permission.
 Priority is an integer from 1 to 9, with larger values scheduled at higher
-priority. The catalogue advertises these options. SenseCore accepts only `guaranteed`,
-and Slurm refuses `scheduling` altogether.
+priority. The catalogue advertises these options. Slurm refuses `scheduling` altogether.
 
 **A job on idle resources can be preempted when they are reclaimed.** Nothing restarts
 it: provider restart is off, and running again is your explicit `ml-exp retry`. A long
@@ -226,8 +225,8 @@ workspace is not a persistent Docker layer cache.
 ### Shared registry
 
 A shared private registry can serve all backends. The default publisher pushes
-from a CPU DSW to the configured registry, such as Docker Hub. PAI/Slurm pull directly;
-SenseCore uses digest-preserving on-demand CCR delivery. These are operator
+from a CPU DSW to the configured registry, such as Docker Hub. PAI/Slurm pull directly.
+These are operator
 choices, not requirements for an unrelated Slurm installation.
 Follow [build publication](builds.md#pai-dsw-publisher);
 existing Runtime/Run image references are never rewritten when defaults change.

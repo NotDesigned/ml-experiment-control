@@ -122,7 +122,7 @@ fn run_attempts_mark_the_current_attempt_and_keep_backend_identity() {
             r#"{"operation":"run_attempts","input":{"attempts":[],"current_attempt_id":null},"expected":{"project":"demo","run_id":"trial","current_attempt_id":null,"count":0,"attempts":[]}}"#,
         ),
         literal(
-            r#"{"operation":"run_attempts","input":{"attempts":[{"attempt_id":"attempt-001","state":"RUNNING","backend":"slurm","backend_job_id":null},{"attempt_id":"attempt-002","state":"SUCCEEDED","backend":"sensecore","backend_job_id":"1"}],"current_attempt_id":"attempt-001"},"expected":{"project":"demo","run_id":"trial","current_attempt_id":"attempt-001","count":2,"attempts":[{"identity":"trial::attempt-001","attempt_id":"attempt-001","current":true,"backend":"slurm","backend_job_id":null,"state":"RUNNING"},{"identity":"trial::attempt-002","attempt_id":"attempt-002","current":false,"backend":"sensecore","backend_job_id":"1","state":"SUCCEEDED"}]}}"#,
+            r#"{"operation":"run_attempts","input":{"attempts":[{"attempt_id":"attempt-001","state":"RUNNING","backend":"slurm","backend_job_id":null},{"attempt_id":"attempt-002","state":"SUCCEEDED","backend":"pai-dlc","backend_job_id":"1"}],"current_attempt_id":"attempt-001"},"expected":{"project":"demo","run_id":"trial","current_attempt_id":"attempt-001","count":2,"attempts":[{"identity":"trial::attempt-001","attempt_id":"attempt-001","current":true,"backend":"slurm","backend_job_id":null,"state":"RUNNING"},{"identity":"trial::attempt-002","attempt_id":"attempt-002","current":false,"backend":"pai-dlc","backend_job_id":"1","state":"SUCCEEDED"}]}}"#,
         ),
     ] {
         let input = &case["input"];

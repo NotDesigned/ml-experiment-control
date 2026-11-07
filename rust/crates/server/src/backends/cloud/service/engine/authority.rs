@@ -24,6 +24,15 @@ fn planning_error(error: ml_exp_core::cloud::Error) -> cloud::Error {
         cloud::Error::evidence()
     }
 }
+/// A Run made on the retired SenseCore backend: readable from the registry, but the
+/// service no longer acts on it.
+pub(super) fn retired_backend() -> cloud::Error {
+    cloud::Error {
+        code: "BACKEND_RETIRED".into(),
+        http_status: Some(410),
+        uncertain: false,
+    }
+}
 impl Service {
     /// The receipt an undelivered input will have: its import recipe, or else its
     /// verified upload, under this backend's data root. A missing input is evidence.
@@ -54,57 +63,22 @@ impl Service {
             root: format!("{}/{project}/{asset}/tree", backend.definition.data_root()?),
         })
     }
-    fn selected_profile(
-        &self,
-        project: &str,
-        request: &run::Create,
-        selected: Option<&cloud::adapter::Profile>,
-    ) -> cloud::Result<Option<cloud::adapter::Profile>> {
-        let backend = self
-            .backends
-            .get(&request.executor)
-            .ok_or_else(cloud::Error::configuration)?;
-        let frozen = if let Some(profile) = selected {
-            Some(profile.clone())
-        } else {
-            let root = self.authority(project, &request.run_id)?;
-            if root.entry_exists(OsStr::new(&request.run_id)).map_err(io)? {
-                read(
-                    &root.child(OsStr::new(&request.run_id), false).map_err(io)?,
-                    "manifest.json",
-                )?["native_cloud"]
-                    .get("profile")
-                    .cloned()
-                    .map(serde_json::from_value)
-                    .transpose()
-                    .map_err(why!(cloud::Error::evidence()))?
-            } else {
-                None
-            }
-        };
-        if let Some(profile) = &frozen {
-            profile.validate()?;
-            match (&backend.adapter.profile, profile) {
-                (
-                    cloud::adapter::Profile::Sensecore(base),
-                    cloud::adapter::Profile::Sensecore(chosen),
-                ) => {
-                    let mut expected = base.clone();
-                    expected.cluster = chosen.cluster.clone();
-                    if expected != *chosen
-                        || !backend
-                            .definition
-                            .spot_clusters
-                            .as_ref()
-                            .is_some_and(|s| s.contains(&chosen.cluster))
-                    {
-                        return Err(cloud::Error::evidence());
-                    }
-                }
-                _ => return Err(cloud::Error::evidence()),
-            }
+    /// Only a SenseCore Run froze its own provider profile, chosen among spot clusters.
+    /// That backend was removed, so such a Run can still be read from the registry but
+    /// the service can no longer act on it.
+    fn refuse_frozen_profile(&self, project: &str, run: &str) -> cloud::Result<()> {
+        let root = self.authority(project, run)?;
+        if root.entry_exists(OsStr::new(run)).map_err(io)?
+            && read(
+                &root.child(OsStr::new(run), false).map_err(io)?,
+                "manifest.json",
+            )?["native_cloud"]
+                .get("profile")
+                .is_some()
+        {
+            return Err(retired_backend());
         }
-        Ok(frozen)
+        Ok(())
     }
     pub(super) fn execution_adapter(
         &self,
@@ -122,9 +96,8 @@ impl Service {
             .backends
             .get(&execution.backend_id)
             .ok_or_else(cloud::Error::configuration)?;
-        let profile = self
-            .selected_profile(&execution.job.project, &request, None)?
-            .unwrap_or_else(|| backend.adapter.profile.clone());
+        self.refuse_frozen_profile(&execution.job.project, &request.run_id)?;
+        let profile = backend.adapter.profile.clone();
         if profile.digest()? != execution.profile_sha256 {
             return Err(cloud::Error::evidence());
         }
@@ -230,25 +203,14 @@ impl Service {
         request: &run::Create,
         route: &Value,
         now: &str,
-        selected: Option<&cloud::adapter::Profile>,
     ) -> cloud::Result<creation::Documents> {
         let backend = self
             .backends
             .get(&request.executor)
             .ok_or_else(cloud::Error::configuration)?;
-        if matches!(
-            backend.adapter.profile,
-            cloud::adapter::Profile::Sensecore(_)
-        ) && request
-            .scheduling
-            .as_ref()
-            .is_some_and(|p| p.allocation != ml_exp_core::cloud::pai::Allocation::Guaranteed)
-        {
-            return Err(cloud::Error::configuration());
-        }
         let runtime = self.runtime(project, &request.executor, &request.runtime_id)?;
-        let selected = self.selected_profile(project, request, selected)?;
-        let profile = selected.as_ref().unwrap_or(&backend.adapter.profile);
+        self.refuse_frozen_profile(project, &request.run_id)?;
+        let profile = &backend.adapter.profile;
         let source = self
             .sources
             .read(project, &runtime.source_id)
@@ -270,20 +232,11 @@ impl Service {
                 {
                     return Ok(receipt.clone());
                 }
-                if let Some(saved) = self.data_saved(project, &request.executor, &input.asset_id)? {
-                    if let Some(receipt) = saved.state.ready {
-                        return Ok(receipt);
-                    }
-                    if matches!(
-                        backend.adapter.profile,
-                        cloud::adapter::Profile::Sensecore(_)
-                    ) {
-                        return Err(cloud::Error {
-                            code: "INPUT_NOT_READY".into(),
-                            http_status: Some(409),
-                            uncertain: false,
-                        });
-                    }
+                if let Some(receipt) = self
+                    .data_saved(project, &request.executor, &input.asset_id)?
+                    .and_then(|saved| saved.state.ready)
+                {
+                    return Ok(receipt);
                 }
                 self.undelivered_receipt(backend, project, &request.executor, &input.asset_id)
             })
@@ -330,16 +283,11 @@ impl Service {
         )
         .map_err(planning_error)?;
         let storage = backend.definition.storage_layout()?;
+        // PAI prepares data inside the job. Only the retired SenseCore backend ran it in a
+        // separate job before, but every Run keeps the field it was authored with.
         if request.data_preparation.is_some() {
-            let before_job = matches!(
-                backend.adapter.profile,
-                cloud::adapter::Profile::Sensecore(_)
-            );
-            if before_job && backend.data_copier.is_none() {
-                return Err(cloud::Error::configuration());
-            }
-            documents.run["native_cloud"]["data_preparation_before_job"] = json!(before_job);
-            documents.attempt["native_cloud"]["data_preparation_before_job"] = json!(before_job);
+            documents.run["native_cloud"]["data_preparation_before_job"] = json!(false);
+            documents.attempt["native_cloud"]["data_preparation_before_job"] = json!(false);
         }
         let root = self.authority(project, &request.run_id)?;
         let existing = if root.entry_exists(OsStr::new(&request.run_id)).map_err(io)? {
@@ -372,11 +320,6 @@ impl Service {
             documents.run["native_cloud"]["worker_sha256"] = worker.clone();
             documents.attempt["native_cloud"]["worker_sha256"] = worker;
         }
-        if let Some(selected) = selected {
-            documents.run["native_cloud"]["profile"] = json!(selected);
-            documents.attempt["native_cloud"]["profile"] =
-                documents.run["native_cloud"]["profile"].clone();
-        }
         Ok(documents)
     }
     pub(super) fn current_execution(
@@ -407,7 +350,6 @@ impl Service {
             run["created_at"]
                 .as_str()
                 .ok_or_else(cloud::Error::evidence)?,
-            None,
         )?;
         let mut first = run.clone();
         first["attempt_id"] = json!("attempt-001");
@@ -427,11 +369,7 @@ impl Service {
                 .as_str()
                 .ok_or_else(cloud::Error::evidence)?
                 .into(),
-            backend_config_sha256: self
-                .selected_profile(project, &request, None)?
-                .as_ref()
-                .unwrap_or(&backend.adapter.profile)
-                .digest()?,
+            backend_config_sha256: backend.adapter.profile.digest()?,
         };
         let channel = self
             .exchange
@@ -481,10 +419,7 @@ impl Service {
             .cloned()
             .collect();
         for mount in &package.config.datasets {
-            if !matches!(
-                backend.adapter.profile,
-                cloud::adapter::Profile::Sensecore(_)
-            ) && !materialized.contains(&mount.receipt.asset_id)
+            if !materialized.contains(&mount.receipt.asset_id)
                 && !package
                     .imports
                     .iter()

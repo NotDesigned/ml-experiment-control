@@ -35,10 +35,8 @@ flowchart TD
     Prepare --> Review[Submission: prepared gates and explicit authorization]
     Review --> Dispatch[Backend adapter]
     Dispatch --> Slurm[SSH Slurm gateway and Apptainer]
-    Dispatch --> ACP[SenseCore ACP over REST]
     Dispatch --> DLC[PAI DLC over REST]
     Slurm --> Worker[ml-exp-worker-rs and user command]
-    ACP --> Worker
     DLC --> Worker
     Worker --> State[Persistent checkpoint on backend storage]
     Worker --> Records[Canonical API metric and event journal]
@@ -53,8 +51,7 @@ The API freezes and orchestrates work; backend schedulers allocate resources.
 Image builds run in a separate private builder (see
 [the Python bridge](#python-bridge-boundary)), by default on a CPU PAI DSW that
 publishes to a configured registry. DSW also supports temporary debugging; **DLC is
-PAI's training backend**. SenseCore uses ACP for training and bounded data/result
-copy jobs; CCI is a separate temporary debug-machine feature.
+PAI's training backend**.
 
 Cloud workers report process evidence, input progress, history pages and
 checkpoint metadata over a scoped HTTPS exchange. Slurm collects equivalent
@@ -124,8 +121,7 @@ locks, revision checks and atomic transitions.
 
 The API keeps source, control metadata and receipts, not full dataset or weight
 archives. Transfers use 16 MiB parts numbered from zero. Slurm payloads go to
-shared storage through the gateway. SenseCore uses a CCR data image and a CPU copy
-to NAS. PAI datasets stay in approved OSS and are verified into a personal CPFS
+shared storage through the gateway. PAI datasets stay in approved OSS and are verified into a personal CPFS
 cache. Recovery state stays on backend persistent storage. Source, outputs,
 checkpoints and journals have separate lifetimes. See [data](data.md),
 [checkpoints](persistent-checkpoints.md) and
@@ -138,7 +134,7 @@ keep it, and neither is needed for basic API or client reads:
 
 | Effect | Code | Boundary |
 | --- | --- | --- |
-| Image build and copy | `server/src/ml_exp_server/builds/` (`native_image.py`, `native_data.py`), which also imports other modules of that package; it also needs `worker/src/ml_exp_worker/` and `src/experiment_control/` on its import path | Separate process behind a private socket. Rust owns recipes, frozen Runtime identity and durable dispatch intent |
+| Image build and copy | `server/src/ml_exp_server/builds/` (`native_image.py`), which also imports other modules of that package; it also needs `worker/src/ml_exp_worker/` and `src/experiment_control/` on its import path | Separate process behind a private socket. Rust owns recipes, frozen Runtime identity and durable dispatch intent |
 | W&B publication | `rust/crates/server/src/tracking/sdk.py`, run with the configured interpreter and the official SDK | Effect shell only. Rust compares identities and advances cursors |
 
 Neither is an install path for the client or API. Two short launchers embedded in

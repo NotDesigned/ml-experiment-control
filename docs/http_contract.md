@@ -182,8 +182,8 @@ it is not proof that file contents contain no secrets. See [builds](builds.md).
 
 Use the exact [multipart paths and resume rules](data.md#native-http-endpoints),
 including zero-based part numbers. Completion establishes destination durability,
-not GPU training. SenseCore data-image publication and NAS delivery are distinct.
-Slurm/SenseCore target-backed assets do not provide client archive downloads;
+not GPU training.
+Slurm target-backed assets do not provide client archive downloads;
 approved OSS datasets have a separate signed-download route. Do not use output
 routes to retrieve datasets.
 

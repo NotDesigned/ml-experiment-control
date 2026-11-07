@@ -132,7 +132,7 @@ fn sync_recovery_lost_reply_keeps_failed_parent_and_cannot_create_a_second_child
         confirmation: format!("RETRY SYNC {action} {request_id} dlc-failed"),
     };
     let child = retry.job(action, &request_id, &parent).unwrap();
-    let Profile::Pai(p) = &profile else { panic!() };
+    let Profile::Pai(p) = &profile;
     row["DisplayName"] = json!(child.name().unwrap());
     row["Settings"]["Tags"] = json!(child.tags(&p.scope().unwrap()).unwrap());
     let state = Arc::new(Mutex::new(State::default()));
@@ -255,9 +255,7 @@ fn lost_create_and_stop_replies_restart_absence_and_foreign_identity_never_repla
         .unwrap();
     assert_eq!(verified["termination_verified"], true);
     assert_eq!(verified["observation"]["state"], "CANCELLED");
-    let Profile::Pai(mut changed) = profile else {
-        unreachable!()
-    };
+    let Profile::Pai(mut changed) = profile;
     changed.quota_id = "different-quota".into();
     assert!(
         outbox

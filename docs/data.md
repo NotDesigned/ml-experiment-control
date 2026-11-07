@@ -7,7 +7,7 @@ bounded part buffers; large dataset payloads live on backend storage or the conf
 
 ## Storage model
 
-Every backend has one primary storage: shared storage on Slurm, NAS on SenseCore and
+Every backend has one primary storage: shared storage on Slurm and
 personal CPFS on PAI. A Run's `STATE_DIR` and `OUTPUT_DIR` and every verified dataset
 tree live there, and it is the only storage training reads and writes.
 
@@ -41,7 +41,7 @@ creates a different identity.
 
 ### Direct upload
 
-On PAI and SenseCore the client sends each part straight to OSS. For each part it asks
+On PAI the client sends each part straight to OSS. For each part it asks
 the server for a ticket, a signed PUT for that one object of that Project, executor,
 asset and part. A ticket lasts 300 seconds and cannot overwrite: it is valid only with
 `x-oss-forbid-overwrite`, which is inside its signature. The client checks that the URL
@@ -97,7 +97,6 @@ not interchangeable.
 | Backend | Delivery before training |
 | --- | --- |
 | Slurm | Client → bounded API buffer → connected SSH gateway → shared storage. Offline compute nodes read the shared cache. |
-| SenseCore | Client → signed PUT to OSS objects (`--via-server`: through a bounded API buffer) → CCR data image, built from those objects on a PAI DSW → debug CPU ACP → NAS. A CPU receipt establishes readiness. |
 | PAI | Client → signed PUT to personal OSS objects (`--via-server`: through a bounded API buffer) → verified personal CPFS cache. Import runs before training, optionally in a separate CPU job. |
 
 A cache is scoped to its executor/storage identity. An asset's presence on one
@@ -119,7 +118,7 @@ because a recipe does not go through Begin.
 
 ## Paths in the job
 
-Two variables point at data, with the same meaning on Slurm, SenseCore and PAI:
+Two variables point at data, with the same meaning on Slurm and PAI:
 
 - `DATASETS_JSON` is the one entry for declared inputs. It is a JSON object from
   each name in the Run's `data` field to that asset's verified directory, the same
@@ -184,7 +183,7 @@ shell as one argument, which Linux limits to 128 KiB, has not been verified.
 
 Repeat the original request until `data show` reports `new_request_allowed: true`.
 That means the last observation proved this exact job FAILED, was CANCELLED or was
-PREEMPTED. Then publish with a new request ID, on PAI or SenseCore. A fresh provider
+PREEMPTED. Then publish with a new request ID. A fresh provider
 read must prove the same thing again before the new job is prepared.
 
 Anything else returns `DATA_COPY_IDENTITY_CONFLICT` and creates nothing: a job that
@@ -192,13 +191,6 @@ was never prepared or never started, a submission with no provider record (absen
 cannot prove an uncertain create did not land), a failed read, a running job, or
 SUCCEEDED without READY. The worker exits non-zero unless READY was acknowledged, so
 that last case is contradictory evidence.
-
-SenseCore `SUSPENDED` and `DELETING` also refuse, although they display as CANCELLED: a
-deleting job may still be running, and a suspended job has not been shown unable to
-resume. The service never stops a copy job itself. To replace one in either state, have
-the provider finish deleting it, so that a read reports `DELETED`. If the provider stops
-reporting the job at all, the read fails and the request stays refused, because absence
-is not proof.
 
 The new job has its own deterministic identity from the new request ID. On PAI,
 `--runtime` may name another READY Runtime; without it the original Runtime is kept.
@@ -224,10 +216,6 @@ calls and response loss do not create another job. The diagnostic uses the
 original image, 0 GPUs, 2 CPUs and 4 GiB, and a 300-second running limit. CPFS is
 mounted read-only. It does not run data-copy, unpack files, publish READY, remove
 parts or retry the original copy.
-
-SenseCore has no read-only diagnostic and no provider read for a copy. There,
-`data diagnose` returns 422 `READONLY_DIAGNOSTIC_UNSUPPORTED` and the provider read
-says `PROVIDER_DIAGNOSTICS_UNSUPPORTED`, with no provider call.
 
 The report contains current available bytes/inodes, marker/state identity and
 metadata hashes, modes/ownership, recorded part counts, part sizes, and an

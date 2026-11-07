@@ -1372,24 +1372,6 @@ fn watching_stops_when_the_provider_can_no_longer_be_read() {
 }
 
 #[test]
-fn watching_stops_when_the_provider_has_paused_the_job() {
-    let files = Files::new();
-    let mut world = World::new();
-    world.job_states = vec![("CANCELLED", "SUSPENDED")];
-    let fake = Fake::start(world);
-    let mut shown = Vec::new();
-    let value = files
-        .drive(&fake, true, &mut Vec::new(), true, &mut shown)
-        .unwrap();
-    assert_eq!(value["watching_stopped"], true);
-    assert_eq!(value["job_over"], false, "it may still run");
-    assert!(
-        shown.iter().any(|line| line.contains("paused")),
-        "{shown:?}"
-    );
-}
-
-#[test]
 fn another_server_does_not_inherit_this_servers_state_file() {
     let files = Files::new();
     let first = Fake::start(World::new());

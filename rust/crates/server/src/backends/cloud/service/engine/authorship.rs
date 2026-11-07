@@ -57,29 +57,7 @@ impl Service {
         } else {
             ml_exp_core::tracking::resolve(request.wandb.as_ref(), &self.tracking, project)
         };
-        let selected = if !exists {
-            let backend = self
-                .backends
-                .get(&request.executor)
-                .ok_or_else(cloud::Error::configuration)?;
-            if let Some(allowed) = &backend.definition.spot_clusters {
-                let cluster = backend
-                    .adapter
-                    .highest_spot(Some(allowed), &AtomicBool::new(false))?;
-                let cloud::adapter::Profile::Sensecore(mut profile) =
-                    backend.adapter.profile.clone()
-                else {
-                    return Err(cloud::Error::configuration());
-                };
-                profile.cluster = cluster.name;
-                Some(cloud::adapter::Profile::Sensecore(profile))
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        let docs = self.documents(project, &request, &route, now, selected.as_ref())?;
+        let docs = self.documents(project, &request, &route, now)?;
         let checked = |directory: &Directory, reused: bool| -> cloud::Result<Value> {
             let run = read(directory, "manifest.json")?;
             let original = read(directory, "request.json")?;
@@ -119,7 +97,7 @@ impl Service {
         write(&attempt, "attempt.json", &docs.attempt)?;
         write(&attempt, "status.json", &docs.status)?;
         self.authority(project, &request.run_id)?;
-        let current = self.documents(project, &request, &route, now, selected.as_ref())?;
+        let current = self.documents(project, &request, &route, now)?;
         if current.run != docs.run || current.attempt != docs.attempt {
             return Err(cloud::Error::evidence());
         }

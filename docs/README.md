@@ -18,7 +18,7 @@ records.
 7. [W&B](wandb.md): optional server publication and per-Run destinations.
 8. [Local metrics](metrics.md#attach-metrics-from-local-training): attach an existing local JSONL stream through the native client.
 9. [Recovery](recovery.md): failed stages, uncertain requests and output collection.
-10. [Debug sessions](debug-sessions.md): temporary CCI/DSW SSH machines.
+10. [Debug sessions](debug-sessions.md): temporary DSW SSH machines.
 11. [Administrative maintenance](resource-deletion.md): reviewed removal of outputs, state and Run registrations.
 
 No research-question entity is required. Scientific evaluation is an ordinary Run
@@ -31,7 +31,6 @@ with declared inputs and metrics.
 - [Configuration](configuration.md): client settings and independently enabled backends.
 - [Slurm](slurm.md): SSH scheduling, shared storage and offline compute nodes.
 - [PAI](pai.md): DLC training, CPFS/OSS and an optional DSW builder.
-- [SenseCore](sensecore-rest.md): REST, cluster choice and job diagnostics.
 - [Builds](builds.md): Dockerfile rules, publishers, cache and capacity.
 - [Project lifecycle](operator-guide.md#project-registration-and-lifecycle): registration, pause and archive.
 - [Action storage](action-storage.md): the authoritative SQLite store and its backup.

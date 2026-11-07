@@ -38,7 +38,7 @@ randomness and subprocess effects belong to outer packages. A successful local
 command is never sufficient proof that a scheduler accepted a job.
 
 The optional image effect bridge stays in Python:
-`server/src/ml_exp_server/builds/native_image.py` and `native_data.py`. Rust owns
+`server/src/ml_exp_server/builds/native_image.py`. Rust owns
 its recipes, frozen Runtime identity and durable dispatch intent. W&B uses a
 narrow optional official-SDK process. User training code can use any image language; see the
 [image contract](../docs/builds.md#dockerfile-contract) for optional `python3` uses.
@@ -65,19 +65,14 @@ flowchart LR
   can freeze `scheduling.allocation` (`guaranteed`, `allow_idle`, `idle_only`) and
   priority 1–9, default 5. `ml-exp submit` defaults a job with GPUs to `allow_idle`,
   which [can be preempted](../docs/pai.md#dlc-scheduling-options). The profile still enforces resource and duration limits.
-- SenseCore uses REST for ACP training and CPU copy/collection, and CCI debug.
-  Training and debug CPU profiles are separate; GPU ACP never uses a debug pool.
-  An optional `spot_clusters` allowlist selects the compatible pool with the
-  highest SPOT allowance, then freezes that profile per Run. Retry, cancellation
-  and reconciliation keep this original choice. Quota is not idle GPU capacity.
 - Cloud worker packets report process evidence, input progress, history pages
   and checkpoint metadata over a scoped HTTPS channel. Slurm collects equivalent
   evidence through its gateway. Missing evidence remains unknown.
 - Result collection can run separately on CPU after training. The native cloud
   collector uses an existing digest-pinned worker image and persistent storage;
   it does not repeat the training command.
-- Debug machines have bounded leases and retained create/stop identity. CCI
-  supports create and stop; DSW also supports delete. Unknown creation is queried,
+- Debug machines have bounded leases and retained create/stop identity. DSW
+  supports create, stop and delete. Unknown creation is queried,
   never automatically repeated under a fresh identity.
 
 ## Client configuration
@@ -124,7 +119,7 @@ UNKNOWN and STALE observations do not promise availability or a start time.
 
 ## Temporary SSH machines
 
-`ml-exp debug list` shows the configured DSW or CCI profiles. Create a request
+`ml-exp debug list` shows the configured DSW profiles. Create a request
 file using a profile from that list, a new 32-character hexadecimal request ID
 and your actual SSH public key. The private key stays on your machine.
 
@@ -149,7 +144,7 @@ ml-exp debug stop "$debug_identity" --confirmation "STOP $debug_identity"
 ml-exp debug delete "$debug_identity" --confirmation "DELETE $debug_identity"
 ```
 
-Only DSW supports delete; CCI supports create and stop. Refresh checks the
+DSW supports create, stop and delete. Refresh checks the
 provider; show reads saved status. An SSH connection is returned only after the
 provider reports Running. Use the returned host, port and user with the private
 key corresponding to your submitted public key.
@@ -206,8 +201,7 @@ ml-exp run start --project demo --file experiment.json --state ./private-state.j
 
 For an existing Runtime, omit `runtime` and provide `run.runtime_id`. Inline
 Runtime and explicit runtime_id are mutually exclusive. `scheduling` is a cloud
-option; Slurm rejects it. SenseCore uses its own SPOT profile rather than PAI
-idle allocation choices. Each request ID is a durable recovery slot; changing its
+option; Slurm rejects it. Each request ID is a durable recovery slot; changing its
 payload is a conflict. Budget and known provider limits are checked before build.
 
 `run.env` contains per-experiment string values and participates in the frozen
@@ -242,7 +236,7 @@ automatically rerun. Change the explicit source/arguments to request a new cache
 On Slurm the operator enables `script_preparation` for the backend and configures
 the gateway helper's absolute `data_preparer` path to Apptainer. The gateway
 executes this CPU preparation before `sbatch`, so training nodes need no Internet.
-SenseCore uses its configured debug CPU ACP data copier. PAI executes preparation
+PAI executes preparation
 inside the allocated DLC job and counts this time toward the job's time limit.
 It uses the approved persistent mount; an absent mount is never created locally.
 Shared dataset markers bind the storage target and root inode, while the
@@ -262,11 +256,6 @@ creating cloud Runs: `allow_run_creation` without `exchange` is refused at
 `--check`, while a server that creates no Runs may still omit it. Slurm's staged and
 offline entrypoint is unchanged.
 
-For SenseCore, preparation status retains the CPU job's identity and distinguishes
-failure from uncertainty and ordinary waiting. A failed copy reports
-`DATA_PREPARATION_FAILED` without creating a training Submission. Direct
-`run prepare` can return `operation=PREPARE_INPUT` while the CPU job is pending;
-that response cannot be used with `execute`.
 Slurm download scripts receive cancellation and run without holding the helper's
 global metadata lock; a failed/cancelled preparation leaves no dispatchable plan.
 
@@ -340,8 +329,7 @@ has its own smaller source-only policy and is not a way to upload datasets.
 
 PAI workers can download approved OSS objects through signed part URLs into their
 personal CPFS cache. This native path does not activate provider OSS filesystem
-mounts. SenseCore data goes through a CPU DSW-built data image, the configured
-registry, a same-digest CCR mirror and a debug CPU ACP copy into NAS. Download capabilities
+mounts. Download capabilities
 stay outside Docker contexts. Training waits for a verified READY receipt.
 
 `DATA_DIR` / `DATASETS_JSON`, `STATE_DIR`, `OUTPUT_DIR`, and `METRICS_PATH` are
@@ -351,7 +339,7 @@ Attempt explicitly references the exact checkpoint and storage scope; it does
 not require uploading the full training state through the API.
 
 An explicit restart from the beginning is available after the exact parent job
-is terminal, on Slurm, PAI or SenseCore:
+is terminal, on Slurm or PAI:
 
 ```sh
 ml-exp run retry ACTION --run RUN --attempt attempt-001 --from-start
@@ -484,15 +472,14 @@ Select only the backends needed for this installation:
 | --- | --- | --- |
 | SSH Slurm | `submission_config`: [Slurm example](deploy/slurm.example.json) | Pinned SSH config/known_hosts; helper and data helper on the networked gateway; shared Run/data roots |
 | PAI DLC | `cloud_config`: [PAI example](deploy/pai.example.json) | Private PAI access key file, approved quota/CPFS/user role, exact private registry auth, personal OSS prefix |
-| SenseCore ACP | `cloud_config`: [SenseCore example](deploy/sensecore.example.json) | Private SenseCore access key file, training pool and personal NAS; separate debug CPU copier/collector |
 
 All IDs, hashes, resource limits, storage paths and accounts in these examples
 are placeholders. Replace them with approved values. Backend `enabled`,
 `allow_run_creation` and polling start disabled. The examples must not be used
-as proof of available resources. To configure PAI and SenseCore together, put
-both definitions in the same cloud file's `backends` list; its exchange and
-object store are shared. Executor IDs must be unique across Slurm and cloud.
-PAI/SenseCore profiles also require matching credential `provider` values.
+as proof of available resources. Several PAI backends share one cloud file's
+`backends` list, with a shared exchange and object store. Executor IDs must be
+unique across Slurm and cloud. PAI profiles also require matching credential
+`provider` values.
 
 Credential files have these shapes; enter actual values privately, never in a
 Project, source archive, experiment file or command argument:
@@ -501,7 +488,7 @@ Project, source archive, experiment file or command argument:
 {"provider":"pai","access_key_id":"REPLACE","access_key_secret":"REPLACE"}
 ```
 
-SenseCore uses `"provider":"sensecore"`. PAI may additionally specify
+PAI may additionally specify
 `security_token` for temporary credentials. The OSS file uses
 `access_key_id`, `access_key_secret` and optional `security_token`, without
 `provider`. The exchange signing key is a separate private file of at least
@@ -586,20 +573,6 @@ to a different status row. Set the optional trusted helper scheduler field
 from the controller when accounting lacks the marker and the queue no longer
 contains the job. Missing, foreign or duplicate evidence still blocks mutation;
 controller eviction does not prove cancellation or permit resubmission.
-
-For SenseCore, `scope.zone` addresses the compute pool and NAS mount. Set
-`scope.workspace_zone` separately when the workspace lives in another zone of
-the same region; omission uses the compute zone. Resource-spec `memory.allocatable` is GiB. A pool with an empty
-`spot_status` has zero SPOT allowance; it does not invalidate the other pools.
-Reported allowance still does not establish idle GPU capacity.
-
-The native offline-log adapter resolves the configured workspace through the
-account-scoped resource catalogue before querying logs. SenseCore requires that
-catalogue's workspace UUID in `resource_id`, rather than the workspace's REST
-path. Personal telemetry uses the workspace zone; the compute/NAS zone remains
-unchanged. Foreign or ambiguous workspace records and log hits are rejected.
-A successful query with no hits means logs are unavailable; it is not evidence
-that the container succeeded or that a failed job can safely be resubmitted.
 
 W&B errors distinguish missing SDK, authentication, remote Run, init,
 history read and writes without exposing exception messages or keys. Uncertain

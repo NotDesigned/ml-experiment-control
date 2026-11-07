@@ -117,7 +117,7 @@ class Registry:
         return json.loads(raw)
 
     def redirected_blob(self, method, location, *, maximum=8 * 1024 ** 2):
-        # CCR may issue an HTTP signed OSS URL. Upgrade to TLS to the exact
+        # A registry may issue an HTTP signed object-store URL. Upgrade to TLS to the exact
         # operator-approved host and never forward registry credentials.
         target = urlsplit(location)
         if (target.scheme not in {"http", "https"} or target.hostname not in self.blob_hosts

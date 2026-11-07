@@ -1,6 +1,6 @@
 //! Native-image identity: a frozen recipe, source and base, with what the image's worker
-//! must do. PAI and SenseCore images hold a worker that can fetch the one its Run froze, so
-//! they name the contract it keeps. Slurm images, and every image built before this, name
+//! must do. PAI images hold a worker that can fetch the one its Run froze, so they name the
+//! contract it keeps. Slurm images, and every image built before this, name
 //! the worker itself, and their identities stay exactly as they were.
 use super::*;
 pub const CONTRACT: &str = "native-image-recipe.v1";
@@ -15,7 +15,8 @@ pub const CONTRACT: &str = "native-image-recipe.v1";
 ///   Its `DatasetParts` and `ExchangeParts` read the exchanges with the channels in that config.
 /// - `data-copy --config --channel-json --storage-json`, for the same jobs, with that `Config`,
 ///   `import::DataChannel` and `launch::StorageLayout`, and `POST {data channel}/ready`.
-/// - `script-prepare --plan-json`, for SenseCore's data preparation, with `data_preparation::Plan`.
+/// - `script-prepare --plan-json`, with `data_preparation::Plan`. Only the retired SenseCore
+///   backend asked this of a cloud image; it stays here so the pinned contract is unchanged.
 ///
 /// Each of those types denies unknown fields, so a new field is a change to this contract
 /// unless the worker it reaches is always the frozen one.

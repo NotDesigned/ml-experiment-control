@@ -1,6 +1,5 @@
 //! Pure request signing. Inputs are explicit; no credential, time or entropy I/O.
 use super::{Error, Result};
-use base64::Engine;
 use hmac::{Hmac, Mac};
 use ml_exp_core::cloud::{Endpoint, Method, Request};
 use sha2::{Digest, Sha256};
@@ -142,15 +141,6 @@ pub(super) fn sign(
                 ),
             );
         }
-        Endpoint::Sensecore { .. } => {
-            if date.len() != 29 || !date.ends_with(" GMT") || !date.is_ascii() {
-                return Err(Error::configuration());
-            }
-            let signature = base64::engine::general_purpose::STANDARD
-                .encode(mac(secret, format!("x-date: {date}").as_bytes()));
-            headers.insert("x-date".into(), date.into());
-            headers.insert("authorization".into(),format!("hmac accesskey=\"{id}\", algorithm=\"hmac-sha256\", headers=\"x-date\", signature=\"{signature}\""));
-        }
     }
     Ok(Signed {
         url: format!(
@@ -214,24 +204,6 @@ mod tests {
                 "n"
             )
             .is_err()
-        );
-        let mut sense = request;
-        sense.endpoint = Endpoint::Sensecore {
-            service: "iam".into(),
-            region: None,
-        };
-        let signed = sign(
-            &sense,
-            "exampleID",
-            "exampleSecret",
-            None,
-            "Thu, 29 Oct 2026 00:00:00 GMT",
-            "",
-        )
-        .unwrap();
-        assert_eq!(
-            signed.headers["authorization"],
-            "hmac accesskey=\"exampleID\", algorithm=\"hmac-sha256\", headers=\"x-date\", signature=\"r9nHTTD24XOH89hH4/jhHXEZaPgy6wEmGpVZqf7u2B8=\""
         );
     }
 }

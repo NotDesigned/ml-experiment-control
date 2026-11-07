@@ -115,7 +115,7 @@ to skip the question in a script; without a terminal `--yes` is required.
 
 | Need | Option |
 | --- | --- |
-| Another backend | `--executor pai-h200`. A prefix of fixed shapes, such as `sensecore-n6ls`, takes the smallest that fits |
+| Another backend | `--executor pai-h200`. A prefix of fixed shapes takes the smallest that fits |
 | CPUs and memory | `--cpus`, `--memory`. Sized from `--gpus` unless given. A fixed shape always runs whole |
 | Another Dockerfile | `--dockerfile docker/train.Dockerfile` |
 | Environment variables | `--env KEY=VALUE`. Platform names are refused |

@@ -44,17 +44,6 @@ impl Runtime {
                     .validate()
                     .map_err(why!(cloud::Error::configuration()))?;
                 let credentials = Credentials::load(&d.credentials_file)?;
-                let provider_matches = matches!(
-                    (&credentials, &d.profile),
-                    (Credentials::Pai { .. }, domain::Profile::PaiDsw { .. })
-                        | (
-                            Credentials::Sensecore { .. },
-                            domain::Profile::SensecoreCci { .. }
-                        )
-                );
-                if !provider_matches {
-                    return Err(cloud::Error::configuration());
-                }
                 Ok((
                     name,
                     (
@@ -128,6 +117,8 @@ impl CreateRejection {
         })
     }
 }
+/// The contract only the retired SenseCore debug profile issued.
+const RETIRED_CONTRACT: &str = "native-debug-machine.v1";
 fn name(id: &str) -> cloud::Result<String> {
     if id
         .strip_prefix("debug.")
@@ -152,6 +143,9 @@ impl Service {
     fn debug_load(&self, id: &str) -> cloud::Result<Saved> {
         let saved: Saved = serde_json::from_value(read(&self.slots, &name(id)?)?)
             .map_err(why!(cloud::Error::evidence()))?;
+        if saved.recipe.contract == RETIRED_CONTRACT {
+            return Err(super::authority::retired_backend());
+        }
         let runtime = self
             .debug
             .as_ref()
@@ -170,7 +164,6 @@ impl Service {
                 || !saved.claims.contains("create")
                 || !saved.terminal
                 || !saved.network_clean
-                || !matches!(profile, domain::Profile::PaiDsw { .. })
             {
                 return Err(cloud::Error::evidence());
             }
@@ -181,7 +174,11 @@ impl Service {
         let mut records = Vec::new();
         for n in self.slots.entry_names().map_err(io)? {
             if let Some(id) = n.to_str().and_then(|s| s.strip_suffix(".debug.json")) {
-                records.push(self.debug_load(id)?);
+                // A SenseCore machine stays on disk but is no longer listed or counted.
+                match self.debug_load(id) {
+                    Err(error) if error.code == super::authority::retired_backend().code => {}
+                    loaded => records.push(loaded?),
+                }
             }
         }
         Ok(records)
@@ -219,7 +216,7 @@ impl Service {
             .debug
             .as_ref()
             .ok_or_else(cloud::Error::configuration)?;
-        let profiles=runtime.profiles.iter().map(|(name,(profile,_))|json!({"name":name,"provider":if matches!(profile,domain::Profile::PaiDsw{..}){"pai_dsw"}else{"sensecore_cci"},"delete_supported":matches!(profile,domain::Profile::PaiDsw{..})})).collect::<Vec<_>>();
+        let profiles=runtime.profiles.iter().map(|(name,(profile,_))|json!({"name":name,"provider":"pai_dsw","delete_supported":true})).collect::<Vec<_>>();
         Ok(
             json!({"enabled":runtime.enabled,"profiles":profiles,"machines":self.debug_records()?.iter().map(Self::debug_view).collect::<Vec<_>>()}),
         )
@@ -258,11 +255,6 @@ impl Service {
             .filter(|r| !(r.terminal && r.network_clean || r.deleted))
             .count()
             >= runtime.max_active
-            || matches!(profile, domain::Profile::SensecoreCci { .. })
-                && records.iter().any(|r| {
-                    r.recipe.request.profile == request.profile
-                        && !(r.terminal && r.network_clean || r.deleted)
-                })
         {
             return Err(cloud::Error {
                 code: "DEBUG_MACHINE_LIMIT".into(),
@@ -277,7 +269,7 @@ impl Service {
             stop_requested: false,
             delete_requested: false,
             terminal: false,
-            network_clean: matches!(profile, domain::Profile::PaiDsw { .. }),
+            network_clean: true,
             deleted: false,
             connection: None,
             diagnostic: None,
@@ -308,7 +300,7 @@ impl Service {
             }
             Err(e) => return Err(e),
         };
-        if matches!(profile, domain::Profile::PaiDsw { .. }) && saved.provider_id.is_none() {
+        if saved.provider_id.is_none() {
             let rows = value["Instances"]
                 .as_array()
                 .ok_or_else(cloud::Error::evidence)?;
@@ -456,13 +448,11 @@ impl Service {
                     .create(&saved.recipe)
                     .map_err(why!(cloud::Error::configuration()))?;
                 let response = self.debug_effect(&mut saved, "create", client, create)?;
-                if matches!(profile, domain::Profile::PaiDsw { .. }) {
-                    if let Some(id) = response.as_ref().and_then(|v| v["InstanceId"].as_str()) {
-                        ml_exp_core::identity::validate_id(id)
-                            .map_err(why!(cloud::Error::evidence()))?;
-                        saved.provider_id = Some(id.into());
-                        self.debug_save(&saved)?;
-                    }
+                if let Some(id) = response.as_ref().and_then(|v| v["InstanceId"].as_str()) {
+                    ml_exp_core::identity::validate_id(id)
+                        .map_err(why!(cloud::Error::evidence()))?;
+                    saved.provider_id = Some(id.into());
+                    self.debug_save(&saved)?;
                 }
                 value = Self::debug_lookup(profile, client, &saved)?;
             }
@@ -490,10 +480,7 @@ impl Service {
                     .map_err(why!(cloud::Error::evidence()))?
                     .into(),
             );
-            if saved.terminal
-                && matches!(profile, domain::Profile::PaiDsw { .. })
-                && saved.provider_message.is_none()
-            {
+            if saved.terminal && saved.provider_message.is_none() {
                 // Diagnostic reads are advisory. Failure to read them must not
                 // turn a known provider outcome into an uncertain submission
                 // or prevent stopping/deleting this exact owned instance.
@@ -516,14 +503,8 @@ impl Service {
                         .stop(&saved.recipe, &provider_id, false)
                         .map_err(why!(cloud::Error::configuration()))?;
                     self.debug_call(&mut saved, client, &request)?;
-                } else if matches!(profile, domain::Profile::SensecoreCci { .. }) {
-                    saved.network_clean =
-                        self.debug_network_stop(&saved, profile, client, &provider_id)?;
                 }
-                if saved.delete_requested
-                    && saved.terminal
-                    && matches!(profile, domain::Profile::PaiDsw { .. })
-                {
+                if saved.delete_requested && saved.terminal {
                     saved.claims.insert("delete".into());
                     self.debug_save(&saved)?;
                     let request = profile
@@ -559,71 +540,6 @@ impl Service {
                         }
                         saved.connection = profile.connection(&value);
                     }
-                    domain::Profile::SensecoreCci { network, .. } => {
-                        let request = profile
-                            .service(&saved.recipe, false)
-                            .map_err(why!(cloud::Error::configuration()))?;
-                        let value = match client.call(&request, &AtomicBool::new(false)) {
-                            Ok(v) => Some(v),
-                            Err(e) if e.http_status == Some(404) => None,
-                            Err(e) => return Err(e),
-                        };
-                        if let Some(service) = value {
-                            if service["name"] != saved.recipe.name
-                                || service["selector"] != json!({"app":saved.recipe.name})
-                                || !domain::subset(
-                                    &json!([{"port":22,"target_port":22}]),
-                                    &service["ports"],
-                                )
-                            {
-                                return Err(cloud::Error::evidence());
-                            }
-                            let request = profile
-                                .network(&saved.recipe, "get", &provider_id)
-                                .map_err(why!(cloud::Error::configuration()))?;
-                            let row = match client.call(&request, &AtomicBool::new(false)) {
-                                Ok(v) => Some(v),
-                                Err(e) if e.http_status == Some(404) => None,
-                                Err(e) => return Err(e),
-                            };
-                            if let Some(row) = row {
-                                if profile
-                                    .check_network(&saved.recipe, &provider_id, &row)
-                                    .map_err(why!(cloud::Error::evidence()))?
-                                {
-                                    saved.connection = Some(
-                                        json!({"host":network.external_ip,"port":network.external_port,"user":"root","access":"internet"}),
-                                    );
-                                } else if row["state"] == "CREATED"
-                                    && row["properties"]["internal_instance_name"]
-                                        .as_str()
-                                        .unwrap_or("")
-                                        .is_empty()
-                                {
-                                    let mut request = profile
-                                        .network(&saved.recipe, "bind", &provider_id)
-                                        .map_err(why!(cloud::Error::configuration()))?;
-                                    let mut body = row.clone();
-                                    body["properties"]["internal_instance_name"] =
-                                        json!(provider_id);
-                                    body["properties"]["internal_instance_type"] =
-                                        json!("CCI_DEPLOYMENT_SERVICE");
-                                    request.body = Some(body);
-                                    self.debug_effect(&mut saved, "dnat-bind", client, request)?;
-                                }
-                            } else {
-                                let request = profile
-                                    .network(&saved.recipe, "create", &provider_id)
-                                    .map_err(why!(cloud::Error::configuration()))?;
-                                self.debug_effect(&mut saved, "dnat-create", client, request)?;
-                            }
-                        } else {
-                            let request = profile
-                                .service(&saved.recipe, true)
-                                .map_err(why!(cloud::Error::configuration()))?;
-                            self.debug_effect(&mut saved, "service", client, request)?;
-                        }
-                    }
                 }
             }
             Ok(())
@@ -632,43 +548,6 @@ impl Service {
         saved.diagnostic = result.err().map(|e| e.code);
         self.debug_save(&saved)?;
         Ok(Self::debug_view(&saved))
-    }
-    fn debug_network_stop(
-        &self,
-        saved: &Saved,
-        profile: &domain::Profile,
-        client: &Client,
-        id: &str,
-    ) -> cloud::Result<bool> {
-        if !saved.claims.contains("dnat-create") {
-            return Ok(true);
-        }
-        let request = profile
-            .network(&saved.recipe, "get", id)
-            .map_err(why!(cloud::Error::configuration()))?;
-        let row = match client.call(&request, &AtomicBool::new(false)) {
-            Ok(v) => v,
-            Err(e) if e.http_status == Some(404) => return Ok(true),
-            Err(e) => return Err(e),
-        };
-        profile
-            .check_network(&saved.recipe, id, &row)
-            .map_err(why!(cloud::Error::evidence()))?;
-        let operation = if row["properties"]["internal_instance_name"]
-            .as_str()
-            .is_some_and(|s| !s.is_empty())
-        {
-            "unbind"
-        } else {
-            "delete"
-        };
-        client.call(
-            &profile
-                .network(&saved.recipe, operation, id)
-                .map_err(why!(cloud::Error::configuration()))?,
-            &AtomicBool::new(false),
-        )?;
-        Ok(false)
     }
     pub fn debug_stop(
         &self,
@@ -682,18 +561,6 @@ impl Service {
         }
         let lock = self.lock("debug.debug_stop")?;
         let mut saved = self.debug_load(id)?;
-        if delete
-            && matches!(
-                self.debug
-                    .as_ref()
-                    .ok_or_else(cloud::Error::configuration)?
-                    .profiles[&saved.recipe.request.profile]
-                    .0,
-                domain::Profile::SensecoreCci { .. }
-            )
-        {
-            return Err(cloud::Error::configuration());
-        }
         saved.stop_requested = true;
         saved.delete_requested |= delete;
         self.debug_save(&saved)?;

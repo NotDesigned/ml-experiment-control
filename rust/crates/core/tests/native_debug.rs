@@ -35,27 +35,6 @@ fn request() -> Create {
     }
 }
 const NOW: &str = "2026-10-29T00:00:00Z";
-const USER: &str = "12345678-1234-1234-1234-123456789abc";
-
-fn sensecore_profile() -> Profile {
-    serde_json::from_value(json!({"provider":"sensecore_cci",
-        "image":format!("registry.example/team/debug@sha256:{}", "c".repeat(64)),
-        "network":{"eip_name":"eip1","eip_id":"/subscriptions/sub/resourceGroups/group/zones/cn-east-1a/eips/eip1",
-            "nat_gateway_id":"nat1","external_ip":"203.0.113.7","external_port":2222,"tenant_id":"tenant1"},
-        "profile":{"scope":{"subscription":"sub","resource_group":"group","region":"cn-east-1","zone":"cn-east-1a",
-            "workspace":"work","user_id":USER},
-        "cluster":"debug-cluster","vpc_id":"vpc1","worker_spec":"cpu.2c4g","worker_gpus":0,"worker_cpus":2,
-        "worker_memory_gb":4,"worker_nodes":1,"storage_volume":"nas","storage_subdir":"/researcher",
-        "mount_path":"/data","purpose":"data_copy","quota":"RESERVED"}})).unwrap()
-}
-fn sensecore_request() -> Create {
-    Create {
-        gpus: 0,
-        cpus: 2,
-        memory_gb: 4,
-        ..request()
-    }
-}
 
 #[test]
 fn dsw_name_meets_actual_api_constraints_and_full_ownership_is_still_required() {
@@ -114,9 +93,8 @@ fn dsw_name_meets_actual_api_constraints_and_full_ownership_is_still_required() 
 #[test]
 fn dsw_workspace_binding_accepts_the_provider_integer_and_nothing_else() {
     let mut profile = profile();
-    if let Profile::PaiDsw { profile, .. } = &mut profile {
-        profile.workspace_id = "253".into();
-    }
+    let Profile::PaiDsw { profile: dsw, .. } = &mut profile;
+    dsw.workspace_id = "253".into();
     let recipe = profile.recipe(request(), NOW).unwrap();
     let body = profile.create(&recipe).unwrap().body.unwrap();
     assert_eq!(body["WorkspaceSource"], "/mnt/ml-expd-personal");
@@ -185,43 +163,8 @@ fn dsw_lifecycle_path_and_reason_match_the_current_state() {
     );
 }
 
-#[test]
-fn sensecore_issues_v1_with_its_own_name_and_exact_ownership() {
-    let profile = sensecore_profile();
-    let request = sensecore_request();
-    let recipe = profile.recipe(request.clone(), NOW).unwrap();
-    assert_eq!(recipe.contract, "native-debug-machine.v1");
-    let digest = canonical::digest(&json!([
-        "native-debug-machine.v1",
-        recipe.profile_sha256,
-        request
-    ]))
-    .unwrap();
-    assert_eq!(recipe.identity, format!("debug.{digest}"));
-    assert_eq!(recipe.name, format!("ml-expd-debug-{}", &digest[..32]));
-    profile.check_recipe(&recipe).unwrap();
-    let create = profile.create(&recipe).unwrap();
-    assert_eq!(create.query["app_name"], recipe.name);
-    assert_eq!(create.query["request_id"], request.request_id);
-    let body = create.body.unwrap();
-    assert_eq!(body["name"], recipe.name);
-    assert_eq!(body["display_name"], recipe.identity);
-    let mut row = body.clone();
-    row["uid"] = json!("cci-owned");
-    row["ownership"] = json!({"user_id":USER});
-    assert_eq!(profile.checked(&recipe, None, &row).unwrap(), "cci-owned");
-    row["ownership"] = json!({"user_id":"87654321-4321-4321-4321-cba987654321"});
-    assert!(profile.checked(&recipe, None, &row).is_err());
-    row = body;
-    row["uid"] = json!("cci-owned");
-    row["ownership"] = json!({"user_id":USER});
-    row["name"] = json!("foreign");
-    assert!(profile.checked(&recipe, None, &row).is_err());
-    assert!(profile.lifecycle(&recipe, "cci-owned").is_err());
-}
-
-/// A self-consistent recipe under the other provider's contract, with the name
-/// that contract would use, is refused even though its digest is correct.
+/// A self-consistent recipe under another contract, with the name that contract
+/// would use, is refused even though its digest is correct.
 fn forged(profile: &Profile, request: Create, contract: &str, name: fn(&str) -> String) -> Recipe {
     let profile_sha256 = profile.digest().unwrap();
     let digest = canonical::digest(&json!([contract, profile_sha256, request])).unwrap();
@@ -241,12 +184,13 @@ fn forged(profile: &Profile, request: Create, contract: &str, name: fn(&str) -> 
 fn dsw_name(digest: &str) -> String {
     format!("ml_exp_{}", &digest[..20])
 }
-fn sensecore_name(digest: &str) -> String {
+/// The name format of the retired SenseCore contract `native-debug-machine.v1`.
+fn retired_name(digest: &str) -> String {
     format!("ml-expd-debug-{}", &digest[..32])
 }
 
 #[test]
-fn each_provider_accepts_only_its_own_contract() {
+fn a_dsw_profile_accepts_only_its_own_contract() {
     type Name = fn(&str) -> String;
     let dsw = profile();
     let genuine = forged(&dsw, request(), "native-debug-machine.v4", dsw_name);
@@ -254,7 +198,7 @@ fn each_provider_accepts_only_its_own_contract() {
     dsw.check_recipe(&genuine).unwrap();
     let refused: [(&str, Name); 4] = [
         ("native-debug-machine.v1", dsw_name),
-        ("native-debug-machine.v1", sensecore_name),
+        ("native-debug-machine.v1", retired_name),
         ("native-debug-machine.v2", dsw_name),
         ("native-debug-machine.v3", dsw_name),
     ];
@@ -262,20 +206,5 @@ fn each_provider_accepts_only_its_own_contract() {
         let recipe = forged(&dsw, request(), contract, name);
         assert!(dsw.check_recipe(&recipe).is_err(), "{contract}");
         assert!(dsw.create(&recipe).is_err(), "{contract}");
-    }
-    let sense = sensecore_profile();
-    let genuine = forged(
-        &sense,
-        sensecore_request(),
-        "native-debug-machine.v1",
-        sensecore_name,
-    );
-    assert!(genuine == sense.recipe(sensecore_request(), NOW).unwrap());
-    sense.check_recipe(&genuine).unwrap();
-    let names: [Name; 2] = [dsw_name, sensecore_name];
-    for name in names {
-        let recipe = forged(&sense, sensecore_request(), "native-debug-machine.v4", name);
-        assert!(sense.check_recipe(&recipe).is_err());
-        assert!(sense.create(&recipe).is_err());
     }
 }

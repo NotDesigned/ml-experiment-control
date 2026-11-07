@@ -1,7 +1,7 @@
-//! Bound PAI/SenseCore adapters. Every observation validates the original
+//! Bound PAI adapters. Every observation validates the original
 //! request, workspace, owner and provider identity before returning evidence.
 use super::{Client, Error, Result};
-use ml_exp_core::cloud::{self, Job, JobObservation, Page, Request, pai, sensecore};
+use ml_exp_core::cloud::{self, Job, JobObservation, Page, Request, pai};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -34,13 +34,11 @@ impl Transport for Shared {
 #[serde(tag = "provider", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Profile {
     Pai(pai::Profile),
-    Sensecore(sensecore::Profile),
 }
 impl Profile {
     pub fn validate(&self) -> Result<()> {
         match self {
             Self::Pai(p) => p.validate(),
-            Self::Sensecore(p) => p.validate(),
         }
         .map_err(why!(Error::configuration()))
     }
@@ -81,16 +79,6 @@ impl Handle {
                     return Err(Error::evidence());
                 }
             }
-            Profile::Sensecore(_) => {
-                if self.job_id != job.name().map_err(why!(Error::evidence()))?
-                    || self
-                        .provider_uid
-                        .as_deref()
-                        .is_none_or(|s| cloud::component(s).is_err())
-                {
-                    return Err(Error::evidence());
-                }
-            }
         }
         Ok(())
     }
@@ -118,11 +106,6 @@ impl<T: Transport> Adapter<T> {
                     .map_err(why!(Error::evidence()))?,
                 None,
             ),
-            Profile::Sensecore(p) => (
-                p.validate_job(row, job, None)
-                    .map_err(why!(Error::evidence()))?,
-                Some(row["uid"].as_str().ok_or_else(Error::evidence)?.into()),
-            ),
         };
         let handle = Handle {
             profile_sha256: self.profile.digest()?,
@@ -136,7 +119,6 @@ impl<T: Transport> Adapter<T> {
     fn raw_job(&self, id: &str, cancelled: &AtomicBool) -> Result<Value> {
         match &self.profile {
             Profile::Pai(p) => self.call(p.get(id), cancelled),
-            Profile::Sensecore(p) => self.call(p.get(id), cancelled),
         }
     }
     /// The caller must durably reserve its submit effect before this method.
@@ -149,16 +131,9 @@ impl<T: Transport> Adapter<T> {
     ) -> Result<Handle> {
         let response = match &self.profile {
             Profile::Pai(p) => self.call(p.create(job, allocation), cancelled)?,
-            Profile::Sensecore(p) => {
-                if allocation != pai::Allocation::Guaranteed {
-                    return Err(Error::configuration());
-                }
-                self.call(p.create(job), cancelled)?
-            }
         };
         let id = match &self.profile {
             Profile::Pai(_) => response["JobId"].as_str(),
-            Profile::Sensecore(_) => response["name"].as_str(),
         };
         let id = id
             .filter(|id| cloud::component(id).is_ok())
@@ -209,21 +184,6 @@ impl<T: Transport> Adapter<T> {
                 }
                 Ok(observation)
             }
-            Profile::Sensecore(p) => {
-                let mut observation = p
-                    .validate_job(&row, job, handle.provider_uid.as_deref())
-                    .map_err(why!(Error::evidence()))?;
-                if matches!(
-                    observation.state,
-                    ml_exp_core::state::RunState::Queued | ml_exp_core::state::RunState::Starting
-                ) {
-                    // A separate diagnostic failure cannot erase a known job.
-                    if let Ok(workers) = self.call(p.workers(&handle.job_id, "1"), cancelled) {
-                        observation.queue = ml_exp_core::cloud::sensecore::waiting_for(&workers);
-                    }
-                }
-                Ok(observation)
-            }
         }
     }
     /// Positive absence requires complete, stable and duplicate-free pages.
@@ -244,10 +204,6 @@ impl<T: Transport> Adapter<T> {
                     let page = token.parse().map_err(why!(Error::evidence()))?;
                     let value = self.call(p.list(job, page), cancelled)?;
                     Page::pai(&value, "Jobs", page, 100)
-                }
-                Profile::Sensecore(p) => {
-                    let value = self.call(p.list(job, &token), cancelled)?;
-                    Page::sensecore(&value, "training_jobs", &token)
                 }
             }
             .map_err(why!(Error::evidence()))?;
@@ -290,7 +246,6 @@ impl<T: Transport> Adapter<T> {
         }
         match &self.profile {
             Profile::Pai(p) => self.call(p.stop(&handle.job_id), cancelled)?,
-            Profile::Sensecore(p) => self.call(p.stop(&handle.job_id), cancelled)?,
         };
         // A successful POST is not proof of termination.
         self.observe(job, handle, cancelled).map_err(|mut e| {
@@ -299,9 +254,7 @@ impl<T: Transport> Adapter<T> {
         })
     }
     pub fn pai_quota(&self, cancelled: &AtomicBool) -> Result<Value> {
-        let Profile::Pai(p) = &self.profile else {
-            return Err(Error::configuration());
-        };
+        let Profile::Pai(p) = &self.profile;
         let value = self.call(p.quota(), cancelled)?;
         let quota = value.get("Quota").unwrap_or(&value);
         if quota["QuotaId"] != p.quota_id {
@@ -316,9 +269,7 @@ impl<T: Transport> Adapter<T> {
         cancelled: &AtomicBool,
     ) -> Result<Value> {
         handle.validate(&self.profile, job)?;
-        let Profile::Pai(p) = &self.profile else {
-            return Err(Error::configuration());
-        };
+        let Profile::Pai(p) = &self.profile;
         let value = self.raw_job(&handle.job_id, cancelled)?;
         p.validate_job(&value, job, Some(&handle.job_id))
             .map_err(why!(Error::evidence()))?;
@@ -340,9 +291,7 @@ impl<T: Transport> Adapter<T> {
         cancelled: &AtomicBool,
     ) -> Result<Value> {
         handle.validate(&self.profile, job)?;
-        let Profile::Pai(p) = &self.profile else {
-            return Err(Error::configuration());
-        };
+        let Profile::Pai(p) = &self.profile;
         let row = self.raw_job(&handle.job_id, cancelled)?;
         p.validate_job(&row, job, Some(&handle.job_id))
             .map_err(why!(Error::evidence()))?;
@@ -369,251 +318,5 @@ impl<T: Transport> Adapter<T> {
             Err(error) => result["events_error"] = failure(error),
         }
         Ok(experiment_redact::redact_json(result))
-    }
-    /// What SenseCore recorded for one job: its state, each worker's phase and events,
-    /// and the first worker's log tail. Reads only. A failed read of an events or logs
-    /// list is shown beside the rest, since a job can outlive either.
-    pub fn sensecore_provider_diagnostics(
-        &self,
-        job: &Job,
-        handle: &Handle,
-        lines: u32,
-        cancelled: &AtomicBool,
-    ) -> Result<Value> {
-        handle.validate(&self.profile, job)?;
-        let Profile::Sensecore(p) = &self.profile else {
-            return Err(Error::configuration());
-        };
-        let row = self.raw_job(&handle.job_id, cancelled)?;
-        p.validate_job(&row, job, handle.provider_uid.as_deref())
-            .map_err(why!(Error::evidence()))?;
-        let failure = |error: Error| json!({"code":error.code,"http_status":error.http_status});
-        let workers = self.sensecore_workers(job, handle, cancelled)?;
-        let mut result = sensecore::diagnostic_job(&row);
-        result["job_id"] = json!(handle.job_id);
-        let mut events = Vec::new();
-        let mut pods = Vec::new();
-        for (index, worker) in workers.iter().take(4).enumerate() {
-            let name = worker["name"].as_str().ok_or_else(Error::evidence)?;
-            let mut view = sensecore::diagnostic_pod(worker);
-            match self.call(p.worker_events(&handle.job_id, name), cancelled) {
-                Ok(value) => {
-                    if let Some(message) = sensecore::preempted_by(&value) {
-                        result["reason_code"] = json!("PREEMPTED");
-                        result["reason_message"] = json!(message);
-                    }
-                    events.extend(sensecore::diagnostic_events(&value, &format!("{name} ")));
-                }
-                Err(error) => view["events_error"] = failure(error),
-            }
-            if index == 0 {
-                let now = time::OffsetDateTime::now_utc().unix_timestamp();
-                match self.sensecore_offline_logs(job, handle, lines, now, cancelled) {
-                    Ok(logs) => {
-                        view["logs"] =
-                            json!(pai::diagnostic_tail(&json!(logs.text), lines as usize))
-                    }
-                    Err(error) => view["logs_error"] = failure(error),
-                }
-            }
-            pods.push(view);
-        }
-        result["pods"] = json!(pods);
-        result["pods_total"] = json!(workers.len());
-        match self.call(p.job_events(&handle.job_id), cancelled) {
-            Ok(value) => events.extend(sensecore::diagnostic_events(&value, "job ")),
-            Err(error) => result["events_error"] = failure(error),
-        }
-        result["events"] = json!(events);
-        Ok(experiment_redact::redact_json(result))
-    }
-    fn sense_pages(
-        &self,
-        field: &str,
-        make: impl Fn(&str) -> cloud::Result<Request>,
-        cancelled: &AtomicBool,
-    ) -> Result<Vec<Value>> {
-        let mut token = "1".to_owned();
-        let mut seen = BTreeSet::new();
-        let mut names = BTreeSet::new();
-        let mut total = None;
-        let mut result = Vec::new();
-        for _ in 0..100 {
-            if !seen.insert(token.clone()) {
-                return Err(Error::evidence());
-            }
-            let value = self.call(make(&token), cancelled)?;
-            let page = Page::sensecore(&value, field, &token).map_err(why!(Error::evidence()))?;
-            if total.is_some_and(|n| page.total != Some(n)) {
-                return Err(Error::evidence());
-            }
-            if total.is_none() {
-                total = page.total;
-            }
-            let empty = page.rows.is_empty();
-            for row in page.rows {
-                let name = row["name"]
-                    .as_str()
-                    .filter(|n| cloud::component(n).is_ok())
-                    .ok_or_else(Error::evidence)?;
-                if !names.insert(name.to_owned()) {
-                    return Err(Error::evidence());
-                }
-                result.push(row);
-            }
-            if result.len() > 10000 {
-                return Err(Error::evidence());
-            }
-            if let Some(next) = page.next {
-                token = next;
-                continue;
-            }
-            if total.is_some_and(|n| n > result.len() as u64) {
-                if empty {
-                    return Err(Error::evidence());
-                }
-                token = (token
-                    .parse::<u32>()
-                    .map_err(why!(Error::evidence()))?
-                    .checked_add(1)
-                    .ok_or_else(Error::evidence)?)
-                .to_string();
-                continue;
-            }
-            if total.is_some_and(|n| n != result.len() as u64) {
-                return Err(Error::evidence());
-            }
-            return Ok(result);
-        }
-        Err(Error::evidence())
-    }
-    pub fn sensecore_clusters(&self, cancelled: &AtomicBool) -> Result<Vec<sensecore::Cluster>> {
-        let Profile::Sensecore(p) = &self.profile else {
-            return Err(Error::configuration());
-        };
-        let pools = self.sense_pages("aec2s", |token| p.pools(token), cancelled)?;
-        let mut result = Vec::new();
-        for row in pools {
-            if row["state"] != "ACTIVE" {
-                continue;
-            }
-            let name = row["name"].as_str().ok_or_else(Error::evidence)?;
-            // This profile only authorizes its zone; other-zone pools are not
-            // queried or considered as implicit cross-zone storage fallback.
-            let expected = p
-                .scope
-                .path("aec2s", name)
-                .map_err(why!(Error::evidence()))?;
-            if row["id"] != expected {
-                continue;
-            }
-            let specs =
-                self.sense_pages("resource_specs", |token| p.specs(name, token), cancelled)?;
-            result.push(sensecore::cluster(p, &row, &specs).map_err(why!(Error::evidence()))?);
-        }
-        Ok(result)
-    }
-    pub fn highest_spot(
-        &self,
-        allowed: Option<&BTreeSet<String>>,
-        cancelled: &AtomicBool,
-    ) -> Result<sensecore::Cluster> {
-        let Profile::Sensecore(p) = &self.profile else {
-            return Err(Error::configuration());
-        };
-        sensecore::highest_spot(p, &self.sensecore_clusters(cancelled)?, allowed)
-            .map_err(why!(Error::evidence()))
-    }
-    pub fn sensecore_workers(
-        &self,
-        job: &Job,
-        handle: &Handle,
-        cancelled: &AtomicBool,
-    ) -> Result<Vec<Value>> {
-        self.observe(job, handle, cancelled)?;
-        let Profile::Sensecore(p) = &self.profile else {
-            return Err(Error::configuration());
-        };
-        self.sense_pages(
-            "workers",
-            |token| p.workers(&handle.job_id, token),
-            cancelled,
-        )
-    }
-    pub fn sensecore_offline_logs(
-        &self,
-        job: &Job,
-        handle: &Handle,
-        tail: u32,
-        end_unix_seconds: i64,
-        cancelled: &AtomicBool,
-    ) -> Result<sensecore::OfflineLogs> {
-        handle.validate(&self.profile, job)?;
-        let Profile::Sensecore(p) = &self.profile else {
-            return Err(Error::configuration());
-        };
-        let row = self.raw_job(&handle.job_id, cancelled)?;
-        p.validate_job(&row, job, handle.provider_uid.as_deref())
-            .map_err(why!(Error::evidence()))?;
-        let start = row["create_time"]
-            .as_str()
-            .and_then(|s| {
-                time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).ok()
-            })
-            .and_then(|t| t.unix_timestamp().checked_sub(60))
-            .filter(|n| *n >= 0)
-            .ok_or_else(Error::evidence)?;
-        let stations =
-            self.sense_pages("resources", |token| p.telemetry_stations(token), cancelled)?;
-        let expected_name = format!("ts-user-{}", p.scope.user_id);
-        let stations = stations
-            .iter()
-            .filter(|s| {
-                s["name"] == expected_name
-                    && s["type"] == "monitor.ts.v1.telemetryStation"
-                    && s["deleted"] != true
-                    && s["zone"] == p.scope.workspace_zone()
-                    && s["subscription_name"] == p.scope.subscription
-                    && s["resource_group_name"] == p.scope.resource_group
-            })
-            .collect::<Vec<_>>();
-        if stations.len() != 1 {
-            return Err(Error::evidence());
-        }
-        let workspaces = self.sense_pages("resources", |token| p.workspaces(token), cancelled)?;
-        let workspace_id =
-            sensecore::log_workspace_id(p, &workspaces).map_err(why!(Error::evidence()))?;
-        let workers = self.sensecore_workers(job, handle, cancelled)?;
-        let worker = workers.first().ok_or_else(Error::evidence)?;
-        let name = worker["name"].as_str().ok_or_else(Error::evidence)?;
-        let container = match worker.get("containers") {
-            None | Some(Value::Null) => "container-worker-0",
-            Some(Value::Array(containers)) if containers.is_empty() => "container-worker-0",
-            Some(Value::Array(containers)) => {
-                containers[0]["name"].as_str().ok_or_else(Error::evidence)?
-            }
-            _ => return Err(Error::evidence()),
-        };
-        let value = self.call(
-            p.offline_logs(
-                &expected_name,
-                &workspace_id,
-                name,
-                container,
-                start..=end_unix_seconds,
-                tail,
-            ),
-            cancelled,
-        )?;
-        sensecore::validate_offline_logs(
-            &workspace_id,
-            &value,
-            name,
-            container,
-            start,
-            end_unix_seconds,
-            tail,
-        )
-        .map_err(why!(Error::evidence()))
     }
 }

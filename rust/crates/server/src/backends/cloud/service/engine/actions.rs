@@ -9,9 +9,6 @@ impl Service {
         expires: &str,
         transition: &str,
     ) -> cloud::Result<Value> {
-        if let Some(status) = self.prepare_script(project, run)? {
-            return Ok(status);
-        }
         let _lock = self.lock("actions.prepare")?;
         let attempt_id = self.current_attempt(project, run)?;
         let saved = self.saved_attempt(project, run, &attempt_id)?;
@@ -66,7 +63,6 @@ impl Service {
             let adapter = self.execution_adapter(&execution)?;
             match &adapter.profile {
                 cloud::adapter::Profile::Pai(p) => p.create(&execution.job, execution.allocation),
-                cloud::adapter::Profile::Sensecore(p) => p.create(&execution.job),
             }
             .map_err(why!(cloud::Error::configuration()))?;
             let plan = action::prepare(&execution, &approval, now, expires)

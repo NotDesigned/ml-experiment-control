@@ -16,7 +16,10 @@ pub struct Settings {
     /// Run froze. Without it new Runtimes keep naming their worker, as they always did.
     #[serde(default)]
     pub worker_store: Option<std::path::PathBuf>,
-    pub data_base_image: Option<String>,
+    /// The base of SenseCore's data images. That backend was removed; the setting is
+    /// still accepted so an existing configuration loads, and it is ignored.
+    #[serde(default, rename = "data_base_image")]
+    _data_base_image: Option<String>,
     #[serde(default)]
     pub slurm: std::collections::BTreeMap<String, Materializer>,
 }
@@ -160,7 +163,7 @@ impl Service {
     pub fn has_builds(&self) -> bool {
         self.builds.is_some()
     }
-    /// `Some` where a new Runtime on this executor can bootstrap: PAI and SenseCore, once a
+    /// `Some` where a new Runtime on this executor can bootstrap: PAI, once a
     /// server holds the workers to serve. Slurm builds and materializes per Runtime, and its
     /// jobs have no exchange to fetch from, so its identity stays the worker's hash.
     pub(super) fn bootstrap_identity(&self, executor: &str) -> Option<&'static str> {
@@ -353,15 +356,13 @@ impl Service {
                 uncertain: false,
             });
         }
-        // SenseCore and the Slurm gateways cannot pull from the main registry.
+        // The Slurm gateways cannot pull from the main registry. `false` is what a PAI
+        // build has always sent; SenseCore's `true` is retired.
         let executor = &record.definition.executor;
         let mirror = if settings.slurm.contains_key(executor) {
             json!("slurm")
         } else {
-            json!(self.backends.get(executor).is_some_and(|b| matches!(
-                b.adapter.profile,
-                cloud::adapter::Profile::Sensecore(_)
-            )))
+            json!(false)
         };
         let payload = json!({"operation":format!("native-{operation}"),"runtime_id":record.runtime_id,"project":record.project,"source_id":record.definition.source_id,
             "base_image":record.definition.base_image,"dockerfile":record.definition.dockerfile,"worker_sha256":record.worker_sha256,"mirror":mirror});

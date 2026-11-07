@@ -101,11 +101,10 @@ credentials are required only for the configured repositories and transfer paths
 |---|---|---|---|
 | SSH Slurm/Apptainer | `submission_config` | [slurm.example.json](../rust/deploy/slurm.example.json) | [Slurm](slurm.md) |
 | PAI DLC | `cloud_config` | [pai.example.json](../rust/deploy/pai.example.json) | [PAI](pai.md) |
-| SenseCore ACP | `cloud_config` | [sensecore.example.json](../rust/deploy/sensecore.example.json) | [SenseCore](sensecore-rest.md) |
 
 Omitted backends stay disabled, and the examples start with `enabled`,
-`allow_run_creation` and polling off. To configure PAI and SenseCore together, put
-both in one cloud file's `backends` list. Executor IDs must be unique across Slurm
+`allow_run_creation` and polling off. Several cloud backends go in one cloud
+file's `backends` list. Executor IDs must be unique across Slurm
 and cloud; they are operator-chosen names, not built-in cluster names. Removing an
 entry stops offering it for new work, and existing frozen Runs and Attempts keep
 their original definition. A cloud file that sets `allow_run_creation` must also set

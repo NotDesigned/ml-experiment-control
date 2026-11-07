@@ -169,20 +169,6 @@ mod tests {
         }
     }
     #[test]
-    fn a_raw_state_that_may_still_run_allows_no_new_request() {
-        let raw = |text: &str| {
-            let mut value = status(ml_exp_core::cloud::sensecore::normalize(text));
-            value["observation"]["provider_state"] = json!(text);
-            value
-        };
-        for text in ["SUSPENDED", "DELETING", "deleting"] {
-            assert!(!allows_new_request(&raw(text)), "{text}");
-        }
-        for text in ["STOPPED", "DELETED", "CANCELLED", "CANCELED", "FAILED"] {
-            assert!(allows_new_request(&raw(text)), "{text}");
-        }
-    }
-    #[test]
     fn stale_or_unbound_evidence_allows_no_new_request() {
         let mut failed_read = status(RunState::Failed);
         failed_read["diagnostic"] = json!({"code":"PROVIDER_DOWN"});

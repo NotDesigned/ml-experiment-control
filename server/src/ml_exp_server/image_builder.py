@@ -38,10 +38,12 @@ CONFIG_KEYS = frozenset({
     "registry_auth_file", "registry_auth_hosts", "registry_blob_hosts", "docker", "skopeo",
     "ephemeral_buildkit", "buildkit_image", "buildkit_http_proxy", "buildkit_network",
     "build_storage_path", "build_expansion_factor", "build_reserve_bytes", "build_min_free_inodes",
-    "pai_dsw", "sensecore_mirror", "slurm_mirror"})
+    "pai_dsw", "slurm_mirror"})
 
 
 def check_config(config: dict) -> None:
+    if "sensecore_mirror" in config:
+        raise ValueError("builder configuration sensecore_mirror is retired with SenseCore support; remove it")
     unknown = sorted(set(config) - CONFIG_KEYS)
     if unknown:
         raise ValueError("unknown builder configuration: " + ", ".join(unknown))

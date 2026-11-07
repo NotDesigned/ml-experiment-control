@@ -13,12 +13,12 @@ from ..storage import atomic_json
 def target_image(delivery):
     source, tag = delivery['source_image'], delivery['target_tag']
     if (not IMAGE.fullmatch(source)
-            or not re.fullmatch(r'[A-Za-z0-9.-]+/[a-z0-9._/-]+:(?:bundle|data)-[0-9a-f]{64}', tag)):
+            or not re.fullmatch(r'[A-Za-z0-9.-]+/[a-z0-9._/-]+:bundle-[0-9a-f]{64}', tag)):
         raise ValueError('invalid frozen image delivery')
     return tag.rsplit(':', 1)[0] + '@' + source.split('@', 1)[1]
 
 
-def mirror(builder, request, policy_name='sensecore_mirror'):
+def mirror(builder, request, policy_name):
     target = target_image(request)
     source, tag = request['source_image'], request['target_tag']
     policy = builder.config.get(policy_name, {})
