@@ -143,9 +143,12 @@ have separate confirmation states:
 | `REMOTE_DISPLAY_ACK_PENDING` | History arrived; derived display is not confirmed yet |
 | Identity/reconciliation error | Inspect remote history; do not blindly replay it |
 
-Worker acceptance, W&B confirmation and artifact upload are independent. Normal
-observation/publication polls are about ten seconds plus collection/network
-latency; error backoff reaches five minutes. W&B's green session indicator tracks
+`pending` is how many records are not yet confirmed on W&B, out of `total`, and
+`last_confirmed_at` is when that last moved. `failures` counts real errors, not
+waiting for W&B to show what was sent.
+
+Worker acceptance, W&B confirmation and artifact upload are independent. Error
+backoff reaches five minutes. W&B's green session indicator tracks
 the server publisher session and can lag during outages; it is not direct proof
 that GPU training is alive. Use platform state, logs and steps together.
 
@@ -154,13 +157,52 @@ publication cannot recreate observations that were never saved. Publication curs
 live in the registry's `tracking/` directory; keep it with service state.
 
 
-## Reserved history gaps
+## Throughput
 
-Normal publication stops at an unacknowledged send and flushes SDK sessions on
-orderly API shutdown. An uncertain send is never automatically replayed.
+Publication is designed to keep up with at least 100 records per second across
+all Runs, with a lag near the time W&B takes to show a batch. This rate is derived,
+not yet measured against W&B. Each journal record stays one W&B row with its own
+`ml_expd/sequence` and `_step`, so a row still proves exactly one record.
 
-For a verified remote gap below later published events, an operator can stop the
-API and run the existing configuration with:
+- A Run sends up to 4096 rows at once and waits until W&B shows them, confirming
+  by range as they appear. The official SDK accepted about 2000 rows a second on
+  the 2 GB production host, offline, so the limit is the time rows take to become
+  visible: 4096 rows over about 30 seconds is about 130 records a second. Rows
+  are sent every 5 seconds per open W&B Run; a waiting Run is read every 5 seconds.
+- All Runs with a backlog share 16384 rows in flight equally, never less than 128
+  each, and the publisher turns to the next Run after each batch, so one large
+  backlog cannot hold back a live Run. A Run with nothing new makes no W&B request.
+- At most 16 W&B Runs stay open in the SDK. Opening another finishes the least
+  recently used one, which flushes it, and it resumes when it has more to send, so
+  W&B may briefly show a running Run as `finished`.
+
+## Restarts and reserved history gaps
+
+Every row is reserved durably before it is sent, and an uncertain row is never
+blindly sent again. An orderly API stop flushes the SDK sessions. This needs
+`KillMode=mixed` in the service unit, as in
+[`ml-expd.service`](../rust/deploy/ml-expd.service): under systemd's default the
+SDK child and `wandb-core` also receive SIGTERM and die at once, losing what they
+hold. The deploy tool does not change units; add it to an existing one by hand.
+
+A crash, a kill or a lost SDK child can still lose rows, so the publisher recovers
+them by itself. Rows no running SDK child holds show `RECOVERY_SETTLING` while
+it keeps reading W&B: anything that arrives is confirmed, and each change restarts
+a three-minute delay, because a dying `wandb-core` or W&B itself may still deliver
+them. Then the two identical scans are compared with the original journal events
+and send reservations, a repair record is saved (`history_repair`, with `source`,
+`attempts` and time; older repairs are summarized in `repairs`), and only rows
+proven absent are appended to the original W&B Run. Status is `REPAIR_ACK_PENDING`
+until W&B shows them, and publication then continues. A repair that also goes
+missing is retried the same way, each time waiting longer, at most three times.
+A session that shows no progress for ten minutes is closed, which flushes it,
+and is then treated the same way.
+
+A successful recovery ends like any other publication: once all records and the
+display are confirmed, the W&B Run is resumed if needed and finished, so a
+`crashed` Run becomes `finished`, or `failed` for a Run that did not succeed.
+
+An operator can run the same repair at once, without the delay, with the API stopped:
 
 ```bash
 ml-expd-rs --config /private/server.json --repair-tracking PROJECT RUN ATTEMPT
@@ -175,13 +217,19 @@ uncertain repair only observes; it does not send again or clear reservations.
 Restart the API to resume incremental publication. Existing W&B panels are not
 recreated. Keep the pre-repair event list and actual remote confirmation evidence.
 
-A saved repair adds `history_repair` to publication state. After a repair use a
+After a repair use a
 forward fix rather than a program downgrade or a database restore. This operation does not restart training or recover
 records that are missing from the canonical journal.
 
-Remote SDK pages may repeat the same physical row. The service compares the
+Remote SDK pages may repeat the same physical row. The service compares a digest of the
 complete row (including values and axes) before collapsing such page repeats;
 conflicting content or the same sequence at different physical rows is rejected.
 This does not resubmit history or relax the exact-prefix acknowledgement.
 
-Explicit history recovery can also repair an absent reserved tail. It still requires review of the exact original events and stable remote absence; the normal publisher never resends unknown reservations. The recovery confirms the appended range using normal remote evidence, preserves scientific step axes, and a repeated or uncertain repair only observes.
+Both repairs cover a reserved hole or an absent reserved tail. They preserve
+scientific step axes and confirm by normal remote evidence.
+
+What only a real W&B run can show: how long rows take to become visible, and so
+the real rate; that a resumed `crashed` Run ends `finished`; and whether three
+minutes always covers late delivery. A row delivered after its repair would appear
+twice, and history reads then fail visibly rather than confirm it.

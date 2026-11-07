@@ -10,6 +10,8 @@ use std::{
     time::{Duration, Instant},
 };
 const BOUND: usize = 8 * 1024 * 1024;
+/// Each session's flush takes time; systemd's default stop limit is 90 seconds.
+const SHUTDOWN_SECONDS: u64 = 80;
 pub(super) struct Sdk {
     child: Child,
     input: ChildStdin,
@@ -23,6 +25,34 @@ impl Sdk {
             return Err(Error::Transport);
         }
         Ok(bytes)
+    }
+    /// Split effects, in order, into complete requests within the pipe's bound.
+    pub(super) fn frames(job: &Value, effects: Vec<Value>) -> Result<Vec<Value>> {
+        let base = Self::validate_request(job)?.len();
+        let mut chunks = vec![Vec::new()];
+        let mut size = base;
+        for effect in effects {
+            let length = serde_json::to_vec(&effect)
+                .map_err(why!(Error::Transport))?
+                .len()
+                + 1;
+            // A little under the bound leaves room for the array's own syntax.
+            if size + length > BOUND - 1024 && chunks.last().is_some_and(|c| !c.is_empty()) {
+                chunks.push(Vec::new());
+                size = base;
+            }
+            size += length;
+            chunks.last_mut().ok_or(Error::Transport)?.push(effect);
+        }
+        chunks
+            .into_iter()
+            .map(|effects| {
+                let mut frame = job.clone();
+                frame["effects"] = Value::Array(effects);
+                Self::validate_request(&frame)?;
+                Ok(frame)
+            })
+            .collect()
     }
     pub(super) fn open(python: &Path) -> Result<Self> {
         if !python.is_absolute() {
@@ -63,7 +93,7 @@ impl Sdk {
         frame.extend_from_slice(&bytes);
         let deadline = Instant::now()
             + Duration::from_secs(if request["operation"] == "shutdown" {
-                45
+                SHUTDOWN_SECONDS
             } else {
                 90
             });
@@ -73,7 +103,7 @@ impl Sdk {
     }
     pub(super) fn shutdown(&mut self) -> Result<()> {
         let flag = AtomicBool::new(false);
-        let deadline = Instant::now() + Duration::from_secs(45);
+        let deadline = Instant::now() + Duration::from_secs(SHUTDOWN_SECONDS);
         let mut value = self.call(&serde_json::json!({"operation":"shutdown"}), &flag)?;
         // Cancellation can leave one earlier response on the pipe. Drain that
         // receipt, then wait for the one shutdown request; never send it twice.

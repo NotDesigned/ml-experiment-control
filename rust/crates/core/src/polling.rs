@@ -129,6 +129,14 @@ impl Schedule {
         }
         self
     }
+    /// The caller paces this entry itself, and it is healthy.
+    pub fn due_at(mut self, key: &str, due: u64) -> Self {
+        if let Some(entry) = self.entries.get_mut(key) {
+            entry.failures = 0;
+            entry.due = due;
+        }
+        self
+    }
     /// A phase this backend has no work for. The failure count stays, so a failure in
     /// another phase keeps backing off, and the backoff that failure already waited is
     /// not waited again. A healthy entry returns to its usual interval.
