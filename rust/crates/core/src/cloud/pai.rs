@@ -443,10 +443,10 @@ pub fn normalize(value: &str) -> RunState {
 
 const DIAGNOSTIC_LINE_CHARS: usize = 4096;
 const DIAGNOSTIC_TAIL_BYTES: usize = 256 * 1024;
-fn clipped(value: &str) -> String {
+pub(super) fn clipped(value: &str) -> String {
     value.chars().take(DIAGNOSTIC_LINE_CHARS).collect()
 }
-fn provider_text(value: &Value) -> Value {
+pub(super) fn provider_text(value: &Value) -> Value {
     value
         .as_str()
         .map_or(Value::Null, |text| json!(clipped(text)))

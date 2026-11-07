@@ -1,5 +1,6 @@
 //! SenseCore ACP REST compiler and exact scoped pool/job evidence.
 use super::*;
+use super::pai::{clipped, provider_text};
 use crate::state::RunState;
 use std::collections::BTreeSet;
 
@@ -263,6 +264,29 @@ impl Profile {
             true,
         )
     }
+    pub fn job_events(&self, name: &str) -> Result<Request> {
+        component(name)?;
+        self.request(
+            Method::Get,
+            "ListTrainingJobEvents",
+            format!("{}/{name}/events", self.jobs_path()?),
+            BTreeMap::from([("page_size".into(), "100".into())]),
+            None,
+            true,
+        )
+    }
+    pub fn worker_events(&self, name: &str, worker: &str) -> Result<Request> {
+        component(name)?;
+        component(worker)?;
+        self.request(
+            Method::Get,
+            "ListWorkerEvents",
+            format!("{}/{name}/workers/{worker}/events", self.jobs_path()?),
+            BTreeMap::from([("page_size".into(), "100".into())]),
+            None,
+            true,
+        )
+    }
     pub fn telemetry_stations(&self, token: &str) -> Result<Request> {
         self.resources(
             "monitor.ts.v1.telemetryStation",
@@ -445,6 +469,57 @@ fn resource_uuid(value: &str) -> Result<()> {
 
 /// RMH resource IDs are UUIDs, distinct from the scoped REST resource paths.
 /// Resolve only the exact configured workspace; never guess a UUID from a job.
+/// The provider's own account of a job, selected field by field so that a row's
+/// environment and command never leave this module. The shape matches PAI's.
+pub fn diagnostic_job(row: &Value) -> Value {
+    json!({"provider_state":provider_text(&row["state"]),
+        "created_at":provider_text(&row["create_time"]),
+        "running_at":provider_text(&row["start_time"]),
+        "finished_at":provider_text(&row["complete_time"]),
+        "cluster":provider_text(&row["resource_pool"]["name"])})
+}
+pub fn diagnostic_pod(worker: &Value) -> Value {
+    json!({"pod_id":provider_text(&worker["name"]),"type":"worker",
+        "status":provider_text(&worker["phase"]),
+        "node":provider_text(&worker["node_name"])})
+}
+/// The provider's events, oldest first: it lists them newest first. `prefix` names
+/// what they belong to, because a job and its workers report separately.
+pub fn diagnostic_events(value: &Value, prefix: &str) -> Vec<String> {
+    let none = Vec::new();
+    let mut events = value["events"]
+        .as_array()
+        .unwrap_or(&none)
+        .iter()
+        .map(|event| {
+            let text = |key: &str| event[key].as_str().unwrap_or("");
+            clipped(&format!(
+                "{prefix}{} {} ago: {}",
+                text("reason"),
+                text("age"),
+                text("message")
+            ))
+        })
+        .collect::<Vec<_>>();
+    events.reverse();
+    events
+}
+/// The scheduler's statement that it took this worker's cards for another job. The
+/// provider reports such a job as FAILED and gives no other reason, so the event is
+/// the only place a client can learn it. An explanation, never a state.
+pub fn preempted_by(worker_events: &Value) -> Option<String> {
+    worker_events["events"]
+        .as_array()?
+        .iter()
+        .find(|event| {
+            event["reason"] == "Evicted"
+                && event["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("preempted"))
+        })
+        .and_then(|event| event["message"].as_str())
+        .map(clipped)
+}
 pub fn log_workspace_id(profile: &Profile, rows: &[Value]) -> Result<String> {
     profile.validate()?;
     let matching = rows
@@ -711,4 +786,53 @@ pub fn highest_spot(
         })
         .cloned()
         .ok_or(Error("no compatible spot cluster"))
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+
+    /// Shapes as SenseCore returned them for a Spot job that lost its card seconds
+    /// after being scheduled, on 2026-11-07.
+    fn preempted() -> Value {
+        json!({"events":[
+            {"type":"Normal","reason":"Started","age":"471s","message":"Started container pytorch"},
+            {"type":"Normal","reason":"Evicted","age":"475s",
+             "message":"4301 | [4301]has been preempted by job ns/om-175e]"},
+            {"type":"Normal","reason":"Scheduled","age":"486s","message":"2300 | assigned"}
+        ],"total_size":3})
+    }
+
+    #[test]
+    fn a_preemption_is_read_from_the_evicted_event_alone() {
+        assert_eq!(
+            preempted_by(&preempted()).as_deref(),
+            Some("4301 | [4301]has been preempted by job ns/om-175e]")
+        );
+        for other in [
+            json!({"events":[{"reason":"Evicted","message":"node memory pressure"}]}),
+            json!({"events":[{"reason":"Killing","message":"preempted"}]}),
+            json!({"events":[]}),
+            json!({}),
+        ] {
+            assert_eq!(preempted_by(&other), None);
+        }
+    }
+
+    #[test]
+    fn events_read_oldest_first_and_name_their_owner() {
+        let events = diagnostic_events(&preempted(), "worker-0 ");
+        assert_eq!(events[0], "worker-0 Scheduled 486s ago: 2300 | assigned");
+        assert!(events[2].starts_with("worker-0 Started 471s ago"));
+        assert!(diagnostic_events(&json!({}), "job ").is_empty());
+    }
+
+    #[test]
+    fn a_job_row_shows_only_named_fields() {
+        let view = diagnostic_job(&json!({"state":"FAILED","start_time":null,
+            "env":[{"name":"TOKEN","value":"secret"}],"resource_pool":{"name":"pool"}}));
+        assert_eq!(view["provider_state"], "FAILED");
+        assert_eq!(view["cluster"], "pool");
+        assert!(!view.to_string().contains("secret"));
+    }
 }

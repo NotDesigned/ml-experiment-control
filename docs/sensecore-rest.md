@@ -27,6 +27,7 @@ afterward. Errors expose bounded status/reason, not account payloads or keys.
 | Pool bindings and specifications | Workspace `workspaceAEC2Bindings`, AEC2 `resourceSpecs` |
 | Create/read/reconcile/stop | ACP `trainingJobs`, `trainingJobs:batchStop` |
 | Worker status | ACP `trainingJobs/J/workers` |
+| Scheduler events | ACP `trainingJobs/J/events`, `trainingJobs/J/workers/W/events` |
 | Active logs | Monitor signed livestream token/poll |
 | Historical logs | Monitor `logStream/products/product.lepton-acp-new/logs` |
 
@@ -124,3 +125,17 @@ Verify the CPU spec is exactly 2 CPUs, 4 GiB and 0 GPUs in the selected debug po
 Dataset uploads stream directly to backend storage. Runtime builds use
 the separately configured builder, which can be local Docker or PAI DSW;
 see [builds](builds.md).
+
+## Reading why a job ended
+
+`ml-exp run diagnose` reads the job, its workers, their events and the first worker's
+log tail. It changes nothing on the provider.
+
+SenseCore reports a preempted job as `FAILED`, with `start_time` empty and no reason on
+the job. The only statement of the cause is an `Evicted` event on the worker that says
+which job took the cards. Diagnose shows that as `Reason: PREEMPTED`. The Run's state
+stays `FAILED`, because an event explains a state and does not replace it, and the
+platform starts no new job. Spot quota can be preempted seconds after a job is scheduled,
+so an empty log does not mean training code failed.
+
+A copy job's provider read remains unsupported.

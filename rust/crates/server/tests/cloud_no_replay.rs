@@ -197,6 +197,7 @@ impl Transport for FakeProvider {
             }),
             "GetJobEvents" => Ok(json!({"Events":["scheduled"]})),
             "ListWorkers" => Ok(json!({"workers":[]})),
+            "ListTrainingJobEvents" => Ok(json!({"events":[]})),
             other => panic!("unexpected provider operation {other}"),
         }
     }
@@ -1544,6 +1545,7 @@ impl Transport for CopyProvider {
             }
             "GetJobEvents" => Ok(json!({"Events":["scheduled"]})),
             "ListWorkers" => Ok(json!({"workers":[]})),
+            "ListTrainingJobEvents" => Ok(json!({"events":[]})),
             other => panic!("unexpected provider operation {other}"),
         }
     }
@@ -2452,26 +2454,14 @@ fn attempt_diagnostics_read_through_the_run_outbox_and_keep_their_keys() {
             .provider_diagnostics("demo", "train", "attempt-001", 50)
             .unwrap();
         assert_eq!(unread["provider_read"], false);
-        assert_eq!(
-            unread["diagnostic"],
-            match kind {
-                Kind::Pai => "NO_PROVIDER_JOB_RECORDED",
-                Kind::Sensecore => "PROVIDER_DIAGNOSTICS_UNSUPPORTED",
-            }
-        );
+        assert_eq!(unread["diagnostic"], "NO_PROVIDER_JOB_RECORDED");
         f.execute(&service, &action).unwrap();
         let read = service
             .provider_diagnostics("demo", "train", "attempt-001", 50)
             .unwrap();
-        match kind {
-            Kind::Pai => {
-                assert_eq!(read["provider_read"], true);
-                assert_eq!(read["provider"]["job_id"], PAI_JOB_ID);
-            }
-            Kind::Sensecore => {
-                assert_eq!(read["provider_read"], false);
-                assert_eq!(read["diagnostic"], "PROVIDER_DIAGNOSTICS_UNSUPPORTED");
-            }
+        assert_eq!(read["provider_read"], true);
+        if let Kind::Pai = kind {
+            assert_eq!(read["provider"]["job_id"], PAI_JOB_ID);
         }
         assert_eq!(f.provider.creates(), 1);
     }

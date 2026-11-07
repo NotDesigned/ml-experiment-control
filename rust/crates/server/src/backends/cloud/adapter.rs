@@ -370,6 +370,60 @@ impl<T: Transport> Adapter<T> {
         }
         Ok(experiment_redact::redact_json(result))
     }
+    /// What SenseCore recorded for one job: its state, each worker's phase and events,
+    /// and the first worker's log tail. Reads only. A failed read of an events or logs
+    /// list is shown beside the rest, since a job can outlive either.
+    pub fn sensecore_provider_diagnostics(
+        &self,
+        job: &Job,
+        handle: &Handle,
+        lines: u32,
+        cancelled: &AtomicBool,
+    ) -> Result<Value> {
+        handle.validate(&self.profile, job)?;
+        let Profile::Sensecore(p) = &self.profile else {
+            return Err(Error::configuration());
+        };
+        let row = self.raw_job(&handle.job_id, cancelled)?;
+        p.validate_job(&row, job, handle.provider_uid.as_deref())
+            .map_err(why!(Error::evidence()))?;
+        let failure = |error: Error| json!({"code":error.code,"http_status":error.http_status});
+        let workers = self.sensecore_workers(job, handle, cancelled)?;
+        let mut result = sensecore::diagnostic_job(&row);
+        result["job_id"] = json!(handle.job_id);
+        let mut events = Vec::new();
+        let mut pods = Vec::new();
+        for (index, worker) in workers.iter().take(4).enumerate() {
+            let name = worker["name"].as_str().ok_or_else(Error::evidence)?;
+            let mut view = sensecore::diagnostic_pod(worker);
+            match self.call(p.worker_events(&handle.job_id, name), cancelled) {
+                Ok(value) => {
+                    if let Some(message) = sensecore::preempted_by(&value) {
+                        result["reason_code"] = json!("PREEMPTED");
+                        result["reason_message"] = json!(message);
+                    }
+                    events.extend(sensecore::diagnostic_events(&value, &format!("{name} ")));
+                }
+                Err(error) => view["events_error"] = failure(error),
+            }
+            if index == 0 {
+                let now = time::OffsetDateTime::now_utc().unix_timestamp();
+                match self.sensecore_offline_logs(job, handle, lines, now, cancelled) {
+                    Ok(logs) => view["logs"] = json!(pai::diagnostic_tail(&json!(logs.text), lines as usize)),
+                    Err(error) => view["logs_error"] = failure(error),
+                }
+            }
+            pods.push(view);
+        }
+        result["pods"] = json!(pods);
+        result["pods_total"] = json!(workers.len());
+        match self.call(p.job_events(&handle.job_id), cancelled) {
+            Ok(value) => events.extend(sensecore::diagnostic_events(&value, "job ")),
+            Err(error) => result["events_error"] = failure(error),
+        }
+        result["events"] = json!(events);
+        Ok(experiment_redact::redact_json(result))
+    }
     fn sense_pages(
         &self,
         field: &str,
