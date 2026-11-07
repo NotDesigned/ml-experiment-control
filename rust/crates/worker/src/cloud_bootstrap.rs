@@ -375,7 +375,8 @@ mod tests {
     fn what_cannot_be_executed_names_each_place_and_stops() {
         let temp = tempfile::tempdir().unwrap();
         let missing = temp.path().join("absent");
-        let bytes = b"not a program";
+        // Fails in the kernel. Plain junk would not: execvp hands that to /bin/sh.
+        let bytes = b"#!/no/such/interpreter\n";
         let refused = shown(become_worker(
             &[missing.clone(), temp.path().into()],
             bytes,
