@@ -3239,3 +3239,341 @@ fn a_slurm_run_finds_an_unlisted_runtime_only_through_its_builder() {
         .unwrap();
     assert_eq!(created["creation_state"], "CREATED");
 }
+
+/// The object store behaviour direct upload relies on, over a real socket so that real
+/// reqwest parses each reply. Real OSS also checks signatures and expiry; this cannot.
+#[derive(Default)]
+struct FakeOss {
+    objects: Mutex<BTreeMap<String, Vec<u8>>>,
+    /// While set, a GET waits to be let through: `reached` says one has arrived.
+    hold: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+}
+impl FakeOss {
+    fn start(self: &Arc<Self>) -> String {
+        use std::io::{BufRead, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let oss = self.clone();
+        std::thread::spawn(move || {
+            for socket in listener.incoming() {
+                let oss = oss.clone();
+                std::thread::spawn(move || {
+                    let mut socket = socket.unwrap();
+                    let mut reader = std::io::BufReader::new(socket.try_clone().unwrap());
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    let mut words = line.split_whitespace();
+                    let method = words.next().unwrap_or_default().to_owned();
+                    let key = words
+                        .next()
+                        .unwrap_or_default()
+                        .split('?')
+                        .next()
+                        .unwrap()
+                        .to_owned();
+                    let (mut length, mut forbid) = (0, false);
+                    loop {
+                        let mut header = String::new();
+                        reader.read_line(&mut header).unwrap();
+                        let lower = header.trim().to_lowercase();
+                        if lower.is_empty() {
+                            break;
+                        }
+                        if let Some(value) = lower.strip_prefix("content-length: ") {
+                            length = value.parse().unwrap();
+                        }
+                        forbid |= lower == "x-oss-forbid-overwrite: true";
+                    }
+                    let mut body = vec![0; length];
+                    reader.read_exact(&mut body).unwrap();
+                    let held = if method == "GET" {
+                        oss.hold.lock().unwrap().take()
+                    } else {
+                        None
+                    };
+                    if let Some((reached, release)) = held {
+                        reached.send(()).unwrap();
+                        release.recv().unwrap();
+                    }
+                    let mut objects = oss.objects.lock().unwrap();
+                    let (status, reply, size) = match method.as_str() {
+                        "PUT" if forbid && objects.contains_key(&key) => {
+                            ("409 Conflict", vec![], 0)
+                        }
+                        "PUT" => {
+                            objects.insert(key, body);
+                            ("200 OK", vec![], 0)
+                        }
+                        "DELETE" => {
+                            objects.remove(&key);
+                            ("204 No Content", vec![], 0)
+                        }
+                        _ => match objects.get(&key) {
+                            None => ("404 Not Found", vec![], 0),
+                            Some(found) if method == "HEAD" => ("200 OK", vec![], found.len()),
+                            Some(found) => ("200 OK", found.clone(), found.len()),
+                        },
+                    };
+                    drop(objects);
+                    let _ = write!(
+                        socket,
+                        "HTTP/1.1 {status}\r\nContent-Length: {size}\r\nConnection: close\r\n\r\n"
+                    );
+                    let _ = socket.write_all(&reply);
+                });
+            }
+        });
+        origin
+    }
+}
+/// A service with an object store, one real tar and its Begin already done.
+struct DirectUpload {
+    f: Fixture,
+    oss: Arc<FakeOss>,
+    service: Service,
+    archive: Vec<u8>,
+    definition: Definition,
+    sha: String,
+}
+impl DirectUpload {
+    fn new(kind: Kind) -> Self {
+        use sha2::Digest;
+        let f = Fixture::new(kind);
+        let credentials = f.temp.path().join("oss-credentials");
+        private(
+            &credentials,
+            &json!({"access_key_id":"id","access_key_secret":"secret"}),
+        );
+        let mut config: Value = serde_json::from_slice(&f.config).unwrap();
+        config["artifacts"] = json!({"endpoint":"oss-cn-example.aliyuncs.com","bucket":"bucket",
+            "prefix":"users/alice/ml-expd/","credentials_file":credentials});
+        let oss = Arc::new(FakeOss::default());
+        let mut service = Service::open_with_transport(
+            f.settings.clone(),
+            Settings::from_slice(&serde_json::to_vec(&config).unwrap()).unwrap(),
+            f.sources.clone(),
+            None,
+            Default::default(),
+            f.provider.clone(),
+        )
+        .unwrap();
+        service.redirect_objects_for_tests(oss.start());
+        let content = vec![7u8; 1024];
+        let mut tar = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(content.len() as u64);
+        header.set_mode(0o600);
+        header.set_cksum();
+        tar.append_data(&mut header, "train.bin", content.as_slice())
+            .unwrap();
+        let archive = tar.into_inner().unwrap();
+        let sha = format!("{:x}", sha2::Sha256::digest(&archive));
+        let definition = Definition {
+            sha256: sha.clone(),
+            archive_bytes: archive.len() as u64,
+            files: vec![FileReceipt {
+                path: "train.bin".into(),
+                sha256: format!("{:x}", sha2::Sha256::digest(&content)),
+                bytes: content.len() as u64,
+            }],
+        };
+        let upload = Self {
+            f,
+            oss,
+            service,
+            archive,
+            definition: definition.clone(),
+            sha,
+        };
+        upload
+            .transfer(ml_exp_core::datasets::Command::Begin { definition })
+            .unwrap();
+        upload
+    }
+    fn asset(&self) -> String {
+        self.definition.asset_id()
+    }
+    fn transfer(&self, command: ml_exp_core::datasets::Command) -> cloud::Result<Value> {
+        self.service
+            .dataset_transfer("demo", self.f.executor, command, &[])
+    }
+    fn ticket(&self) -> Value {
+        self.service
+            .dataset_upload_ticket("demo", self.f.executor, &self.asset(), 0, &self.sha)
+            .unwrap()
+    }
+    /// The way the client sends a part: the ticket's URL and header, no credential.
+    fn put(&self, bytes: &[u8]) -> u16 {
+        let ticket = self.ticket();
+        reqwest::blocking::Client::new()
+            .put(ticket["url"].as_str().unwrap())
+            .header("x-oss-forbid-overwrite", "true")
+            .body(bytes.to_vec())
+            .send()
+            .unwrap()
+            .status()
+            .as_u16()
+    }
+    fn uploaded(&self) -> cloud::Result<Value> {
+        self.service
+            .dataset_part_uploaded("demo", self.f.executor, &self.asset(), 0, &self.sha)
+    }
+    fn complete(&self) -> cloud::Result<Value> {
+        self.transfer(ml_exp_core::datasets::Command::Complete {
+            asset_id: self.asset(),
+        })
+    }
+    fn view(&self) -> Value {
+        self.service
+            .dataset_state("demo", self.f.executor, &self.asset())
+            .unwrap()
+    }
+}
+#[test]
+fn a_ticket_needs_the_exact_project_asset_and_part() {
+    for kind in KINDS {
+        let c = DirectUpload::new(kind);
+        let executor = c.f.executor;
+        let asset = c.asset();
+        let ticket = c.ticket();
+        let url = ticket["url"].as_str().unwrap();
+        assert!(url.contains(&format!("/datasets/demo/{executor}/{}/parts/00000?", c.sha)));
+        assert_eq!(ticket["bytes"], c.archive.len() as u64);
+        let ask = |project: &str, executor: &str, asset: &str, part: u64, sha: &str| {
+            c.service
+                .dataset_upload_ticket(project, executor, asset, part, sha)
+                .is_err()
+        };
+        assert!(ask("other", executor, &asset, 0, &c.sha), "another Project");
+        assert!(ask("demo", "other", &asset, 0, &c.sha), "another executor");
+        let never_begun = format!("asset.{}", "9".repeat(64));
+        assert!(ask("demo", executor, &never_begun, 0, &c.sha), "no Begin");
+        assert!(ask("demo", executor, &asset, 1, &c.sha), "beyond the asset");
+        assert!(ask("demo", executor, &asset, 0, "not-a-hash"), "no hash");
+        assert_eq!(c.put(&c.archive), 200);
+        c.uploaded().unwrap();
+        let other = "8".repeat(64);
+        assert!(ask("demo", executor, &asset, 0, &other), "another claim");
+        let record = c
+            .service
+            .dataset_part_uploaded("demo", executor, &asset, 0, &other);
+        assert!(record.is_err(), "a record cannot change");
+    }
+}
+#[test]
+fn a_wrong_part_is_refused_at_complete_and_the_repeat_can_replace_it() {
+    for kind in KINDS {
+        let c = DirectUpload::new(kind);
+        let mut wrong = c.archive.clone();
+        *wrong.last_mut().unwrap() ^= 1;
+        assert_eq!(c.put(&wrong), 200);
+        // The size is right, so it is recorded. That accepts nothing.
+        let recorded = c.uploaded().unwrap();
+        assert_eq!(recorded["parts"].as_object().unwrap().len(), 1);
+        assert_eq!(recorded["archive_verified"], false);
+        let refused = c.complete().unwrap_err();
+        assert_eq!(refused.code, "DATASET_PART_REJECTED");
+        assert_eq!(
+            error::Error::from(refused).code,
+            "DATASET_PART_REJECTED",
+            "the code reaches the client"
+        );
+        let view = c.view();
+        assert_eq!(view["archive_verified"], false);
+        assert!(view["ready"].is_null());
+        assert_eq!(view["parts"].as_object().unwrap().len(), 0);
+        assert!(c.oss.objects.lock().unwrap().is_empty());
+        // Nothing that reads an asset can get a ticket for it.
+        assert!(
+            c.service
+                .dataset_download("demo", c.f.executor, &c.asset(), 0)
+                .is_err()
+        );
+        // The same upload again.
+        assert_eq!(c.put(&c.archive), 200);
+        c.uploaded().unwrap();
+        assert_eq!(c.complete().unwrap()["archive_verified"], true);
+        // Accepted now: no more tickets, and no later observation can remove the part.
+        assert!(
+            c.service
+                .dataset_upload_ticket("demo", c.f.executor, &c.asset(), 0, &c.sha)
+                .is_err()
+        );
+        assert_eq!(c.uploaded().unwrap()["archive_verified"], true);
+        assert_eq!(c.oss.objects.lock().unwrap().len(), 1);
+        assert!(
+            c.service
+                .dataset_download("demo", c.f.executor, &c.asset(), 0)
+                .is_ok()
+        );
+    }
+}
+#[test]
+fn a_part_is_not_recorded_unless_it_exists_at_its_exact_size() {
+    for kind in KINDS {
+        let c = DirectUpload::new(kind);
+        assert_eq!(c.uploaded().unwrap_err().code, "DATASET_PART_NOT_STORED");
+        assert_eq!(c.view()["parts"].as_object().unwrap().len(), 0);
+        assert_eq!(c.put(&c.archive[..10]), 200);
+        assert_eq!(c.uploaded().unwrap_err().code, "DATASET_PART_REJECTED");
+        assert_eq!(c.view()["parts"].as_object().unwrap().len(), 0);
+        assert!(c.oss.objects.lock().unwrap().is_empty());
+        // A lost reply: the object is there, and the repeat is told so and still records.
+        assert_eq!(c.put(&c.archive), 200);
+        assert_eq!(c.put(&c.archive), 409);
+        c.uploaded().unwrap();
+        c.uploaded().unwrap();
+        assert_eq!(c.complete().unwrap()["archive_verified"], true);
+    }
+}
+#[test]
+fn through_the_server_recovers_from_a_wrong_object_no_record_accepted() {
+    for kind in KINDS {
+        let c = DirectUpload::new(kind);
+        let mut wrong = c.archive.clone();
+        wrong[0] ^= 1;
+        assert_eq!(c.put(&wrong), 200);
+        let value = c
+            .service
+            .dataset_transfer(
+                "demo",
+                c.f.executor,
+                ml_exp_core::datasets::Command::Part {
+                    asset_id: c.asset(),
+                    number: 0,
+                    sha256: c.sha.clone(),
+                    bytes: c.archive.len() as u64,
+                },
+                &c.archive,
+            )
+            .unwrap();
+        assert_eq!(value["parts"].as_object().unwrap().len(), 1);
+        assert_eq!(c.complete().unwrap()["archive_verified"], true);
+    }
+}
+/// A large archive takes minutes to read, and everything else needs this lock.
+#[test]
+fn complete_does_not_hold_the_service_lock_while_it_reads() {
+    let c = DirectUpload::new(Kind::Pai);
+    assert_eq!(c.put(&c.archive), 200);
+    c.uploaded().unwrap();
+    let (reached, arrived) = std::sync::mpsc::channel();
+    let (release, wait) = std::sync::mpsc::channel();
+    *c.oss.hold.lock().unwrap() = Some((reached, wait));
+    std::thread::scope(|scope| {
+        let completing = scope.spawn(|| c.complete());
+        arrived.recv().unwrap();
+        // A Begin takes the lock. It would wait for its deadline if complete held it.
+        let started = std::time::Instant::now();
+        c.transfer(ml_exp_core::datasets::Command::Begin {
+            definition: c.definition.clone(),
+        })
+        .unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        release.send(()).unwrap();
+        assert_eq!(
+            completing.join().unwrap().unwrap()["archive_verified"],
+            true
+        );
+    });
+}

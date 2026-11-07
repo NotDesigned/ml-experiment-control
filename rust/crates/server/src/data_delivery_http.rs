@@ -34,7 +34,80 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
             "/api/projects/{project}/datasets/{executor}/{asset}/download-ticket",
             post(download),
         )
+        .route(
+            "/api/projects/{project}/datasets/{executor}/{asset}/upload-ticket",
+            post(upload_ticket),
+        )
+        .route(
+            "/api/projects/{project}/datasets/{executor}/{asset}/part-uploaded",
+            post(part_uploaded),
+        )
         .layer(DefaultBodyLimit::max(8 * 1024 * 1024))
+}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DirectPart {
+    part: u64,
+    sha256: String,
+}
+/// The shape of the request. The service checks it against the asset's definition.
+fn direct_part(query: Option<&str>, asset: &str, body: &[u8]) -> Result<DirectPart, Error> {
+    api::no_parameters(query).map_err(|_| invalid())?;
+    if !ml_exp_core::datasets::asset_id(asset) {
+        return Err(invalid());
+    }
+    ml_exp_core::json::mapping(body)
+        .ok()
+        .and_then(|m| serde_json::from_value(Value::Object(m)).ok())
+        .ok_or_else(invalid)
+}
+/// Slurm has no object store, and a client takes this refusal to mean "send through
+/// the server". An older server has no route at all and no capability to say it does.
+fn direct_service(
+    api: &api::Api,
+    executor: &str,
+) -> Result<Arc<crate::backends::cloud::service::Service>, Error> {
+    api.cloud()
+        .filter(|cloud| cloud.accepts(executor) && cloud.has_datasets())
+        .ok_or(Error {
+            status: 422,
+            code: "DATASET_DIRECT_UPLOAD_UNSUPPORTED",
+            detail: "this executor has no object store; send the parts through the server",
+        })
+}
+async fn upload_ticket(
+    State(state): State<Arc<AppState>>,
+    Path((project, executor, asset)): Path<(String, String, String)>,
+    RawQuery(query): RawQuery,
+    body: Bytes,
+) -> Response {
+    let request = match direct_part(query.as_deref(), &asset, &body) {
+        Ok(request) => request,
+        Err(error) => return http_effect::failure(error),
+    };
+    http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
+        direct_service(api, &executor)?
+            .dataset_upload_ticket(&project, &executor, &asset, request.part, &request.sha256)
+            .map_err(Into::into)
+    })
+    .await
+}
+async fn part_uploaded(
+    State(state): State<Arc<AppState>>,
+    Path((project, executor, asset)): Path<(String, String, String)>,
+    RawQuery(query): RawQuery,
+    body: Bytes,
+) -> Response {
+    let request = match direct_part(query.as_deref(), &asset, &body) {
+        Ok(request) => request,
+        Err(error) => return http_effect::failure(error),
+    };
+    http_effect::execute(state, OnTimeout::Effect, move |api, _| {
+        direct_service(api, &executor)?
+            .dataset_part_uploaded(&project, &executor, &asset, request.part, &request.sha256)
+            .map_err(Into::into)
+    })
+    .await
 }
 async fn download(
     State(state): State<Arc<AppState>>,

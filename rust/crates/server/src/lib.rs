@@ -221,6 +221,7 @@ async fn health(State(state): State<Arc<AppState>>) -> Response {
                     "native-datasets.v1",
                     "native-object-datasets.v1",
                     "native-oss-dataset-import.v1",
+                    "native-dataset-direct-upload.v1",
                 ]);
             }
             if cloud.has_exchange() {
@@ -689,6 +690,40 @@ mod tests {
             assert_eq!(response.status().as_u16(), status);
         }
     }
+    /// A server with no object store behind an executor says so in the one code a
+    /// client takes to mean "send through the server", and only to an authorized caller.
+    #[tokio::test]
+    async fn direct_upload_routes_are_authorized_and_refuse_an_executor_with_no_object_store() {
+        let (_temp, state) = http_effect::tests::state();
+        let asset = format!("asset.{}", "a".repeat(64));
+        for route in ["upload-ticket", "part-uploaded"] {
+            let uri = format!("/api/projects/demo/datasets/slurm/{asset}/{route}");
+            let body = json!({"part":0,"sha256":"b".repeat(64)}).to_string();
+            for (token, status, code) in [
+                (None, 401, None),
+                (Some("wrong"), 401, None),
+                (Some(TOKEN), 422, Some("DATASET_DIRECT_UPLOAD_UNSUPPORTED")),
+            ] {
+                let mut request = Request::builder().method(Method::POST).uri(&uri);
+                if let Some(token) = token {
+                    request = request.header("authorization", format!("Bearer {token}"));
+                }
+                let response = app(
+                    Auth {
+                        token: TOKEN.into(),
+                    },
+                    state.api.clone(),
+                )
+                .oneshot(request.body(Body::from(body.clone())).unwrap())
+                .await
+                .unwrap();
+                assert_eq!(response.status().as_u16(), status, "{route} {token:?}");
+                if let Some(code) = code {
+                    assert_eq!(response.headers()["x-ml-expd-error-code"], code);
+                }
+            }
+        }
+    }
     #[tokio::test]
     async fn reads_are_authenticated_and_other_methods_are_refused() {
         for (method, authorization, expected) in [
@@ -807,6 +842,8 @@ mod schema_tests {
                 || path.ends_with("/continue")
                 || path.ends_with("/publish")
                 || path.ends_with("/download-ticket")
+                || path.ends_with("/upload-ticket")
+                || path.ends_with("/part-uploaded")
                 || path.ends_with("/import-oss")
                 || path.contains("/runtimes/")
                     && (path.ends_with("/execute")

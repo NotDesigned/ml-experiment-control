@@ -1,5 +1,6 @@
-//! A job's work is finished before these calls. One busy reply or a restarting server
-//! must not lose it, and each call retried here is safe to repeat on the server.
+//! A worker's job is finished before these calls, and a client's upload may have run
+//! for hours: one busy reply or a restarting server must not lose that. Each call
+//! retried with this is safe to repeat. Pure: the caller does the sleeping.
 use std::time::Duration;
 
 pub const ATTEMPTS: u32 = 12;

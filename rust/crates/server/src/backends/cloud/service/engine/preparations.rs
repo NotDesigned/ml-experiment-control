@@ -246,6 +246,18 @@ impl Service {
         if let Some(code) = &run.code_source_id {
             value["frozen"]["code_source_id"] = json!(code);
         }
+        // What this preparation will run as, including one saved before it had a choice.
+        if let Some(backend) = self
+            .backends
+            .get(&run.executor)
+            .filter(|backend| matches!(backend.adapter.profile, cloud::adapter::Profile::Pai(_)))
+        {
+            value["frozen"]["allocation"] = json!(
+                run.scheduling
+                    .as_ref()
+                    .map_or(backend.definition.allocation, |s| s.allocation)
+            );
+        }
         if saved.submission.is_none() && saved.started && self.accepts(&run.executor) {
             if let Some(progress) = self.script_status(&saved.project, &run.run_id)? {
                 value["phase"] = json!(if progress["status"] == "READY" {

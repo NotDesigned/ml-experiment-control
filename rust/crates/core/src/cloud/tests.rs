@@ -1139,3 +1139,133 @@ fn the_bootstrap_contract_is_pinned() {
         ["--package-url", "--package-token", "--package-sha256"]
     );
 }
+
+/// Stored Runs have no `scheduling` and ran guaranteed. Reading one must not change a
+/// byte of it or what it asks for, and these hashes are bound into its Actions.
+#[test]
+fn a_stored_run_without_scheduling_keeps_its_hash_and_stays_guaranteed() {
+    let (docs, request, compile) = stored_run(None);
+    assert!(docs.run["native_cloud"].get("scheduling").is_none());
+    assert_eq!(request.identity("demo").unwrap(), "PIN_REQUEST");
+    assert_eq!(
+        helper::sha256_bytes(&serde_json::to_vec(&docs.run).unwrap()),
+        "PIN_RUN"
+    );
+    assert_eq!(
+        compile(pai::Allocation::default()).allocation,
+        pai::Allocation::Guaranteed
+    );
+    // What reads a stored document keeps meaning guaranteed.
+    assert_eq!(pai::Allocation::default(), pai::Allocation::Guaranteed);
+    let partial: crate::first_submission::native::creation::Scheduling =
+        serde_json::from_value(json!({"priority":3})).unwrap();
+    assert_eq!(partial.allocation, pai::Allocation::Guaranteed);
+}
+#[test]
+fn a_new_run_freezes_its_allocation_and_the_backend_setting_cannot_change_it() {
+    assert_eq!(pai::Allocation::for_new_run(1), pai::Allocation::AllowIdle);
+    assert_eq!(pai::Allocation::for_new_run(0), pai::Allocation::Guaranteed);
+    let (docs, _, compile) = stored_run(Some(json!({"allocation":"allow_idle"})));
+    assert_eq!(
+        docs.run["native_cloud"]["scheduling"],
+        json!({"allocation":"allow_idle","priority":5})
+    );
+    assert_eq!(
+        docs.attempt["native_cloud"]["scheduling"],
+        docs.run["native_cloud"]["scheduling"]
+    );
+    assert_eq!(
+        compile(pai::Allocation::Guaranteed).allocation,
+        pai::Allocation::AllowIdle
+    );
+    // The choice is part of the request's identity, so it makes a new Run.
+    let (_, none, _) = stored_run(None);
+    let (_, idle, _) = stored_run(Some(json!({"allocation":"allow_idle"})));
+    let (_, guaranteed, _) = stored_run(Some(json!({"allocation":"guaranteed"})));
+    let identity = |r: &run::Create| r.identity("demo").unwrap();
+    assert_ne!(identity(&none), identity(&idle));
+    assert_ne!(identity(&none), identity(&guaranteed));
+    assert_ne!(identity(&idle), identity(&guaranteed));
+}
+#[allow(clippy::type_complexity)]
+fn stored_run(
+    scheduling: Option<Value>,
+) -> (
+    crate::first_submission::native::creation::Documents,
+    run::Create,
+    impl Fn(pai::Allocation) -> action::Execution,
+) {
+    let runtime = run::Runtime {
+        runtime_id: format!("runtime.{}", "1".repeat(64)),
+        source_id: format!("source.{}", "2".repeat(64)),
+        image: format!("registry.example/team/image@sha256:{}", "c".repeat(64)),
+        source_dir: "/workspace".into(),
+        worker_path: "/opt/ml-expd/worker".into(),
+        worker_sha256: format!("sha256:{}", "d".repeat(64)),
+    };
+    let mut body = json!({"run_id":"train","runtime_id":runtime.runtime_id,"executor":"pai-h200",
+        "command":["python","train.py"],"resources":{"gpus":1,"cpus":8,"memory_gb":64},
+        "walltime_seconds":3600,"seed":42});
+    if let Some(scheduling) = scheduling {
+        body["scheduling"] = scheduling;
+    }
+    let request: run::Create = serde_json::from_value(body).unwrap();
+    let project_sha = format!("sha256:{}", "a".repeat(64));
+    let source_sha = format!("sha256:{}", "b".repeat(64));
+    let profile = format!("sha256:{}", "5".repeat(64));
+    let root = "/mnt/workspace/ml-expd/runs";
+    let mut docs = run::documents(
+        "demo",
+        &request,
+        &runtime,
+        run::Authority {
+            project_sha256: &project_sha,
+            source_receipt_sha256: &source_sha,
+            profile_sha256: &profile,
+            tracking_route: &json!({"enabled":false}),
+            target: &helper::Target {
+                backend_id: "pai-h200".into(),
+                profile_sha256: profile.clone(),
+                storage_scope: format!("sha256:{}", "6".repeat(64)),
+            },
+            run_root: root,
+            data_root: "/mnt/workspace/ml-expd/datasets",
+            datasets: &[],
+            checkpoint: None,
+        },
+        "2026-10-29T00:00:00Z",
+    )
+    .unwrap();
+    let storage = json!({"mount":"/mnt/workspace","runs":root,
+        "datasets":"/mnt/workspace/ml-expd/datasets"});
+    docs.run["native_cloud"]["storage"] = storage.clone();
+    docs.attempt["native_cloud"]["storage"] = storage;
+    let (run_doc, attempt_doc) = (docs.run.clone(), docs.attempt.clone());
+    let compile = move |allocation| {
+        let binding = crate::first_submission::native::Binding {
+            project: "demo".into(),
+            run_id: "train".into(),
+            attempt_id: "attempt-001".into(),
+            project_sha256: project_sha.clone(),
+            run_sha256: helper::sha256_bytes(&serde_json::to_vec(&run_doc).unwrap()),
+            attempt_sha256: helper::sha256_bytes(&serde_json::to_vec(&attempt_doc).unwrap()),
+            source_receipt_sha256: source_sha.clone(),
+            backend_config_sha256: profile.clone(),
+        };
+        run::execution(
+            &run_doc,
+            &attempt_doc,
+            binding,
+            &runtime,
+            root,
+            &"0".repeat(32),
+            allocation,
+            exchange::Channel {
+                url: "https://api.example/api/worker-exchange/demo/train/attempt-001".into(),
+                token: "e".repeat(64),
+            },
+        )
+        .unwrap()
+    };
+    (docs, request, compile)
+}

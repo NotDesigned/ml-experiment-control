@@ -243,6 +243,22 @@ pub(crate) fn extend(document: &mut Value) {
             json!({"part":{"type":"integer","minimum":0}}),
         )),
     );
+    let direct_part = object(
+        &["part", "sha256"],
+        json!({"part":{"type":"integer","minimum":0},"sha256":{"type":"string"}}),
+    );
+    insert(
+        "/api/projects/{project}/datasets/{executor}/{asset}/upload-ticket",
+        "post",
+        "Obtain a short-lived signed PUT for one part, which cannot overwrite an object. 422 DATASET_DIRECT_UPLOAD_UNSUPPORTED means this executor has no object store.",
+        Some(direct_part.clone()),
+    );
+    insert(
+        "/api/projects/{project}/datasets/{executor}/{asset}/part-uploaded",
+        "post",
+        "Record a part sent directly to the object store once it exists at its exact size; complete proves its bytes",
+        Some(direct_part),
+    );
     insert(
         "/api/runs/{project}/{run}/preparation",
         "get",

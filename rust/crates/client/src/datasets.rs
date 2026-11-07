@@ -8,10 +8,182 @@ use ml_exp_core::{
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
-    io::{Read, Seek, SeekFrom},
+    io::{Cursor, Read, Seek, SeekFrom},
     path::Path,
+    sync::Arc,
     time::Duration,
 };
+const DIRECT_UPLOAD: &str = "native-dataset-direct-upload.v1";
+/// One part's bytes, shared with the request sending them: a retry sends them again
+/// without a second copy, so an upload holds about one part in memory.
+#[derive(Clone)]
+pub struct Part(Arc<Vec<u8>>);
+impl AsRef<[u8]> for Part {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+impl Part {
+    pub(crate) fn new(bytes: Vec<u8>) -> Self {
+        Self(Arc::new(bytes))
+    }
+    pub(crate) fn reader(&self) -> Cursor<Self> {
+        Cursor::new(self.clone())
+    }
+    pub(crate) fn len(&self) -> u64 {
+        self.0.len() as u64
+    }
+    fn into_vec(self) -> Vec<u8> {
+        Arc::unwrap_or_clone(self.0)
+    }
+}
+/// What a direct upload does outside this process. Tests replace it, because a ticket
+/// must be HTTPS and a local fake is not.
+pub trait ObjectStore {
+    /// One PUT. The status, or why there is none, in words that hold no ticket.
+    fn put(&mut self, url: &url::Url, part: &Part) -> Result<u16, String>;
+    fn wait(&mut self, delay: Duration);
+}
+struct Real<'a>(&'a Client);
+impl ObjectStore for Real<'_> {
+    fn put(&mut self, url: &url::Url, part: &Part) -> Result<u16, String> {
+        self.0.put_object(url, part)
+    }
+    fn wait(&mut self, delay: Duration) {
+        std::thread::sleep(delay);
+    }
+}
+enum Attempt {
+    Again(String),
+    Stop(Error),
+}
+/// A call to the server: a passing failure is tried again, and the rest stop.
+fn server_attempt(error: Error) -> Attempt {
+    match error {
+        Error::Transport => Attempt::Again("the server did not answer".into()),
+        Error::Http(failure) if ml_exp_core::retry::may_pass(failure.status) => {
+            Attempt::Again(format!("the server answered HTTP {}", failure.status))
+        }
+        other => Attempt::Stop(other),
+    }
+}
+/// As the worker repeats a result part: bounded, with the same waits.
+fn repeated<T>(
+    store: &mut dyn ObjectStore,
+    gave_up: &'static str,
+    mut attempt: impl FnMut(&mut dyn ObjectStore) -> Result<T, Attempt>,
+) -> Result<T, Error> {
+    let mut count = 0;
+    loop {
+        count += 1;
+        match attempt(store) {
+            Ok(value) => return Ok(value),
+            Err(Attempt::Stop(error)) => return Err(error),
+            Err(Attempt::Again(failure)) => {
+                if count >= ml_exp_core::retry::ATTEMPTS {
+                    eprintln!("Giving up after {count} attempts: {failure}");
+                    return Err(Error::Observation(gave_up));
+                }
+                eprintln!("Attempt {count} failed: {failure}; trying again");
+                store.wait(ml_exp_core::retry::delay(count));
+            }
+        }
+    }
+}
+/// The checks the worker makes on a result ticket, and that it names this very part.
+fn ticket_url(ticket: &Value, part: u64, bytes: u64, tail: &str) -> Result<url::Url, Error> {
+    if ticket["part"] != part
+        || ticket["bytes"] != bytes
+        || ticket["headers"] != serde_json::json!({"x-oss-forbid-overwrite":"true"})
+    {
+        return Err(Error::Response);
+    }
+    let uri = url::Url::parse(ticket["url"].as_str().ok_or(Error::Response)?)
+        .map_err(|_| Error::Response)?;
+    if uri.scheme() != "https"
+        || !uri.host_str().is_some_and(|h| h.ends_with(".aliyuncs.com"))
+        || !uri.username().is_empty()
+        || uri.password().is_some()
+        || uri.fragment().is_some()
+        || !uri.path().ends_with(tail)
+    {
+        return Err(Error::Response);
+    }
+    Ok(uri)
+}
+const PUT_GAVE_UP: &str = "direct upload to object storage kept failing. Accepted parts are kept: \
+     repeat this command to resume, or add --via-server to send the rest through the server";
+const PUT_REFUSED: &str = "object storage refused a direct upload. Accepted parts are kept: \
+     repeat this command to resume, or add --via-server to send the rest through the server";
+const RECORD_GAVE_UP: &str = "the server did not record a part sent to object storage. Repeat \
+     this command to resume: a part already stored is not sent twice";
+struct Direct<'a> {
+    client: &'a Client,
+    base: String,
+    /// The object key's end, up to the part number.
+    tail: String,
+}
+impl Direct<'_> {
+    /// `None` when this executor has no object store. Only the first part can choose
+    /// that: nothing has been sent yet, so sending through the server is no retreat.
+    fn send(
+        &self,
+        store: &mut dyn ObjectStore,
+        number: u64,
+        sha256: &str,
+        part: &Part,
+        first: bool,
+    ) -> Result<Option<Value>, Error> {
+        let identity = serde_json::json!({"part":number,"sha256":sha256});
+        let tail = format!("{}/{number:05}", self.tail);
+        let mut unsupported = false;
+        repeated(store, PUT_GAVE_UP, |store| {
+            // A new ticket each time: one lasts minutes, and waits can pass that.
+            let ticket = match self
+                .client
+                .post(&format!("{}/upload-ticket", self.base), &identity)
+            {
+                Ok(ticket) => ticket,
+                Err(Error::Http(failure))
+                    if failure.error_code == "DATASET_DIRECT_UPLOAD_UNSUPPORTED" =>
+                {
+                    unsupported = true;
+                    return Ok(());
+                }
+                Err(error) => return Err(server_attempt(error)),
+            };
+            let uri = ticket_url(&ticket, number, part.len(), &tail).map_err(Attempt::Stop)?;
+            match store.put(&uri, part) {
+                // 409: already stored and never replaced. Complete proves its bytes.
+                Ok(200 | 409) => Ok(()),
+                Ok(status) if ml_exp_core::retry::may_pass(status) => Err(Attempt::Again(format!(
+                    "object storage answered HTTP {status}"
+                ))),
+                Ok(status) => {
+                    eprintln!("Object storage answered HTTP {status}");
+                    Err(Attempt::Stop(Error::Observation(PUT_REFUSED)))
+                }
+                Err(failure) => Err(Attempt::Again(failure)),
+            }
+        })?;
+        if unsupported {
+            return if first {
+                Ok(None)
+            } else {
+                Err(Error::Observation(
+                    "this executor stopped offering direct upload during this upload; \
+                     add --via-server",
+                ))
+            };
+        }
+        repeated(store, RECORD_GAVE_UP, |_| {
+            self.client
+                .post(&format!("{}/part-uploaded", self.base), &identity)
+                .map_err(server_attempt)
+        })
+        .map(Some)
+    }
+}
 pub(crate) struct Plan {
     pub(crate) path: String,
     pub(crate) method: reqwest::Method,
@@ -159,6 +331,28 @@ pub fn upload(
     executor: &str,
     path: &Path,
     health: &Value,
+    via_server: bool,
+) -> Result<Value, Error> {
+    upload_with(
+        client,
+        project,
+        executor,
+        path,
+        health,
+        via_server,
+        &mut Real(client),
+    )
+}
+/// [`upload`], with what it does to the object store supplied.
+#[doc(hidden)]
+pub fn upload_with(
+    client: &Client,
+    project: &str,
+    executor: &str,
+    path: &Path,
+    health: &Value,
+    via_server: bool,
+    store: &mut dyn ObjectStore,
 ) -> Result<Value, Error> {
     validate(project, executor, None)?;
     capability(health)?;
@@ -200,6 +394,19 @@ pub fn upload(
         if current.definition != definition {
             return Err(Error::Response);
         }
+        let direct = Direct {
+            client,
+            base: format!("{base}/{asset}"),
+            tail: format!("/datasets/{project}/{executor}/{}/parts", definition.sha256),
+        };
+        let offered = health["capabilities"]
+            .as_array()
+            .is_some_and(|names| names.iter().any(|name| name == DIRECT_UPLOAD));
+        let mut use_direct = !via_server && offered;
+        let mut sent_directly = false;
+        if !via_server && !offered {
+            eprintln!("This server does not offer direct upload; sending through it.");
+        }
         if current.ready.is_none() {
             for number in 0..definition.part_count().map_err(|_| Error::Response)? {
                 let count = definition.part_size(number).map_err(|_| Error::Response)?;
@@ -225,13 +432,26 @@ pub fn upload(
                     definition.part_count().map_err(|_| Error::Response)?,
                     count
                 );
-                let value = send(
-                    client,
-                    format!("{base}/{asset}/parts/{number}/{sha256}"),
-                    reqwest::Method::PUT,
-                    part,
-                    false,
-                )?;
+                let part = Part::new(part);
+                let mut stored = None;
+                if use_direct {
+                    stored = direct.send(store, number, &sha256, &part, !sent_directly)?;
+                    sent_directly = stored.is_some();
+                    if stored.is_none() {
+                        eprintln!("This executor has no object store; sending through the server.");
+                        use_direct = false;
+                    }
+                }
+                let value = match stored {
+                    Some(value) => value,
+                    None => send(
+                        client,
+                        format!("{base}/{asset}/parts/{number}/{sha256}"),
+                        reqwest::Method::PUT,
+                        part.into_vec(),
+                        false,
+                    )?,
+                };
                 let next = state(value, project, executor, &asset)?;
                 current
                     .validate_successor(&next)

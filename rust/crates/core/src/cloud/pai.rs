@@ -14,6 +14,25 @@ pub enum Allocation {
     IdleOnly,
 }
 impl Allocation {
+    /// What a new Run asks for when nobody chose. This is read only where a Run is
+    /// authored, which then freezes it. `Default` stays `Guaranteed`, because a stored
+    /// Run or preparation with no `scheduling` ran as, and keeps meaning, exactly that.
+    /// A job with no GPU is left guaranteed: idle resources are about GPUs, and it has
+    /// nothing to gain from being preempted.
+    pub fn for_new_run(gpus: u32) -> Self {
+        if gpus == 0 {
+            Self::Guaranteed
+        } else {
+            Self::AllowIdle
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Guaranteed => "guaranteed",
+            Self::AllowIdle => "allow_idle",
+            Self::IdleOnly => "idle_only",
+        }
+    }
     pub fn oversold(self) -> &'static str {
         match self {
             Self::Guaranteed => "ForbiddenQuotaOverSold",

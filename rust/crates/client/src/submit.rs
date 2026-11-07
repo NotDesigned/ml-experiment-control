@@ -60,6 +60,8 @@ pub struct Options {
     pub run_id: Option<String>,
     pub data: Vec<(String, String)>,
     pub env: Vec<(String, String)>,
+    /// `--allocation`, as a name clap has already checked.
+    pub allocation: Option<String>,
 }
 
 /// The experiment file `run start` reads, with everything `submit` derives optional.
@@ -169,6 +171,17 @@ pub fn spec(
     if command.is_empty() {
         return Err(needed("what to run: put the command after `--`"));
     }
+    // Into the Run fields the identity already covers, the same as the file's spelling.
+    // Left out, the identity is what it always was, so a repeat still finds its old job.
+    let mut extra = file.run.extra;
+    if let Some(allocation) = options.allocation {
+        extra
+            .entry("scheduling")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .ok_or_else(|| Error::Submit("run.scheduling in the file is not an object".into()))?
+            .insert("allocation".into(), json!(allocation));
+    }
     Ok(Spec {
         project: options
             .project
@@ -207,7 +220,7 @@ pub fn spec(
         run_id: options.run_id.or(file.run.run_id),
         data,
         env,
-        extra: file.run.extra,
+        extra,
         max_gpu_hours: file.approval.max_gpu_hours,
         reason: file.approval.reason,
     })
@@ -225,6 +238,8 @@ pub struct Plan {
     pub cpus: u32,
     pub memory_gb: u32,
     pub max_gpu_hours: f64,
+    /// `None` where the executor has no such choice.
+    pub allocation: Option<String>,
 }
 
 pub struct Hooks<'a> {
@@ -643,6 +658,7 @@ pub fn resolve(spec: &Spec, identity: Identity, executor: &Value) -> Result<Plan
              CPU executor from `ml-exp backend`"
         )));
     }
+    let allocation = allocation(spec, &chosen, executor, gpus)?;
     ml_exp_core::environment::validate(&spec.env).map_err(|_| {
         Error::Submit(
             "an environment variable has an invalid or reserved name; \
@@ -662,7 +678,44 @@ pub fn resolve(spec: &Spec, identity: Identity, executor: &Value) -> Result<Plan
         max_gpu_hours: spec
             .max_gpu_hours
             .unwrap_or((f64::from(gpus) * spec.walltime_seconds as f64 / 36.0).ceil() / 100.0),
+        allocation,
     })
+}
+/// What this new job will ask for. The default is decided here, and `request` freezes
+/// it in the Run. Slurm and SenseCore have nothing to choose, so both ask what they did.
+fn allocation(
+    spec: &Spec,
+    chosen: &str,
+    executor: &Value,
+    gpus: u32,
+) -> Result<Option<String>, Error> {
+    use ml_exp_core::cloud::pai::Allocation;
+    let scheduling = spec.extra.get("scheduling");
+    if scheduling.is_some_and(|value| !value.is_object()) {
+        return Err(Error::Submit(
+            "run.scheduling in the file is not an object".into(),
+        ));
+    }
+    let asked = scheduling
+        .and_then(|value| value.get("allocation"))
+        .and_then(Value::as_str);
+    match executor["kind"].as_str() {
+        Some("pai-dlc") => Ok(Some(
+            asked
+                .unwrap_or(Allocation::for_new_run(gpus).name())
+                .to_owned(),
+        )),
+        Some("sensecore") if asked.is_some_and(|name| name != Allocation::Guaranteed.name()) => {
+            Err(Error::Submit(format!(
+                "{chosen} is a SenseCore executor, which has no idle resources to allow; \
+                 remove the allocation choice"
+            )))
+        }
+        Some("slurm") if scheduling.is_some() => Err(Error::Submit(format!(
+            "{chosen} is a Slurm executor, which has no allocation or priority choice"
+        ))),
+        _ => Ok(None),
+    }
 }
 /// What a saved preparation will run, whatever today's executors would resolve to. It
 /// is frozen on the server, and it is what the user must be shown.
@@ -687,6 +740,7 @@ fn frozen(identity: Identity, view: &Value) -> Result<Plan, Error> {
         cpus: number("cpus")?,
         memory_gb: number("memory_gb")?,
         max_gpu_hours: frozen["max_gpu_hours"].as_f64().ok_or(Error::Response)?,
+        allocation: frozen["allocation"].as_str().map(str::to_owned),
     })
 }
 pub fn plan(
@@ -743,6 +797,17 @@ pub fn summary(spec: &Spec, plan: &Plan, files: usize, environment: &str) -> Str
         format!("  time      up to {} seconds", spec.walltime_seconds),
         format!("  spend     up to {} GPU hours", plan.max_gpu_hours),
     ];
+    match plan.allocation.as_deref() {
+        Some("guaranteed") => lines.push("  allocation guaranteed: only the quota".into()),
+        Some(name) => {
+            let may = if name == "idle_only" { "only" } else { "also" };
+            lines.push(format!(
+                "  allocation {name}: uses {may} idle resources, so THIS JOB MAY BE PREEMPTED and \
+                 end early. Write checkpoints; --allocation guaranteed avoids this"
+            ));
+        }
+        None => {}
+    }
     if !spec.data.is_empty() {
         let names: Vec<&str> = spec.data.iter().map(|(name, _)| name.as_str()).collect();
         lines.push(format!("  data      {}", names.join(", ")));
@@ -787,6 +852,16 @@ fn request(
     }
     if let Some(code) = code_source_id {
         run["code_source_id"] = json!(code);
+    }
+    // A chosen allocation is already here. This freezes a defaulted one in the new Run,
+    // since a Run with no `scheduling` means guaranteed. A guaranteed job stays absent,
+    // and its Run is what it was before there was any choice.
+    if let Some(name) = plan
+        .allocation
+        .as_deref()
+        .filter(|name| *name != "guaranteed")
+    {
+        run["scheduling"]["allocation"] = json!(name);
     }
     let request: preparation::Request = serde_json::from_value(json!({
         "request_id": plan.request_id,
@@ -1152,7 +1227,20 @@ fn follow(
     }
 }
 /// What the backend says went wrong, when a job ended without success.
-fn explain_failure(client: &Client, project: &str, run: &str, hooks: &mut Hooks<'_>) {
+fn explain_failure(
+    client: &Client,
+    project: &str,
+    run: &str,
+    allocation: Option<&str>,
+    hooks: &mut Hooks<'_>,
+) {
+    // PAI names no preempted state: a reclaimed job reads as FAILED or CANCELLED.
+    if allocation.is_some_and(|name| name != "guaranteed") {
+        (hooks.progress)(
+            "This job could use idle resources, and PAI does not report a preemption as such: \
+             it may have been reclaimed rather than have failed",
+        );
+    }
     let selection = observation::Selection {
         project: Some(project),
         run: Some(run),
@@ -1162,11 +1250,13 @@ fn explain_failure(client: &Client, project: &str, run: &str, hooks: &mut Hooks<
         (hooks.progress)(&presentation::provider_diagnostics(&value));
     }
 }
+#[allow(clippy::too_many_arguments)]
 fn watch(
     client: &Client,
     project: &str,
     run: &str,
     id: &str,
+    allocation: Option<&str>,
     current: Value,
     health: &Value,
     hooks: &mut Hooks<'_>,
@@ -1176,7 +1266,7 @@ fn watch(
     }
     let latest = follow(client, id, current, health, hooks);
     if over(&latest) && job_state(&latest) != Some("SUCCEEDED") {
-        explain_failure(client, project, run, hooks);
+        explain_failure(client, project, run, allocation, hooks);
     }
     latest
 }
@@ -1314,6 +1404,9 @@ pub fn run(
                 &spec.project,
                 &identity.run_id,
                 id,
+                saved
+                    .as_ref()
+                    .and_then(|view| view["frozen"]["allocation"].as_str()),
                 current,
                 &health,
                 &mut hooks,
@@ -1407,6 +1500,7 @@ pub fn run(
         &spec.project,
         &plan.run_id,
         &id,
+        plan.allocation.as_deref(),
         current,
         &health,
         &mut hooks,
@@ -1524,6 +1618,7 @@ pub fn retry(
                 &latest.project,
                 &latest.run_id,
                 &parent,
+                None,
                 current,
                 &health,
                 &mut hooks,
@@ -1594,6 +1689,7 @@ pub fn retry(
         &latest.project,
         &latest.run_id,
         &id,
+        None,
         current,
         &health,
         &mut hooks,
@@ -1866,6 +1962,176 @@ mod tests {
             "source",
         )
         .unwrap()
+    }
+    fn row(executor: &str, kind: &str) -> Value {
+        json!({"executor_id":executor,"kind":kind,"limits":{}})
+    }
+    fn on(spec: &Spec, executor: &Value) -> Result<Plan, Error> {
+        plan(
+            spec,
+            &"a".repeat(64),
+            &format!("FROM {PINNED}\n"),
+            executor,
+            "source",
+        )
+    }
+    fn frozen_run(spec: &Spec, plan: &Plan) -> Map<String, Value> {
+        let source = format!("source.{}", "b".repeat(64));
+        request(spec, plan, &source, None).unwrap().run
+    }
+    fn choosing(allocation: &str) -> Spec {
+        let mut chosen = spec();
+        chosen
+            .extra
+            .insert("scheduling".into(), json!({"allocation": allocation}));
+        chosen
+    }
+    /// Computed separately from the array `identify` hashes, as it stood before this
+    /// option existed. A repeat of an old command must still find its old job.
+    #[test]
+    fn with_no_choice_the_identity_is_the_one_saved_jobs_have() {
+        let plan = on(&spec(), &row("pai-h200", "pai-dlc")).unwrap();
+        assert_eq!(plan.request_id, "d15e3a7b64b5196d01b80a6cb8d74587");
+        assert_eq!(plan.run_id, "source-d15e3a7b");
+    }
+    #[test]
+    fn a_new_pai_job_with_gpus_freezes_the_default_and_the_question_says_it_may_be_preempted() {
+        let spec = spec();
+        let plan = on(&spec, &row("pai-h200", "pai-dlc")).unwrap();
+        assert_eq!(plan.allocation.as_deref(), Some("allow_idle"));
+        assert_eq!(
+            frozen_run(&spec, &plan)["scheduling"],
+            json!({"allocation":"allow_idle"})
+        );
+        let question = summary(&spec, &plan, 1, "built");
+        assert!(question.contains("allocation allow_idle"), "{question}");
+        assert!(question.contains("MAY BE PREEMPTED"), "{question}");
+    }
+    #[test]
+    fn each_allocation_is_its_own_identity_and_the_flag_is_the_file_spelling() {
+        let from_flag = |allocation: &str| {
+            spec_of(
+                Options {
+                    project: Some("demo".into()),
+                    executor: Some("pai-h200".into()),
+                    directory: "source".into(),
+                    command: vec!["python3".into(), "train.py".into()],
+                    gpus: Some(1),
+                    walltime_seconds: Some(600),
+                    allocation: Some(allocation.into()),
+                    ..Options::default()
+                },
+                None,
+            )
+            .unwrap()
+        };
+        let pai = row("pai-h200", "pai-dlc");
+        let none = on(&spec(), &pai).unwrap();
+        let mut ids = vec![none.request_id];
+        for name in ["guaranteed", "allow_idle", "idle_only"] {
+            let plan = on(&from_flag(name), &pai).unwrap();
+            assert_eq!(plan.allocation.as_deref(), Some(name));
+            assert_ne!(plan.run_id, none.run_id, "{name}");
+            let file = on(&choosing(name), &pai).unwrap();
+            assert_eq!(file.request_id, plan.request_id, "{name}");
+            ids.push(plan.request_id);
+        }
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), 4);
+        // The flag wins over the file, and keeps what else the file said.
+        let file = br#"{"run":{"scheduling":{"allocation":"idle_only","priority":7}}}"#;
+        let merged = spec_of(
+            Options {
+                project: Some("demo".into()),
+                executor: Some("pai-h200".into()),
+                command: vec!["x".into()],
+                gpus: Some(1),
+                walltime_seconds: Some(600),
+                allocation: Some("guaranteed".into()),
+                ..Options::default()
+            },
+            Some(file),
+        )
+        .unwrap();
+        assert_eq!(
+            merged.extra["scheduling"],
+            json!({"allocation":"guaranteed","priority":7})
+        );
+    }
+    #[test]
+    fn a_guaranteed_choice_says_so_and_a_priority_alone_gets_the_default() {
+        let chosen = choosing("guaranteed");
+        let plan = on(&chosen, &row("pai-h200", "pai-dlc")).unwrap();
+        let question = summary(&chosen, &plan, 1, "built");
+        assert!(question.contains("allocation guaranteed"), "{question}");
+        assert!(!question.contains("PREEMPTED"), "{question}");
+        assert_eq!(
+            frozen_run(&chosen, &plan)["scheduling"]["allocation"],
+            "guaranteed"
+        );
+
+        let mut priority = spec();
+        priority
+            .extra
+            .insert("scheduling".into(), json!({"priority":7}));
+        let plan = on(&priority, &row("pai-h200", "pai-dlc")).unwrap();
+        assert_eq!(
+            frozen_run(&priority, &plan)["scheduling"],
+            json!({"allocation":"allow_idle","priority":7})
+        );
+    }
+    #[test]
+    fn a_pai_job_with_no_gpus_stays_as_it_was() {
+        let mut cpu = spec();
+        cpu.gpus = 0;
+        let plan = on(&cpu, &row("pai-native-cpu", "pai-dlc")).unwrap();
+        assert_eq!(plan.allocation.as_deref(), Some("guaranteed"));
+        assert!(!frozen_run(&cpu, &plan).contains_key("scheduling"));
+    }
+    #[test]
+    fn slurm_and_sensecore_are_asked_nothing_new() {
+        for executor in [row("slurm-h100", "slurm"), row("sense", "sensecore")] {
+            let spec = spec();
+            let plan = on(&spec, &executor).unwrap();
+            assert_eq!(plan.allocation, None);
+            assert!(!frozen_run(&spec, &plan).contains_key("scheduling"));
+            assert!(!summary(&spec, &plan, 1, "built").contains("allocation"));
+        }
+        for name in ["allow_idle", "idle_only"] {
+            let refused = on(&choosing(name), &row("sense", "sensecore"));
+            assert!(matches!(refused, Err(Error::Submit(_))), "{name}");
+        }
+        assert!(on(&choosing("guaranteed"), &row("sense", "sensecore")).is_ok());
+        assert!(matches!(
+            on(&choosing("guaranteed"), &row("slurm-h100", "slurm")),
+            Err(Error::Submit(_))
+        ));
+    }
+    #[test]
+    fn a_saved_preparation_is_shown_as_it_was_frozen() {
+        let identity = identify(
+            &spec(),
+            &"a".repeat(64),
+            &format!("FROM {PINNED}\n"),
+            "source",
+        )
+        .unwrap();
+        let view = json!({"frozen":{"executor":"pai-h200","gpus":1,"cpus":8,"memory_gb":32,
+            "max_gpu_hours":1.0,"allocation":"guaranteed"}});
+        let plan = frozen(identity, &view).unwrap();
+        assert_eq!(plan.allocation.as_deref(), Some("guaranteed"));
+        // An older server does not say.
+        let identity = identify(
+            &spec(),
+            &"a".repeat(64),
+            &format!("FROM {PINNED}\n"),
+            "source",
+        )
+        .unwrap();
+        let view = json!({"frozen":{"executor":"pai-h200","gpus":1,"cpus":8,"memory_gb":32,
+            "max_gpu_hours":1.0}});
+        assert_eq!(frozen(identity, &view).unwrap().allocation, None);
     }
     #[test]
     fn times_read_as_a_person_writes_them() {
