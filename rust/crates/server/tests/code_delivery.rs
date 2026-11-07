@@ -808,11 +808,6 @@ fn an_upgrade_needs_no_rebuild_and_an_attempt_fetches_only_the_worker_it_froze()
     let preparation = waiting["preparation_id"].as_str().unwrap().to_owned();
     drop(on_old_scheme);
     let on_new_scheme = open(&config(&second, true));
-    let context = || ml_exp_server::runs::Context {
-        now: "2026-10-29T00:02:00Z",
-        expires: "2026-10-29T01:02:00Z",
-        transition_id: &"f".repeat(32),
-    };
     assert!(
         on_new_scheme
             .experiment_continue(
@@ -820,7 +815,11 @@ fn an_upgrade_needs_no_rebuild_and_an_attempt_fetches_only_the_worker_it_froze()
                 &preparation,
                 &format!("PREPARE {preparation}"),
                 None,
-                context()
+                ml_exp_server::runs::Context {
+                    now: "2026-10-29T00:02:00Z",
+                    expires: "2026-10-29T01:02:00Z",
+                    transition_id: &"f".repeat(32),
+                },
             )
             .is_ok()
     );
