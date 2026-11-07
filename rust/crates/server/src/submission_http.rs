@@ -208,9 +208,8 @@ pub(crate) fn creation_failure(cause: slurm::Error) -> Error {
         // The caller can act on this one, so it keeps its own code.
         422 if error.code == "DATASET_MANIFESTS_TOO_LARGE" => {}
         422 => {
+            // The detail stays: which check refused it is the only thing to act on.
             error.code = "RUN_CREATION_REJECTED";
-            error.detail =
-                "Run request, resources, source or published runtime fail native admission";
         }
         409 => {
             error.code = "RUN_CREATION_CONFLICT";
@@ -528,5 +527,6 @@ mod tests {
             "Run runtime or executor",
         )));
         assert_eq!((other.status, other.code), (422, "RUN_CREATION_REJECTED"));
+        assert_eq!(other.detail, "Run runtime or executor");
     }
 }

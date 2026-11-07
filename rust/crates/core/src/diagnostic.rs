@@ -178,6 +178,13 @@ impl std::fmt::Display for HttpFailure {
                 self.status, self.error_code
             );
         }
+        if let Some(detail) = self.details.as_ref().and_then(Value::as_str) {
+            return write!(
+                f,
+                "HTTP {} {}: {detail}; inspect saved identities before retrying",
+                self.status, self.error_code
+            );
+        }
         write!(
             f,
             "HTTP {} {}; inspect saved identities before retrying",
