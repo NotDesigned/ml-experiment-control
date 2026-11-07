@@ -626,3 +626,107 @@ fn the_default_help_is_short_and_help_all_hides_nothing() {
         );
     }
 }
+
+/// Health answers, then the next request is refused as the server refuses a busy lock.
+fn serve_busy(listener: std::net::TcpListener) -> std::thread::JoinHandle<Vec<String>> {
+    use std::time::Instant;
+    std::thread::spawn(move || {
+        let mut paths = Vec::new();
+        for index in 0..2 {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let (mut socket, _) = loop {
+                match listener.accept() {
+                    Ok(value) => break value,
+                    Err(e)
+                        if e.kind() == std::io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(5))
+                    }
+                    Err(e) => panic!("missing CLI request {index}: {e}"),
+                }
+            };
+            socket.set_nonblocking(false).unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut bytes = Vec::new();
+            while !bytes.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                socket.read_exact(&mut byte).unwrap();
+                bytes.push(byte[0]);
+                assert!(bytes.len() < 8192);
+            }
+            let request = String::from_utf8(bytes).unwrap();
+            paths.push(request.lines().next().unwrap().to_owned());
+            let (status, code, body) = if index == 0 {
+                ("200 OK", "", r#"{"ok":true,"capabilities":[]}"#)
+            } else {
+                (
+                    "503 Service Unavailable",
+                    "X-ML-Expd-Error-Code: CLOUD_RUN_BUSY\r\n",
+                    r#"{"code":"CLOUD_RUN_BUSY","detail":"another cloud operation is in progress"}"#,
+                )
+            };
+            write!(
+                socket,
+                "HTTP/1.1 {status}\r\n{code}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        }
+        paths
+    })
+}
+
+#[test]
+fn json_mode_prints_one_error_document_on_stdout_and_still_fails() {
+    use serde_json::Value;
+    use std::net::TcpListener;
+    for (view, json) in [("status", true), ("diagnose", true), ("status", false)] {
+        let temp = tempfile::tempdir().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let base = format!("http://{}/ml-expd", listener.local_addr().unwrap());
+        let server = serve_busy(listener);
+        let mut cmd = command(temp.path());
+        cmd.env("ML_EXPD_API_TOKEN", "cli-busy-test-secret").args([
+            "--url",
+            &base,
+            "run",
+            view,
+            "--project",
+            "p",
+            "--run",
+            "r",
+        ]);
+        if json {
+            cmd.arg("--json");
+        }
+        let output = cmd.output().unwrap();
+        let paths = server.join().unwrap();
+        assert!(!output.status.success(), "{view}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("CLOUD_RUN_BUSY"), "{view}: {stderr}");
+        assert!(
+            paths[1].starts_with("GET /ml-expd/api/runs/p/r"),
+            "{paths:?}"
+        );
+        if !json {
+            assert!(output.stdout.is_empty(), "{view}");
+            continue;
+        }
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(!stdout.contains("cli-busy-test-secret"));
+        let value: Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(value["error"]["code"], "CLOUD_RUN_BUSY", "{view}");
+        assert_eq!(value["error"]["http_status"], 503, "{view}");
+        assert!(
+            value["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("CLOUD_RUN_BUSY")
+        );
+        assert_eq!(value.as_object().unwrap().len(), 1);
+    }
+}
