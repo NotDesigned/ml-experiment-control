@@ -1146,10 +1146,13 @@ fn the_bootstrap_contract_is_pinned() {
 fn a_stored_run_without_scheduling_keeps_its_hash_and_stays_guaranteed() {
     let (docs, request, compile) = stored_run(None);
     assert!(docs.run["native_cloud"].get("scheduling").is_none());
-    assert_eq!(request.identity("demo").unwrap(), "PIN_REQUEST");
     assert_eq!(
-        helper::sha256_bytes(&serde_json::to_vec(&docs.run).unwrap()),
-        "PIN_RUN"
+        [
+            request.identity("demo").unwrap(),
+            helper::sha256_bytes(&serde_json::to_vec(&docs.run).unwrap()),
+            helper::sha256_bytes(&serde_json::to_vec(&docs.attempt).unwrap()),
+        ],
+        ["PIN_REQUEST", "PIN_RUN", "PIN_ATTEMPT"]
     );
     assert_eq!(
         compile(pai::Allocation::default()).allocation,

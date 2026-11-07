@@ -63,7 +63,8 @@ flowchart LR
   datasets, metric ingestion or checkpoint registration.
 - PAI uses REST for DLC training and DSW debug/build machines. Each new DLC Run
   can freeze `scheduling.allocation` (`guaranteed`, `allow_idle`, `idle_only`) and
-  priority 1–9, default 5. The profile still enforces resource and duration limits.
+  priority 1–9, default 5. `ml-exp submit` defaults a job with GPUs to `allow_idle`,
+  which [can be preempted](../docs/pai.md#dlc-scheduling-options). The profile still enforces resource and duration limits.
 - SenseCore uses REST for ACP training and CPU copy/collection, and CCI debug.
   Training and debug CPU profiles are separate; GPU ACP never uses a debug pool.
   An optional `spot_clusters` allowlist selects the compatible pool with the

@@ -44,33 +44,72 @@ multiplied by duration: 8 GPUs for the default day require 192 GPU-hours.
 A frozen Run or preparation keeps its duration.
 
 For longer training, save complete recovery state on CPFS and explicitly submit
-a subsequent Run with `resume_from`. Provider restart and paid Spot are disabled;
+a subsequent Run with `resume_from`. Provider restart and paid Spot are disabled, and
+[idle resources can be reclaimed earlier](#dlc-scheduling-options);
 there is no automatic continuation or unbounded cumulative budget. Client wait
 timeouts do not terminate the remote job.
 
 ## DLC scheduling options
 
-New Runs default to priority **5** and guaranteed quota only. A Run can choose:
+A job with GPUs from `ml-exp submit` defaults to `allow_idle` and priority **5**. The
+question before it is sent names the allocation and says when the job may be preempted.
+Choose another with `--allocation`, or in the file `submit --file` reads:
 
-```json
-{"resources":{"gpus":8,"cpus":64,"memory_gb":512,"max_time":"08:00:00",
-              "allocation_policy":"allow_idle","priority":5}}
+```bash
+ml-exp submit . --gpus 8 --time 8h --allocation guaranteed -- python train.py
 ```
 
-| `allocation_policy` | `Settings.EnableTideResource` | `Settings.OversoldType` and `JobSpecs[].OversoldType` |
+```json
+{"run":{"scheduling":{"allocation":"guaranteed","priority":5}}}
+```
+
+| `allocation` | `Settings.EnableTideResource` | `Settings.OversoldType` and `JobSpecs[].OversoldType` |
 | --- | --- | --- |
-| `guaranteed` (default) | false | `ForbiddenQuotaOverSold` |
+| `guaranteed` | false | `ForbiddenQuotaOverSold` |
 | `allow_idle` | true | `AcceptQuotaOverSold` |
 | `idle_only` | true | `ForceQuotaOverSold` |
 
 Both job-level permission and policy are set. A node policy alone does not enable
 idle resources. `UseOversoldResource` reports actual allocation, not permission.
 Priority is an integer from 1 to 9, with larger values scheduled at higher
-priority. The catalogue advertises these options. Other backends reject them.
+priority. The catalogue advertises these options. SenseCore accepts only `guaranteed`,
+and Slurm refuses `scheduling` altogether.
 
-Each Run freezes its choice; create a new Run to change it.
+**A job on idle resources can be preempted when they are reclaimed.** Nothing restarts
+it: provider restart is off, and running again is your explicit `ml-exp retry`. A long
+Run should write checkpoints to `STATE_DIR` often enough to lose little. PAI reports no
+preempted state: such a job reads as `FAILED` or `CANCELLED`, the same as a failure or
+a cancellation, and this service cannot tell them apart. `ml-exp submit` says so when
+a job that could use idle resources ends that way. The provider's own reason may or may
+not say more.
+
+`max_gpu_hours` is unchanged by the allocation. It bounds GPU count times duration for
+one Attempt, whichever resources it runs on, and it is not a bill. A retry is a new
+Attempt that asks and spends again.
+
+Each Run freezes its choice, in the Run itself, and a retry keeps it; create a new Run
+to change it. With `submit`, a different `--allocation` is a different job. Leaving the
+option out keeps the identity a repeat of an older command had, so:
+
+- A Run, Attempt or preparation stored with no `scheduling` keeps meaning what it meant,
+  guaranteed, and a retry of it stays guaranteed. Repeating the command that saved such
+  a preparation finds it and shows `guaranteed`.
+- The default applies when `ml-exp submit` creates a new preparation, which then holds
+  `allow_idle` explicitly. Changing the default later changes no existing Run.
+
+Only `ml-exp submit` applies this default, because only it asks first. A job with no
+GPUs, such as on a CPU executor, stays guaranteed, and so do the platform's own copy,
+collection, sync, script-preparation and diagnostic jobs. `run start`, `run create`,
+`run batch`, the HTTP API and clients older than this release freeze what they are
+given, and without `scheduling` that is guaranteed.
+
+The backend's `allocation` setting is what a Run with no `scheduling` asks for, stored
+ones included. Leave it at `guaranteed`: changing it changes what old Runs and their
+retries ask for, and an Action already prepared under the old value then refuses to
+run. It does not set the default for new Runs.
+
 Idle permission does not bypass role limits, increase the per-job GPU ceiling,
-guarantee admission, or enable Spot. Borrowed resources can be reclaimed.
+guarantee admission, or enable Spot.
 
 ### Resource and queue evidence
 
@@ -141,7 +180,8 @@ configuration, not proof that the remote mount works.
 ### Data and recovery limits
 
 Configure [OSS dataset assets](data.md#pai-preparation-using-an-existing-image)
-for versioned originals, upload/import and signed downloads. DLC first delivery
+for versioned originals, [direct upload](data.md#direct-upload), import and signed
+downloads. DLC first delivery
 uses the exact-Attempt API transfer into a verified personal CPFS cache. This
 happens inside the allocated job and consumes its time/GPU budget, unless you
 publish the asset first with a CPU job; subsequent jobs can reuse verified cache
