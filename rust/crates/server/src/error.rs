@@ -400,6 +400,11 @@ impl From<crate::backends::cloud::Error> for Error {
                     "INVALID_CLOUD_REQUEST",
                     "cloud request violates the configured resource or protocol limits",
                 ),
+                ("BACKEND_RETIRED", _) => (
+                    410,
+                    "BACKEND_RETIRED",
+                    "this Run was made on SenseCore, whose support was removed; its registry record stays readable, but the service no longer acts on it",
+                ),
                 (_, Some(410)) => (
                     410,
                     "CLOUD_OBJECT_GONE",

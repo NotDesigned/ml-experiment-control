@@ -682,7 +682,7 @@ pub fn resolve(spec: &Spec, identity: Identity, executor: &Value) -> Result<Plan
     })
 }
 /// What this new job will ask for. The default is decided here, and `request` freezes
-/// it in the Run. Slurm and SenseCore have nothing to choose, so both ask what they did.
+/// it in the Run. Slurm has nothing to choose, so it asks what it did.
 fn allocation(
     spec: &Spec,
     chosen: &str,
@@ -705,12 +705,6 @@ fn allocation(
                 .unwrap_or(Allocation::for_new_run(gpus).name())
                 .to_owned(),
         )),
-        Some("sensecore") if asked.is_some_and(|name| name != Allocation::Guaranteed.name()) => {
-            Err(Error::Submit(format!(
-                "{chosen} is a SenseCore executor, which has no idle resources to allow; \
-                 remove the allocation choice"
-            )))
-        }
         Some("slurm") if scheduling.is_some() => Err(Error::Submit(format!(
             "{chosen} is a Slurm executor, which has no allocation or priority choice"
         ))),
@@ -1119,15 +1113,8 @@ fn finished(state: &str) -> bool {
         "SUCCEEDED" | "FAILED" | "CANCELLED" | "TIMEOUT" | "PREEMPTED"
     )
 }
-fn provider_state(submission: &Value) -> &str {
-    submission["cloud_observation"]["observation"]["provider_state"]
-        .as_str()
-        .unwrap_or_default()
-}
-/// SenseCore also reports CANCELLED for a job that may still be running.
 fn over(submission: &Value) -> bool {
     job_state(submission).is_some_and(finished)
-        && !ml_exp_core::cloud::sensecore::may_still_run(provider_state(submission))
 }
 /// The backend's own words when it gives them, such as PAI's `EnvPreparing`.
 fn describe(submission: &Value) -> Option<String> {
@@ -1201,9 +1188,6 @@ fn follow(
                             "this server is not reporting the job's state, so it may have \
                              ended. Its background polling may be off",
                         )
-                    } else if ml_exp_core::cloud::sensecore::may_still_run(provider_state(&latest))
-                    {
-                        Some("the provider has paused or is deleting the job")
                     } else {
                         None
                     };
@@ -2126,19 +2110,12 @@ mod tests {
         assert!(!frozen_run(&cpu, &plan).contains_key("scheduling"));
     }
     #[test]
-    fn slurm_and_sensecore_are_asked_nothing_new() {
-        for executor in [row("slurm-h100", "slurm"), row("sense", "sensecore")] {
-            let spec = spec();
-            let plan = on(&spec, &executor).unwrap();
-            assert_eq!(plan.allocation, None);
-            assert!(!frozen_run(&spec, &plan).contains_key("scheduling"));
-            assert!(!summary(&spec, &plan, 1, "built").contains("allocation"));
-        }
-        for name in ["allow_idle", "idle_only"] {
-            let refused = on(&choosing(name), &row("sense", "sensecore"));
-            assert!(matches!(refused, Err(Error::Submit(_))), "{name}");
-        }
-        assert!(on(&choosing("guaranteed"), &row("sense", "sensecore")).is_ok());
+    fn slurm_is_asked_nothing_new() {
+        let spec = spec();
+        let plan = on(&spec, &row("slurm-h100", "slurm")).unwrap();
+        assert_eq!(plan.allocation, None);
+        assert!(!frozen_run(&spec, &plan).contains_key("scheduling"));
+        assert!(!summary(&spec, &plan, 1, "built").contains("allocation"));
         assert!(matches!(
             on(&choosing("guaranteed"), &row("slurm-h100", "slurm")),
             Err(Error::Submit(_))
@@ -2603,12 +2580,10 @@ mod tests {
         assert!(may_exist(&Value::Null), "unknown is treated as maybe sent");
     }
     #[test]
-    fn a_job_that_may_still_run_is_not_over() {
+    fn only_a_finished_job_is_over() {
         let job = |state: &str, own: &str| json!({"cloud_observation":{"observation":{"state":state,"provider_state":own}}});
         assert!(over(&job("FAILED", "Failed")));
         assert!(over(&job("CANCELLED", "STOPPED")));
-        assert!(!over(&job("CANCELLED", "DELETING")));
-        assert!(!over(&job("CANCELLED", "SUSPENDED")));
         assert!(!over(&job("RUNNING", "Running")));
     }
     #[test]

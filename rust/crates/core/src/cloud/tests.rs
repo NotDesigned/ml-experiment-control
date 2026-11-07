@@ -37,31 +37,6 @@ fn pai() -> pai::Profile {
         vpc: None,
     }
 }
-fn sense() -> sensecore::Profile {
-    sensecore::Profile {
-        scope: sensecore::Scope {
-            subscription: "sub".into(),
-            resource_group: "group".into(),
-            region: "cn-east-1".into(),
-            zone: "cn-east-1a".into(),
-            workspace_zone: None,
-            workspace: "work".into(),
-            user_id: "12345678-1234-1234-1234-123456789abc".into(),
-        },
-        cluster: "training".into(),
-        vpc_id: "vpc1".into(),
-        worker_spec: "gpu.8c64g".into(),
-        worker_gpus: 1,
-        worker_cpus: 8,
-        worker_memory_gb: 64,
-        worker_nodes: 1,
-        storage_volume: "nas".into(),
-        storage_subdir: "/personal/researcher".into(),
-        mount_path: "/data".into(),
-        purpose: sensecore::Purpose::Training,
-        quota: sensecore::Quota::Spot,
-    }
-}
 #[test]
 fn sync_child_and_retry_tokens_are_deterministic_and_pinned() {
     let action = "action-0123456789abcdef";
@@ -221,7 +196,7 @@ fn cloud_run_authorship_launch_and_approval_preserve_science_and_exact_attempt()
     .unwrap();
     assert!(!plan.to_string().contains(&"0".repeat(32)));
     action::validate(&plan, &execution).unwrap();
-    // A SenseCore job is named after its token, so a recorded result may hold it.
+    // A provider job may be named after its token, so a recorded result may hold it.
     let mut settled = plan.clone();
     settled["execution"] = json!({"status":"VERIFIED","result":{"submission":{
         "backend":"pai-h200","backend_job_id":format!("ml-exp-{}", "0".repeat(32))}}});
@@ -596,240 +571,6 @@ fn dlc_resources_idle_permission_personal_mounts_and_frozen_ownership_are_explic
     assert!(p.validate_queue(&queue, "dlc-foreign").is_err());
 }
 #[test]
-fn sensecore_training_copy_and_quota_selection_preserve_boundaries() {
-    let p = sense();
-    let job = job();
-    let body = p.create(&job).unwrap().body.unwrap();
-    assert_eq!(body["fault_tolerance"]["backoff_limit"], 0);
-    assert_eq!(body["scheduling"]["quota_type"], "SPOT");
-    let mut debug = p.clone();
-    debug.cluster = "debug-cluster".into();
-    assert!(debug.create(&job).is_err());
-    debug.purpose = sensecore::Purpose::DataCopy;
-    debug.worker_spec = "cpu.2c4g".into();
-    debug.worker_gpus = 0;
-    debug.worker_cpus = 2;
-    debug.worker_memory_gb = 4;
-    debug.quota = sensecore::Quota::Reserved;
-    let mut cpu = job.clone();
-    cpu.gpus = 0;
-    cpu.cpus = 2;
-    cpu.memory_gb = 4;
-    assert!(debug.create(&cpu).is_ok());
-    let spec = json!({"name":p.worker_spec,"cpu":{"vcpu_allocatable":8},"memory":{"allocatable":64},"device":{"number":1},"zones":[p.scope.zone]});
-    let make = |name: &str, quota: &str| {
-        let row = json!({"name":name,"id":p.scope.path("aec2s",name).unwrap(),"state":"ACTIVE","vpc_id":p.vpc_id,"spot_status":[{"spot_quota":{"device":quota}}]});
-        sensecore::cluster(&p, &row, std::slice::from_ref(&spec)).unwrap()
-    };
-    let clusters = vec![
-        make("c", "12.125"),
-        make("b", "12.125000001"),
-        make("debug-big", "999"),
-        make("a", "12.125000001"),
-    ];
-    assert_eq!(
-        sensecore::highest_spot(&p, &clusters, None).unwrap().name,
-        "a"
-    );
-    let mut incompatible = clusters.clone();
-    incompatible[3].vpc_id = "other".into();
-    assert_eq!(
-        sensecore::highest_spot(&p, &incompatible, None)
-            .unwrap()
-            .name,
-        "b"
-    );
-    let mut duplicate = clusters.clone();
-    duplicate.push(clusters[0].clone());
-    assert!(sensecore::highest_spot(&p, &duplicate, None).is_err());
-    let mut reserved = json!({"name":"debug","id":p.scope.path("aec2s","debug").unwrap(),"state":"ACTIVE","vpc_id":p.vpc_id,"spot_status":[]});
-    let zero = sensecore::cluster(&p, &reserved, std::slice::from_ref(&spec)).unwrap();
-    assert_eq!(zero.spot_devices_nano, 0);
-    assert!(sensecore::highest_spot(&p, &[zero], None).is_err());
-    reserved["spot_status"] = Value::Null;
-    assert!(sensecore::cluster(&p, &reserved, std::slice::from_ref(&spec)).is_err());
-    let row = json!({"name":"training","id":p.scope.path("aec2s","training").unwrap(),"state":"ACTIVE","vpc_id":p.vpc_id,"spot_status":[{"spot_quota":{"device":"1"}}]});
-    let mut too_small = spec.clone();
-    too_small["memory"]["allocatable"] = json!(63);
-    assert!(
-        !sensecore::cluster(&p, &row, &[too_small])
-            .unwrap()
-            .compatible
-    );
-    let row = json!({"name":job.name().unwrap(),"uid":"uid1","ownership":{"user_id":p.scope.user_id},"state":"RUNNING"});
-    p.validate_job(&row, &job, Some("uid1")).unwrap();
-    assert!(p.validate_job(&row, &job, Some("uid2")).is_err());
-}
-#[test]
-fn sensecore_workspace_zone_does_not_change_pool_or_mount_zone_and_an_absent_zone_keeps_the_digest()
-{
-    let mut p = sense();
-    let unzoned = serde_json::to_value(&p).unwrap();
-    assert!(unzoned["scope"].get("workspace_zone").is_none());
-    let restored: sensecore::Profile = serde_json::from_value(unzoned).unwrap();
-    assert_eq!(restored.digest().unwrap(), p.digest().unwrap());
-    p.scope.workspace_zone = Some("cn-east-1z".into());
-    assert!(
-        p.jobs_path()
-            .unwrap()
-            .contains("/zones/cn-east-1z/workspaces/work/")
-    );
-    assert!(
-        p.pools("1")
-            .unwrap()
-            .path
-            .contains("/zones/cn-east-1z/workspaces/work/")
-    );
-    assert!(
-        p.specs("training", "1")
-            .unwrap()
-            .path
-            .contains("/zones/cn-east-1a/aec2s/training/")
-    );
-    assert_eq!(
-        p.create(&job()).unwrap().body.unwrap()["mount"][0]["zone"],
-        "cn-east-1a"
-    );
-    let job = job();
-    let mut row = json!({"name":job.name().unwrap(),"uid":"uid1","ownership":{"user_id":p.scope.user_id},"state":"STARTING","id":format!("{}/trainingJobs/{}",p.scope.workspace_path().unwrap(),job.name().unwrap())});
-    assert!(p.validate_job(&row, &job, Some("uid1")).is_ok());
-    row["id"] = json!(format!(
-        "{}/trainingJobs/{}",
-        p.scope.path("workspaces", &p.scope.workspace).unwrap(),
-        job.name().unwrap()
-    ));
-    assert!(p.validate_job(&row, &job, Some("uid1")).is_err());
-    assert_eq!(
-        p.stop(&job.name().unwrap()).unwrap().body.unwrap()["zone"],
-        "cn-east-1z"
-    );
-    assert_ne!(restored.digest().unwrap(), p.digest().unwrap());
-    p.scope.workspace_zone = Some("cn-other-1z".into());
-    assert!(p.validate().is_err());
-}
-#[test]
-fn offline_logs_and_pagination_refuse_foreign_hits_truncation_and_ambiguous_absence() {
-    let p = sense();
-    let workspace_id = "01234567-89ab-cdef-0123-456789abcdef";
-    let hit = json!({"attributes":{"k8s.pod.name":"pod1","k8s.container.name":"container1"},"resource":{"resource_id":workspace_id},"log_time":"2026-10-29T00:00:00Z","body":"checkpoint saved"});
-    let value = json!({"hits":[hit],"total":"1"});
-    let end = 1793232000;
-    let logs = sensecore::validate_offline_logs(
-        workspace_id,
-        &value,
-        "pod1",
-        "container1",
-        end - 1,
-        end + 1,
-        100,
-    )
-    .unwrap();
-    assert!(logs.available);
-    assert_eq!(logs.text, "checkpoint saved");
-    assert!(
-        sensecore::validate_offline_logs(
-            workspace_id,
-            &value,
-            "foreign",
-            "container1",
-            end - 1,
-            end + 1,
-            100
-        )
-        .is_err()
-    );
-    assert!(
-        p.offline_logs(
-            "another-user-station",
-            workspace_id,
-            "pod1",
-            "container1",
-            1..=2,
-            10
-        )
-        .is_err()
-    );
-    let mut foreign = value.clone();
-    foreign["hits"][0]["resource"]["resource_id"] = json!(p.scope.workspace_path().unwrap());
-    assert!(
-        sensecore::validate_offline_logs(
-            workspace_id,
-            &foreign,
-            "pod1",
-            "container1",
-            end - 1,
-            end + 1,
-            100
-        )
-        .is_err()
-    );
-    assert!(Page::pai(&json!({"Jobs":[],"TotalCount":2}), "Jobs", 1, 100).is_err());
-    assert!(
-        Page::sensecore(
-            &json!({"training_jobs":[],"next_page_token":"1"}),
-            "training_jobs",
-            "1"
-        )
-        .is_err()
-    );
-    assert!(
-        Endpoint::Pai {
-            product: Product::PaiDlc,
-            region: "example.com/escape".into()
-        }
-        .host()
-        .is_err()
-    );
-}
-
-#[test]
-fn offline_requests_use_exact_workspace_uuid_and_workspace_telemetry_zone() {
-    let mut p = sense();
-    p.scope.workspace_zone = Some("cn-east-1z".into());
-    let row = json!({"name":p.scope.workspace,"type":"compute.workspace.v1.instance","zone":"cn-east-1z","subscription_name":p.scope.subscription,"resource_group_name":p.scope.resource_group,"id":"01234567-89ab-cdef-0123-456789abcdef"});
-    let id = sensecore::log_workspace_id(&p, &[row.clone()]).unwrap();
-    let station = format!("ts-user-{}", p.scope.user_id);
-    let request = p
-        .offline_logs(&station, &id, "pod1", "pytorch", 1..=2, 20)
-        .unwrap();
-    assert!(request.read_only);
-    assert!(
-        request
-            .path
-            .contains("/zones/cn-east-1z/telemetryStations/")
-    );
-    assert_eq!(request.body.unwrap()["resource_id"], json!([id]));
-    assert_eq!(
-        p.workspaces("1").unwrap().query["filter"],
-        "resource_type='compute.workspace.v1.instance'"
-    );
-    assert!(sensecore::log_workspace_id(&p, &[]).is_err());
-    assert!(sensecore::log_workspace_id(&p, &[row.clone(), row.clone()]).is_err());
-    for (key, value) in [
-        ("id", p.scope.workspace_path().unwrap()),
-        ("name", "foreign".into()),
-        ("zone", p.scope.zone.clone()),
-        ("subscription_name", "foreign".into()),
-        ("resource_group_name", "foreign".into()),
-        ("type", "other.resource".into()),
-    ] {
-        let mut invalid = row.clone();
-        invalid[key] = json!(value);
-        assert!(
-            sensecore::log_workspace_id(&p, &[invalid]).is_err(),
-            "{key}"
-        );
-    }
-    let mut deleted = row;
-    deleted["deleted"] = json!(true);
-    assert!(sensecore::log_workspace_id(&p, &[deleted]).is_err());
-    assert!(
-        p.offline_logs(&station, "not-a-uuid", "pod1", "pytorch", 1..=2, 20)
-            .is_err()
-    );
-}
-
-#[test]
 fn readonly_diagnostic_mounts_do_not_change_plain_job_serialization() {
     let original = job();
     let plain = json!({
@@ -854,7 +595,7 @@ fn readonly_diagnostic_mounts_do_not_change_plain_job_serialization() {
             .is_none()
     );
 
-    let mut diagnostic = original.clone();
+    let mut diagnostic = original;
     diagnostic.gpus = 0;
     diagnostic.cpus = 2;
     diagnostic.memory_gb = 4;
@@ -896,9 +637,6 @@ fn readonly_diagnostic_mounts_do_not_change_plain_job_serialization() {
             .create(&readonly, pai::Allocation::Guaranteed)
             .is_err()
     );
-    let mut sc_readonly = original;
-    sc_readonly.read_only_storage = true;
-    assert!(sense().create(&sc_readonly).is_err());
 }
 
 #[test]

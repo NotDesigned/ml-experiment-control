@@ -35,20 +35,25 @@ are provider-blocked and stay disabled.
 
 The existing adapters declare:
 
-| Detail | Slurm | SenseCore ACP | PAI DLC |
-|---|---|---|---|
-| Runtime | OCI → Apptainer SIF | OCI | OCI |
-| Allocation | Flexible, bounded by configured capacity | Exact GPU count of fixed worker spec | Flexible within configured quota/capacity; single node, 1–8 GPUs |
-| Uploaded input | Parts over SSH to shared storage | CCR data image → zero-GPU debug ACP → NAS | Approved OSS asset → zero-GPU CPU preparation or inside-job CPFS cache |
-| Script download | Gateway before allocation when `script_preparation` is on | Zero-GPU debug ACP before training when CPU preparation is configured | Inside allocated job |
-| Queue/exit/preemption reasons | Supported | Not declared as reliable structured fields | Queue blockers when available; exit/preemption not guaranteed |
-| Walltime | Scheduler and worker | Worker | Scheduler and worker; 24-hour cap |
-| Server resource status | Slurm partition allocation | Read-only workspace cluster list | Quota allocation snapshot |
-| Generic adapter offline-export hook | Not implemented | Not implemented | Not implemented |
+| Detail | Slurm | PAI DLC |
+|---|---|---|
+| Runtime | OCI → Apptainer SIF | OCI |
+| Allocation | Flexible, bounded by configured capacity | Flexible within configured quota/capacity; single node, 1–8 GPUs |
+| Uploaded input | Parts over SSH to shared storage | Approved OSS asset → zero-GPU CPU preparation or inside-job CPFS cache |
+| Script download | Gateway before allocation when `script_preparation` is on | Inside allocated job |
+| Queue/exit/preemption reasons | Supported | Queue blockers when available; exit/preemption not guaranteed |
+| Walltime | Scheduler and worker | Scheduler and worker; 24-hour cap |
+| Server resource status | Slurm partition allocation | Quota allocation snapshot |
+| Generic adapter offline-export hook | Not implemented | Not implemented |
+
+SenseCore support was removed. A cloud config that still lists a SenseCore backend,
+collector or debug profile is refused at load, and the deployment check reports
+`cloud_backend_retired`. Runs created on SenseCore stay readable from the registry,
+like any Run whose executor is no longer configured.
 
 The server separately collects results to recover outputs from an exact original
 Attempt. It publishes Slurm shared-directory outputs or
-uses a bounded zero-GPU SenseCore CPU job to read NAS and resume the original
+uses a bounded zero-GPU PAI CPU job to read CPFS and resume the original
 archive transfer. This server operation does not require the generic adapter
 `outputs.offline_export` hook. Query or start it with `ml-exp run collect`; see
 [result recovery](recovery.md). It preserves the original scheduler outcome and
@@ -190,57 +195,15 @@ the content. An uncertain stage remains subject to the existing explicit
 reconciliation rules.
 
 
-### SenseCore script preparation
-
-With the operator's `data_delivery` CPU profile configured, new SenseCore Runs
-freeze that profile and prepare their download script in a RESERVED debug ACP
-job with 2 CPUs, 4 GiB and no GPU. The exact training image supplies the helper,
-source and script. Already staged inputs are verified and linked at their frozen
-mount paths before the script starts. The script writes into NAS; its hash-based
-cache and READY receipt are reused by the training worker.
-Inputs combined with CPU script preparation must already be staged on NAS
-through the CCR data-delivery path. API-hosted inputs without that transport are rejected
-before building or creating the CPU job;
-the platform does not attempt an unauthenticated download in the helper.
-
-`data.preparation` reports `phase=before_job`, `budget=preparation`,
-`transport=cpu-acp-shared-storage` and `max_timeout_seconds=3600`. Queue and script
-limits are bounded independently; this work does not consume the training GPU
-allocation or its walltime. Set `requirements.data_preparation_before_job=true`
-to reject an executor that cannot provide this. Matching rejects an excessive
-script timeout before building. It is not a free-resource or startup-time guarantee.
-
-The CPU intent is persisted before its single REST create. Confirmed UID, image,
-script and profile are checked when observing the original job. A lost reply or
-missing receipt requires reconciliation; continue never creates a replacement.
-New Runs freeze a callback wrapper identity. After the script, that wrapper
-rereads the sealed NAS receipt and verifies actual file SHA256 before sending an
-independent expiring capability callback. Provider stdout indexing is not required
-for readiness. A fast callback waits for the original confirmed UID; wrong or
-replacement UIDs are rejected. Verified data may be READY even if callback ACK
-failure makes the CPU job fail; its original job status is preserved. The token
-is removed before the user's script runs. Config changes do not rebind an existing
-Run. See [data](data.md).
-
 ## Internal boundary for another backend
 
 There is no plugin mechanism or backend registry. Slurm lives in the server's
-`backends/slurm`. PAI and SenseCore share `backends/cloud`: the `Profile` enum in
+`backends/slurm`. PAI lives in `backends/cloud`: the `Profile` enum in
 `backends/cloud/adapter.rs` selects the provider, and its request compiler lives in
 `core/src/cloud/`. Neither tree decides ownership: `runs/` chooses the backend for a Run
 or Action and calls only its service, and the handlers that serve either backend
 (`submission_http.rs`, `dataset_http.rs`, `preparation_http.rs`, `capacity_http.rs`) sit
 above both trees. Data preparation
-(`backends/cloud/service/engine/script_preparation.rs`, `data_delivery.rs`) and independent result
+(`backends/cloud/service/engine/data_delivery.rs`, `materialization.rs`) and independent result
 collection (`synchronization.rs`) are separate operations from training. Another cloud
 provider means a new `Profile` variant and compiler, written against those modules.
-
-SenseCore data copy, download-script preparation and result recovery share the
-CPU profile/specification/document checks and exact name/UID observation helpers
-in `core/src/cloud/sensecore.rs` and the server's `backends/cloud/adapter.rs`. They retain separate durable intents, timeouts,
-retry rules and receipts. A confirmed UID is persisted even when a data READY
-callback arrives first. An interrupted operation without a UID may bind only
-the single exact, owned job found under its original name. Subsequent observations
-and timeout cancellation reject another UID. Missing or ambiguous jobs never
-cause create to be replayed. The provider's batch-stop API is still name based;
-checking the UID first does not make it an atomic compare-and-stop operation.

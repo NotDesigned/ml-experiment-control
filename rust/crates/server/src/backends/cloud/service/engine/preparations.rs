@@ -61,20 +61,6 @@ impl Service {
             .resolve(project, frozen)
             .map_err(why!(cloud::Error::configuration()))?;
         if let Some(backend) = self.backends.get(&run.executor) {
-            if matches!(
-                backend.adapter.profile,
-                cloud::adapter::Profile::Sensecore(_)
-            ) && run
-                .scheduling
-                .as_ref()
-                .is_some_and(|s| s.allocation != ml_exp_core::cloud::pai::Allocation::Guaranteed)
-            {
-                return Err(cloud::Error {
-                    code: "INVALID_CLOUD_REQUEST".into(),
-                    http_status: Some(422),
-                    uncertain: false,
-                });
-            }
             if let Some(code) = &run.code_source_id {
                 self.check_code(project, code)?;
             }
@@ -113,7 +99,6 @@ impl Service {
                         .map(|s| s.allocation)
                         .unwrap_or(backend.definition.allocation),
                 ),
-                cloud::adapter::Profile::Sensecore(p) => p.create(&job),
             }
             .map_err(why!(cloud::Error {
                 code: "INVALID_CLOUD_REQUEST".into(),
@@ -247,32 +232,12 @@ impl Service {
             value["frozen"]["code_source_id"] = json!(code);
         }
         // What this preparation will run as, including one saved before it had a choice.
-        if let Some(backend) = self
-            .backends
-            .get(&run.executor)
-            .filter(|backend| matches!(backend.adapter.profile, cloud::adapter::Profile::Pai(_)))
-        {
+        if let Some(backend) = self.backends.get(&run.executor) {
             value["frozen"]["allocation"] = json!(
                 run.scheduling
                     .as_ref()
                     .map_or(backend.definition.allocation, |s| s.allocation)
             );
-        }
-        if saved.submission.is_none() && saved.started && self.accepts(&run.executor) {
-            if let Some(progress) = self.script_status(&saved.project, &run.run_id)? {
-                value["phase"] = json!(if progress["status"] == "READY" {
-                    "DATA_PREPARED"
-                } else {
-                    "DATA_PREPARATION"
-                });
-                value["status"] = if progress["status"] == "READY" {
-                    json!("PREPARING")
-                } else {
-                    progress["status"].clone()
-                };
-                value["data_preparation"] = progress["data_preparation"].clone();
-                value["error_code"] = progress["error_code"].clone();
-            }
         }
         Ok(value)
     }
@@ -449,8 +414,7 @@ impl Service {
             });
         }
         let backend = &self.backends[&run.executor];
-        let pai = matches!(backend.adapter.profile, cloud::adapter::Profile::Pai(_));
-        if backend.data_copier.is_some() || pai && backend.collector.is_some() {
+        if backend.collector.is_some() {
             for input in &run.data {
                 if let Some(data_saved) = self
                     .data_saved(project, &run.executor, &input.asset_id)?
@@ -466,7 +430,7 @@ impl Service {
                         &run.executor,
                         &input.asset_id,
                         &request_id,
-                        pai.then_some(run.runtime_id.as_str()),
+                        Some(run.runtime_id.as_str()),
                     )?;
                     if data["ready"].is_null() {
                         let mut view = self.setup_view(&saved)?;
@@ -479,9 +443,6 @@ impl Service {
         }
         // The preflight above has checked this, and a build frozen here keeps its worker.
         self.author_run(project, run.clone(), now)?;
-        if self.prepare_script(project, &run.run_id)?.is_some() {
-            return self.setup_view(&saved).map(Continue::View);
-        }
         let submission = self.prepare(
             project,
             &run.run_id,

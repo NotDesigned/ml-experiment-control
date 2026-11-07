@@ -95,32 +95,4 @@ impl Page {
             next,
         })
     }
-    pub fn sensecore(value: &Value, field: &str, token: &str) -> Result<Self> {
-        let rows = value[field].as_array().ok_or(Error("list rows"))?;
-        let total = match value.get("total_size") {
-            None | Some(Value::Null) => None,
-            Some(v) => Some(v.as_u64().ok_or(Error("list total"))?),
-        };
-        let next = match value.get("next_page_token") {
-            None => None,
-            Some(Value::String(s)) if s.is_empty() || s == "0" => None,
-            Some(Value::String(s)) => {
-                component(s)?;
-                Some(s.clone())
-            }
-            _ => return Err(Error("page token")),
-        };
-        if rows.len() > 100
-            || total.is_some_and(|n| n < rows.len() as u64 || n > 10000)
-            || next.as_deref() == Some(token)
-            || rows.is_empty() && next.is_some()
-        {
-            return Err(Error("incomplete page"));
-        }
-        Ok(Self {
-            rows: rows.clone(),
-            total,
-            next,
-        })
-    }
 }

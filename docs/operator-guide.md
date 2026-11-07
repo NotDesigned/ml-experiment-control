@@ -15,7 +15,6 @@ copying them alone does not produce a runnable GPU service.
 | Optional image builder | Private socket, registry push auth; a separately configured PAI CPU DSW or local Docker/BuildKit. Separate Python process; see [below](#image-builder) |
 | Slurm | Pinned SSH to a networked gateway, `ml-exp-worker-rs` helper, Slurm/Apptainer, shared storage, registry pull auth |
 | PAI DLC | Access key file, workspace/quota, personal CPFS/role, registry pull auth, private OSS prefix |
-| SenseCore | Access key file, workspace/pools/specs, CCR pull authorization, NAS; separate debug CPU copier and collector |
 | Optional W&B | Separate interpreter with the official SDK, private API key file |
 
 Keep one daemon writer per registry. The examples use this layout:
@@ -171,7 +170,7 @@ with the version, source commit and hashes; read that file to learn what is runn
 
 The tool replaces programs only. It does not touch registries, Runs, Attempts,
 provider jobs or remote Slurm helpers, and rollback restores no database. New builds
-embed the new worker. On Slurm they get new Runtime identities. On PAI and SenseCore they
+embed the new worker. On Slurm they get new Runtime identities. On PAI they
 do not, so an environment is not rebuilt, and each new Run freezes the new worker and
 downloads it when it starts ([details](builds.md#the-worker-and-upgrades)); the first release
 with this still builds each environment once more. Existing Runtimes and images keep their
@@ -194,7 +193,7 @@ experiment file.
 1. **Choose one backend and its persistent storage.** Add it through
    [the matching example](configuration.md#enable-only-the-backends-you-use), with
    credentials, shared data/Run paths and pull authorization. Follow its
-   [Slurm](slurm.md), [SenseCore](sensecore-rest.md) or [PAI](pai.md) preconditions.
+   [Slurm](slurm.md) or [PAI](pai.md) preconditions.
    Confirm the compute nodes can access those paths; API access alone does not
    prove this. Slurm helpers must be installed and their stores initialized once on
    the gateway; enabling an executor installs nothing remote.
@@ -375,12 +374,12 @@ recovery must account for frozen worker contracts and state written by newer
 versions, and an old release is not an automatic rollback target.
 
 Registry images and backend datasets and state need explicit retention. There is no
-global Docker prune or automatic NAS cleanup. Reviewed removal of outputs, persistent
+global Docker prune or automatic backend storage cleanup. Reviewed removal of outputs, persistent
 state or checkpoints uses [administrative maintenance](resource-deletion.md), enabled
 with `administration: true`. Record exact versions and verification privately; these
 docs are not a list of live jobs. Known defects and unimplemented recovery
 capabilities are in [recovery](recovery.md).
 
-Treat API disk, DSW build storage, Slurm shared storage and SenseCore NAS as distinct
+Treat API disk, DSW build storage and Slurm shared storage as distinct
 capacity domains, and check each one's actual write, quota and inode state. Freeing
-an API-side transfer does not free NAS training-state generations.
+an API-side transfer does not free backend training-state generations.

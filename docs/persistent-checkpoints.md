@@ -7,7 +7,7 @@ never interprets or unpickles training state.
 
 ## Enable and write
 
-These variables are the same on Slurm, SenseCore and PAI DLC:
+These variables are the same on Slurm and PAI DLC:
 
 | Variable | Purpose |
 |---|---|
@@ -23,7 +23,7 @@ The platform owns these names, so a Run's `env` cannot set them.
 
 `STATE_DIR` and `OUTPUT_DIR` are the sibling directories `state` and `outputs` of
 one Attempt directory within the configured shared mount: Slurm uses shared
-storage, SenseCore uses NAS, and PAI DLC uses its approved personal CPFS/NAS
+storage and PAI DLC uses its approved personal CPFS/NAS
 workspace. New Attempts do not overwrite the restore source. A profile change
 does not move a Run's frozen paths or image.
 
@@ -58,7 +58,7 @@ generation, not by a later report.
 Only metadata is uploaded. The checkpoint ID binds project/Run/Attempt,
 source/image/storage context and sorted file hashes. Registration is idempotent
 and reports REGISTERED / worker-sha256: the worker verified bytes, not an
-independent server read of NAS. The platform exports acknowledged references
+independent server read of backend storage. The platform exports acknowledged references
 and restore provenance in `checkpoints.json`.
 
 ```bash
@@ -81,7 +81,7 @@ The worker rehashes the
 actual generation before training and exposes it through RESUME_DIR. Your code
 restores all scientific state. Missing/corrupt files block training without a
 latest/older fallback. References must belong to the same project/storage scope;
-GPU profiles may differ when storage is shared, but Slurm, SenseCore and DLC
+GPU profiles may differ when storage is shared, but Slurm and DLC
 are different scopes. DLC scope also binds the approved user and storage
 endpoint. Cross-backend use requires explicit state export/data asset delivery.
 
@@ -114,8 +114,8 @@ delete persistent state, but a REGISTERED checkpoint alone is not a downloadable
 archive. See [output recovery](recovery.md#output-recovery). Retain referenced
 generations deliberately; no automatic state garbage collection exists.
 An administrator can explicitly [remove](resource-deletion.md) a terminal Attempt's
-`outputs`, its `state` or one generation, on Slurm, SenseCore and PAI DLC. On the cloud
-backends this runs as a zero-GPU job and needs the backend's `collector`. A generation
+`outputs`, its `state` or one generation, on Slurm and PAI DLC. On PAI
+this runs as a zero-GPU job and needs the backend's `collector`. A generation
 that a frozen `resume_from` names blocks the plan. Real provider cleanup has not been
 accepted on any backend. Dataset assets have a separate lifecycle.
 

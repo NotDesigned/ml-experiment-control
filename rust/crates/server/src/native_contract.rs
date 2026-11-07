@@ -301,7 +301,7 @@ pub(crate) fn extend(document: &mut Value) {
     insert(
         "/api/projects/{project}/datasets/{executor}/{asset}/publish",
         "post",
-        "Prepare data on backend storage before training. PAI uses an existing READY runtime_id, 0GPU/2CPU/4GiB/3600s, verified OSS parts and personal CPFS; SenseCore retains its data-image/debug CPU copy. Never reports READY without a full verified receipt.",
+        "Prepare data on backend storage before training. PAI uses an existing READY runtime_id, 0GPU/2CPU/4GiB/3600s, verified OSS parts and personal CPFS. Never reports READY without a full verified receipt.",
         Some(object(
             &["request_id", "confirmation"],
             json!({"request_id":{"type":"string"},"confirmation":{"type":"string"},"runtime_id":{"type":["string","null"]}}),
@@ -310,7 +310,7 @@ pub(crate) fn extend(document: &mut Value) {
     insert(
         "/api/debug",
         "get",
-        "Configured DSW/CCI profiles and retained machine state; CCI supports create and stop only",
+        "Configured DSW profiles and retained machine state",
         None,
     );
     insert(

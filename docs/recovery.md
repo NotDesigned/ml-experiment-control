@@ -181,7 +181,7 @@ already-created Attempt; it never allocates another Attempt or submits a job.
 
 ### Native CPU sync recovery
 
-For native PAI/SenseCore submissions, inspect an existing CPU sync without
+For native PAI submissions, inspect an existing CPU sync without
 refreshing the provider or creating a job:
 
 ```bash
@@ -218,7 +218,7 @@ ml-exp run files ACTION
 ml-exp run collect ACTION
 ```
 
-Slurm collects through its configured SSH/shared-storage path. PAI and SenseCore
+Slurm collects through its configured SSH/shared-storage path. PAI
 can create a zero-GPU CPU synchronization job under a retained request identity;
 use `run sync` above when you need to retain that identity explicitly. Collection
 does not rerun training or require a replacement training Run. Missing backend
@@ -228,9 +228,7 @@ history stays FAILED. Delayed offline logs remain pending, not proof of success.
 The CPU job takes the backend's `result_job` limits, by default 2 CPUs, 4 GiB and
 6 hours. Set it in the backend's entry in `cloud_config`, for example
 `"result_job": {"max_time_seconds": 43200}`, with any of `cpus`, `memory_gb` and
-`max_time_seconds`. PAI allows up to its `collector` capacity and 24 hours. A
-SenseCore collector has one fixed 2 CPU, 4 GiB shape, so there only the time limit
-moves. Storage maintenance jobs use the same limits. An interrupted archive restarts
+`max_time_seconds`. PAI allows up to its `collector` capacity and 24 hours. Storage maintenance jobs use the same limits. An interrupted archive restarts
 from nothing, so the time limit must cover packing, hashing and uploading the whole
 result. A job keeps the limits it was first recorded with: to give more time after a
 limit was hit, raise it and start a new `run sync --request-id`, or retry a failed one.
@@ -293,7 +291,7 @@ for another Attempt of the same Run, or create a new Run with explicit
 code restores optimizer, scheduler, RNG and data cursor. Registration alone does
 not prove a successful restore or make state downloadable.
 
-There is no automatic preemption recovery. ACP uses `backoff_limit: 0`; the
+There is no automatic preemption recovery. The
 collector never launches replacement training. Worker restore, inside-job data,
 training and result return share one worker duration. A hard kill can interrupt
 publication; offline recovery can only return bytes that were actually persisted.

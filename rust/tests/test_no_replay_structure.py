@@ -23,8 +23,8 @@ CRATES = Path("rust/crates")
 SERVER = CRATES / "server/src"
 
 PINS = {
-    "rust/crates/server/src/backends/cloud/outbox.rs": "33eac20279e79291741ad3a7e11e2547e14cfc7c4b8eff96f8264395e0de899a",
-    "rust/crates/server/src/backends/cloud/outbox/tests.rs": "8814a4ca4cdd1fa542e08932443ddec0ed24e69f46cad0c82ae33698b24dc273",
+    "rust/crates/server/src/backends/cloud/outbox.rs": "644249c14405310d41270914026e07dc1ab44f6b31dbe42f88065fc5a057c211",
+    "rust/crates/server/src/backends/cloud/outbox/tests.rs": "6d16b03af9f08f17b9f04454d2c0a9f45f7e43376c5ee82ad65805cd2e52683c",
     "rust/crates/server/src/backends/cloud/action.rs": "a09c4a78734245d578dbbbaa75c62a86e0ee2a49f81737c100e4cc5e2d7123dc",
     "rust/crates/server/src/backends/slurm/action.rs": "15ad4038d8525dde13d1439c97faa1475bc371e078603f3c8eb1ab0444b609ba",
     "rust/crates/server/src/backends/slurm/transport.rs": "1be44752888a9c93cbd7d4ac81643ab3c2977f7c345e61f8e36410ca60c9af5c",
@@ -51,16 +51,10 @@ PINS = {
 KNOWN_CREATE_SITES = Counter(
     {
         ("adapter.rs", "Profile::Pai(p) => self.call(p.create(job, allocation), cancelled)?,"): 1,
-        ("adapter.rs", "self.call(p.create(job), cancelled)?"): 1,
         ("outbox.rs", "p.create(job, allocation)"): 1,
-        ("outbox.rs", "p.create(job).map_err(why!(Error::configuration()))?;"): 1,
         ("outbox.rs", "match guard().and_then(|_| adapter.create(job, allocation, cancelled)) {"): 1,
         ("actions.rs", "cloud::adapter::Profile::Pai(p) => p.create(&execution.job, execution.allocation),"): 1,
-        ("actions.rs", "cloud::adapter::Profile::Sensecore(p) => p.create(&execution.job),"): 1,
         ("preparations.rs", "cloud::adapter::Profile::Pai(p) => p.create("): 1,
-        ("preparations.rs", "cloud::adapter::Profile::Sensecore(p) => p.create(&job),"): 1,
-        ("script_preparation.rs", "p.create(&job, ml_exp_core::cloud::pai::Allocation::Guaranteed)"): 1,
-        ("script_preparation.rs", "cloud::adapter::Profile::Sensecore(p) => p.create(&job),"): 1,
         # Debug sessions have their own durable claim, saved before this request.
         ("debug.rs", ".create(&saved.recipe)"): 1,
     }

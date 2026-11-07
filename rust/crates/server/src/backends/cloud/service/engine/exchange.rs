@@ -813,7 +813,7 @@ impl crate::tracking::Source for Service {
             .map_err(why!(crate::tracking::Error::Identity))
     }
     /// The scheduler outbox's last provider observation, only where it proves the job
-    /// is over (SenseCore's CANCELLED for a job that may still run proves nothing).
+    /// is over.
     /// Nothing is fetched: the observer and client refreshes keep it current.
     fn provider_terminal(
         &self,

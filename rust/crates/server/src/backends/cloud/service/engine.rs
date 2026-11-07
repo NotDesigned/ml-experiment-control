@@ -38,7 +38,6 @@ struct Backend {
     definition: Definition,
     adapter: Adapter<Shared>,
     collector: Option<Adapter<Shared>>,
-    data_copier: Option<Adapter<Shared>>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -225,11 +224,6 @@ impl Service {
                 .as_ref()
                 .map(|profile| Adapter::new(profile.clone(), transport(&definition)?))
                 .transpose()?;
-            let data_copier = definition
-                .data_copier
-                .as_ref()
-                .map(|profile| Adapter::new(profile.clone(), transport(&definition)?))
-                .transpose()?;
             if backends
                 .insert(
                     definition.executor.clone(),
@@ -237,7 +231,6 @@ impl Service {
                         definition,
                         adapter,
                         collector,
-                        data_copier,
                     },
                 )
                 .is_some()
@@ -497,5 +490,4 @@ mod materialization;
 mod preparations;
 pub use preparations::{Continue, ExternalExecutors};
 mod renewal;
-mod script_preparation;
 mod sync_jobs;

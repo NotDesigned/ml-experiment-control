@@ -17,8 +17,8 @@ remain unknown where the retained record has no timestamp; PAI image-pull events
 are not yet included in the cached Run summary.
 
 The reported `training=INCOMPLETE` describes remaining acceptance work, not an
-unfinished file transfer. Slurm GPU training/restore and SenseCore GPU acceptance
-were never proven on any release. PAI CPU/H200 and W&B cloud acceptance passed only
+unfinished file transfer. Slurm GPU training/restore acceptance
+was never proven on any release. PAI CPU/H200 and W&B cloud acceptance passed only
 in bounded tests on earlier releases. None of this establishes large-model or
 all-backend acceptance.
 
@@ -34,12 +34,10 @@ flowchart TD
     HTTP --> LEDGER[Durable intent, receipt and observation stores]
     HTTP --> SLURM[SSH Slurm gateway]
     HTTP --> PAI[PAI REST: DLC / DSW]
-    HTTP --> SC[SenseCore REST: ACP / CCI]
     HTTP --> BUILD[Optional Python image effects]
-    BUILD --> REGISTRY[CPU PAI DSW publishes to the configured registry; same-digest CCR mirror for SenseCore]
+    BUILD --> REGISTRY[CPU PAI DSW publishes to the configured registry]
     SLURM --> WORKER[Native worker]
     PAI --> WORKER
-    SC --> WORKER
     WORKER --> STATE[Backend checkpoint / input cache]
     WORKER --> OBJECT[Private result parts]
     WORKER --> HTTP
@@ -63,18 +61,17 @@ Research code may use Python/PyTorch or another image language.
 | OCI-to-SIF on Slurm gateway | `worker/materialize.rs` | Exact reuse/capacity/tampering checks; real private ACR-to-SIF conversion passed |
 | Upload/download cloud datasets | `server/objects.rs`, `server/backends/cloud/service/engine/datasets.rs`, `client/datasets.rs` | Bounded parts and immutable receipts; two-part OSS transfer/PAI CPU consumption and Slurm shared-storage upload/reuse passed |
 | Import existing approved OSS datasets | `core/datasets/oss.rs`, `server/backends/cloud/service/engine/oss_import.rs`, `client/datasets.rs` | Scope-bound plain-tar inspection, immutable part reuse, no API-host spool; real OSS import and PAI CPU consumption passed |
-| Download into CPFS / NAS input cache | `worker/{data_import,cloud_data}.rs` | Import/hash/cache tests; personal CPFS consumption passed; NAS provider acceptance pending |
-| Frozen download script and verified persistent input cache | `core/data_preparation.rs`, `worker/data_preparation.rs`, `server/backends/cloud/service/engine/script_preparation.rs` | CPFS script execution and verified reuse passed; three-backend dispatch acceptance pending |
-| CCR data image and CPU ACP copy before training | `server/backends/cloud/service/engine/data_delivery.rs`, `builds/native_data.py`, `worker/data_copy_cli.rs` | Stage control/hash/capability tests; actual copy pending |
+| Download into CPFS input cache | `worker/{data_import,cloud_data}.rs` | Import/hash/cache tests; personal CPFS consumption passed |
+| Frozen download script and verified persistent input cache | `core/data_preparation.rs`, `worker/data_preparation.rs` | CPFS script execution and verified reuse passed; two-backend dispatch acceptance pending |
 | One experiment configuration | `core/preparation.rs`, `client/preparations.rs`, `server/backends/cloud/service/engine/preparations.rs` | Recovery slot, conflict, early preflight and HTTP tests |
 | Matrix preparation and bounded dispatch | `core/preparation.rs`, `client/batch.rs` | Stable identities, exact terminal slot accounting; actual batch pending |
-| Slurm / DLC / ACP submit, reconcile, refresh and cancel | `server/runs`, `server/backends/slurm`, `server/backends/cloud` | Real bounded DLC CPU/H200 execution passed; Slurm GPU/ACP acceptance pending |
+| Slurm / DLC submit, reconcile, refresh and cancel | `server/runs`, `server/backends/slurm`, `server/backends/cloud` | Real bounded DLC CPU/H200 execution passed; Slurm GPU acceptance pending |
 | Logs/history/checkpoints over gateway or scoped HTTPS | `io/observations.rs`, `worker/cloud_exchange.rs`, `server/backends/cloud/service/engine/exchange.rs` | Lost ACK, sequence, variant and frozen identity tests |
 | Explicit new Attempt from selected persistent checkpoint | `core/cloud/retry.rs`, `server/backends/cloud/service/engine/retry.rs` | Immutable restore and budget checks; real PAI CPU and H200 split/continuous states matched independent oracles exactly |
 | CPU result collection, direct download, verified ACK/release | `worker/cloud_artifacts.rs`, `server/backends/cloud/service/engine/artifacts.rs`, `client/artifacts.rs` | Real PAI zero-GPU synchronization, verified downloads, release and exact repeat passed |
 | List and select result archive files | `client/artifacts/files.rs`, `io/artifacts.rs` | Selected-file persistence only after full archive verification; no partial ACK; direct original-file recovery still pending |
-| DSW / CCI debug lifecycle | `core/cloud/debug.rs`, `server/backends/cloud/service/engine/debug.rs`, `client/debug.rs` | Actual zero-GPU DSW create/SSH/CPFS/stop/delete passed; CCI acceptance pending |
-| Backend catalogue/cached capacity | `core/capacity.rs`, `server/backends/cloud/service/engine/capacity.rs`, `capacity_http.rs` | Local GET is effect-free; real PAI quota refresh and retained timestamp accepted; Slurm cached capacity refresh passed; SenseCore pending |
+| DSW debug lifecycle | `core/cloud/debug.rs`, `server/backends/cloud/service/engine/debug.rs`, `client/debug.rs` | Actual zero-GPU DSW create/SSH/CPFS/stop/delete passed |
+| Backend catalogue/cached capacity | `core/capacity.rs`, `server/backends/cloud/service/engine/capacity.rs`, `capacity_http.rs` | Local GET is effect-free; real PAI quota refresh and retained timestamp accepted; Slurm cached capacity refresh passed |
 | Optional W&B publication | `core/tracking`, `server/tracking` | Fake SDK and durable ACK tests; same-Run official-cloud CPU acceptance passed; uncertain sends reserved pending remote proof |
 | Scoped administrative maintenance and record retirement | `core/maintenance.rs`, `server/administration.rs`, `worker/maintenance.rs` | Confined plans and worker receipts; actual provider cleanup pending |
 | Standalone verified client update | `core/distribution.rs`, `client/update.rs` | Public assets verified; public installer and update check passed on Tokyo |
@@ -86,12 +83,6 @@ for commands and configuration shapes.
 In the table, "passed" means passed on an earlier release. The build and SIF rows
 were tests that published through one ACR registry. Builds now default to a CPU PAI
 DSW publishing to a configured registry such as Docker Hub (see [builds](builds.md)).
-
-SenseCore can select the compatible cluster with the highest SPOT allowance from an
-operator allowlist when creating a new Run; the profile is then frozen, and
-reconcile, cancel and explicit retry never select a different pool. Training pools
-exclude debug; data-copy profiles explicitly use debug CPU pools. Quota observations
-do not establish the number of idle GPUs.
 
 DSW debug recipes use the v4 contract: at most 27 ASCII letters, digits and
 underscores, with the personal CPFS mount at `/mnt/ml-expd-personal` (also DSW's
@@ -113,10 +104,10 @@ After changing the worker or its bridge, updating a source checkout does not upd
 a wheel installed in another environment. Exercise an actual build through the
 running daemon and reconcile its receipt to establish what the service loads.
 
-Three-backend training acceptance remains a separate pending check. Contracts that
+Two-backend training acceptance remains a separate pending check. Contracts that
 bound behavior:
 
-- **Storage layout.** Fresh PAI/NAS workspaces need no manual Run or cache-parent
+- **Storage layout.** Fresh PAI workspaces need no manual Run or cache-parent
   directories; the mounted personal root must exist. Links, escaping paths and
   shared-writable descendants are refused without repair.
 - **Requests and credentials.** PAI CPU Runs pass the shared request shape; Slurm GPU
@@ -127,13 +118,12 @@ bound behavior:
   and requires reconciliation. Missing and stale sockets, same-identity recovery and
   lost-reply refusal are exercised without provider effects.
 - **Environment and discovery.** Per-Run `env` is frozen with the protocol across
-  Slurm/DLC/ACP, and reserved platform variables are refused before effects. `data list`
+  Slurm/DLC, and reserved platform variables are refused before effects. `data list`
   reads bounded local metadata only and separates uploaded archives from ready caches.
 - **Data preparation.** `data_preparation` freezes script path, interpreter, arguments,
   timeout and optional expected hash; source/image and user environment bind its cache
   identity, and the receipt records the script and every output file's SHA256. Slurm
-  prepares on the networked gateway before submission, SenseCore uses the debug CPU ACP
-  adapter, and PAI prepares inside the DLC job. Only complete verified caches are reused;
+  prepares on the networked gateway before submission and PAI prepares inside the DLC job. Only complete verified caches are reused;
   failed/incomplete executions keep bounded diagnostics and are not silently replayed.
 - **Filesystem publication.** The tested personal CPFS mount rejects
   `renameat2(RENAME_NOREPLACE)` (errno 22). Regular files use an atomic hard-link
@@ -142,9 +132,7 @@ bound behavior:
   require native no-replace support and can remain unavailable on such a filesystem.
 - **Interrupted effects.** A saved build start marker without a live build requires
   reconciliation; it is not reported as EXECUTING and cannot be dispatched twice.
-  SenseCore preparation distinguishes a running copy, terminal failure, completed copy
-  and uncertain submission, and a failed copy returns `DATA_PREPARATION_FAILED` without
-  authorizing GPU training. Slurm releases its helper metadata lock before running a
+  Slurm releases its helper metadata lock before running a
   download script; cancellation reaches the script, and failure retains diagnostics
   without publishing a PREPARED submission or replaying it.
 
@@ -204,7 +192,7 @@ question or Campaign. Batch commands perform explicit passes, not an unattended
 queue. An expired gate blocks dispatch until an explicit `run renew`
 creates a fresh PREPARED plan; renewal is idempotent, preserves the Run/Attempt and
 budget, and refuses any possible prior execution. No automatic checkpoint selection
-or unbounded restart exists. Native debug supports CCI create/stop and DSW
+or unbounded restart exists. Native debug supports DSW
 create/stop/delete. Slurm dataset export is outside the OSS-specific dataset download
 command.
 

@@ -80,9 +80,6 @@ def _same_definition(saved, frozen):
 
 
 def request(builder, value):
-    if value.get("operation") in {"native-data-build", "native-data-get"}:
-        from .native_data import request as data_request
-        return data_request(builder, value)
     allowed = {"operation", "runtime_id", "project", "source_id", "base_image", "dockerfile", "worker_sha256", "mirror"}
     if (set(value) != allowed or value["operation"] not in {
             "native-build", "native-get", "native-reconcile", "native-logs", "native-progress"}
@@ -90,7 +87,7 @@ def request(builder, value):
             or not PROJECT.fullmatch(value["project"])
             or not re.fullmatch(r"source\.[0-9a-f]{64}", value["source_id"])
             or not IMAGE.fullmatch(value["base_image"])
-            or not (type(value["mirror"]) is bool or value["mirror"] == "slurm")):
+            or not (value["mirror"] is False or value["mirror"] == "slurm")):
         raise ValueError("invalid native build request")
     identifier = value["runtime_id"].removeprefix("runtime.")
     frozen = {k: v for k, v in value.items() if k != "operation"}
@@ -202,7 +199,8 @@ def request(builder, value):
 
 
 def mirror_policy(value):
-    return "slurm_mirror" if value["mirror"] == "slurm" else "sensecore_mirror"
+    """Only Slurm gateways need a copy; SenseCore's `sensecore_mirror` was retired."""
+    return "slurm_mirror"
 
 
 def _finish(builder, value, image, frozen, receipt):

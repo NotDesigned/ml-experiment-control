@@ -678,7 +678,7 @@ mod tests {
         assert!(status.lines().any(|line| line == expected), "{status}");
         let diagnose = provider_diagnostics(
             &json!({"project":"p","run_id":"r","attempt_id":"attempt-001",
-            "backend":"sensecore","diagnostic":"NO_PROVIDER_JOB_RECORDED","startup_failure":failure}),
+            "backend":"pai-dlc","diagnostic":"NO_PROVIDER_JOB_RECORDED","startup_failure":failure}),
         );
         assert!(diagnose.lines().any(|line| line == expected), "{diagnose}");
         assert!(diagnose.contains("Provider not read"));

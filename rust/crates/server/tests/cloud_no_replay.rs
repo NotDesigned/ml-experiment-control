@@ -1,11 +1,11 @@
-//! Service-level no-replay proof for PAI and SenseCore. Real Run stores, Actions
+//! Service-level no-replay proof for PAI. Real Run stores, Actions
 //! and outboxes run against a fake provider that counts creates. Every scenario
 //! ends by asserting how many creates the provider saw: an uncertain submission
 //! must never be sent twice, whatever the service was asked to do next.
 use ml_exp_core::{
     artifacts::FileReceipt,
     canonical,
-    cloud::{Job, Request, action::Execution, data::Image, pai, run::Runtime, sensecore},
+    cloud::{Job, Request, action::Execution, pai, run::Runtime},
     datasets::{Definition, State},
     first_submission::native::{self, Approval, creation::Request as CreateRun},
     multipart::PartRecord,
@@ -58,7 +58,6 @@ const GATE_EXPIRES: &str = "2026-10-29T01:01:00Z";
 const T_GATE_EXPIRED: &str = "2026-10-29T02:00:00Z";
 const RENEWED_GATE_EXPIRES: &str = "2026-10-29T03:00:00Z";
 const PAI_JOB_ID: &str = "dlc-owned";
-const SENSECORE_USER: &str = "12345678-1234-1234-1234-123456789abc";
 const REQUEST_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const REQUEST_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const REQUEST_C: &str = "cccccccccccccccccccccccccccccccc";
@@ -66,9 +65,8 @@ const REQUEST_C: &str = "cccccccccccccccccccccccccccccccc";
 #[derive(Clone, Copy)]
 enum Kind {
     Pai,
-    Sensecore,
 }
-const KINDS: [Kind; 2] = [Kind::Pai, Kind::Sensecore];
+const KINDS: [Kind; 1] = [Kind::Pai];
 
 /// What the provider holds and how it answers. The row is the one job a test
 /// has bound; `exists` says whether that job reached the provider.
@@ -116,8 +114,6 @@ impl FakeProvider {
                 json!({"JobId":PAI_JOB_ID,"WorkspaceId":p.workspace_id,"ResourceId":p.quota_id,
                 "DisplayName":name,"Settings":{"Tags":job.tags(&p.scope().unwrap()).unwrap()},"Status":"Running"})
             }
-            Profile::Sensecore(p) => json!({"name":name,"uid":"owned-job-uid",
-                "ownership":{"user_id":p.scope.user_id},"state":"RUNNING"}),
         };
         self.world().row = row;
     }
@@ -130,14 +126,6 @@ impl FakeProvider {
                 }
                 if world.foreign {
                     row["Settings"]["Tags"]["ml-expd.attempt"] = json!("attempt-999");
-                }
-            }
-            Profile::Sensecore(_) => {
-                if world.terminal {
-                    row["state"] = json!("FAILED");
-                }
-                if world.foreign {
-                    row["ownership"]["user_id"] = json!("00000000-0000-0000-0000-000000000000");
                 }
             }
         }
@@ -163,7 +151,6 @@ impl Transport for FakeProvider {
             world.exists = true;
             return Ok(match &self.profile {
                 Profile::Pai(_) => json!({"JobId":PAI_JOB_ID}),
-                Profile::Sensecore(_) => json!({"name":world.row["name"]}),
             });
         }
         let is_get = matches!(action, "GetJob" | "GetTrainingJob");
@@ -237,33 +224,6 @@ fn provider_profile(kind: Kind) -> (Profile, &'static str, &'static str) {
             }),
             "pai-h200",
             "/mnt/workspace/ml-expd/runs",
-        ),
-        Kind::Sensecore => (
-            Profile::Sensecore(sensecore::Profile {
-                scope: sensecore::Scope {
-                    subscription: "sub".into(),
-                    resource_group: "group".into(),
-                    region: "cn-east-1".into(),
-                    zone: "cn-east-1a".into(),
-                    workspace_zone: Some("cn-east-1z".into()),
-                    workspace: "work".into(),
-                    user_id: SENSECORE_USER.into(),
-                },
-                cluster: "training".into(),
-                vpc_id: "vpc1".into(),
-                worker_spec: "gpu.8c64g".into(),
-                worker_gpus: 1,
-                worker_cpus: 8,
-                worker_memory_gb: 64,
-                worker_nodes: 1,
-                storage_volume: "nas".into(),
-                storage_subdir: "/personal/researcher".into(),
-                mount_path: "/data".into(),
-                purpose: sensecore::Purpose::Training,
-                quota: sensecore::Quota::Spot,
-            }),
-            "acp-h200",
-            "/data/ml-expd/runs",
         ),
     }
 }
@@ -573,7 +533,7 @@ fn a_lost_reply_is_reconciled_after_reopen_with_one_create() {
 }
 
 /// The create was confirmed and its handle saved, then the first observation
-/// failed. On SenseCore the recorded job name contains the submission token.
+/// failed.
 #[test]
 fn a_failed_read_after_a_confirmed_create_recovers_with_one_create() {
     for kind in KINDS {
@@ -784,38 +744,6 @@ fn retry_is_refused_on_absent_or_non_terminal_evidence() {
             true
         );
         assert_eq!(f.provider.creates(), 1);
-    }
-}
-
-/// SenseCore reports CANCELLED for these too, but neither shows the job is over, so a
-/// new Attempt could train beside the old job.
-#[test]
-fn a_sensecore_job_that_may_still_run_cannot_be_retried() {
-    for raw in ["DELETING", "SUSPENDED"] {
-        let f = Fixture::new(Kind::Sensecore);
-        let service = f.open();
-        let flag = AtomicBool::new(false);
-        let (action, _) = f.ready(&service, "train");
-        f.execute(&service, &action).unwrap();
-        let next = f.run_directory("train").join("attempts/attempt-002");
-        f.provider.world().row["state"] = json!(raw);
-        assert_eq!(
-            service
-                .retry(&action, retry_request("train"), T_RECONCILE, &flag)
-                .unwrap_err()
-                .code,
-            "CLOUD_EVIDENCE_INVALID",
-            "{raw}"
-        );
-        assert!(!next.exists(), "{raw}");
-
-        f.provider.world().row["state"] = json!("DELETED");
-        let retried = service
-            .retry(&action, retry_request("train"), T_RECONCILE, &flag)
-            .unwrap();
-        assert_eq!(retried["retry_state"], "CREATED", "{raw}");
-        assert!(next.exists(), "{raw}");
-        assert_eq!(f.provider.creates(), 1, "{raw}");
     }
 }
 
@@ -1118,7 +1046,6 @@ fn a_read_refused_after_the_provider_call_backs_off_to_the_cap() {
         // RUNNING does not allow STARTING.
         match kind {
             Kind::Pai => f.provider.world().row["Status"] = json!("EnvPreparing"),
-            Kind::Sensecore => f.provider.world().row["state"] = json!("STARTING"),
         }
         assert!(
             service
@@ -1503,10 +1430,9 @@ impl CopyProvider {
             .filter(|action| matches!(action.as_str(), "CreateJob" | "CreateTrainingJob"))
             .count()
     }
-    /// Set the newest job's state, named as SenseCore names it.
+    /// Set the newest job's state, given as the service names it.
     fn set_state(&self, state: &str) {
         let (field, text) = match (self.kind, state) {
-            (Kind::Sensecore, _) => ("state", state),
             (Kind::Pai, "FAILED") => ("Status", "Failed"),
             (Kind::Pai, "SUCCEEDED") => ("Status", "Succeeded"),
             (Kind::Pai, "CANCELLED") => ("Status", "Stopped"),
@@ -1525,11 +1451,6 @@ impl CopyProvider {
                     json!({"JobId":id}),
                 )
             }
-            Kind::Sensecore => (
-                json!({"name":body["name"],"uid":format!("copy-uid-{number}"),
-                    "ownership":{"user_id":SENSECORE_USER},"state":"RUNNING"}),
-                json!({"name":body["name"]}),
-            ),
         }
     }
 }
@@ -1566,7 +1487,6 @@ impl Transport for CopyProvider {
                 let id = request.path.rsplit('/').next().unwrap();
                 let field = match self.kind {
                     Kind::Pai => "JobId",
-                    Kind::Sensecore => "name",
                 };
                 world
                     .rows
@@ -1626,17 +1546,6 @@ impl CopyFixture {
             Profile::Pai(_) => {
                 config["backends"][0]["collector"] = json!(f.provider.profile);
             }
-            Profile::Sensecore(training) => {
-                let mut copier = training.clone();
-                copier.purpose = sensecore::Purpose::DataCopy;
-                copier.cluster = "debug-cpu".into();
-                copier.worker_spec = "cpu.2c4g".into();
-                copier.worker_gpus = 0;
-                copier.worker_cpus = 2;
-                copier.worker_memory_gb = 4;
-                copier.quota = sensecore::Quota::Reserved;
-                config["backends"][0]["data_copier"] = json!(Profile::Sensecore(copier));
-            }
         }
         let config = serde_json::to_vec(&config).unwrap();
         let settings = Settings::from_slice(&config).unwrap();
@@ -1669,19 +1578,6 @@ impl CopyFixture {
             Kind::Pai => {
                 json!({"state":state,"archive_verified":true,"image_recipe":null,"image_started":false,
                     "image":null,"copy_request_id":null,"copy_status":null,"diagnostic":null})
-            }
-            Kind::Sensecore => {
-                let recipe = Image {
-                    project: "demo".into(),
-                    executor: f.executor.into(),
-                    definition,
-                    base_image: format!("registry.example/team/base@sha256:{}", "4".repeat(64)),
-                    worker_sha256: format!("sha256:{}", "5".repeat(64)),
-                };
-                json!({"state":state,"archive_verified":true,"image_recipe":recipe,"image_started":true,
-                    "image":format!("registry.sensecore.cn/team/data@sha256:{}", "6".repeat(64)),
-                    "copy_request_id":null,"copy_storage":settings.backends[0].storage_layout().unwrap(),
-                    "copy_status":null,"diagnostic":null})
             }
         };
         let name = format!(
@@ -1801,7 +1697,6 @@ impl CopyFixture {
     fn publish(&self, service: &Arc<Service>, request: &str) -> cloud::Result<Value> {
         let runtime = match self.kind {
             Kind::Pai => Some(self.f.runtime.runtime_id.as_str()),
-            Kind::Sensecore => None,
         };
         service.publish_dataset("demo", self.f.executor, &self.asset, request, runtime)
     }
@@ -1967,20 +1862,7 @@ fn a_maintenance_job_takes_the_configured_limit_and_keeps_it_once_recorded() {
 #[test]
 fn every_maintenance_plan_of_an_attempt_runs_as_its_own_job_once() {
     for kind in KINDS {
-        let mut c = CopyFixture::new(kind, 1);
-        if let Profile::Sensecore(training) = &c.f.provider.profile {
-            let mut collector = training.clone();
-            collector.purpose = sensecore::Purpose::ResultCollection;
-            collector.cluster = "debug-cpu".into();
-            collector.worker_spec = "cpu.2c4g".into();
-            collector.worker_gpus = 0;
-            collector.worker_cpus = 2;
-            collector.worker_memory_gb = 4;
-            collector.quota = sensecore::Quota::Reserved;
-            let mut config: Value = serde_json::from_slice(&c.config).unwrap();
-            config["backends"][0]["collector"] = json!(Profile::Sensecore(collector));
-            c.config = serde_json::to_vec(&config).unwrap();
-        }
+        let c = CopyFixture::new(kind, 1);
         let service = c.open();
         let (action, _) = c.f.ready(&service, "train");
         c.f.execute(&service, &action).unwrap();
@@ -2038,26 +1920,6 @@ fn result_job_limits_default_and_refuse_what_the_collector_cannot_run() {
     ] {
         assert!(load(refused.clone()).is_err(), "{refused}");
     }
-    // SenseCore's collector has one fixed shape, and only the time limit can move.
-    let f = Fixture::new(Kind::Sensecore);
-    let Profile::Sensecore(training) = &f.provider.profile else {
-        panic!("expected SenseCore");
-    };
-    let mut collector = training.clone();
-    collector.purpose = sensecore::Purpose::ResultCollection;
-    collector.cluster = "debug-cpu".into();
-    collector.worker_spec = "cpu.2c4g".into();
-    collector.worker_gpus = 0;
-    collector.worker_cpus = 2;
-    collector.worker_memory_gb = 4;
-    collector.quota = sensecore::Quota::Reserved;
-    let mut config: Value = serde_json::from_slice(&f.config).unwrap();
-    config["backends"][0]["collector"] = json!(Profile::Sensecore(collector));
-    let config = serde_json::to_vec(&config).unwrap();
-    let load = |limits: Value| Settings::from_slice(&with_result_job(&config, limits));
-    assert!(load(json!({"max_time_seconds":86400})).is_ok());
-    assert!(load(json!({"cpus":4})).is_err());
-    assert!(load(json!({"memory_gb":8})).is_err());
 }
 
 #[test]
@@ -2216,27 +2078,6 @@ fn a_late_archive_verification_of_another_state_changes_nothing() {
                 .is_err()
         );
         assert_eq!(c.saved_dataset(), before);
-    }
-}
-
-/// SenseCore reports CANCELLED for these too, but neither shows the job is over.
-#[test]
-fn a_sensecore_copy_that_may_still_run_refuses_a_new_request() {
-    for raw in ["DELETING", "SUSPENDED"] {
-        let c = CopyFixture::new(Kind::Sensecore, 3);
-        let service = c.open();
-        c.publish(&service, REQUEST_A).unwrap();
-        c.provider.set_state(raw);
-        let view = c.publish(&service, REQUEST_A).unwrap();
-        assert_eq!(view["new_request_allowed"], false, "{raw}");
-        c.assert_new_request_refused(&service);
-        assert_eq!(c.provider.creates(), 1, "{raw}");
-
-        c.provider.set_state("DELETED");
-        let view = c.publish(&service, REQUEST_A).unwrap();
-        assert_eq!(view["new_request_allowed"], true, "{raw}");
-        c.publish(&service, REQUEST_B).unwrap();
-        assert_eq!(c.provider.creates(), 2, "{raw}");
     }
 }
 
@@ -2431,38 +2272,6 @@ fn a_superseded_pai_request_stays_readable() {
 }
 
 #[test]
-fn sensecore_data_diagnostics_are_typed_refusals_with_no_provider_call() {
-    let c = CopyFixture::new(Kind::Sensecore, 3);
-    let service = c.open();
-    // Before any copy exists, and again once a copy request is recorded.
-    for published in [false, true] {
-        if published {
-            c.publish(&service, REQUEST_A).unwrap();
-        }
-        let calls = c.provider.world().calls.len();
-        for execute in [false, true] {
-            let refused = service
-                .data_diagnostic(
-                    "demo",
-                    c.f.executor,
-                    &c.asset,
-                    REQUEST_A,
-                    execute,
-                    T_RECONCILE,
-                )
-                .unwrap_err();
-            assert_eq!(refused.code, "READONLY_DIAGNOSTIC_UNSUPPORTED");
-        }
-        let view = service
-            .data_provider_diagnostics("demo", c.f.executor, &c.asset, REQUEST_A, 50)
-            .unwrap();
-        assert_eq!(view["diagnostic"], "PROVIDER_DIAGNOSTICS_UNSUPPORTED");
-        assert_eq!(view["provider_read"], false);
-        assert_eq!(c.provider.world().calls.len(), calls);
-    }
-}
-
-#[test]
 fn a_pai_copy_with_no_recorded_job_says_so_without_reading_the_provider() {
     let c = CopyFixture::new(Kind::Pai, 3);
     let service = c.open();
@@ -2519,9 +2328,7 @@ fn attempt_diagnostics_read_through_the_run_outbox_and_keep_their_keys() {
             .provider_diagnostics("demo", "train", "attempt-001", 50)
             .unwrap();
         assert_eq!(read["provider_read"], true);
-        if let Kind::Pai = kind {
-            assert_eq!(read["provider"]["job_id"], PAI_JOB_ID);
-        }
+        assert_eq!(read["provider"]["job_id"], PAI_JOB_ID);
         assert_eq!(f.provider.creates(), 1);
     }
 }
@@ -3718,7 +3525,7 @@ fn a_retry_asks_for_the_allocation_its_run_froze() {
     }
 }
 #[test]
-fn a_preparation_shows_the_allocation_it_will_ask_for_and_sensecore_has_no_choice() {
+fn a_preparation_shows_the_allocation_it_will_ask_for() {
     let c = CopyFixture::new(Kind::Pai, 3);
     let view = c
         .open()
@@ -3736,22 +3543,4 @@ fn a_preparation_shows_the_allocation_it_will_ask_for_and_sensecore_has_no_choic
         .insert("scheduling".into(), json!({"allocation":"allow_idle"}));
     let view = c.open().experiment_prepare("demo", chosen, None).unwrap();
     assert_eq!(view["frozen"]["allocation"], "allow_idle");
-
-    let c = CopyFixture::new(Kind::Sensecore, 3);
-    let view = c
-        .open()
-        .experiment_prepare("demo", dataset_setup(&c), None)
-        .unwrap();
-    assert!(view["frozen"].get("allocation").is_none());
-    let c = CopyFixture::new(Kind::Sensecore, 3);
-    let mut chosen = dataset_setup(&c);
-    chosen
-        .run
-        .insert("scheduling".into(), json!({"allocation":"allow_idle"}));
-    let refused = c
-        .open()
-        .experiment_prepare("demo", chosen, None)
-        .unwrap_err();
-    assert_eq!(refused.code, "INVALID_CLOUD_REQUEST");
-    assert_eq!(c.provider.creates(), 0);
 }

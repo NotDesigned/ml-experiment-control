@@ -6,6 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 pub(crate) const RUN_CREATION_REQUIRES_EXCHANGE: &str = "CLOUD_RUN_CREATION_REQUIRES_EXCHANGE";
+pub(crate) const BACKEND_RETIRED: &str = "CLOUD_BACKEND_RETIRED";
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Definition {
@@ -24,10 +25,6 @@ pub struct Definition {
     /// Limits of a new CPU job on `collector`, for result sync and storage maintenance.
     #[serde(default)]
     pub result_job: domain::exchange::ResultJobLimits,
-    pub data_copier: Option<Profile>,
-    /// Opt-in highest-SPOT selection among approved same-zone/VPC pools.
-    /// The selected profile is frozen per Run and never reselected on retry.
-    pub spot_clusters: Option<BTreeSet<String>>,
     #[serde(default)]
     pub allocation: Allocation,
     #[serde(default = "timeout")]
@@ -58,12 +55,8 @@ impl Definition {
         Ok(value)
     }
     pub fn storage_layout(&self) -> cloud::Result<domain::launch::StorageLayout> {
-        let mount = match &self.profile {
-            Profile::Pai(_) => "/mnt/workspace",
-            Profile::Sensecore(p) => &p.mount_path,
-        };
         let storage = domain::launch::StorageLayout {
-            mount: mount.into(),
+            mount: "/mnt/workspace".into(),
             runs: self.run_root.clone().into(),
             datasets: self.data_root()?.into(),
         };
@@ -91,29 +84,6 @@ impl Definition {
         ml_exp_core::identity::validate_id(&self.executor)
             .map_err(why!(cloud::Error::configuration()))?;
         self.profile.validate()?;
-        if let Some(names) = &self.spot_clusters {
-            if names.is_empty()
-                || names.len() > 1024
-                || names.iter().any(|s| {
-                    domain::component(s).is_err() || s.to_ascii_lowercase().contains("debug")
-                })
-                || !matches!(&self.profile,Profile::Sensecore(p) if p.purpose==domain::sensecore::Purpose::Training&&p.quota==domain::sensecore::Quota::Spot)
-            {
-                return Err(cloud::Error::configuration());
-            }
-        }
-        if let Some(copy) = &self.data_copier {
-            copy.validate()?;
-            match (&self.profile, copy) {
-                (Profile::Sensecore(training), Profile::Sensecore(copy))
-                    if copy.purpose == domain::sensecore::Purpose::DataCopy
-                        && training.scope == copy.scope
-                        && training.storage_volume == copy.storage_volume
-                        && training.storage_subdir == copy.storage_subdir
-                        && training.mount_path == copy.mount_path => {}
-                _ => return Err(cloud::Error::configuration()),
-            }
-        }
         let limits = &self.result_job;
         if limits.cpus == 0
             || limits.memory_gb == 0
@@ -124,10 +94,6 @@ impl Definition {
                     limits.cpus > p.max_cpus
                         || limits.memory_gb > p.max_memory_gb
                         || limits.max_time_seconds > domain::pai::MAX_JOB_SECONDS
-                }
-                // A SenseCore job takes its shape from the fixed collector spec.
-                Some(Profile::Sensecore(p)) => {
-                    limits.cpus != p.worker_cpus || limits.memory_gb != p.worker_memory_gb
                 }
                 None => false,
             }
@@ -142,12 +108,6 @@ impl Definition {
                         && training.workspace_id == copy.workspace_id
                         && training.storage == copy.storage
                         && training.vpc == copy.vpc => {}
-                (Profile::Sensecore(training), Profile::Sensecore(copy))
-                    if copy.purpose == domain::sensecore::Purpose::ResultCollection
-                        && training.scope == copy.scope
-                        && training.storage_volume == copy.storage_volume
-                        && training.storage_subdir == copy.storage_subdir
-                        && training.mount_path == copy.mount_path => {}
                 _ => return Err(cloud::Error::configuration()),
             }
         }
@@ -157,28 +117,12 @@ impl Definition {
         {
             return Err(cloud::Error::configuration());
         }
-        match &self.profile {
-            Profile::Pai(p) => {
-                if p.storage.is_none() || !self.run_root.starts_with("/mnt/workspace/") {
-                    return Err(cloud::Error::configuration());
-                }
-            }
-            Profile::Sensecore(p) => {
-                if p.worker_nodes != 1
-                    || p.purpose != domain::sensecore::Purpose::Training
-                    || self.allocation != Allocation::Guaranteed
-                    || !self.run_root.starts_with(&format!("{}/", p.mount_path))
-                {
-                    return Err(cloud::Error::configuration());
-                }
-            }
+        let Profile::Pai(p) = &self.profile;
+        if p.storage.is_none() || !self.run_root.starts_with("/mnt/workspace/") {
+            return Err(cloud::Error::configuration());
         }
         let data_root = self.data_root()?;
-        let prefix = match &self.profile {
-            Profile::Pai(_) => "/mnt/workspace/".into(),
-            Profile::Sensecore(p) => format!("{}/", p.mount_path),
-        };
-        if !data_root.starts_with(&prefix) || self.datasets.len() > 4096 {
+        if !data_root.starts_with("/mnt/workspace/") || self.datasets.len() > 4096 {
             return Err(cloud::Error::configuration());
         }
         let target = self.target()?;
@@ -251,6 +195,20 @@ impl Settings {
     }
     pub fn from_slice(bytes: &[u8]) -> cloud::Result<Self> {
         let value = domain_json(bytes)?;
+        if lists_sensecore(&value) {
+            crate::why::record_static(
+                file!(),
+                line!(),
+                "SenseCore support was removed; delete every SenseCore backend, collector, \
+                 data copier and debug profile from the cloud configuration",
+                &(),
+            );
+            return Err(cloud::Error {
+                code: BACKEND_RETIRED.into(),
+                http_status: None,
+                uncertain: false,
+            });
+        }
         let settings: Self =
             serde_json::from_value(value).map_err(why!(cloud::Error::configuration()))?;
         if settings.schema_version != 1
@@ -282,6 +240,27 @@ impl Settings {
         }
         Ok(settings)
     }
+}
+/// SenseCore support was removed. A configuration that still names it is refused with
+/// its own code, rather than as an unknown provider among other schema errors.
+fn lists_sensecore(value: &serde_json::Value) -> bool {
+    let sensecore = |profile: &serde_json::Value| {
+        profile["provider"]
+            .as_str()
+            .is_some_and(|provider| provider.starts_with("sensecore"))
+    };
+    let backends = value["backends"].as_array().into_iter().flatten();
+    let debug = value["debug"]["profiles"].as_object().into_iter().flatten();
+    backends
+        .flat_map(|backend| {
+            [
+                &backend["profile"],
+                &backend["collector"],
+                &backend["data_copier"],
+            ]
+        })
+        .chain(debug.map(|(_, definition)| &definition["profile"]))
+        .any(sensecore)
 }
 fn domain_json(bytes: &[u8]) -> cloud::Result<serde_json::Value> {
     ml_exp_core::json::mapping(bytes)

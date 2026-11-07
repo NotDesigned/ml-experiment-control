@@ -7,7 +7,7 @@ build/copy operations retain a narrow Python bridge, and W&B uses its official
 SDK process.
 
 Submit code, a Dockerfile and data to an existing HTTP API; run experiments on
-SSH Slurm/Apptainer, SenseCore ACP or Alibaba PAI DLC; retrieve verified results.
+SSH Slurm/Apptainer or Alibaba PAI DLC; retrieve verified results.
 Backend credentials and image builds stay on the server side.
 
 ## Install the native client
@@ -86,11 +86,11 @@ and `src/`), the official W&B SDK process, and release and upgrade tooling. None
 of these is a client or API installation path.
 
 W&B is an [optional server integration](docs/wandb.md). Platform metrics work
-without it. Temporary [CCI/DSW debug sessions](docs/debug-sessions.md) are separate
+without it. Temporary [DSW debug sessions](docs/debug-sessions.md) are separate
 from training; PAI training uses DLC.
 
-Source and data are separate uploads. Data targets shared Slurm storage,
-SenseCore NAS through CCR, or approved PAI OSS/CPFS storage. The API uses a bounded
+Source and data are separate uploads. Data targets shared Slurm storage
+or approved PAI OSS/CPFS storage. The API uses a bounded
 transfer buffer rather than keeping a second permanent dataset. Output archives
 are hash-verified on download and may be released after client acknowledgement;
 metrics and persistent checkpoint state have separate lifecycles. See

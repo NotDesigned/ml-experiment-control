@@ -1,8 +1,8 @@
 # SSH debug sessions
 
-A debug session requests a temporary **SenseCore CCI** or **PAI DSW** machine.
+A debug session requests a temporary **PAI DSW** machine.
 It is independent of a scientific Run/Attempt. Formal training still uses
-SenseCore ACP, PAI DLC, or Slurm.
+PAI DLC or Slurm.
 
 ## Client workflow
 
@@ -34,25 +34,21 @@ policy. The client never disables SSH host-key checking.
 ```bash
 ml-exp debug stop "$debug_identity" --confirmation "STOP $debug_identity"
 ml-exp debug refresh "$debug_identity"
-# DSW additionally supports deletion:
 ml-exp debug delete "$debug_identity" --confirmation "DELETE $debug_identity"
 ml-exp debug refresh "$debug_identity"
 ```
 
-CCI supports create/query/stop; DSW also supports delete. Each profile in the
-catalog reports `delete_supported`. Requesting CCI deletion returns
-`CLOUD_CONFIGURATION_INVALID` without a provider mutation.
+DSW supports create/query/stop/delete. Each profile in the
+catalog reports `delete_supported`.
 
 Stop/delete requests can remain `STOPPING`/`DELETING` while the provider acts.
 The server continues requested cleanup about every 30 seconds, at most 16 machines
 per pass. A permission denial
 (HTTP 403) pauses automatic retries; fix the permission and explicitly refresh. DSW deletion is complete
-only after the machine is absent. Stopping CCI releases compute and removes its
-session-owned DNAT rule; the stopped CCI and internal Service metadata remain.
-There is no automatic restart. An expired or deleted identity cannot be reused
+only after the machine is absent. There is no automatic restart. An expired or deleted identity cannot be reused
 for a new machine; choose a new request ID.
 
-Save work under the approved persistent mount: DSW `/mnt/workspace`, CCI `/data`.
+Save work under the approved persistent mount: DSW `/mnt/workspace`.
 The container's own filesystem is temporary. Stop/delete never deletes the
 mounted CPFS/NAS contents. They do remove ephemeral instance storage.
 
@@ -63,14 +59,9 @@ active machines. Profiles are disabled until the operator configures them.
 DSW always has a four-hour hard ceiling, even if the shared debug-session maximum
 is configured higher. A shorter operator lease still takes precedence.
 
-- DSW: a **native shutdown timer** is installed and read back. Its absolute
-  deadline never advances on refresh. On expiry the server also stops the instance.
-  It deletes an instance only on an explicit `delete`.
-- CCI: the injected SSH process has an **absolute expiry deadline**, and the
-  server stops the instance and removes its own port rule on expiry. This is
-  **not a provider-side compute shutdown timer**: if ML-Expd is unavailable,
-  SSH expires but compute may remain allocated until server recovery or manual
-  cleanup. Closing the shell or stopping sshd does not release cloud resources.
+DSW installs a **native shutdown timer** and reads it back. Its absolute
+deadline never advances on refresh. On expiry the server also stops the instance.
+It deletes an instance only on an explicit `delete`.
 
 A repeated `create` with the identical request ID and request returns the
 existing record. A changed request under the same ID is rejected. If a create
@@ -90,7 +81,7 @@ All routes use the normal bearer authentication.
 | GET | `/api/debug/{identity}` | Saved observation |
 | POST | `/api/debug/{identity}/refresh` | Reconcile the same machine |
 | POST | `/api/debug/{identity}/stop` | Stop compute |
-| POST | `/api/debug/{identity}/delete` | Delete a DSW instance; unsupported for CCI |
+| POST | `/api/debug/{identity}/delete` | Delete a DSW instance |
 
 ```json
 {
@@ -118,7 +109,7 @@ the private record, so changing the catalog cannot redirect cleanup.
 
 Configure machines in the cloud configuration's `debug` block: `enabled`,
 `max_active` and `profiles`. Each profile holds a `credentials_file` and a nested
-`profile`. PAI/SenseCore credential files and signed REST transports are the same
+`profile`. PAI credential files and signed REST transports are the same
 kind the backends use; no `sco` command is invoked. A machine's record keeps its
 frozen profile for cleanup. Unknown fields are refused at every level.
 
@@ -157,21 +148,3 @@ The personal CPFS path maps to `/mnt/workspace`, public models/datasets mount
 read-only, and visibility is PRIVATE. The server does not create a new NAT,
 EIP, security group, project mount or OSS filesystem mount. Native PAI assigns
 the public port.
-
-CCI (`provider: sensecore_cci`) fields:
-
-- `profile`: the [SenseCore backend profile](sensecore-rest.md). Its `purpose` must not
-  be `training`, `mount_path` must be `/data`, and `storage_subdir` must be one
-  leading-slash personal directory, such as `/alice`.
-- `image`: an image with `/usr/sbin/sshd`, `ssh-keygen` and `timeout` already
-  installed. No network package installation happens at startup.
-- `network`: an existing EIP in the chosen pool's VPC and zone, with all of
-  `eip_name`, `eip_id` (the path of that EIP in the profile's scope),
-  `nat_gateway_id`, `external_ip`, `external_port` (at least 1024) and `tenant_id`.
-
-The selected native resource specification must match the profile's CPU,
-memory and GPU count. CCI debug uses RESERVED quota. A new, session-owned DNAT
-rule uses the profile's `external_port`; no existing rule is migrated. Its UID,
-creator, network and CCI target are checked before bind/unbind/delete of that
-port rule. CCI app/Service deletion is intentionally not provided. Shared
-EIPs/NAT and unrelated instances/rules are never removed.

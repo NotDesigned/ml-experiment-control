@@ -27,10 +27,6 @@ pub(super) fn failure_evidence(
             access_key_secret,
             security_token,
         } => (access_key_id, access_key_secret, security_token.as_deref()),
-        Credentials::Sensecore {
-            access_key_id,
-            access_key_secret,
-        } => (access_key_id, access_key_secret, None),
     };
     fn hide_request_secrets(text: &mut String, value: &Value, depth: usize) {
         if depth > 16 {

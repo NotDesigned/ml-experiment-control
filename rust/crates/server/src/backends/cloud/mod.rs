@@ -61,10 +61,6 @@ pub enum Credentials {
         #[serde(default)]
         security_token: Option<String>,
     },
-    Sensecore {
-        access_key_id: String,
-        access_key_secret: String,
-    },
 }
 impl Credentials {
     pub fn load(path: &Path) -> Result<Self> {
@@ -88,10 +84,6 @@ impl Credentials {
                 access_key_secret,
                 security_token,
             } => (access_key_id, access_key_secret, security_token.as_deref()),
-            Self::Sensecore {
-                access_key_id,
-                access_key_secret,
-            } => (access_key_id, access_key_secret, None),
         };
         if std::iter::once(id.as_str())
             .chain(std::iter::once(secret.as_str()))
@@ -106,7 +98,6 @@ impl Credentials {
         matches!(
             (self, profile),
             (Self::Pai { .. }, adapter::Profile::Pai(_))
-                | (Self::Sensecore { .. }, adapter::Profile::Sensecore(_))
         )
     }
 }
@@ -197,18 +188,6 @@ impl Client {
                     &nonce,
                 )?
             }
-            (
-                Credentials::Sensecore {
-                    access_key_id,
-                    access_key_secret,
-                },
-                Endpoint::Sensecore { .. },
-            ) => {
-                let format=time::format_description::parse("[weekday repr:short], [day] [month repr:short] [year] [hour]:[minute]:[second] GMT").map_err(why!(Error::configuration()))?;
-                let date = now.format(&format).map_err(why!(Error::configuration()))?;
-                signing::sign(request, access_key_id, access_key_secret, None, &date, "")?
-            }
-            _ => return Err(Error::configuration()),
         };
         let method = match request.method {
             Method::Get => reqwest::Method::GET,
@@ -259,14 +238,10 @@ impl Client {
                     || value["Success"] == false
                     || value["IsSuccess"] == false
             }
-            Endpoint::Sensecore { .. } => false,
         };
         if !status.is_success() || provider_error {
             let raw = match request.endpoint {
                 Endpoint::Pai { .. } => value["Code"].as_str(),
-                Endpoint::Sensecore { .. } => value["details"]
-                    .as_array()
-                    .and_then(|a| a.iter().find_map(|v| v["reason"].as_str())),
             };
             let code = raw
                 .filter(|s| {

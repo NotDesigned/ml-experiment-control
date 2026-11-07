@@ -11,7 +11,6 @@ mod observation;
 pub mod pai;
 pub mod retry;
 pub mod run;
-pub mod sensecore;
 use crate::{canonical, identity, slurm::helper, submission};
 pub use observation::{JobObservation, Page, QueueDiagnostic};
 use serde::{Deserialize, Serialize};
@@ -67,14 +66,7 @@ impl Product {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "provider", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Endpoint {
-    Pai {
-        product: Product,
-        region: String,
-    },
-    Sensecore {
-        service: String,
-        region: Option<String>,
-    },
+    Pai { product: Product, region: String },
 }
 impl Endpoint {
     pub fn host(&self) -> Result<String> {
@@ -82,31 +74,6 @@ impl Endpoint {
             Self::Pai { product, region } => {
                 region_id(region)?;
                 Ok(format!("{}.{}.aliyuncs.com", product.endpoint(), region))
-            }
-            Self::Sensecore { service, region } => {
-                if !matches!(
-                    service.as_str(),
-                    "aec2" | "cci" | "network" | "management" | "iam" | "monitor"
-                ) {
-                    return Err(Error("service"));
-                }
-                match region {
-                    Some(region) => {
-                        sense_region(region)?;
-                        if !matches!(service.as_str(), "aec2" | "cci" | "network") {
-                            return Err(Error("regional service"));
-                        }
-                        Ok(if service == "cci" {
-                            format!("cci.{region}.sensecore.cn")
-                        } else {
-                            format!("{service}.{region}.sensecoreapi.cn")
-                        })
-                    }
-                    None if !matches!(service.as_str(), "aec2" | "cci" | "network") => {
-                        Ok(format!("{service}.sensecoreapi.cn"))
-                    }
-                    _ => Err(Error("service region")),
-                }
             }
         }
     }
@@ -194,16 +161,6 @@ pub fn region_id(value: &str) -> Result<&str> {
     } else {
         Ok(value)
     }
-}
-pub(super) fn sense_region(value: &str) -> Result<&str> {
-    region_id(value)?;
-    if !regex::Regex::new(r"^cn-[a-z]+-[0-9]+$")
-        .expect("constant region regex")
-        .is_match(value)
-    {
-        return Err(Error("SenseCore region"));
-    }
-    Ok(value)
 }
 pub(super) fn absolute_path(value: &str) -> Result<&str> {
     if !value.starts_with('/')
