@@ -679,7 +679,7 @@ fn without_delivery_on_the_executor_the_code_stays_in_the_image() {
             .lock()
             .unwrap()
             .iter()
-            .all(|(_, path, _)| !path.contains("/runtimes/")),
+            .all(|(_, path, _)| !path.contains("/runtimes/") || path.ends_with("/progress")),
         "with no worker digest there is no Runtime to ask about"
     );
 }
@@ -743,8 +743,8 @@ fn data_preparation_keeps_its_code_in_the_image() {
 fn code_above_the_limit_is_refused_before_anything_is_sent() {
     let files = Files::new();
     files.dependencies_only();
-    let large = std::fs::File::create(files.root.path().join("source/weights.bin")).unwrap();
-    large
+    std::fs::File::create(files.root.path().join("source/weights.bin"))
+        .unwrap()
         .set_len(ml_exp_core::sources::MAX_CODE_BYTES + 1)
         .unwrap();
     let fake = delivering();

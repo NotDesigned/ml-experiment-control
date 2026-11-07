@@ -170,9 +170,7 @@ fn fill(
     // Sorted, so a parent comes before everything inside it.
     for path in &manifest.directories {
         let (parent, name) = split(path);
-        let parent = opened
-            .get(parent)
-            .ok_or_else(|| Failure::Final(Error::Binding))?;
+        let parent = opened.get(parent).ok_or(Failure::Final(Error::Binding))?;
         let child = parent.create_new_child(OsStr::new(name)).map_err(storage)?;
         opened.insert(path.clone(), child);
     }
@@ -188,7 +186,7 @@ fn fill(
     for file in &manifest.files {
         let parent = opened
             .get(split(&file.path).0)
-            .ok_or_else(|| Failure::Final(Error::Binding))?;
+            .ok_or(Failure::Final(Error::Binding))?;
         receive(&mut response, file, parent)?;
     }
     match response.read(&mut [0u8; 1]) {
