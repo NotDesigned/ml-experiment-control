@@ -834,6 +834,10 @@ fn stopped(view: &Value, builder_idle: bool) -> Option<String> {
             &error["build_failure"]
         };
         let code = cause["code"].as_str().unwrap_or("UNKNOWN");
+        let step = runtime["operator_step"]
+            .as_str()
+            .map(|step| format!(". {step}"))
+            .unwrap_or_default();
         if matches!(code, "BUILD_RECEIPT_MISSING" | "NATIVE_BUILD_RPC_UNCERTAIN") {
             // Proof that nothing was left means it is not running, whatever was last seen.
             return (builder_idle || runtime["retry_safe"] == true).then(|| {
@@ -841,7 +845,7 @@ fn stopped(view: &Value, builder_idle: bool) -> Option<String> {
                     "the image build is not running and left no result ({code}), so its outcome \
                      is unresolved. See {logs}. Running this command again checks once more \
                      and builds again if nothing was left behind; changing the code or the \
-                     Dockerfile starts a new build"
+                     Dockerfile starts a new build{step}"
                 )
             });
         }
@@ -853,7 +857,7 @@ fn stopped(view: &Value, builder_idle: bool) -> Option<String> {
         return Some(format!(
             "the image build failed with {code}{reason}. See {logs}. Running this command \
              again builds again if nothing was left behind; changing the code or the \
-             Dockerfile starts a new build"
+             Dockerfile starts a new build{step}"
         ));
     }
     if view["data"]["new_request_allowed"] == true {
@@ -1722,7 +1726,7 @@ fn environment_ready(
                 base_image: plan.base_image.clone(),
                 dockerfile: spec.dockerfile.clone(),
             }
-            .id(&spec.project, worker)
+            .offered_id(&spec.project, worker)
             .ok()
         });
     id.is_some_and(|id| {

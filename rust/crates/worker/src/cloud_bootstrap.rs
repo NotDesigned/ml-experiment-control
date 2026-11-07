@@ -3,11 +3,11 @@
 //! arguments, before anything else happens. This reads nothing from a package except
 //! `worker_sha256`, because the package may come from a server far newer than this image.
 //!
-//! The worker goes in a local temporary directory, not on shared storage. The Attempt's
-//! directory cannot exist yet: `cloud::prepare` reads an existing one as a launch that
-//! began. And shared storage may be mounted noexec, which nothing here can know before
-//! trying. A local copy costs one download each time a job starts, and a restarted job
-//! makes that download again.
+//! The worker runs from a sealed memory file, which needs no writable or executable
+//! directory and leaves nothing behind. Where that is not possible, it goes in a local
+//! temporary directory. It never goes on shared storage: the Attempt's directory cannot
+//! exist yet, since `cloud::prepare` reads an existing one as a launch that began, and shared
+//! storage may be mounted noexec. Either way a restarted job downloads it again.
 use crate::managed::{Error, Result};
 use ml_exp_core::{cloud::launch::MAX_WORKER_BYTES, slurm::helper};
 use std::{
@@ -26,6 +26,9 @@ use std::{
 /// Set only by this module on the worker it starts, naming the hash that worker must have.
 const STARTED_AS: &str = "ML_EXPD_WORKER_BOOTSTRAPPED";
 const PROGRAM: &str = "ml-exp-worker-rs";
+/// Far longer than about 8 MiB takes, and a GPU waits for this. A stalled read tries again.
+const ONE_READ: Duration = Duration::from_secs(120);
+const ALL_READS: Duration = Duration::from_secs(600);
 
 fn refused(why: impl std::fmt::Display) -> Error {
     Error::Bootstrap(experiment_redact::redact_line(&why.to_string()))
@@ -66,15 +69,22 @@ enum Failure {
     Again(String),
     Final(Error),
 }
+/// How long the next read may take, or `None` if the whole allowance has gone.
+fn next_read(elapsed: Duration) -> Option<Duration> {
+    let left = ALL_READS.checked_sub(elapsed)?;
+    (!left.is_zero()).then(|| left.min(ONE_READ))
+}
 fn read_once(
     client: &reqwest::blocking::Client,
     url: &str,
     token: &str,
     expected: &str,
+    limit: Duration,
 ) -> std::result::Result<Vec<u8>, Failure> {
     let response = client
         .get(url)
         .bearer_auth(token)
+        .timeout(limit)
         .send()
         .map_err(|error| Failure::Again(error.without_url().to_string()))?;
     let status = response.status().as_u16();
@@ -112,13 +122,15 @@ pub fn fetch(url: &str, token: &str, expected: &str) -> Result<Vec<u8>> {
     let client = reqwest::blocking::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(600))
         .build()
         .map_err(refused)?;
+    let started = std::time::Instant::now();
     let mut count = 0;
     loop {
         count += 1;
-        match read_once(&client, url, token, expected) {
+        let limit = next_read(started.elapsed())
+            .ok_or_else(|| refused("the worker download ran out of time"))?;
+        match read_once(&client, url, token, expected, limit) {
             Ok(bytes) => return Ok(bytes),
             Err(Failure::Final(error)) => return Err(error),
             Err(Failure::Again(why)) => {
@@ -151,13 +163,65 @@ fn install(directory: &Path, bytes: &[u8]) -> std::io::Result<PathBuf> {
     fs::set_permissions(&path, fs::Permissions::from_mode(0o500))?;
     Ok(path)
 }
-/// Returns only if the next worker could not be started, in any of `directories`.
+/// Returns why, if the next worker could not be started from memory.
+#[cfg(target_os = "linux")]
+fn in_memory(bytes: &[u8], required: &str, arguments: &[OsString]) -> String {
+    use std::os::fd::AsRawFd;
+    let mut file = match ml_exp_io::sealed_memory_file(PROGRAM, bytes) {
+        Ok(file) => file,
+        Err(error) => return format!("memory: {error}"),
+    };
+    let mut held = Vec::new();
+    if let Err(error) = file.read_to_end(&mut held) {
+        return format!("memory: cannot be read back: {error}");
+    }
+    let actual = helper::sha256_bytes(&held);
+    if actual != required {
+        return format!("memory: reads back as {actual}, not {required}");
+    }
+    drop(held);
+    eprintln!("ML_EXPD_WORKER_BOOTSTRAP=START {required}");
+    let error = Command::new(format!("/proc/self/fd/{}", file.as_raw_fd()))
+        .arg0(PROGRAM)
+        .args(arguments)
+        .env(STARTED_AS, required)
+        .exec();
+    format!("memory: cannot be executed: {error}")
+}
+#[cfg(not(target_os = "linux"))]
+fn in_memory(_: &[u8], _: &str, _: &[OsString]) -> String {
+    "memory: this platform has no sealed memory file".into()
+}
+/// Returns only if the next worker could not be started anywhere.
 pub fn become_worker(
     directories: &[PathBuf],
     bytes: &[u8],
     required: &str,
     arguments: &[OsString],
 ) -> Error {
+    let memory = in_memory(bytes, required, arguments);
+    eprintln!("ML_EXPD_WORKER_BOOTSTRAP=FALLBACK {memory}");
+    let directories = in_directories(directories, bytes, required, arguments);
+    refused(format!(
+        "no way to run the worker ({memory}; {directories})"
+    ))
+}
+/// The hash of the program this process is running, wherever it was started from. A worker
+/// started from memory has no path, so `current_exe` would name nothing that can be read.
+pub fn running() -> Result<String> {
+    let mut program = fs::File::open("/proc/self/exe")
+        .or_else(|_| fs::File::open(std::env::current_exe()?))
+        .map_err(refused)?;
+    let mut bytes = Vec::new();
+    program.read_to_end(&mut bytes).map_err(refused)?;
+    Ok(helper::sha256_bytes(&bytes))
+}
+fn in_directories(
+    directories: &[PathBuf],
+    bytes: &[u8],
+    required: &str,
+    arguments: &[OsString],
+) -> String {
     let mut reasons = Vec::new();
     for directory in directories {
         let shown = directory.display();
@@ -187,10 +251,7 @@ pub fn become_worker(
             let _ = fs::remove_dir_all(parent);
         }
     }
-    refused(format!(
-        "no local directory can run the worker ({})",
-        reasons.join("; ")
-    ))
+    reasons.join("; ")
 }
 fn local_directories() -> Vec<PathBuf> {
     let mut directories = vec![std::env::temp_dir()];
@@ -204,8 +265,7 @@ fn local_directories() -> Vec<PathBuf> {
 }
 /// Returns when this worker is the required one. Otherwise it is replaced, or this fails.
 pub fn enter(package: &[u8], package_url: &str, token: &str) -> Result<()> {
-    let path = std::env::current_exe().map_err(refused)?;
-    let running = format!("sha256:{}", ml_exp_io::sha256_file(&path).map_err(refused)?);
+    let running = running()?;
     let started_as = std::env::var(STARTED_AS).ok();
     let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
     enter_as(
@@ -391,15 +451,39 @@ mod tests {
         let refused = shown(become_worker(&[temp.path().into()], bytes, REQUIRED, &[]));
         assert!(refused.contains("reads back as"), "{refused}");
     }
-    /// The whole way through a real exec, which must happen in a process of its own.
+    #[test]
+    fn a_stalled_download_is_bounded_well_below_a_read_per_attempt() {
+        assert_eq!(next_read(Duration::ZERO), Some(ONE_READ));
+        assert_eq!(
+            next_read(ALL_READS - Duration::from_secs(5)),
+            Some(Duration::from_secs(5))
+        );
+        assert_eq!(next_read(ALL_READS), None);
+        assert_eq!(next_read(ALL_READS + Duration::from_secs(5)), None);
+        assert!(ALL_READS < ONE_READ * crate::retry::ATTEMPTS);
+    }
+    #[test]
+    fn this_process_can_hash_its_own_program() {
+        let expected = ml_exp_io::sha256_file(&std::env::current_exe().unwrap()).unwrap();
+        assert_eq!(running().unwrap(), format!("sha256:{expected}"));
+    }
+    /// Run `test` in a process of its own, because a real exec replaces the caller.
+    fn in_child(test: &str, environment: &[(&str, &std::ffi::OsStr)]) -> bool {
+        Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test, "--ignored", "--nocapture"])
+            .envs(environment.iter().copied())
+            .status()
+            .unwrap()
+            .success()
+    }
     #[test]
     #[ignore = "started by the test below"]
-    fn exec_child() {
-        let (Ok(url), Ok(directory)) = (std::env::var("BOOT_URL"), std::env::var("BOOT_DIR"))
-        else {
+    fn fetch_and_exec_child() {
+        let Ok(url) = std::env::var("BOOT_URL") else {
             return;
         };
         let required = std::env::var("BOOT_REQUIRED").unwrap();
+        let script = std::env::var_os("BOOT_SCRIPT").unwrap();
         let package = serde_json::to_vec(&serde_json::json!({"worker_sha256":required})).unwrap();
         let error = enter_as(
             RUNNING,
@@ -407,8 +491,8 @@ mod tests {
             &package,
             &format!("{url}/api/worker-exchange/demo/train/attempt-001/package"),
             "tok",
-            &[PathBuf::from(directory)],
-            &["cloud-launch".into(), "--package-url".into(), "same".into()],
+            &[PathBuf::from(std::env::var_os("BOOT_DIR").unwrap())],
+            &["-c".into(), script, "zero".into(), "one".into()],
         )
         .unwrap_err();
         panic!("still here: {error}");
@@ -417,37 +501,118 @@ mod tests {
     fn a_worker_fetched_from_the_attempts_endpoint_really_replaces_this_process() {
         let temp = tempfile::tempdir().unwrap();
         let output = temp.path().join("seen");
-        let program = format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$0\" \"$@\" \"$ML_EXPD_WORKER_BOOTSTRAPPED\" > {}\n",
-            output.display()
-        )
-        .into_bytes();
+        let unused = temp.path().join("unused");
+        fs::create_dir(&unused).unwrap();
+        // A real program, as a worker is; a memory file cannot run a script.
+        let program = fs::read("/bin/sh").unwrap();
         let required = helper::sha256_bytes(&program);
         let (url, thread) = server(vec![(200, program)]);
-        let status = Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "cloud_bootstrap::tests::exec_child",
-                "--ignored",
-                "--nocapture",
-            ])
-            .env("BOOT_URL", &url)
-            .env("BOOT_DIR", temp.path())
-            .env("BOOT_REQUIRED", &required)
-            .status()
-            .unwrap();
-        assert!(status.success());
+        let script = format!(
+            "{{ printf '%s\\n' \"$0\" \"$1\" \"$ML_EXPD_WORKER_BOOTSTRAPPED\"; \
+             readlink /proc/$$/exe; }} > {}",
+            output.display()
+        );
+        assert!(in_child(
+            "cloud_bootstrap::tests::fetch_and_exec_child",
+            &[
+                ("BOOT_URL", url.as_ref()),
+                ("BOOT_DIR", unused.as_os_str()),
+                ("BOOT_REQUIRED", required.as_ref()),
+                ("BOOT_SCRIPT", script.as_ref()),
+            ],
+        ));
         assert_eq!(
             thread.join().unwrap(),
             ["/api/worker-exchange/demo/train/attempt-001/worker tok"]
         );
         let seen = fs::read_to_string(output).unwrap();
         let lines: Vec<&str> = seen.lines().collect();
+        assert_eq!(lines[..3], ["zero", "one", required.as_str()], "{seen}");
+        assert!(lines[3].starts_with("/memfd:"), "{seen}");
+        // Nothing was written anywhere, and nothing stays behind.
+        assert_eq!(fs::read_dir(&unused).unwrap().count(), 0);
+    }
+    #[test]
+    #[ignore = "started by the test below"]
+    fn exec_this_program_from_memory_child() {
+        let Ok(output) = std::env::var("BOOT_OUTPUT") else {
+            return;
+        };
+        if std::env::var_os(STARTED_AS).is_some() {
+            // The worker's own checks, from a process that has no path.
+            let hash = running().unwrap();
+            assert_eq!(next(&hash, &required_of_env(), None).unwrap(), Step::Run);
+            let path = std::env::current_exe().unwrap();
+            fs::write(output, format!("{hash}\n{}\n", path.display())).unwrap();
+            return;
+        }
+        let bytes = fs::read(std::env::current_exe().unwrap()).unwrap();
+        let required = helper::sha256_bytes(&bytes);
+        let why = in_memory(
+            &bytes,
+            &required,
+            &[
+                "--exact".into(),
+                "cloud_bootstrap::tests::exec_this_program_from_memory_child".into(),
+                "--ignored".into(),
+                "--nocapture".into(),
+            ],
+        );
+        panic!("still here: {why}");
+    }
+    fn required_of_env() -> String {
+        std::env::var(STARTED_AS).unwrap()
+    }
+    #[test]
+    fn a_worker_started_from_memory_can_prove_what_it_is() {
+        let temp = tempfile::tempdir().unwrap();
+        let output = temp.path().join("seen");
+        assert!(in_child(
+            "cloud_bootstrap::tests::exec_this_program_from_memory_child",
+            &[("BOOT_OUTPUT", output.as_os_str())],
+        ));
+        let seen = fs::read_to_string(output).unwrap();
+        let lines: Vec<&str> = seen.lines().collect();
+        assert_eq!(lines[0], running().unwrap(), "{seen}");
+        assert!(lines[1].starts_with("/memfd:"), "{seen}");
+    }
+    #[test]
+    #[ignore = "started by the test below"]
+    fn exec_from_a_directory_child() {
+        let Ok(directory) = std::env::var("BOOT_DIR") else {
+            return;
+        };
+        let program = std::env::var("BOOT_PROGRAM").unwrap().into_bytes();
+        let why = in_directories(
+            &[PathBuf::from(directory)],
+            &program,
+            &helper::sha256_bytes(&program),
+            &["same".into()],
+        );
+        panic!("still here: {why}");
+    }
+    #[test]
+    fn without_a_memory_file_a_worker_runs_from_a_private_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let output = temp.path().join("seen");
+        let program = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$0\" \"$@\" \"$ML_EXPD_WORKER_BOOTSTRAPPED\" > {}\n",
+            output.display()
+        );
+        let required = helper::sha256_bytes(program.as_bytes());
+        assert!(in_child(
+            "cloud_bootstrap::tests::exec_from_a_directory_child",
+            &[
+                ("BOOT_DIR", temp.path().as_os_str()),
+                ("BOOT_PROGRAM", program.as_ref()),
+            ],
+        ));
+        let seen = fs::read_to_string(output).unwrap();
+        let lines: Vec<&str> = seen.lines().collect();
         assert!(
             lines[0].starts_with(temp.path().to_str().unwrap()),
             "{seen}"
         );
-        assert_eq!(lines[1..4], ["cloud-launch", "--package-url", "same"]);
-        assert_eq!(lines[4], required);
+        assert_eq!(lines[1..], ["same", required.as_str()], "{seen}");
     }
 }

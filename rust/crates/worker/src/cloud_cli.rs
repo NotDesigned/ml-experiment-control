@@ -49,9 +49,9 @@ pub(crate) fn main_from(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         // Before the package is decoded: a later server's may not decode in this worker.
         ml_exp_worker::cloud_bootstrap::enter(&bytes, &args.package_url, &args.package_token)?;
         let package = ml_exp_worker::cloud::scoped(&args.package_url, &args.package_token, &bytes)?;
-        let path =
-            std::env::current_exe().map_err(|_| ml_exp_worker::managed::Error::Configuration)?;
-        ml_exp_worker::cloud::verify_binary(&path, &package.worker_sha256)?;
+        if ml_exp_worker::cloud_bootstrap::running()? != package.worker_sha256 {
+            return Err(ml_exp_worker::managed::Error::Binding);
+        }
         if args.inspect {
             return ml_exp_worker::managed::inspect(&package.config);
         }

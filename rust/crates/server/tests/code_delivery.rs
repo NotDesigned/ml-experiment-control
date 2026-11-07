@@ -675,6 +675,7 @@ fn an_upgrade_needs_no_rebuild_and_an_attempt_fetches_only_the_worker_it_froze()
     assert_eq!(again["runtime_id"], id.as_str());
     assert_eq!(again["status"], "READY");
     assert_eq!(requests.lock().unwrap().len(), 1);
+    assert!(again.get("operator_step").is_none());
     // A Runtime stored before this is still read, under the identity it always had.
     assert_eq!(
         later.runtime_status("demo", &legacy_id).unwrap()["runtime_id"],
@@ -785,6 +786,20 @@ fn an_upgrade_needs_no_rebuild_and_an_attempt_fetches_only_the_worker_it_froze()
         "WORKER_BINARY_UNAVAILABLE"
     );
     assert!(!world.runs().join("no-worker").exists());
+    // Nor can a file of the store that is not what its name says.
+    let damaged = keep(b"worker three");
+    fs::write(
+        store.join(damaged.strip_prefix("sha256:").unwrap()),
+        b"worker 3hree",
+    )
+    .unwrap();
+    assert_eq!(
+        open(&config(&damaged, true))
+            .create_run("demo", request("damaged-worker", &id, false), NOW)
+            .unwrap_err()
+            .code,
+        "WORKER_BINARY_UNAVAILABLE"
+    );
 
     // An unbuilt preparation with an old identity moves to the new one, and no further.
     let recipe = Definition {
@@ -831,6 +846,44 @@ fn an_upgrade_needs_no_rebuild_and_an_attempt_fetches_only_the_worker_it_froze()
             .unwrap()["runtime"]["runtime_id"],
         moved.as_str()
     );
+    // A build stuck with no proof keeps its identity, so the view names the way out, and
+    // the record's removal is one: the next attempt begins again and builds once more.
+    let stuck_recipe = Definition {
+        base_image: format!("registry.example/base@sha256:{}", "6".repeat(64)),
+        ..definition.clone()
+    };
+    let stuck = on_new_scheme
+        .prepare_runtime("demo", stuck_recipe.clone())
+        .unwrap()["runtime_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let record = world
+        .settings
+        .registry_root
+        .join(format!("cloud-submissions/slots/{stuck}.runtime.json"));
+    let mut saved: Value = serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
+    saved["started"] = json!(true);
+    saved["diagnostic"] = json!({"code":"PAI_DSW_CLEANUP_REQUIRED","retry_safe":false});
+    fs::remove_file(&record).unwrap();
+    fs::write(&record, serde_json::to_vec(&saved).unwrap()).unwrap();
+    fs::set_permissions(&record, fs::Permissions::from_mode(0o600)).unwrap();
+    let held = on_new_scheme.runtime_status("demo", &stuck).unwrap();
+    assert_eq!(held["status"], "RECONCILE_REQUIRED");
+    let step = held["operator_step"].as_str().unwrap();
+    assert!(step.contains(&format!("{stuck}.runtime.json")), "{step}");
+    let builds = requests.lock().unwrap().len();
+    assert_eq!(
+        on_new_scheme
+            .execute_runtime("demo", &stuck, &format!("BUILD {stuck}"))
+            .unwrap()["status"],
+        "RECONCILE_REQUIRED"
+    );
+    assert_eq!(requests.lock().unwrap().len(), builds);
+    fs::remove_file(&record).unwrap();
+    let fresh = on_new_scheme.prepare_runtime("demo", stuck_recipe).unwrap();
+    assert_eq!(fresh["runtime_id"], stuck.as_str());
+    assert_eq!(fresh["status"], "PREPARED");
     drop((service, upgraded, later, newest, on_new_scheme));
 
     // Through the real server executable, as a job would.

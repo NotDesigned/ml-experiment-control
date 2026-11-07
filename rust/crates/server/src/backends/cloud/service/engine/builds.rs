@@ -190,17 +190,8 @@ impl Service {
             return Ok(None);
         }
         let settings = self.builds.as_ref().ok_or_else(worker_unavailable)?;
-        let store = settings
-            .worker_store
-            .as_ref()
-            .ok_or_else(worker_unavailable)?;
-        let name = settings
-            .worker_sha256
-            .strip_prefix("sha256:")
-            .ok_or_else(worker_unavailable)?;
-        if !store.join(name).is_file() {
-            return Err(worker_unavailable());
-        }
+        // Hashing about 8 MiB is cheap beside a job that could not start.
+        self.stored_worker(&settings.worker_sha256)?;
         Ok(Some(settings.worker_sha256.clone()))
     }
     pub fn runtimes(&self, project: &str) -> cloud::Result<Value> {
@@ -259,9 +250,22 @@ impl Service {
             .active_builds
             .lock()
             .is_ok_and(|s| s.contains(&record.runtime_id));
-        json!({"project":record.project,"runtime_id":record.runtime_id,"source_id":record.definition.source_id,"executor":record.definition.executor,
+        let mut view = json!({"project":record.project,"runtime_id":record.runtime_id,"source_id":record.definition.source_id,"executor":record.definition.executor,
         "status":if record.runtime.is_some()&&(!self.builds.as_ref().is_some_and(|s|s.slurm.contains_key(&record.definition.executor))||record.slurm_runtime.is_some()){"READY"}else if active{"EXECUTING"}else if record.started{"RECONCILE_REQUIRED"}else{"PREPARED"},"runtime":record.runtime,"slurm_runtime":record.slurm_runtime,"build_error":record.diagnostic,
-        "retry_safe":!record.started&&!active,"scheduler_submitted":false,"confirmation":format!("BUILD {}",record.runtime_id)})
+        "retry_safe":!record.started&&!active,"scheduler_submitted":false,"confirmation":format!("BUILD {}",record.runtime_id)});
+        // An upgrade gave a stuck build a new identity. This one keeps its identity, and
+        // nothing here can prove that a build left nothing behind, so a person must.
+        if view["status"] == "RECONCILE_REQUIRED" && bootstraps(record) {
+            view["operator_step"] = json!(format!(
+                "An operator must act if reconciling does not settle this: confirm that no builder is running and that tag bundle-{} is not in the registry, then remove {}.runtime.json from cloud-submissions/slots in the registry root; the next attempt starts over",
+                record
+                    .runtime_id
+                    .strip_prefix("runtime.")
+                    .unwrap_or(&record.runtime_id),
+                record.runtime_id,
+            ));
+        }
+        view
     }
     pub fn runtime(&self, project: &str, executor: &str, id: &str) -> cloud::Result<Runtime> {
         if let Some(runtime) = self

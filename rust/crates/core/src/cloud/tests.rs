@@ -974,3 +974,168 @@ fn a_run_on_a_bootstrapping_runtime_freezes_its_worker_and_any_other_is_unchange
         assert_eq!(execution.job.command[0], "/opt/ml-expd/worker");
     }
 }
+
+#[test]
+fn a_client_can_ask_after_a_bootstrap_version_it_does_not_know() {
+    let later = recipe().offered_id("demo", "worker-bootstrap.v2").unwrap();
+    assert_ne!(later, recipe().id("demo", build::BOOTSTRAP).unwrap());
+    assert_eq!(
+        recipe().offered_id("demo", build::BOOTSTRAP).unwrap(),
+        recipe().id("demo", build::BOOTSTRAP).unwrap()
+    );
+    assert!(recipe().offered_id("demo", "something else").is_err());
+}
+/// What a worker in an already published image is asked to read. If this has to change, the
+/// images out there cannot do it: raise `build::BOOTSTRAP`, which rebuilds them, and keep
+/// recognising the old value. Adding a field fails to compile here, by design.
+#[test]
+fn the_bootstrap_contract_is_pinned() {
+    use crate::{
+        artifacts::FileReceipt,
+        data_preparation,
+        datasets::{self, import},
+    };
+    assert_eq!(build::BOOTSTRAP, "worker-bootstrap.v1");
+    let digest = format!("sha256:{}", "a".repeat(64));
+    let target = helper::Target {
+        backend_id: "pai".into(),
+        profile_sha256: digest.clone(),
+        storage_scope: digest.clone(),
+    };
+    let file = FileReceipt {
+        path: "f".into(),
+        bytes: 1,
+        sha256: digest.clone(),
+    };
+    let definition = datasets::Definition {
+        sha256: digest.clone(),
+        archive_bytes: 2,
+        files: vec![file],
+    };
+    let data_channel = import::DataChannel {
+        url: "https://x/d".into(),
+        token: "t".into(),
+    };
+    let channel = exchange::Channel {
+        url: "https://x/e".into(),
+        token: "u".into(),
+    };
+    let config = import::Config {
+        root: "/r".into(),
+        target,
+        project: "demo".into(),
+        definition,
+        source: import::Source::File { path: "/p".into() },
+        timeout_seconds: 3,
+    };
+    let storage = launch::StorageLayout {
+        mount: "/m".into(),
+        runs: "/m/r".into(),
+        datasets: "/m/d".into(),
+    };
+    let plan = data_preparation::Plan {
+        contract: data_preparation::CONTRACT.into(),
+        request: data_preparation::Request {
+            script: "s".into(),
+            interpreter: "python3".into(),
+            arguments: vec!["a".into()],
+            timeout_seconds: 4,
+            expected_content_sha256: Some(digest.clone()),
+        },
+        source_id: "source".into(),
+        image: "image".into(),
+        cache_root: "/c".into(),
+        mounted_root: "/m".into(),
+        workdir: "/w".into(),
+        env: BTreeMap::from([("K".to_owned(), "V".to_owned())]),
+        require_cached: true,
+    };
+    assert_eq!(
+        serde_json::to_value(&config).unwrap(),
+        json!({"root":"/r","project":"demo","timeout_seconds":3,"source":{"kind":"file","path":"/p"},
+            "target":{"backend_id":"pai","profile_sha256":digest,"storage_scope":digest},
+            "definition":{"sha256":digest,"archive_bytes":2,
+                "files":[{"path":"f","bytes":1,"sha256":digest}]}})
+    );
+    assert_eq!(
+        serde_json::to_value(&data_channel).unwrap(),
+        json!({"url":"https://x/d","token":"t"})
+    );
+    assert_eq!(
+        serde_json::to_value(&channel).unwrap(),
+        json!({"url":"https://x/e","token":"u"})
+    );
+    assert_eq!(
+        serde_json::to_value(&storage).unwrap(),
+        json!({"mount":"/m","runs":"/m/r","datasets":"/m/d"})
+    );
+    assert_eq!(
+        serde_json::to_value(&plan).unwrap(),
+        json!({"contract":data_preparation::CONTRACT,"source_id":"source","image":"image",
+            "cache_root":"/c","mounted_root":"/m","workdir":"/w","env":{"K":"V"},
+            "require_cached":true,"request":{"script":"s","interpreter":"python3",
+                "arguments":["a"],"timeout_seconds":4,"expected_content_sha256":digest}})
+    );
+    // Written out with no `..`, so that a new field stops this compiling.
+    let import::Config {
+        root: _,
+        target: _,
+        project: _,
+        definition: _,
+        source,
+        timeout_seconds: _,
+    } = config;
+    match source {
+        import::Source::DatasetParts { channel: _ }
+        | import::Source::ExchangeParts { channel: _ }
+        | import::Source::File { path: _ }
+        | import::Source::Https {
+            url: _,
+            allowed_hosts: _,
+        } => {}
+    }
+    let import::DataChannel { url: _, token: _ } = data_channel;
+    let exchange::Channel { url: _, token: _ } = channel;
+    let launch::StorageLayout {
+        mount: _,
+        runs: _,
+        datasets: _,
+    } = storage;
+    let data_preparation::Plan {
+        contract: _,
+        request,
+        source_id: _,
+        image: _,
+        cache_root: _,
+        mounted_root: _,
+        workdir: _,
+        env: _,
+        require_cached: _,
+    } = plan;
+    let data_preparation::Request {
+        script: _,
+        interpreter: _,
+        arguments: _,
+        timeout_seconds: _,
+        expected_content_sha256: _,
+    } = request;
+    // How the job's own launcher calls the image's worker, and how a job starts.
+    let launcher = include_str!("materialize.py");
+    assert!(
+        launcher
+            .contains(r#"[worker, "data-import", "--config", path, "--bundle-output", archive]"#)
+    );
+    assert!(launcher.contains(
+        r#"[worker, "data-copy", "--config", path, "--channel-json", channel, "--storage-json", storage]"#
+    ));
+    let (_, execution) = compiled(None, "attempt-001");
+    assert_eq!(execution.job.command[1], "cloud-launch");
+    assert_eq!(
+        execution.job.command[2..]
+            .iter()
+            .step_by(2)
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["--package-url", "--package-token", "--package-sha256"]
+    );
+}

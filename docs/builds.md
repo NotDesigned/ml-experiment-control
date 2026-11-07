@@ -87,20 +87,28 @@ finds the same Runtime after any number of releases. The worker in the image is 
 - `cloud-launch` first reads `worker_sha256` from the package, and nothing else in it, since
   a later server's package may not decode in this worker. If its own hash differs, it
   downloads that worker from the Attempt's `/worker` exchange endpoint with the Attempt's
-  token, retrying a passing failure, checks the hash, writes it to a private local temporary
-  directory, checks that file again, and `exec`s it with the same arguments.
+  token, retrying a passing failure for at most ten minutes, checks the hash, seals it in a
+  memory file, checks that again, and `exec`s it with the same arguments.
 - The worker `exec`ed must have that hash, or the job stops. Any failure stops before
   training and the job's log says why; lines start `ML_EXPD_WORKER_BOOTSTRAP=`.
-- It does not go in the Attempt's directory: that cannot exist before the Attempt starts,
-  because an existing one reads as a launch that began, and shared storage may be mounted
-  noexec. It tries `$TMPDIR`, `/tmp` and `/var/tmp` in turn, and needs one that can execute.
-  A restarted job downloads it again.
+- A memory file needs no writable or executable directory and leaves nothing behind, and needs
+  Linux and `/proc`. If that fails, as under a stricter `vm.memfd_noexec`, the worker goes in a
+  private temporary directory instead: `$TMPDIR`, `/tmp` or `/var/tmp`, whichever can execute.
+  That copy stays for the life of the job. It never goes in the Attempt's directory, which
+  cannot exist before the Attempt starts, and on shared storage that may be mounted noexec.
 
-The bootstrap contract is `cloud-launch` and its arguments, `worker_sha256` at the top of a
-package, the `/package` and `/worker` endpoints, and the plans of `script-prepare` and
-`data-import`, which run in the image's own worker. Changing any of these means raising
-`BOOTSTRAP` in `rust/crates/core/src/cloud/build.rs`, which builds every environment once
-more, and recognising the old value for stored Runtimes.
+The bootstrap contract is everything a later server asks of a worker in an image: `cloud-launch`
+and its arguments, `worker_sha256` at the top of a package, the `/package` and `/worker`
+endpoints, `data-import` and `data-copy` with their configuration, channels, storage layout and
+the dataset exchange for PAI data jobs, and `script-prepare` with its plan. Changing any of these
+means raising `BOOTSTRAP` in `rust/crates/core/src/cloud/build.rs`, which builds every environment
+once more, and recognising the old value for stored Runtimes. A test pins these shapes.
+
+A Runtime on the new identity keeps it even if its build is stuck in `RECONCILE_REQUIRED` with
+nothing to prove the build left nothing behind, as with `PAI_DSW_CLEANUP_REQUIRED` or BuildKit.
+No second build starts by itself. Its view gives an `operator_step`: reconcile again, and if that
+does not settle it, confirm no builder is running and the `bundle-` tag is absent from the
+registry, then remove the record named. The next attempt starts over.
 
 A Runtime built before this keeps its identity and behaviour: its worker cannot bootstrap,
 its Runs freeze nothing and run with the image's worker, and it cannot take delivered code

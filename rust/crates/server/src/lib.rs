@@ -97,6 +97,9 @@ pub(crate) struct AppState {
     api: Option<Arc<api::Api>>,
     effect_slots: Arc<tokio::sync::Semaphore>,
     data_slots: Arc<tokio::sync::Semaphore>,
+    /// Jobs fetching their worker and code, apart from dataset transfers. Each is streamed
+    /// from a file through a small buffer, so even all of these cost the server little.
+    download_slots: Arc<tokio::sync::Semaphore>,
 }
 
 async fn guard(State(state): State<Arc<AppState>>, request: Request, next: Next) -> Response {
@@ -605,6 +608,7 @@ pub fn app(auth: Auth, api: Option<Arc<api::Api>>) -> Router {
         api,
         effect_slots: Arc::new(tokio::sync::Semaphore::new(4)),
         data_slots: Arc::new(tokio::sync::Semaphore::new(4)),
+        download_slots: Arc::new(tokio::sync::Semaphore::new(16)),
     });
     Router::new()
         .route("/api/health", get(health))

@@ -99,6 +99,25 @@ pub fn write_atomic(path: &Path, bytes: &[u8], immutable: bool) -> io::Result<()
     Ok(())
 }
 
+/// Bytes in a sealed anonymous file: nothing can change them, and nothing stays afterward.
+/// It closes on exec, so only a program, not a script, can be run from it by path.
+#[cfg(target_os = "linux")]
+pub fn sealed_memory_file(name: &str, bytes: &[u8]) -> io::Result<File> {
+    use rustix::fs::{MemfdFlags, SealFlags, fcntl_add_seals, memfd_create};
+    use std::io::Seek;
+    let mut file = File::from(memfd_create(
+        name,
+        MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING,
+    )?);
+    file.write_all(bytes)?;
+    fcntl_add_seals(
+        &file,
+        SealFlags::WRITE | SealFlags::SHRINK | SealFlags::GROW | SealFlags::SEAL,
+    )?;
+    file.rewind()?;
+    Ok(file)
+}
+
 pub fn sha256_file(path: &Path) -> io::Result<String> {
     let mut options = OpenOptions::new();
     options.read(true);

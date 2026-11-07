@@ -22,6 +22,8 @@ use std::{
 use tokio::sync::mpsc;
 /// A worker that stops reading must not hold a transfer slot for ever.
 const CODE_TRANSFER: Duration = Duration::from_secs(15 * 60);
+/// Many jobs starting together is normal, and a turn comes soon. A worker tries again after this.
+const TRANSFER_WAIT: Duration = Duration::from_secs(20);
 type Cloud = crate::backends::cloud::service::Service;
 type Chunks<'a> = &'a mut dyn FnMut(Vec<u8>) -> io::Result<()>;
 pub(crate) fn routes() -> Router<Arc<AppState>> {
@@ -270,7 +272,10 @@ async fn attempt_transfer<G: Send + 'static, C: Send + 'static>(
             });
         }
     };
-    let Ok(permit) = state.data_slots.clone().try_acquire_owned() else {
+    // Only a holder of this Attempt's token can queue here.
+    let slot =
+        tokio::time::timeout(TRANSFER_WAIT, state.download_slots.clone().acquire_owned()).await;
+    let Ok(Ok(permit)) = slot else {
         let mut response = http_effect::failure(Error {
             status: 429,
             code: busy,

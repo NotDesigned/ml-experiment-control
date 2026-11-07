@@ -179,9 +179,11 @@ frozen worker. One deployment runs at a time (`ROOT/.deploy.lock`).
 
 Never delete `ROOT/workers/`: a queued job or a retry fetches the worker its Run froze from
 there, and without it fails before training with `WORKER_BINARY_UNAVAILABLE`. It grows by one
-worker, about 8 MiB, per release. After a rollback the earlier server does not read a Runtime
-built on the new identity, or a preparation frozen with it, so rolling back past this
-release needs those removed from the cloud state first.
+worker, about 8 MiB, per release, and a damaged file is replaced at the next deployment of that
+worker. An earlier server does not read a Runtime built on the new identity, or a preparation
+frozen with it, so `--rollback` past this release refuses while any exist, and names the files
+to remove. Runs on those Runtimes are then unreadable to it. Automatic rollback on failed health
+is not affected: a release that never became healthy made none.
 
 ## Enable training after source import
 

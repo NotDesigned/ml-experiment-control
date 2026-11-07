@@ -335,6 +335,9 @@ impl Service {
     /// From the configured store only, with a name that is a validated hash, and refused
     /// unless the file really has that hash.
     pub fn worker_binary(&self, grant: &WorkerGrant) -> cloud::Result<WorkerContent> {
+        self.stored_worker(&grant.worker)
+    }
+    pub(super) fn stored_worker(&self, worker: &str) -> cloud::Result<WorkerContent> {
         use sha2::Digest;
         use std::io::{Read, Seek};
         let unavailable = super::builds::worker_unavailable;
@@ -343,13 +346,10 @@ impl Service {
             .as_ref()
             .and_then(|settings| settings.worker_store.as_ref())
             .ok_or_else(unavailable)?;
-        if !helper::valid_digest(&grant.worker) {
+        if !helper::valid_digest(worker) {
             return Err(unavailable());
         }
-        let name = grant
-            .worker
-            .strip_prefix("sha256:")
-            .ok_or_else(unavailable)?;
+        let name = worker.strip_prefix("sha256:").ok_or_else(unavailable)?;
         let mut file = Directory::open(store, false)
             .and_then(|directory| directory.open_regular_read(OsStr::new(name)))
             .map_err(why!(unavailable()))?;

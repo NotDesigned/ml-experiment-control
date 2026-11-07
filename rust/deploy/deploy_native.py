@@ -84,11 +84,21 @@ def parsed(version):
     return tuple(int(part) for part in version.split("."))
 
 
+def fsync_path(path):
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def replace_file(source, destination, mode):
     temporary = destination.with_name(f".{destination.name}.deploy")
     shutil.copyfile(source, temporary)
     temporary.chmod(mode)
+    fsync_path(temporary)
     os.replace(temporary, destination)
+    fsync_path(destination.parent)
 
 
 def download(url, destination):
@@ -245,8 +255,10 @@ def retain_worker(root):
     store.mkdir(exist_ok=True)
     store.chmod(0o755)
     worker = root / "bin/ml-exp-worker-rs"
-    target = store / sha256(worker)
-    if not target.exists():
+    digest = sha256(worker)
+    target = store / digest
+    # The server refuses a stored file that is not what its name says, so one is replaced.
+    if not target.is_file() or target.is_symlink() or sha256(target) != digest:
         replace_file(worker, target, 0o555)
 
 
@@ -318,9 +330,35 @@ def record(root, version, commit, action):
     return value
 
 
+def bootstrap_state(settings):
+    """Files in the cloud state that a release without worker bootstrap cannot read."""
+    reads = json.loads(Path(settings["server_config"]).read_text())["read_config"]
+    registry = json.loads(Path(reads).read_text())["registry_root"]
+    found = []
+    for path in sorted((Path(registry) / "cloud-submissions/slots").glob("*.json")):
+        if path.name.endswith(".runtime.json"):
+            value = json.loads(path.read_text())
+            text = json.dumps(["native-image-recipe.v1", value["project"], value["definition"],
+                               "worker-bootstrap.v1"],
+                              sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+            if value["runtime_id"] == "runtime." + hashlib.sha256(text.encode()).hexdigest():
+                found.append(path)
+        elif path.name.endswith(".setup.json") and "runtime_identity" in json.loads(path.read_text()):
+            found.append(path)
+    return found
+
+
 def rollback(root, settings, timeout):
     if not (root / "previous/bin/ml-expd-rs").is_file():
         raise Refused("no previous installation is retained")
+    previous = json.loads((root / "previous/cloud_config.json").read_text())
+    if not (previous.get("builds") or {}).get("worker_store"):
+        found = bootstrap_state(settings)
+        if found:
+            raise Refused(
+                "the retained release cannot read Runtimes or preparations made with worker "
+                "bootstrap. Remove these files first, and know that Runs on those Runtimes "
+                "will not be readable by it either: " + ", ".join(str(path) for path in found))
     with publishers_stopped(settings):
         version = restore_previous(root, settings)
     start(settings)

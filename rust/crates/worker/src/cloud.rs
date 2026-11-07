@@ -8,7 +8,7 @@ use ml_exp_core::{
     slurm::helper,
 };
 use ml_exp_io::directory::Directory;
-use std::{collections::BTreeMap, ffi::OsStr, path::Path, sync::atomic::AtomicBool};
+use std::{collections::BTreeMap, ffi::OsStr, sync::atomic::AtomicBool};
 pub fn decode(bytes: &[u8]) -> managed::Result<Package> {
     if bytes.len() > MAX_PACKAGE_BYTES {
         return Err(managed::Error::Configuration);
@@ -193,14 +193,6 @@ fn child(directory: &Directory, name: &str) -> managed::Result<Directory> {
         .require_private()
         .map_err(crate::managed::storage_failure!())?;
     Ok(result)
-}
-/// Verify the native executable against the trusted published-image receipt.
-pub fn verify_binary(path: &Path, expected: &str) -> managed::Result<()> {
-    let sha = ml_exp_io::sha256_file(path).map_err(|_| managed::Error::Binding)?;
-    if format!("sha256:{sha}") != expected {
-        return Err(managed::Error::Binding);
-    }
-    Ok(())
 }
 pub fn prepare(package: &Package, runtime: &BTreeMap<String, String>) -> managed::Result<()> {
     package

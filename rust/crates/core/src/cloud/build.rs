@@ -4,11 +4,21 @@
 //! the worker itself, and their identities stay exactly as they were.
 use super::*;
 pub const CONTRACT: &str = "native-image-recipe.v1";
-/// Goes up only when an image's worker can no longer serve as the bootstrap for a later
-/// one, and that forces one rebuild of every environment. The contract is: `cloud-launch`
-/// and its arguments, `worker_sha256` at the top of a package, the exchange's `/package`
-/// and `/worker`, and the plans of `script-prepare` and `data-import`, which run in the
-/// image's own worker. A raised version must go on recognising this one for stored Runtimes.
+/// Goes up only when an image's worker can no longer do what a later server asks of it, and
+/// that forces one rebuild of every environment. A raised version must go on recognising
+/// this one for stored Runtimes. `tests::the_bootstrap_contract_is_pinned` holds what follows.
+///
+/// A worker in an image is asked to run, by a server of any later release:
+/// - `cloud-launch --package-url --package-token --package-sha256 [--inspect|--sync]`, reading
+///   only `worker_sha256` from the package, and `GET {channel}/package` and `{channel}/worker`.
+/// - `data-import --config --bundle-output`, for PAI data jobs, with `datasets::import::Config`.
+///   Its `DatasetParts` and `ExchangeParts` read the exchanges with the channels in that config.
+/// - `data-copy --config --channel-json --storage-json`, for the same jobs, with that `Config`,
+///   `import::DataChannel` and `launch::StorageLayout`, and `POST {data channel}/ready`.
+/// - `script-prepare --plan-json`, for SenseCore's data preparation, with `data_preparation::Plan`.
+///
+/// Each of those types denies unknown fields, so a new field is a change to this contract
+/// unless the worker it reaches is always the frozen one.
 pub const BOOTSTRAP: &str = "worker-bootstrap.v1";
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -53,6 +63,20 @@ impl Definition {
         if frozen != BOOTSTRAP && !helper::valid_digest(frozen) {
             return Err(Error("build worker"));
         }
+        self.named(project, frozen)
+    }
+    /// The identity a client looks up to say whether an environment is reused. A server
+    /// may offer a later bootstrap version than this client knows; being only a question,
+    /// that is worth asking, and a wrong answer says a build is to come.
+    pub fn offered_id(&self, project: &str, offered: &str) -> Result<String> {
+        self.validate()?;
+        identity::validate_id(project).map_err(|_| Error("build project"))?;
+        if !offered.starts_with("worker-bootstrap.v") && !helper::valid_digest(offered) {
+            return Err(Error("build worker"));
+        }
+        self.named(project, offered)
+    }
+    fn named(&self, project: &str, frozen: &str) -> Result<String> {
         Ok(format!(
             "runtime.{}",
             canonical::digest(&json!([CONTRACT, project, self, frozen]))
