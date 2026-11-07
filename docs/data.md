@@ -89,7 +89,11 @@ Two variables point at data, with the same meaning on Slurm, SenseCore and PAI:
 Read declared inputs from `DATASETS_JSON` rather than building paths below
 `DATA_DIR`: the layout under it belongs to the platform. There is no `INPUT_DIR`, and
 no `/inputs` or `/outputs` path. On Slurm each declared dataset is also bound read-only
-at its own path. Every backend rehashes it before training starts.
+at its own path.
+
+A dataset's bytes are hashed in full once per store, when it is published. Before
+training, every job checks only the file set, sizes and read-only modes. A change that
+keeps a file's size is not noticed at job start, so nothing else should write there.
 
 ## PAI preparation using an existing image
 

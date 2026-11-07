@@ -146,7 +146,8 @@ impl Helper {
         }
         for dataset in &package.config.datasets {
             let root = Directory::open(std::path::Path::new(&dataset.receipt.root), false)?;
-            ml_exp_io::datasets::verify(&root, &dataset.receipt.definition, true)?;
+            // Hashed in full when published; see `managed::run`.
+            ml_exp_io::datasets::verify_file_sizes(&root, &dataset.receipt.definition)?;
         }
         let directories = self.shared_directories(&plan, true)?;
         let sealed = Sealed { plan };

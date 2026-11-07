@@ -461,9 +461,10 @@ impl Store {
         }
         let (state, published) = self.exclusive(request, payload, cancelled)?;
         if let Some(directory) = published {
-            // Sealed READY content is only ever read: a failure here changes nothing.
+            // Hashed in full when it became READY, once per store. Sealed READY content
+            // is only ever read: a failure here changes nothing.
             let tree = directory.child(OsStr::new("tree"), false)?;
-            tree::verify(&tree, &state.definition, true)?;
+            tree::verify_file_sizes(&tree, &state.definition)?;
         }
         self.verify()?;
         let reply = Reply {
