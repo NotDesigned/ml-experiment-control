@@ -186,6 +186,91 @@ impl Store {
 
 use std::ffi::OsString;
 
+/// Object-store copies. A receipt lives beside the document it describes, sealed,
+/// and is written only after the server has read every object back.
+impl Store {
+    fn archive_name(checkpoint_id: &str) -> Result<OsString> {
+        checkpoints::validate_checkpoint_id(checkpoint_id).map_err(why!(Error::Document))?;
+        Ok(OsString::from(format!("archive.{checkpoint_id}.json")))
+    }
+    fn archived_locked(
+        &self,
+        context: &Context,
+        document: &Value,
+    ) -> Result<Option<checkpoints::archive::Receipt>> {
+        let id = document["checkpoint_id"].as_str().ok_or(Error::Document)?;
+        let Some(directory) = self.attempt_directory(context, false)? else {
+            return Ok(None);
+        };
+        let name = Self::archive_name(id)?;
+        if !directory.entry_exists(&name)? {
+            return Ok(None);
+        }
+        let file = directory.open_regular_read(&name)?;
+        let receipt: checkpoints::archive::Receipt =
+            serde_json::from_slice(&directory.read_whole(&name)?).map_err(why!(Error::Document))?;
+        receipt.validate(document).map_err(why!(Error::Document))?;
+        // Publication is followed by sealing. A stop between the two leaves this exact,
+        // valid receipt writable, and sealing it now finishes the same write.
+        if ml_exp_io::directory::require_sealed(&file).is_err() {
+            ml_exp_io::directory::seal_regular(&file, false)?;
+        }
+        Ok(Some(receipt))
+    }
+    /// The verified copy of one registered, not withdrawn checkpoint, if there is one.
+    pub fn archived(
+        &self,
+        context: &Context,
+        checkpoint_id: &str,
+    ) -> Result<Option<(Value, Option<checkpoints::archive::Receipt>)>> {
+        let _guard = self.lock()?;
+        let Some(document) = self.read_locked(context, Some(checkpoint_id))?.pop() else {
+            return Ok(None);
+        };
+        let receipt = self.archived_locked(context, &document)?;
+        Ok(Some((document, receipt)))
+    }
+    /// Every registered document of this Attempt with its verified copy, if any.
+    pub fn list_archived(
+        &self,
+        context: &Context,
+    ) -> Result<Vec<(Value, Option<checkpoints::archive::Receipt>)>> {
+        let _guard = self.lock()?;
+        let mut result = Vec::new();
+        for document in self.read_locked(context, None)? {
+            let receipt = self.archived_locked(context, &document)?;
+            result.push((document, receipt));
+        }
+        Ok(result)
+    }
+    /// Keep the first receipt. A second one for the same document is the same
+    /// statement made later, so the first is returned.
+    pub fn record_archive(
+        &self,
+        context: &Context,
+        receipt: &checkpoints::archive::Receipt,
+    ) -> Result<checkpoints::archive::Receipt> {
+        let _guard = self.lock()?;
+        let document = self
+            .read_locked(context, Some(&receipt.checkpoint_id))?
+            .pop()
+            .ok_or(Error::Document)?;
+        receipt.validate(&document).map_err(why!(Error::Document))?;
+        if let Some(existing) = self.archived_locked(context, &document)? {
+            return Ok(existing);
+        }
+        let directory = self
+            .attempt_directory(context, false)?
+            .ok_or(Error::Document)?;
+        let name = Self::archive_name(&receipt.checkpoint_id)?;
+        let value = serde_json::to_value(receipt).map_err(why!(Error::Document))?;
+        directory.publish_new(&name, &Self::encode(&value)?)?;
+        let file = directory.open_regular_read(&name)?;
+        ml_exp_io::directory::seal_regular(&file, false)?;
+        Ok(receipt.clone())
+    }
+}
+
 impl Store {
     pub fn withdraw(&self, context: &Context, id: &str, plan_id: &str) -> Result<()> {
         checkpoints::validate_checkpoint_id(id).map_err(why!(Error::Document))?;
@@ -259,6 +344,51 @@ mod tests {
                 .read(&context, first["checkpoint_id"].as_str().unwrap())
                 .unwrap(),
             Some(first)
+        );
+    }
+
+    #[test]
+    fn an_archive_receipt_is_kept_once_beside_its_document() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let store = Store::open(temp.path()).unwrap();
+        let context = context();
+        let document = store
+            .register(&context, &ready(4, "step-0004", 7), "2026-10-28T00:00:00Z")
+            .unwrap();
+        let id = document["checkpoint_id"].as_str().unwrap().to_owned();
+        let id = id.as_str();
+        assert_eq!(
+            store.archived(&context, id).unwrap(),
+            Some((document.clone(), None))
+        );
+        let receipt =
+            checkpoints::archive::Receipt::new(&document, "2026-11-08T00:00:00Z", vec![7]).unwrap();
+        assert_eq!(store.record_archive(&context, &receipt).unwrap(), receipt);
+        let later =
+            checkpoints::archive::Receipt::new(&document, "2026-11-09T00:00:00Z", vec![7]).unwrap();
+        assert_eq!(store.record_archive(&context, &later).unwrap(), receipt);
+        assert_eq!(
+            store.list_archived(&context).unwrap(),
+            vec![(document.clone(), Some(receipt.clone()))]
+        );
+        // The receipt is not a checkpoint document and is never listed as one.
+        assert_eq!(store.list(&context).unwrap(), vec![document]);
+        let mut wrong = receipt.clone();
+        wrong.bytes = 8;
+        assert!(store.record_archive(&context, &wrong).is_err());
+        // A stop between publication and sealing: the receipt is sealed on the next read.
+        let path = temp.path().join(format!(
+            "persistent-checkpoints/demo/trial/attempt-001/archive.{id}.json"
+        ));
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(
+            store.archived(&context, id).unwrap().unwrap().1,
+            Some(receipt)
+        );
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o400
         );
     }
 

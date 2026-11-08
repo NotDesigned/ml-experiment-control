@@ -248,10 +248,17 @@ pub fn execution_environment(
     if let Some(value) = &config.checkpoint_restore {
         let plan =
             crate::checkpoints::restore_plan(value, None).map_err(|_| AdmissionError::Binding)?;
+        // The original Attempt's generation, or this Attempt's own delivered copy of it.
+        let state_root = crate::checkpoints::archive::resume_state_root(
+            &plan,
+            &config.attempt_root,
+            values.get("RESUME_DIR").ok_or(AdmissionError::Binding)?,
+        )
+        .map_err(|_| AdmissionError::Binding)?;
         for (key, expected) in [
             (
                 "RESUME_DIR",
-                format!("{}/checkpoints/{}", plan.state_root, plan.generation),
+                format!("{state_root}/checkpoints/{}", plan.generation),
             ),
             ("RESUME_CHECKPOINT_ID", plan.checkpoint_id),
             ("RESUME_STEP", plan.step.to_string()),

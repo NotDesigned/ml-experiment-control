@@ -63,6 +63,11 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
             post(artifact).layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
         )
         .route(
+            "/api/worker-exchange/{project}/{run}/{attempt}/checkpoints",
+            // A completion lists every part's CRC-64: 4 TiB of parts fits.
+            post(checkpoint_archive).layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
+        )
+        .route(
             "/api/worker-exchange/{project}/{run}/{attempt}/startup-failure",
             post(startup_failure).layer(DefaultBodyLimit::max(startup::MAX_BODY_BYTES)),
         )
@@ -386,6 +391,70 @@ async fn artifact(
                 .map_err(|_| invalid())?;
             cloud
                 .receive_artifacts(&project, &run, &attempt, &token, request, &now)
+                .map_err(Into::into)
+        },
+    )
+    .await
+}
+/// Object-store copies of this Attempt's registered checkpoints, and the restore of
+/// the one it resumes from. Verification reads a whole copy, which takes a while.
+async fn checkpoint_archive(
+    State(state): State<Arc<AppState>>,
+    Path((project, run, attempt)): Path<(String, String, String)>,
+    RawQuery(raw): RawQuery,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let invalid = || Error {
+        status: 422,
+        code: "INVALID_CHECKPOINT_ARCHIVE_EXCHANGE",
+        detail: "invalid checkpoint archive request",
+    };
+    if raw.as_deref().is_some_and(|s| !s.is_empty())
+        || ml_exp_core::identity::validate_id(&project)
+            .and_then(|_| ml_exp_core::identity::validate_id(&run))
+            .and_then(|_| ml_exp_core::identity::validate_attempt(&attempt))
+            .is_err()
+    {
+        return http_effect::failure(invalid());
+    }
+    let values: Vec<_> = headers.get_all("authorization").iter().collect();
+    let token = if values.len() == 1 {
+        values[0]
+            .to_str()
+            .ok()
+            .and_then(|s| s.strip_prefix("Bearer "))
+            .map(str::to_owned)
+    } else {
+        None
+    };
+    let Some(token) = token else {
+        return http_effect::failure(Error {
+            status: 401,
+            code: "WORKER_AUTH_REQUIRED",
+            detail: "Attempt worker authentication required",
+        });
+    };
+    let request: ml_exp_core::checkpoints::archive::Request =
+        match ml_exp_core::json::mapping(&body)
+            .ok()
+            .and_then(|v| serde_json::from_value(serde_json::Value::Object(v)).ok())
+        {
+            Some(r) => r,
+            None => return http_effect::failure(invalid()),
+        };
+    http_effect::execute_timeout(
+        state,
+        OnTimeout::Effect,
+        std::time::Duration::from_secs(4 * 3600),
+        move |api, now| {
+            let cloud = api.cloud_only()?;
+            let now = time::OffsetDateTime::from_unix_timestamp(now as i64)
+                .map_err(|_| invalid())?
+                .format(&time::format_description::well_known::Rfc3339)
+                .map_err(|_| invalid())?;
+            cloud
+                .receive_checkpoint_archive(&project, &run, &attempt, &token, request, &now)
                 .map_err(Into::into)
         },
     )

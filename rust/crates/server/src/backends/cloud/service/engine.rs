@@ -69,6 +69,7 @@ pub struct Service {
     debug: Option<debug::Runtime>,
     lock_holder: lock_diagnostics::Holder,
     pub(super) polling: ml_exp_core::polling::Policy,
+    pub(super) archive: super::config::CheckpointArchive,
 }
 pub(super) fn op(error: operations::Error) -> cloud::Error {
     if matches!(error, operations::Error::NotFound) {
@@ -278,6 +279,7 @@ impl Service {
             debug: config.debug.map(debug::Runtime::open).transpose()?,
             lock_holder: lock_diagnostics::Holder::new("cloud-lock"),
             polling: config.polling,
+            archive: config.checkpoint_archive,
         })
     }
     pub fn matches(
@@ -468,6 +470,7 @@ mod artifacts;
 mod authority;
 mod authorship;
 pub(super) mod builds;
+mod checkpoint_archive;
 mod derived;
 mod diagnostics;
 mod exchange;
@@ -475,6 +478,7 @@ mod observation;
 mod rebuild;
 mod retry;
 pub mod startup_failure;
+mod state_purge;
 mod synchronization;
 
 mod datasets;

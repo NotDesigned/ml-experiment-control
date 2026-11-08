@@ -9,6 +9,8 @@ pub mod cloud_artifacts;
 #[cfg(unix)]
 pub mod cloud_bootstrap;
 #[cfg(unix)]
+pub mod cloud_checkpoints;
+#[cfg(unix)]
 pub mod cloud_code;
 #[cfg(unix)]
 pub mod cloud_data;

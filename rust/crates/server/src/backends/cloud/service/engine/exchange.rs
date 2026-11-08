@@ -188,6 +188,8 @@ impl Service {
             .job(&execution.job)
             .map_err(why!(cloud::Error::configuration()))?;
         let job = self.with_result_limits(&execution.backend_id, job)?;
+        // Before the job exists, so a purge sees a sync that may still copy checkpoints.
+        self.record_sync_job(&prepared, &job)?;
         let check = || self.still_live(&guard, &execution.job.project, &execution.job.run_id);
         let status = self.submit_once_or_reconcile(
             collector,
@@ -681,9 +683,30 @@ impl Service {
                 .read(&context, id)
                 .map_err(why!(cloud::Error::evidence()))?
                 .ok_or_else(missing),
-            None => Ok(
-                json!({"project":project,"run_id":run,"attempt_id":attempt,"checkpoints":store.list(&context).map_err(why!(cloud::Error::evidence()))?}),
-            ),
+            None => {
+                let rows = store
+                    .list_archived(&context)
+                    .map_err(why!(cloud::Error::evidence()))?;
+                // Each verified object-store copy, by checkpoint. A checkpoint without
+                // one is still only on backend storage.
+                let archives = rows
+                    .iter()
+                    .filter_map(|(document, receipt)| {
+                        Some((
+                            document["checkpoint_id"].as_str()?.to_owned(),
+                            json!(receipt.as_ref()?),
+                        ))
+                    })
+                    .collect::<serde_json::Map<_, _>>();
+                Ok(json!({
+                    "project": project,
+                    "run_id": run,
+                    "attempt_id": attempt,
+                    "checkpoints": rows.into_iter().map(|(document, _)| document).collect::<Vec<_>>(),
+                    "archives": archives,
+                    "state_purge": self.purge_summary(&prepared)?,
+                }))
+            }
         }
     }
     pub fn tracking_status(&self, project: &str, run: &str) -> cloud::Result<Value> {

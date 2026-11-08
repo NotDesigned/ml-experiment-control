@@ -10,6 +10,8 @@ use serde_json::{Map, Value, json};
 use std::collections::BTreeSet;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
+pub mod archive;
+
 pub const MANIFEST_LIMIT: usize = 256 * 1024;
 pub const MAX_FILES: usize = 20_000;
 pub const MAX_PATH_BYTES: usize = 4096;

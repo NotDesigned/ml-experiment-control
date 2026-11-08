@@ -175,6 +175,32 @@ pub struct Settings {
     pub debug: Option<super::engine::debug::Settings>,
     #[serde(default)]
     pub polling: ml_exp_core::polling::Policy,
+    #[serde(default)]
+    pub checkpoint_archive: CheckpointArchive,
+}
+/// Object-store copies of registered checkpoints, and the purge of an ended Attempt's
+/// `state/` once every copy is verified. Copies need `artifacts` and `exchange`; the
+/// purge also needs the backend's `collector`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CheckpointArchive {
+    /// Seconds from the moment every condition holds to the automatic purge. 0 purges
+    /// at once. `ml-exp run purge-state` never waits.
+    pub purge_delay_seconds: u64,
+    /// The server starts the purge itself. `false` leaves only the explicit command.
+    pub automatic_purge: bool,
+    /// The most bytes a second one Attempt's worker sends to the object store while
+    /// its training runs and after. 0 is no limit.
+    pub upload_bytes_per_second: u64,
+}
+impl Default for CheckpointArchive {
+    fn default() -> Self {
+        Self {
+            purge_delay_seconds: 15 * 60,
+            automatic_purge: true,
+            upload_bytes_per_second: 64 * 1024 * 1024,
+        }
+    }
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

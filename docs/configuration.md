@@ -118,6 +118,38 @@ Private images use Docker `auths` credentials, set per backend with
 `registry_auth_file` on PAI and separately on the builder. Base64 in that format is
 not encryption. Restrict it to exact registry hosts and keep values outside Git.
 
+### Checkpoint copies and the state purge
+
+A PAI cloud file with `artifacts` and `exchange` makes new Runs copy their registered
+checkpoints to OSS and lets the server purge ended Attempts' `state/`
+([recovery](recovery.md#checkpoint-copies-and-the-state-purge)). The optional
+`checkpoint_archive` block tunes it:
+
+```json
+"checkpoint_archive": {"purge_delay_seconds": 900, "automatic_purge": true, "upload_bytes_per_second": 67108864}
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `purge_delay_seconds` | `900` | Seconds from the moment every purge condition holds to the automatic purge. `0` purges at once. `run purge-state` never waits |
+| `automatic_purge` | `true` | The server starts the purge job itself. `false` leaves only `ml-exp run purge-state`. Either needs the backend's `collector` and `enabled` |
+| `upload_bytes_per_second` | `67108864` (64 MiB/s) | The most bytes a second one Attempt's worker sends to OSS, beside training and after. `0` is no limit |
+
+Whether a Run copies checkpoints is frozen in the Run when it is created and does not
+change with this file. Omitting `artifacts` stops copies for new Runs only. A Run also
+copies only when the worker it freezes declares the capability, which the release's own
+worker does; `deploy_native.py` pins `builds.worker_sha256` to that worker when it
+installs the server, in the same step.
+
+The bucket under `artifacts` must not have versioning enabled or suspended. Parts are
+written with `x-oss-forbid-overwrite`, which OSS ignores on a versioned bucket, so a
+copy could then be replaced after it was verified.
+
+Rolling the server back to a release before this one is unsafe once Runs that copy
+exist: that release refuses their packages, which carry `checkpoint_archive`, and
+cannot purge them. `deploy_native.py --rollback` refuses it and names their
+preparations.
+
 Optional capabilities have independent configuration: [image builds](builds.md),
 [W&B](wandb.md) and [temporary debug machines](debug-sessions.md). Enabling a
 training executor does not enable a debug machine, builder or another backend.

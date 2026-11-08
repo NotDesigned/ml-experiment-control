@@ -348,6 +348,26 @@ def bootstrap_state(settings):
     return found
 
 
+# The bytes a worker build that copies checkpoints to the object store holds; the server
+# freezes that copy in a new Run only with such a worker.
+ARCHIVE_CAPABILITY = b"ml-expd-worker-capability:checkpoint-archive.v1"
+
+
+def archive_state(root, settings):
+    """Preparations of Runs that copy checkpoints, when the retained release predates that.
+
+    Its server and worker refuse such a package (an unknown field), and it never purges.
+    """
+    current = (root / "bin/ml-exp-worker-rs").read_bytes()
+    previous = (root / "previous/bin/ml-exp-worker-rs").read_bytes()
+    if ARCHIVE_CAPABILITY not in current or ARCHIVE_CAPABILITY in previous:
+        return []
+    reads = json.loads(Path(settings["server_config"]).read_text())["read_config"]
+    registry = json.loads(Path(reads).read_text())["registry_root"]
+    return [path for path in sorted((Path(registry) / "cloud-submissions/slots").glob("*.json"))
+            if b'"checkpoint_archive":true' in path.read_bytes()]
+
+
 def rollback(root, settings, timeout):
     if not (root / "previous/bin/ml-expd-rs").is_file():
         raise Refused("no previous installation is retained")
@@ -359,6 +379,12 @@ def rollback(root, settings, timeout):
                 "the retained release cannot read Runtimes or preparations made with worker "
                 "bootstrap. Remove these files first, and know that Runs on those Runtimes "
                 "will not be readable by it either: " + ", ".join(str(path) for path in found))
+    found = archive_state(root, settings)
+    if found:
+        raise Refused(
+            "the retained release cannot read Runs that copy checkpoints to the object store; "
+            "their Attempts would fail to read and to purge. Keep this release, or finish and "
+            "remove these first: " + ", ".join(str(path) for path in found))
     with publishers_stopped(settings):
         version = restore_previous(root, settings)
     start(settings)

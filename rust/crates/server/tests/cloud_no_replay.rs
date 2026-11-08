@@ -3544,3 +3544,159 @@ fn a_preparation_shows_the_allocation_it_will_ask_for() {
     let view = c.open().experiment_prepare("demo", chosen, None).unwrap();
     assert_eq!(view["frozen"]["allocation"], "allow_idle");
 }
+
+/// A Run that does not copy checkpoints keeps its state/ whoever asks, and a sync job
+/// of the Attempt that is not proven ended stands in the way until it is.
+#[test]
+fn a_run_that_does_not_copy_is_never_purged_and_a_running_sync_blocks() {
+    let c = CopyFixture::new(Kind::Pai, 1);
+    let service = c.open();
+    let (action, _) = c.f.ready(&service, "train");
+    c.f.execute(&service, &action).unwrap();
+    c.provider.world().rows[0]["Status"] = json!("Failed");
+    service
+        .refresh(&action, T_RECONCILE, &AtomicBool::new(false))
+        .unwrap();
+    let blocked = |unfinished: bool| {
+        let view = service
+            .purge_state("demo", "train", "attempt-001", unfinished, T_RECONCILE)
+            .unwrap();
+        assert_eq!(view["status"], "BLOCKED", "{view}");
+        view["blocked_by"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    for unfinished in [false, true] {
+        let codes = blocked(unfinished);
+        assert_eq!(codes[0], "CHECKPOINT_ARCHIVE_NOT_ENABLED");
+        assert!(
+            !codes.contains(&"ATTEMPT_NOT_TERMINAL".to_owned()),
+            "{codes:?}"
+        );
+        assert!(!codes.contains(&"SYNC_IN_PROGRESS".to_owned()));
+    }
+    assert_eq!(c.provider.creates(), 1);
+    let sync = || {
+        service
+            .synchronize(
+                &action,
+                &ml_exp_core::cloud::exchange::Sync {
+                    request_id: REQUEST_A.into(),
+                    confirmation: format!("SYNC {action}"),
+                },
+                T_RECONCILE,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+    };
+    sync();
+    assert_eq!(c.provider.creates(), 2);
+    assert!(blocked(false).contains(&"SYNC_IN_PROGRESS".to_owned()));
+    // Proven ended once the sync is observed again; observing it creates nothing.
+    c.provider.set_state("FAILED");
+    sync();
+    assert_eq!(c.provider.creates(), 2);
+    assert!(!blocked(false).contains(&"SYNC_IN_PROGRESS".to_owned()));
+    // The automatic purge looks once, keeps it aside and asks for no job.
+    let mut done = std::collections::BTreeSet::new();
+    for _ in 0..2 {
+        service.purge_pass("2026-10-30T00:00:00Z", &mut done);
+    }
+    assert_eq!(done.len(), 1);
+    assert_eq!(c.provider.creates(), 2);
+    assert!(!c.sync_entries().iter().any(|entry| {
+        entry["job"]["run_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("maintenance-")
+    }));
+}
+
+/// A purge record saved just before the service stopped, so its job was never asked
+/// for: the next request asks once, a repeat observes it, and only a job proven to have
+/// failed leads to one further job running the same plan.
+#[test]
+fn a_submitted_purge_without_a_job_is_asked_once_and_a_failed_job_once_more() {
+    let c = CopyFixture::new(Kind::Pai, 1);
+    let service = c.open();
+    let (action, execution) = c.f.ready(&service, "train");
+    c.f.execute(&service, &action).unwrap();
+    let request = canonical::digest(&json!([
+        "native-state-purge.v1",
+        "demo",
+        "train",
+        "attempt-001"
+    ]))
+    .unwrap();
+    let plan = ml_exp_core::maintenance::Plan {
+        contract: "native-storage-maintenance.v1".into(),
+        config: execution.package().unwrap().config,
+        selection: ml_exp_core::maintenance::Selection::State,
+        request_id: request[..32].into(),
+    };
+    private(
+        &c.f.settings
+            .registry_root
+            .join("cloud-submissions/slots")
+            .join(format!(
+                "{}.json.state-purge.json",
+                native::attempt_slot("demo", "train", "attempt-001").unwrap()
+            )),
+        &json!({"contract":"native-state-purge.v1","plan":plan,"trigger":"automatic",
+            "eligible_at":T_RECONCILE,"submitted_at":T_RECONCILE}),
+    );
+    let purge = || {
+        service
+            .purge_state("demo", "train", "attempt-001", false, T_RECONCILE)
+            .unwrap()
+    };
+    let maintenance = || {
+        c.sync_entries()
+            .into_iter()
+            .filter(|entry| {
+                entry["job"]["run_id"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("maintenance-")
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(purge()["status"], "PURGING");
+    assert_eq!(c.provider.creates(), 2);
+    for _ in 0..2 {
+        assert_eq!(purge()["status"], "PURGING");
+    }
+    drop(service);
+    let service = c.open();
+    assert_eq!(
+        service
+            .purge_state("demo", "train", "attempt-001", false, T_RECONCILE)
+            .unwrap()["job_attempt"],
+        0
+    );
+    assert_eq!(c.provider.creates(), 2);
+    assert_eq!(maintenance().len(), 1);
+    c.provider.set_state("FAILED");
+    let view = service
+        .purge_state("demo", "train", "attempt-001", false, T_RECONCILE)
+        .unwrap();
+    assert_eq!(view["job_attempt"], 1, "{view}");
+    assert_eq!(view["status"], "PURGING");
+    assert_eq!(c.provider.creates(), 3);
+    service
+        .purge_state("demo", "train", "attempt-001", false, T_RECONCILE)
+        .unwrap();
+    assert_eq!(c.provider.creates(), 3);
+    let jobs = maintenance();
+    assert_eq!(jobs.len(), 2);
+    assert_ne!(jobs[0]["job"]["run_id"], jobs[1]["job"]["run_id"]);
+    assert_ne!(
+        jobs[0]["job"]["submission_token"],
+        jobs[1]["job"]["submission_token"]
+    );
+    // The same plan, so the worker resumes or returns its receipt.
+    assert_eq!(jobs[0]["job"]["command"], jobs[1]["job"]["command"]);
+}

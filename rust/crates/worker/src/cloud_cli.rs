@@ -61,7 +61,31 @@ pub(crate) fn main_from(args: impl IntoIterator<Item = OsString>) -> ExitCode {
                 .map_err(|_| ml_exp_worker::managed::Error::Configuration)?;
         }
         if args.sync {
-            if !ml_exp_worker::cloud_exchange::drain(&package, &cancelled)? {
+            let drained = ml_exp_worker::cloud_exchange::drain(&package, &cancelled)?;
+            // A preempted worker's registered checkpoints are copied here too: the drain
+            // above has registered its last ready generation, if it had one.
+            if package.checkpoint_archive {
+                match ml_exp_worker::cloud_checkpoints::archive(&package, &cancelled) {
+                    Ok(true) => {}
+                    Ok(false) => eprintln!("ML_EXPD_CHECKPOINT_ARCHIVE=INCOMPLETE"),
+                    Err(error) => eprintln!("ML_EXPD_CHECKPOINT_ARCHIVE=DEFERRED {error}"),
+                }
+            }
+            if !drained {
+                // A worker that never reported its end, as after a preemption, sends no
+                // more. This sync succeeds only when a packet built from storage as it
+                // is now was acknowledged and every registered checkpoint has a verified
+                // copy; a purge of an unfinished Attempt requires such a sync.
+                let observed = ml_exp_worker::managed::sample(&package.config)?;
+                if package.checkpoint_archive
+                    && observed.phase != ml_exp_worker::managed::Phase::Finished
+                    && ml_exp_worker::cloud_exchange::deliver_current(&package, &cancelled)?
+                    && ml_exp_worker::cloud_checkpoints::archive(&package, &cancelled)?
+                    && ml_exp_worker::cloud_checkpoints::report_synced(&package)?
+                {
+                    eprintln!("ML_EXPD_SYNC=UNFINISHED_WORKER_DELIVERED");
+                    return Ok(observed);
+                }
                 return Err(ml_exp_worker::managed::Error::Uncertain);
             }
             ml_exp_worker::cloud_artifacts::publish(&package)?;

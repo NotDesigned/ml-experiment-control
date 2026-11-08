@@ -77,6 +77,8 @@ pub enum Error {
         stage: &'static str,
         errno: Option<i32>,
     },
+    #[error("checkpoint restore failed: {code}; training was not started")]
+    CheckpointRestore { code: &'static str },
     #[error(
         "data preparation failed: {code} (exit_code={exit_code:?}, errno={errno:?}); training was not started"
     )]
@@ -536,9 +538,19 @@ pub fn run(config: &Config, cancelled: &AtomicBool) -> Result<Observation> {
         return Err(Error::Configuration);
     }
     if let Some(document) = &config.checkpoint_restore {
-        let (context, manifest) = ml_exp_core::checkpoints::validate_document(document, None, None)
+        let (_, manifest) = ml_exp_core::checkpoints::validate_document(document, None, None)
             .map_err(|_| Error::Binding)?;
-        let root = Directory::open(std::path::Path::new(&context.state_root), false)
+        // The Attempt's own delivered copy when the frozen RESUME_DIR names it, else the
+        // original's. `environment` was checked against both just above.
+        let plan =
+            ml_exp_core::checkpoints::restore_plan(document, None).map_err(|_| Error::Binding)?;
+        let state_root = ml_exp_core::checkpoints::archive::resume_state_root(
+            &plan,
+            &config.attempt_root,
+            environment.get("RESUME_DIR").ok_or(Error::Binding)?,
+        )
+        .map_err(|_| Error::Binding)?;
+        let root = Directory::open(std::path::Path::new(&state_root), false)
             .map_err(crate::managed::storage_failure!())?;
         ml_exp_io::checkpoints::verify_sealed(&root, &manifest).map_err(|_| Error::Binding)?;
     }

@@ -213,7 +213,8 @@ changing source, parameters or restore reference requires a new Run.
 | `GET /api/runs/P/R` / `/attempts` | Run evidence and exact executions |
 | `GET /api/attempts/P/R::A/logs` | Stored bounded stdout/stderr |
 | `GET /api/attempts/P/R::A/metrics?name=loss` | Compact normalized [metrics](metrics.md); repeat `name` |
-| `GET /api/runs/P/R/attempts/A/checkpoints` / `/checkpoints/CHECKPOINT_ID` | Registered checkpoint metadata |
+| `GET /api/runs/P/R/attempts/A/checkpoints` / `/checkpoints/CHECKPOINT_ID` | Registered checkpoint metadata; the list adds verified OSS copies as `archives` and the `state_purge` record |
+| `POST /api/runs/P/R/attempts/A/purge-state` | Remove an ended PAI Attempt's `state/` under the [purge conditions](recovery.md#checkpoint-copies-and-the-state-purge) |
 | `POST /api/submissions/S/checkpoint` | Verify and register a complete backend checkpoint |
 | `GET /api/runs/P/R/attempts/A/collection` | Training, collection and verification states |
 | `POST /api/submissions/S/collect` / `/sync` | Explicit collection; a cloud sync may use a zero-GPU job |

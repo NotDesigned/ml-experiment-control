@@ -219,6 +219,8 @@ impl Service {
             write(&self.slots, &slot(action, request_id)?, &saved)?;
             saved.job
         };
+        // Before the job exists, so a purge sees a sync that may still copy checkpoints.
+        self.record_sync_job(&prepared, &job)?;
         self.submit_once_or_reconcile(collector, &job, allocation, &check, cancelled)?;
         drop(lock);
         self.sync_status(action, request_id, now)

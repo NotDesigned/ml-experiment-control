@@ -316,11 +316,68 @@ impl Service {
                 .worker_for_new_run(project, &request.runtime_id)?
                 .map(Value::from),
         };
+        // A new Run copies its checkpoints to the object store only with a worker that
+        // declares it can, frozen with it, and an object store to copy to. Every later
+        // Attempt keeps what the Run was created with.
+        let archive = match &existing {
+            Some(run) => run["native_cloud"].get("checkpoint_archive").cloned(),
+            None => match worker.as_ref().and_then(Value::as_str) {
+                Some(worker) if self.has_artifacts() && self.worker_can_archive(worker)? => {
+                    Some(json!(true))
+                }
+                _ => None,
+            },
+        };
+        // A Run that reads a generation in place must not read one whose Attempt's
+        // state/ the platform purges once copied; it would have to copy as well.
+        if let Some(reference) = &request.resume_from {
+            if super::state_purge::resume_refused(
+                existing.is_none(),
+                archive.is_some(),
+                self.checkpoint_source_archives(project, reference)?,
+            ) {
+                return Err(cloud::Error {
+                    code: "RESUME_FROM_ARCHIVED_CHECKPOINT_NEEDS_ARCHIVE".into(),
+                    http_status: Some(409),
+                    uncertain: false,
+                });
+            }
+        }
         if let Some(worker) = worker {
             documents.run["native_cloud"]["worker_sha256"] = worker.clone();
             documents.attempt["native_cloud"]["worker_sha256"] = worker;
         }
+        if let Some(archive) = archive {
+            documents.run["native_cloud"]["checkpoint_archive"] = archive.clone();
+            documents.attempt["native_cloud"]["checkpoint_archive"] = archive;
+        }
         Ok(documents)
+    }
+    /// Whether this stored worker build declares that it copies checkpoints.
+    fn worker_can_archive(&self, worker: &str) -> cloud::Result<bool> {
+        let mut bytes = Vec::new();
+        self.stored_worker(worker)?
+            .each_chunk(|chunk| {
+                bytes.extend_from_slice(&chunk);
+                Ok(())
+            })
+            .map_err(io)?;
+        Ok(ml_exp_core::checkpoints::archive::declares_capability(
+            &bytes,
+        ))
+    }
+    /// Whether the Attempt a reference names belongs to a Run that copies checkpoints.
+    fn checkpoint_source_archives(
+        &self,
+        project: &str,
+        reference: &ml_exp_core::checkpoints::Reference,
+    ) -> cloud::Result<bool> {
+        Ok(self
+            .saved_attempt(project, &reference.run_id, &reference.attempt_id)?
+            .map(|prepared| prepared.execution.package())
+            .transpose()
+            .map_err(why!(cloud::Error::evidence()))?
+            .is_some_and(|package| package.checkpoint_archive))
     }
     pub(super) fn current_execution(
         &self,
