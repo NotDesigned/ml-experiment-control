@@ -429,14 +429,14 @@ pub(crate) fn extend(document: &mut Value) {
     insert(
         "/api/worker-exchange/{project}/{run}/{attempt}/checkpoints",
         "post",
-        "Object-store copies of this Attempt's registered checkpoints: list them with whether each has a verified copy, read one document, obtain write tickets for its parts, or have the server read every object back and record the receipt that makes the copy the checkpoint's authority. download returns read tickets for the verified copy of the checkpoint this Attempt restores. Independent from training; nothing is started or replayed",
+        "Object-store copies of this Attempt's registered checkpoints: list them with whether each has a verified copy, read one document, obtain write tickets for its parts, or complete it: the server HEADs every part, requires the object store's size and x-oss-hash-crc64ecma to match the worker's, requires the worker's file SHA256 values to be the registered ones, and records the receipt that makes the copy the checkpoint's authority. No checkpoint byte passes through the server. download returns read tickets for the verified copy of the checkpoint this Attempt restores. Independent from training; nothing is started or replayed",
         Some(object(
             &["package_sha256", "operation"],
             json!({"package_sha256":{"type":"string"},"operation":{"oneOf":[
                 object(&["kind"],json!({"kind":{"const":"list"}})),
                 object(&["kind","checkpoint_id"],json!({"kind":{"const":"document"},"checkpoint_id":{"type":"string"}})),
                 object(&["kind","checkpoint_id","start"],json!({"kind":{"const":"upload"},"checkpoint_id":{"type":"string"},"start":{"type":"integer","minimum":0}})),
-                object(&["kind","checkpoint_id"],json!({"kind":{"const":"complete"},"checkpoint_id":{"type":"string"}})),
+                object(&["kind","checkpoint_id","part_crc64","file_sha256"],json!({"kind":{"const":"complete"},"checkpoint_id":{"type":"string"},"part_crc64":{"type":"array","items":{"type":"integer","minimum":0},"description":"CRC-64/XZ of each part the worker sent, in part order"},"file_sha256":{"type":"array","items":{"type":"string"},"description":"SHA256 of each file computed from the same bytes, in manifest order"}})),
                 object(&["kind","start"],json!({"kind":{"const":"download"},"start":{"type":"integer","minimum":0}}))
             ]}}),
         )),

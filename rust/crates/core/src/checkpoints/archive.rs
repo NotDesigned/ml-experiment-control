@@ -3,9 +3,12 @@
 //! Each file of a registered generation is cut into `PART_BYTES` objects named by
 //! the checkpoint's identity, the file's SHA256 and the part number, so a key names
 //! exactly one byte range of one immutable file. The worker sends the bytes directly
-//! to the object store with short-lived tickets; the server then reads every object
-//! back and checks each file's size and SHA256 against the registered document before
-//! it records a receipt. Only that receipt makes the copy the checkpoint's authority.
+//! to the object store with short-lived tickets, computing each part's CRC-64/XZ and
+//! each file's SHA256 from the bytes it sends. No byte passes through the server: it
+//! asks the object store for each part's size and its own CRC-64 (`HEAD`), requires
+//! both to match what the worker sent, and requires every file's SHA256 to be the
+//! registered one before it records a receipt. Only that receipt makes the copy the
+//! checkpoint's authority.
 use super::{Error, FileRecord, Result, validate_checkpoint_id};
 use crate::multipart::PART_BYTES;
 use serde::{Deserialize, Serialize};
@@ -15,14 +18,65 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 pub const CONTRACT: &str = "native-checkpoint-archive.v1";
 /// The server's independent read of every object; never only the worker's word.
-pub const VERIFICATION: &str = "server-sha256";
+/// The object store's own CRC-64 of every part, as the server read it, matched the
+/// worker's; the worker's SHA256 of the same bytes matched the registered file.
+pub const VERIFICATION: &str = "oss-crc64+worker-sha256";
 /// At most this many tickets per request, so each one is used well before it expires.
 pub const TICKETS_PER_REQUEST: u64 = 8;
-/// Every part of every file of one checkpoint: 16 TiB.
-pub const MAX_PARTS: u64 = 1 << 20;
+/// Every part of every file of one checkpoint: 4 TiB. Its CRC list fits one request.
+pub const MAX_PARTS: u64 = 1 << 18;
 /// Below a restoring Attempt's own `STATE_DIR`. The generation it restores is
 /// placed at `.restore/<checkpoint hash>/checkpoints/<generation>`.
 pub const RESTORE_DIRECTORY: &str = ".restore";
+
+const CRC64_REFLECTED: u64 = 0xC96C_5795_D787_0F42;
+const fn crc64_table() -> [u64; 256] {
+    let mut table = [0u64; 256];
+    let mut i = 0;
+    while i < 256 {
+        let mut crc = i as u64;
+        let mut bit = 0;
+        while bit < 8 {
+            crc = if crc & 1 == 1 {
+                (crc >> 1) ^ CRC64_REFLECTED
+            } else {
+                crc >> 1
+            };
+            bit += 1;
+        }
+        table[i] = crc;
+        i += 1;
+    }
+    table
+}
+const CRC64_TABLE: [u64; 256] = crc64_table();
+
+/// CRC-64/XZ (ECMA-182 polynomial, reflected, all-ones in and out), which OSS reports
+/// as `x-oss-hash-crc64ecma`, as an unsigned decimal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Crc64(u64);
+impl Default for Crc64 {
+    fn default() -> Self {
+        Self(u64::MAX)
+    }
+}
+impl Crc64 {
+    pub fn update(&mut self, bytes: &[u8]) {
+        let mut crc = self.0;
+        for byte in bytes {
+            crc = CRC64_TABLE[((crc ^ u64::from(*byte)) & 0xff) as usize] ^ (crc >> 8);
+        }
+        self.0 = crc;
+    }
+    pub fn finish(self) -> u64 {
+        self.0 ^ u64::MAX
+    }
+}
+pub fn crc64(bytes: &[u8]) -> u64 {
+    let mut crc = Crc64::default();
+    crc.update(bytes);
+    crc.finish()
+}
 
 /// One object: `part` of the file at `file` in the sorted manifest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,12 +197,18 @@ pub struct Receipt {
     pub bytes: u64,
     pub verification: String,
     pub verified_at: String,
+    /// The object store's CRC-64/XZ of each part, in part order. A restore checks each
+    /// downloaded part against it before the file's SHA256.
+    pub part_crc64: Vec<u64>,
 }
 impl Receipt {
-    pub fn new(document: &Value, verified_at: &str) -> Result<Self> {
+    pub fn new(document: &Value, verified_at: &str, part_crc64: Vec<u64>) -> Result<Self> {
         let (_, manifest) = super::validate_document(document, None, None)?;
         if OffsetDateTime::parse(verified_at, &Rfc3339).is_err() {
             return Err(Error::Timestamp);
+        }
+        if part_crc64.len() as u64 != part_count(&manifest.files)? {
+            return Err(Error::Document);
         }
         Ok(Self {
             contract: CONTRACT.into(),
@@ -161,11 +221,12 @@ impl Receipt {
             bytes: total_bytes(&manifest.files)?,
             verification: VERIFICATION.into(),
             verified_at: verified_at.into(),
+            part_crc64,
         })
     }
     /// This receipt describes exactly this document.
     pub fn validate(&self, document: &Value) -> Result<()> {
-        let expected = Self::new(document, &self.verified_at)?;
+        let expected = Self::new(document, &self.verified_at, self.part_crc64.clone())?;
         if *self != expected {
             return Err(Error::Document);
         }
@@ -189,8 +250,14 @@ pub enum Operation {
     Document { checkpoint_id: String },
     /// Write tickets for parts `start..` of one of this Attempt's checkpoints.
     Upload { checkpoint_id: String, start: u64 },
-    /// Read every object back and record the receipt.
-    Complete { checkpoint_id: String },
+    /// What the worker computed from the bytes it sent: each part's CRC-64/XZ in part
+    /// order and each file's SHA256 in manifest order. The server checks the parts
+    /// against the object store and the files against the registered document.
+    Complete {
+        checkpoint_id: String,
+        part_crc64: Vec<u64>,
+        file_sha256: Vec<String>,
+    },
     /// Read tickets for parts `start..` of the checkpoint this Attempt restores.
     Download { start: u64 },
 }
@@ -199,7 +266,7 @@ impl Operation {
         match self {
             Self::Document { checkpoint_id }
             | Self::Upload { checkpoint_id, .. }
-            | Self::Complete { checkpoint_id } => Some(checkpoint_id),
+            | Self::Complete { checkpoint_id, .. } => Some(checkpoint_id),
             Self::List | Self::Download { .. } => None,
         }
     }
@@ -216,6 +283,18 @@ mod tests {
             bytes,
             sha256: "a".repeat(64),
         }
+    }
+
+    #[test]
+    fn crc64_is_the_one_oss_reports() {
+        // CRC-64/XZ check values: OSS's x-oss-hash-crc64ecma.
+        assert_eq!(crc64(b""), 0);
+        assert_eq!(crc64(b"123456789"), 0x995D_C9BB_DF19_39FA);
+        let mut split = Crc64::default();
+        split.update(b"1234");
+        split.update(b"56789");
+        assert_eq!(split.finish(), 0x995D_C9BB_DF19_39FA);
+        assert_ne!(crc64(b"123456780"), 0x995D_C9BB_DF19_39FA);
     }
 
     #[test]
@@ -307,13 +386,15 @@ mod tests {
         };
         let ready = json!({"step":1,"files":[{"path":"checkpoints/s1/m.pt","bytes":7,"sha256":"d".repeat(64)}]});
         let document = super::super::document(&context, &ready).unwrap();
-        let receipt = Receipt::new(&document, "2026-11-08T00:00:00Z").unwrap();
+        let receipt = Receipt::new(&document, "2026-11-08T00:00:00Z", vec![42]).unwrap();
         assert_eq!((receipt.parts, receipt.bytes), (1, 7));
+        assert_eq!(receipt.verification, "oss-crc64+worker-sha256");
+        assert!(Receipt::new(&document, "2026-11-08T00:00:00Z", vec![]).is_err());
         assert!(receipt.validate(&document).is_ok());
         let mut other = receipt.clone();
         other.parts = 2;
         assert!(other.validate(&document).is_err());
-        assert!(Receipt::new(&document, "yesterday").is_err());
+        assert!(Receipt::new(&document, "yesterday", vec![42]).is_err());
         let request: Request = serde_json::from_value(json!({"package_sha256":"x","operation":{"kind":"upload","checkpoint_id":"c","start":0}})).unwrap();
         assert_eq!(request.operation.checkpoint_id(), Some("c"));
         assert!(

@@ -19,7 +19,8 @@ object store: parts arrive over SSH and its archive stays on shared storage.
 
 On PAI, OSS is also where registered checkpoints are kept. In a Run that copies
 checkpoints, the worker sends each registered generation to OSS while training runs,
-the server reads it back before it records the copy, and that verified copy is the
+the server checks OSS's own CRC-64 of every part against the worker's before it records
+the copy, without moving the bytes itself, and that verified copy is the
 checkpoint's authority. CPFS is then only a working area: once an Attempt has ended,
 its results are published and every checkpoint it registered has a verified copy,
 the platform removes that Attempt's `state/` from CPFS, by default 15 minutes later.

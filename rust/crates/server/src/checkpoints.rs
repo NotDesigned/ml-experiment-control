@@ -357,9 +357,10 @@ mod tests {
             Some((document.clone(), None))
         );
         let receipt =
-            checkpoints::archive::Receipt::new(&document, "2026-11-08T00:00:00Z").unwrap();
+            checkpoints::archive::Receipt::new(&document, "2026-11-08T00:00:00Z", vec![7]).unwrap();
         assert_eq!(store.record_archive(&context, &receipt).unwrap(), receipt);
-        let later = checkpoints::archive::Receipt::new(&document, "2026-11-09T00:00:00Z").unwrap();
+        let later =
+            checkpoints::archive::Receipt::new(&document, "2026-11-09T00:00:00Z", vec![7]).unwrap();
         assert_eq!(store.record_archive(&context, &later).unwrap(), receipt);
         assert_eq!(
             store.list_archived(&context).unwrap(),

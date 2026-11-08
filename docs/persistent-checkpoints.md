@@ -118,15 +118,21 @@ authority. Older Runs keep their checkpoints only on CPFS, as before.
   When training ends the worker finishes the pass, drains the last ready marker and
   copies what is left before it exits, whatever the training outcome. `ml-exp run
   sync` does the same for a job that was preempted or killed.
-- **Verification.** The server reads every object back and checks each file's size
-  and SHA256 against the registered document. Only then does it keep a sealed
-  receipt, `verification: server-sha256`, beside the document. The worker's word is
-  never enough, and an unreadable store records nothing.
+- **Verification.** No checkpoint byte passes through the API host. While it sends
+  each part, the worker computes the part's CRC-64/XZ and each file's SHA256 from the
+  same bytes and reports them. The server sends a `HEAD` for every part and requires
+  the object store's own size and `x-oss-hash-crc64ecma` to match the worker's, and
+  requires every reported file SHA256 to be the registered one. Only then does it keep
+  a sealed receipt, `verification: oss-crc64+worker-sha256`, with each part's CRC-64,
+  beside the document. A missing or different object answers
+  `CHECKPOINT_ARCHIVE_MISMATCH`; an unreadable store records nothing. The SHA256 is
+  the worker's, as at registration; the CRC-64 is the object store's.
 - **Restore.** A new Attempt that resumes from a checkpoint gets its own copy at
   `STATE_DIR/.restore/CHECKPOINT_HASH/checkpoints/GENERATION` before training: a hard
   link to the original Attempt's sealed file when it still has its registered size and
   SHA256, otherwise a download of the verified copy, each part checked and each file
-  hashed before it is sealed. Then the usual check hashes the whole generation. No copy,
+  hashed before it is sealed, after each part's CRC-64 is checked against the
+  receipt. Then the usual check hashes the whole generation. No copy,
   or a copy that does not verify, stops the start; no older checkpoint is chosen.
 - **Purge.** An ended Attempt's `state/` is removed once every condition in
   [recovery](recovery.md#checkpoint-copies-and-the-state-purge) holds. Snapshots and

@@ -77,13 +77,14 @@ impl Service {
                 .archived(&source, id)
                 .map_err(why!(cloud::Error::evidence()))?
                 .ok_or_else(missing)?;
-            receipt.ok_or_else(unavailable)?;
+            let receipt = receipt.ok_or_else(unavailable)?;
             return objects
                 .checkpoint_tickets(
                     &document,
                     start,
                     archive::TICKETS_PER_REQUEST,
                     false,
+                    Some(&receipt.part_crc64),
                     timestamp,
                 )
                 .map_err(io);
@@ -139,21 +140,44 @@ impl Service {
                         *start,
                         archive::TICKETS_PER_REQUEST,
                         true,
+                        None,
                         timestamp,
                     )
                     .map_err(io)
             }
-            Operation::Complete { checkpoint_id } => {
+            Operation::Complete {
+                checkpoint_id,
+                part_crc64,
+                file_sha256,
+            } => {
                 let (document, receipt) = one(checkpoint_id)?;
                 if let Some(receipt) = receipt {
                     return Ok(json!({"archived": true, "receipt": receipt}));
                 }
-                // An unreadable store is an error that proves nothing; refused bytes
-                // are a fact. Neither records a receipt.
-                if !objects.verify_checkpoint(&document).map_err(io)? {
+                let (_, manifest) =
+                    ml_exp_core::checkpoints::validate_document(&document, None, None)
+                        .map_err(why!(cloud::Error::evidence()))?;
+                // The worker's SHA256 of the bytes it sent must be the registered one.
+                if file_sha256.len() != manifest.files.len()
+                    || manifest
+                        .files
+                        .iter()
+                        .zip(file_sha256)
+                        .any(|(record, sha)| record.sha256 != *sha)
+                {
                     return Err(mismatch());
                 }
-                let receipt = archive::Receipt::new(&document, now)
+                // No byte moves through this host: the object store's own size and
+                // CRC-64 of each part must be those of the bytes the worker hashed. An
+                // unreadable store is an error that proves nothing; a missing or
+                // different object is a fact. Neither records a receipt.
+                if !objects
+                    .verify_checkpoint_parts(&document, part_crc64)
+                    .map_err(io)?
+                {
+                    return Err(mismatch());
+                }
+                let receipt = archive::Receipt::new(&document, now, part_crc64.clone())
                     .map_err(why!(cloud::Error::evidence()))?;
                 let kept = registry
                     .record_archive(&context, &receipt)

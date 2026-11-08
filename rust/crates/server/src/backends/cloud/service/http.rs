@@ -64,7 +64,8 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
         )
         .route(
             "/api/worker-exchange/{project}/{run}/{attempt}/checkpoints",
-            post(checkpoint_archive).layer(DefaultBodyLimit::max(64 * 1024)),
+            // A completion lists every part's CRC-64: 4 TiB of parts fits.
+            post(checkpoint_archive).layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
         )
         .route(
             "/api/worker-exchange/{project}/{run}/{attempt}/startup-failure",

@@ -493,13 +493,15 @@ impl Store {
         Ok(format!("{}{suffix}", self.settings.prefix))
     }
     /// Short-lived tickets for parts `start..start+count` of a registered document: PUT
-    /// that cannot replace an object, or GET.
+    /// that cannot replace an object, or GET. A GET ticket carries the part's recorded
+    /// CRC-64 when `crc64` is given.
     pub fn checkpoint_tickets(
         &self,
         document: &serde_json::Value,
         start: u64,
         count: u64,
         upload: bool,
+        crc64: Option<&[u64]>,
         now: i64,
     ) -> io::Result<serde_json::Value> {
         let (_, manifest) = ml_exp_core::checkpoints::validate_document(document, None, None)
@@ -512,9 +514,12 @@ impl Store {
         }
         let expires = now.checked_add(300).ok_or_else(invalid)?;
         let mut tickets = Vec::new();
+        if crc64.is_some_and(|values| values.len() != parts.len()) {
+            return Err(invalid());
+        }
         for part in parts.iter().skip(start as usize).take(count as usize) {
             let key = self.checkpoint_key(document, part)?;
-            tickets.push(serde_json::json!({
+            let mut ticket = serde_json::json!({
                 "index": part.index,
                 "file": manifest.files[part.file].path,
                 "part": part.part,
@@ -522,7 +527,11 @@ impl Store {
                 "bytes": part.bytes,
                 "url": self.signed_url(if upload { "PUT" } else { "GET" }, &key, expires)?,
                 "headers": if upload { serde_json::json!({"x-oss-forbid-overwrite":"true"}) } else { serde_json::json!({}) },
-            }));
+            });
+            if let Some(values) = crc64 {
+                ticket["crc64"] = serde_json::json!(values[part.index as usize]);
+            }
+            tickets.push(ticket);
         }
         Ok(serde_json::json!({
             "parts": total,
@@ -531,86 +540,89 @@ impl Store {
             "expires_in_seconds": 300,
         }))
     }
-    /// Read every object of the document back. True when each file has exactly its
-    /// registered size and SHA256; false when the bytes are refused or missing. An
-    /// error means the store could not be read, which says nothing about the bytes.
-    pub fn verify_checkpoint(&self, document: &serde_json::Value) -> io::Result<bool> {
+    /// The object store's own size and CRC-64/XZ of one part, without its bytes.
+    /// `None` when there is no object. A HEAD without the CRC header is an error: it
+    /// says nothing about the bytes.
+    fn checkpoint_part_head(
+        &self,
+        document: &serde_json::Value,
+        part: &ml_exp_core::checkpoints::archive::Part,
+    ) -> io::Result<Option<(u64, u64)>> {
+        let key = self.checkpoint_key(document, part)?;
+        let response = self
+            .http
+            .head(self.signed_url(
+                "HEAD",
+                &key,
+                time::OffsetDateTime::now_utc().unix_timestamp() + 300,
+            )?)
+            .send()
+            .map_err(|error| error.without_url())
+            .map_err(why_chain!(invalid()))?;
+        let header = |name: &str| -> io::Result<u64> {
+            response
+                .headers()
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse().ok())
+                .ok_or_else(invalid)
+        };
+        match response.status().as_u16() {
+            404 => Ok(None),
+            200 => Ok(Some((
+                header("content-length")?,
+                header("x-oss-hash-crc64ecma")?,
+            ))),
+            _ => Err(invalid()),
+        }
+    }
+    /// Verify a copy without moving its bytes: every part object must exist with its
+    /// exact size and the CRC-64/XZ the worker computed from the bytes it sent. True when
+    /// all match; false when an object is missing or differs. An error means the store
+    /// could not be asked, which says nothing about the bytes. The caller checks the
+    /// worker's file SHA256 values against the registered document.
+    pub fn verify_checkpoint_parts(
+        &self,
+        document: &serde_json::Value,
+        part_crc64: &[u64],
+    ) -> io::Result<bool> {
         let (_, manifest) = ml_exp_core::checkpoints::validate_document(document, None, None)
             .map_err(why!(invalid()))?;
         let parts =
             ml_exp_core::checkpoints::archive::parts(&manifest.files).map_err(why!(invalid()))?;
-        let mut buffer = vec![0u8; 1024 * 1024];
-        let mut current: Option<(usize, Sha256, u64)> = None;
-        let finish = |state: Option<(usize, Sha256, u64)>| -> bool {
-            match state {
-                None => true,
-                Some((file, hash, bytes)) => {
-                    let record = &manifest.files[file];
-                    bytes == record.bytes && format!("{:x}", hash.finalize()) == record.sha256
-                }
-            }
-        };
-        let mut next_file = 0usize;
-        for part in &parts {
-            // Files before this one that have no parts are empty: their hash is fixed.
-            if current
-                .as_ref()
-                .is_none_or(|(file, _, _)| *file != part.file)
-            {
-                if !finish(current.take()) {
-                    return Ok(false);
-                }
-                for record in &manifest.files[next_file..part.file] {
-                    if record.bytes != 0 || format!("{:x}", Sha256::digest(b"")) != record.sha256 {
-                        return Ok(false);
-                    }
-                }
-                next_file = part.file + 1;
-                current = Some((part.file, Sha256::new(), 0));
-            }
-            let key = self.checkpoint_key(document, part)?;
-            let response = self
-                .http
-                .get(self.signed_url(
-                    "GET",
-                    &key,
-                    time::OffsetDateTime::now_utc().unix_timestamp() + 300,
-                )?)
-                .timeout(Duration::from_secs(600))
-                .send()
-                .map_err(|error| error.without_url())
-                .map_err(why_chain!(invalid()))?;
-            match response.status().as_u16() {
-                404 => return Ok(false),
-                200 if response.content_length() != Some(part.bytes) => return Ok(false),
-                200 => {}
-                _ => return Err(invalid()),
-            }
-            let (_, hash, bytes) = current.as_mut().ok_or_else(invalid)?;
-            let mut body = response.take(part.bytes + 1);
-            let mut read = 0u64;
-            loop {
-                let n = body.read(&mut buffer)?;
-                if n == 0 {
-                    break;
-                }
-                hash.update(&buffer[..n]);
-                read += n as u64;
-            }
-            if read != part.bytes {
-                return Err(invalid());
-            }
-            *bytes += read;
-        }
-        if !finish(current.take()) {
+        if parts.len() != part_crc64.len() {
             return Ok(false);
         }
-        for file in &manifest.files[next_file..] {
-            if file.bytes != 0 || format!("{:x}", Sha256::digest(b"")) != file.sha256 {
-                return Ok(false);
-            }
+        // A few HEADs at once: each is a round trip to another region.
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let results: Vec<io::Result<bool>> = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| -> io::Result<bool> {
+                        loop {
+                            let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let Some(part) = parts.get(index) else {
+                                return Ok(true);
+                            };
+                            match self.checkpoint_part_head(document, part)? {
+                                Some((bytes, crc))
+                                    if bytes == part.bytes && crc == part_crc64[index] => {}
+                                _ => return Ok(false),
+                            }
+                        }
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap_or_else(|_| Err(invalid())))
+                .collect()
+        });
+        let mut all = true;
+        for result in results {
+            all &= result?;
         }
-        Ok(true)
+        Ok(all)
     }
 }
 struct Reader<'a> {
@@ -828,6 +840,14 @@ mod tests {
                 let key = target.split('?').next().unwrap().to_owned();
                 oss.requests.lock().unwrap().push(format!("{method} {key}"));
                 let mut objects = oss.objects.lock().unwrap();
+                // OSS reports its own CRC-64 of every stored object.
+                let crc = match objects.get(&key) {
+                    Some(found) if matches!(method.as_str(), "HEAD" | "GET") => format!(
+                        "x-oss-hash-crc64ecma: {}\r\n",
+                        ml_exp_core::checkpoints::archive::crc64(found)
+                    ),
+                    _ => String::new(),
+                };
                 let (status, reply, size): (&str, Vec<u8>, usize) = match method.as_str() {
                     "PUT" if forbid && objects.contains_key(&key) => ("409 Conflict", vec![], 0),
                     "PUT" => {
@@ -847,7 +867,7 @@ mod tests {
                 };
                 let _ = write!(
                     socket,
-                    "HTTP/1.1 {status}\r\nContent-Length: {size}\r\nConnection: close\r\n\r\n"
+                    "HTTP/1.1 {status}\r\nContent-Length: {size}\r\n{crc}Connection: close\r\n\r\n"
                 );
                 let _ = socket.write_all(&reply);
             }
@@ -1024,7 +1044,7 @@ mod tests {
         ]});
         let document = ml_exp_core::checkpoints::document(&context, &ready).unwrap();
         let tickets = store
-            .checkpoint_tickets(&document, 0, 8, true, 1_000_000)
+            .checkpoint_tickets(&document, 0, 8, true, None, 1_000_000)
             .unwrap();
         assert_eq!(tickets["parts"], 1);
         let ticket = &tickets["tickets"][0];
@@ -1037,16 +1057,38 @@ mod tests {
             sha(&model)
         );
         assert_eq!(url.path(), key);
-        assert!(!store.verify_checkpoint(&document).unwrap());
+        let crc = ml_exp_core::checkpoints::archive::crc64(&model);
+        // Missing: the object store has nothing under the key.
+        assert!(!store.verify_checkpoint_parts(&document, &[crc]).unwrap());
+        // The right size with other bytes: OSS's CRC differs from the worker's.
         let mut wrong = model.clone();
         wrong[0] ^= 1;
         oss.objects.lock().unwrap().insert(key.clone(), wrong);
-        assert!(!store.verify_checkpoint(&document).unwrap());
-        oss.objects.lock().unwrap().insert(key, model);
-        assert!(store.verify_checkpoint(&document).unwrap());
+        assert!(!store.verify_checkpoint_parts(&document, &[crc]).unwrap());
+        oss.objects.lock().unwrap().insert(key.clone(), model);
+        assert!(store.verify_checkpoint_parts(&document, &[crc]).unwrap());
+        // A worker that reports another CRC, or the wrong number of parts, is refused.
+        assert!(
+            !store
+                .verify_checkpoint_parts(&document, &[crc ^ 1])
+                .unwrap()
+        );
+        assert!(!store.verify_checkpoint_parts(&document, &[]).unwrap());
+        // Verification sends HEADs only: no object body is read through this host.
+        assert!(
+            !oss.requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|r| r.starts_with("GET ") && r.contains("/checkpoints/"))
+        );
+        let download = store
+            .checkpoint_tickets(&document, 0, 8, false, Some(&[crc]), 1_000_000)
+            .unwrap();
+        assert_eq!(download["tickets"][0]["crc64"], crc);
         assert!(
             store
-                .checkpoint_tickets(&document, 2, 8, false, 1_000_000)
+                .checkpoint_tickets(&document, 2, 8, false, None, 1_000_000)
                 .is_err()
         );
     }

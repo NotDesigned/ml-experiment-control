@@ -29,7 +29,7 @@ explicitly. Before an Attempt is bound, only status can inspect preparation.
 | Scheduler RUNNING | Scheduler state, not evidence that user training started |
 | Recent worker step/log | Training liveness evidence at that observation time |
 | Checkpoint REGISTERED | Worker verified a complete persistent generation, not an API archive |
-| Checkpoint in `archives` | The server read its OSS copy back and every file matched; see [state purge](#checkpoint-copies-and-the-state-purge) |
+| Checkpoint in `archives` | OSS's size and CRC-64 of every part matched the worker's, and the worker's file SHA256 values the registered ones; see [state purge](#checkpoint-copies-and-the-state-purge) |
 | Process exit 0 | Entry process succeeded; publication/scientific validity remain separate |
 | AVAILABLE + SHA256_VERIFIED | Result archive is ready for verified client download |
 | Download ACK accepted | Exact verified local receipt and retention choice were recorded |

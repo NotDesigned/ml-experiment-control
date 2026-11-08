@@ -4,7 +4,9 @@
 //! Bytes go straight between backend storage and the object store with short-lived
 //! tickets on the Attempt's own capability; this worker holds no other credential. An
 //! upload runs beside training on its own thread, one part at a time under the rate the
-//! server names, and the server reads every object back before it records a copy. A
+//! server names. The worker reports each part's CRC-64/XZ and each file's SHA256 of the
+//! bytes it sent; the server checks the object store's own CRC-64 of every part and the
+//! registered SHA256 values before it records a copy, without reading the bytes. A
 //! failed upload is tried again on the next pass and never touches training. A restore
 //! gives the Attempt its own copy before training starts: a hard link to the original
 //! Attempt's sealed file when that file still has its registered bytes, otherwise the
@@ -194,7 +196,21 @@ fn pace(started: Instant, sent: u64, rate: u64) {
     }
 }
 
-fn put(http: &reqwest::blocking::Client, uri: &reqwest::Url, bytes: &[u8]) -> Result<bool> {
+/// The object store's CRC-64 of what it stored, when it says.
+fn stored_crc64(response: &reqwest::blocking::Response) -> Option<u64> {
+    response
+        .headers()
+        .get("x-oss-hash-crc64ecma")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse().ok())
+}
+
+fn put(
+    http: &reqwest::blocking::Client,
+    uri: &reqwest::Url,
+    bytes: &[u8],
+    crc64: u64,
+) -> Result<bool> {
     let mut count = 0;
     loop {
         count += 1;
@@ -203,13 +219,18 @@ fn put(http: &reqwest::blocking::Client, uri: &reqwest::Url, bytes: &[u8]) -> Re
             .header("x-oss-forbid-overwrite", "true")
             .body(bytes.to_vec())
             .send()
-            .map(|response| response.status().as_u16());
+            .map(|response| (response.status().as_u16(), stored_crc64(&response)));
         match status {
-            // An object that is already there is read back by the server like any other.
-            Ok(200 | 409) => return Ok(true),
+            // A store that says it kept other bytes than were sent.
+            Ok((200, Some(stored))) if stored != crc64 => {
+                eprintln!("ML_EXPD_CHECKPOINT_ARCHIVE=PART_CRC64_DIFFERS");
+                return Err(Error::Uncertain);
+            }
+            // An object that is already there is checked by the server like any other.
+            Ok((200 | 409, _)) => return Ok(true),
             // A ticket that expired while earlier parts were sent: ask for new ones.
-            Ok(403) => return Ok(false),
-            Ok(status) if !retry::may_pass(status) => {
+            Ok((403, _)) => return Ok(false),
+            Ok((status, _)) if !retry::may_pass(status) => {
                 eprintln!("ML_EXPD_CHECKPOINT_ARCHIVE=PART_REFUSED HTTP {status}");
                 return Err(Error::Uncertain);
             }
@@ -219,7 +240,9 @@ fn put(http: &reqwest::blocking::Client, uri: &reqwest::Url, bytes: &[u8]) -> Re
     }
 }
 
-/// Send every part of one registered checkpoint, then have the server read it back.
+/// Send every part of one registered checkpoint, computing each part's CRC-64 and each
+/// file's SHA256 from the bytes sent, then have the server check them against the
+/// object store and the registered document.
 fn upload(
     http: &reqwest::blocking::Client,
     package: &Package,
@@ -249,6 +272,8 @@ fn upload(
     let mut sent = 0u64;
     let mut start = 0u64;
     let mut expired = 0;
+    let mut part_crc64 = Vec::with_capacity(parts.len());
+    let mut hashes: Vec<Sha256> = manifest.files.iter().map(|_| Sha256::new()).collect();
     while start < parts.len() as u64 {
         if cancelled.load(Ordering::Relaxed) {
             return Ok(false);
@@ -301,24 +326,44 @@ fn upload(
                 .map_err(crate::managed::storage_failure!())?;
             file.read_exact(chunk)
                 .map_err(crate::managed::storage_failure!())?;
-            if !put(http, &uri, chunk)? {
+            let crc = archive::crc64(chunk);
+            if !put(http, &uri, chunk, crc)? {
                 expired += 1;
                 if expired > 3 {
                     return Err(Error::Uncertain);
                 }
                 break;
             }
+            // Counted once each, in part order, only after the store accepted the part.
+            part_crc64.push(crc);
+            hashes[part.file].update(&*chunk);
             expired = 0;
             sent += part.bytes;
             start += 1;
             pace(started, sent, rate);
         }
     }
+    let file_sha256: Vec<String> = hashes
+        .into_iter()
+        .map(|hash| format!("{:x}", hash.finalize()))
+        .collect();
+    // Bytes that changed on backend storage since registration are not offered.
+    if manifest
+        .files
+        .iter()
+        .zip(&file_sha256)
+        .any(|(record, sha)| record.sha256 != *sha)
+    {
+        eprintln!("ML_EXPD_CHECKPOINT_ARCHIVE=LOCAL_SHA256_DIFFERS {checkpoint_id}");
+        return Err(Error::Binding);
+    }
     let done = send(
         http,
         package,
         Operation::Complete {
             checkpoint_id: checkpoint_id.into(),
+            part_crc64,
+            file_sha256,
         },
     )?;
     Ok(done["archived"] == true)
@@ -484,6 +529,12 @@ fn download(
                     _ => std::thread::sleep(retry::delay(count)),
                 }
             };
+            // The part's recorded CRC-64 first: a wrong part is named before the file.
+            if ticket["crc64"] != archive::crc64(&bytes) {
+                drop(file);
+                let _ = directory.remove_staged_regular(OsStr::new(&partial));
+                return Err(restore_failed("PART_CRC64_MISMATCH"));
+            }
             hash.update(&bytes);
             file.write_all(&bytes)
                 .map_err(crate::managed::storage_failure!())?;
