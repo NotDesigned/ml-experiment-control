@@ -540,11 +540,16 @@ pub fn run(config: &Config, cancelled: &AtomicBool) -> Result<Observation> {
     if let Some(document) = &config.checkpoint_restore {
         let (_, manifest) = ml_exp_core::checkpoints::validate_document(document, None, None)
             .map_err(|_| Error::Binding)?;
-        // The Attempt's own delivered copy when it has one, else the original's.
-        let state_root = config
-            .restore_state_root()
-            .map_err(|_| Error::Binding)?
-            .ok_or(Error::Binding)?;
+        // The Attempt's own delivered copy when the frozen RESUME_DIR names it, else the
+        // original's. `environment` was checked against both just above.
+        let plan =
+            ml_exp_core::checkpoints::restore_plan(document, None).map_err(|_| Error::Binding)?;
+        let state_root = ml_exp_core::checkpoints::archive::resume_state_root(
+            &plan,
+            &config.attempt_root,
+            environment.get("RESUME_DIR").ok_or(Error::Binding)?,
+        )
+        .map_err(|_| Error::Binding)?;
         let root = Directory::open(std::path::Path::new(&state_root), false)
             .map_err(crate::managed::storage_failure!())?;
         ml_exp_io::checkpoints::verify_sealed(&root, &manifest).map_err(|_| Error::Binding)?;

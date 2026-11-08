@@ -217,7 +217,6 @@ mod tests {
             output_directory: Some(attempt.join("outputs")),
             runtime_environment: Vec::new(),
             checkpoint_restore: None,
-            checkpoint_restore_root: None,
             datasets: Vec::new(),
             data_preparation: None,
         }

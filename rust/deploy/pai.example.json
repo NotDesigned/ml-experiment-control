@@ -33,6 +33,7 @@
     "prefix": "users/researcher/ml-exp/",
     "credentials_file": "/etc/ml-exp/oss-credentials.json"
   },
+  "checkpoint_archive": {"purge_delay_seconds": 900, "automatic_purge": true, "upload_bytes_per_second": 67108864},
   "builds": {
     "socket": "/run/ml-exp-builder/builder.sock",
     "peer_uid": 0,

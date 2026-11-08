@@ -91,17 +91,18 @@ impl Package {
         if let Some(value) = &checkpoint {
             let plan = crate::checkpoints::restore_plan(value, None)
                 .map_err(|_| Error("cloud restore plan"))?;
+            // A Run that copies checkpoints restores from the Attempt's own copy, which
+            // the worker delivers before training; any other reads the original.
             let state_root = if self.checkpoint_archive {
-                let root = crate::checkpoints::archive::restore_root(
+                crate::checkpoints::archive::restore_root(
                     &self.config.attempt_root,
                     &plan.checkpoint_id,
                 )
-                .map_err(|_| Error("cloud restore plan"))?;
-                let text = root.to_str().ok_or(Error("cloud restore path"))?.to_owned();
-                self.config.checkpoint_restore_root = Some(root);
-                text
+                .map_err(|_| Error("cloud restore plan"))?
+                .to_str()
+                .ok_or(Error("cloud restore path"))?
+                .to_owned()
             } else {
-                self.config.checkpoint_restore_root = None;
                 plan.state_root.clone()
             };
             self.manifest.environment.extend([
@@ -140,11 +141,6 @@ impl Package {
         }
         if let Some(policy) = &self.artifacts {
             policy.validate().map_err(|_| Error("artifact policy"))?;
-        }
-        if self.config.checkpoint_restore_root.is_some()
-            && (!self.checkpoint_archive || self.checkpoint_context.is_none())
-        {
-            return Err(Error("checkpoint restore delivery"));
         }
         self.config
             .validate()
@@ -350,7 +346,6 @@ pub fn compile(input: Input<'_>) -> Result<Package> {
             "LD_LIBRARY_PATH".into(),
         ],
         checkpoint_restore: None,
-        checkpoint_restore_root: None,
         datasets: Vec::new(),
         data_preparation: None,
     };

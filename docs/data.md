@@ -17,6 +17,19 @@ signed part URLs, so a dataset's bytes do not pass through the API host.
 Training code never reads or writes there, and no OSS path is mounted. Slurm uses no
 object store: parts arrive over SSH and its archive stays on shared storage.
 
+On PAI, OSS is also where registered checkpoints are kept. In a Run that copies
+checkpoints, the worker sends each registered generation to OSS while training runs,
+the server reads it back before it records the copy, and that verified copy is the
+checkpoint's authority. CPFS is then only a working area: once an Attempt has ended,
+its results are published and every checkpoint it registered has a verified copy,
+the platform removes that Attempt's `state/` from CPFS, by default 15 minutes later.
+Snapshots, unpacked data and anything else in `STATE_DIR` that is not a registered
+checkpoint are not copied and go with it; `outputs/` stays. A restore reads the
+original CPFS files while they exist and the OSS copy after. See
+[persistent checkpoints](persistent-checkpoints.md#object-store-copies-on-pai-dlc) and
+[the state purge](recovery.md#checkpoint-copies-and-the-state-purge). Slurm keeps all
+of this on its shared storage.
+
 A second location, if one is ever added, would map roles (runs, state, datasets) to
 paths on declared mounts in the backend configuration. Clients and training code would
 not change: `STATE_DIR` is still `STATE_DIR`. The storage scope that checks

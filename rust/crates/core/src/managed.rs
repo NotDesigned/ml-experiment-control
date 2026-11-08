@@ -34,11 +34,6 @@ pub struct Config {
     pub runtime_environment: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint_restore: Option<serde_json::Value>,
-    /// This Attempt's own copy of the restored generation, delivered before training
-    /// from the original Attempt's storage or from its verified object-store copy.
-    /// Without it the generation is read where the original Attempt wrote it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub checkpoint_restore_root: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub datasets: Vec<crate::datasets::Mount>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -139,22 +134,6 @@ impl Config {
         if let Some(value) = &self.checkpoint_restore {
             crate::checkpoints::restore_plan(value, None).map_err(|_| Error)?;
         }
-        if let Some(root) = &self.checkpoint_restore_root {
-            let plan = crate::checkpoints::restore_plan(
-                self.checkpoint_restore.as_ref().ok_or(Error)?,
-                None,
-            )
-            .map_err(|_| Error)?;
-            if *root
-                != crate::checkpoints::archive::restore_root(
-                    &self.attempt_root,
-                    &plan.checkpoint_id,
-                )
-                .map_err(|_| Error)?
-            {
-                return Err(Error);
-            }
-        }
         if !absolute(&self.manifest_path)
             || !absolute(&self.attempt_root)
             || self.attempt_root.file_name().is_none()
@@ -180,17 +159,6 @@ impl Config {
     }
     pub fn digest(&self) -> Result<String> {
         canonical::digest(&serde_json::to_value(self).map_err(|_| Error)?).map_err(|_| Error)
-    }
-    /// The state root that holds the generation `RESUME_DIR` names.
-    pub fn restore_state_root(&self) -> Result<Option<String>> {
-        let Some(value) = &self.checkpoint_restore else {
-            return Ok(None);
-        };
-        let plan = crate::checkpoints::restore_plan(value, None).map_err(|_| Error)?;
-        Ok(Some(match &self.checkpoint_restore_root {
-            Some(root) => root.to_str().ok_or(Error)?.to_owned(),
-            None => plan.state_root,
-        }))
     }
 }
 
@@ -280,10 +248,13 @@ pub fn execution_environment(
     if let Some(value) = &config.checkpoint_restore {
         let plan =
             crate::checkpoints::restore_plan(value, None).map_err(|_| AdmissionError::Binding)?;
-        let state_root = config
-            .restore_state_root()
-            .map_err(|_| AdmissionError::Binding)?
-            .ok_or(AdmissionError::Binding)?;
+        // The original Attempt's generation, or this Attempt's own delivered copy of it.
+        let state_root = crate::checkpoints::archive::resume_state_root(
+            &plan,
+            &config.attempt_root,
+            values.get("RESUME_DIR").ok_or(AdmissionError::Binding)?,
+        )
+        .map_err(|_| AdmissionError::Binding)?;
         for (key, expected) in [
             (
                 "RESUME_DIR",

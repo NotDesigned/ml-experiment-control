@@ -152,7 +152,6 @@ pub fn plan_with_inputs(
                 serde_json::from_slice(&bytes).map_err(|_| helper::Error::Metadata)
             })
             .transpose()?,
-        checkpoint_restore_root: None,
         datasets: datasets.to_vec(),
         data_preparation: None,
     };

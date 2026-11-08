@@ -199,8 +199,11 @@ experiment file.
    the gateway; enabling an executor installs nothing remote.
 2. **Configure results and worker callbacks.** Cloud backends need `exchange` with
    a public HTTPS URL that workers can reach and a private signing key of at least
-   32 random bytes, plus `artifacts` for the private object prefix. Keep persistent
-   training state separate from temporary result parts.
+   32 random bytes, plus `artifacts` for the private object prefix. On PAI the same
+   prefix also keeps new Runs' checkpoint copies, which are not temporary: do not put
+   an expiry lifecycle rule on `PREFIX/checkpoints/`. A `collector` lets the server
+   purge ended Attempts' `state/` from CPFS once those copies are verified; tune it with
+   [`checkpoint_archive`](configuration.md#checkpoint-copies-and-the-state-purge).
 3. **Prepare the image builder and registry.** See [image builder](#image-builder).
    Slurm may instead use an existing trusted Runtime receipt or the cloud builder's
    `slurm` materializer map. Verify that a bounded build reaches READY and that the

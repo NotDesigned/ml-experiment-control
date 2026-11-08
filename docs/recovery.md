@@ -29,6 +29,7 @@ explicitly. Before an Attempt is bound, only status can inspect preparation.
 | Scheduler RUNNING | Scheduler state, not evidence that user training started |
 | Recent worker step/log | Training liveness evidence at that observation time |
 | Checkpoint REGISTERED | Worker verified a complete persistent generation, not an API archive |
+| Checkpoint in `archives` | The server read its OSS copy back and every file matched; see [state purge](#checkpoint-copies-and-the-state-purge) |
 | Process exit 0 | Entry process succeeded; publication/scientific validity remain separate |
 | AVAILABLE + SHA256_VERIFIED | Result archive is ready for verified client download |
 | Download ACK accepted | Exact verified local receipt and retention choice were recorded |
@@ -275,7 +276,8 @@ prevent ACK. The native endpoint is `POST /api/submissions/ACTION/acknowledge`;
 GET, partial download or a failed checksum never authorizes release.
 
 Release-enabled ACK permits immediate removal of the generated transfer
-archive; there is no 24-hour delay. It does not remove backend checkpoints,
+archive; there is no 24-hour delay. It does not remove backend checkpoints or their
+OSS copies,
 original outputs or dataset assets. Physical object-store cleanup can lag. The
 platform has no timer that expires an archive, but `--keep` is not a permanent
 backup guarantee: a lifecycle rule on the bucket would act outside the platform.
@@ -306,6 +308,58 @@ particular cause. For errno 28, check the
 actual mounted path, inode/file-count and quota; freeing API archives is not
 proof that NAS or CPFS writes work.
 
+
+## Checkpoint copies and the state purge
+
+On PAI DLC a Run that copies checkpoints keeps each registered checkpoint on OSS, and
+the verified copy is its authority; see
+[object-store copies](persistent-checkpoints.md#object-store-copies-on-pai-dlc). A
+retry with `--checkpoint`, or a new Run with `resume_from`, restores from the original
+Attempt's CPFS files while they are there and from the verified copy after its `state/`
+is purged. The restore fails, and training does not start, when neither holds the
+registered bytes.
+
+An ended Attempt's `state/` is removed from CPFS when all of these hold:
+
+| Condition | `blocked_by` when it does not |
+|---|---|
+| The scheduler job is proven to have ended | `ATTEMPT_NOT_TERMINAL` |
+| Its worker reported its end | `WORKER_NOT_FINISHED` |
+| The last ready marker verified | `LAST_CHECKPOINT_UNVERIFIED` |
+| A completed training's results are published | `RESULTS_NOT_PUBLISHED` |
+| Every registered checkpoint has a verified OSS copy | `CHECKPOINT_NOT_ARCHIVED` |
+| The Run copies checkpoints (automatic purge only) | `CHECKPOINT_ARCHIVE_NOT_ENABLED` |
+
+The server checks these about once a minute and starts the purge
+`purge_delay_seconds` (default 900) after it first saw all of them hold; 0 starts it at
+once. The purge is the reviewed `state` maintenance plan run as a zero-GPU CPU job on the
+backend's `collector`, with the Attempt's own worker and capability; it is bounded to
+that Attempt's `state/`, deletes through the directory it inspected and is idempotent.
+`outputs/`, checkpoint records and their OSS copies stay. Its plan, trigger, times, the
+checkpoints it relied on and the job's receipt are kept beside the Attempt and shown by
+`ml-exp run checkpoints` as `state_purge`. The plan's identity decides the job, so a
+restart or a repeated request observes the same job.
+
+To purge now, without the delay:
+
+```bash
+ml-exp run purge-state --project my-study --run training --attempt attempt-001 \
+  --confirmation 'PURGE my-study/training/attempt-001'
+```
+
+It answers `BLOCKED` with `blocked_by` and changes nothing while a condition fails,
+`PURGING` once the job is asked for, and `PURGED` with the receipt. Repeat it to observe.
+A worker that was preempted never reports its end, and it may have written a generation
+it never registered. Run `ml-exp run sync` first, which registers the last ready marker
+and copies it, then confirm with `'PURGE UNFINISHED my-study/training/attempt-001'` to
+accept that anything still unregistered is removed. After `PURGE_JOB_FAILED`, the same
+command makes one new plan. The automatic purge never does that, and never purges an
+unfinished worker's state. The endpoint is
+`POST /api/runs/P/R/attempts/A/purge-state` with `{"confirmation": ...}`.
+
+A registered checkpoint whose CPFS files were removed before its copy was made cannot
+be copied. Remove it with `admin plan --kind checkpoint` ([deletion](resource-deletion.md))
+to let the purge proceed. Slurm keeps its shared storage and has no purge.
 
 ## Read-only collector diagnostics
 

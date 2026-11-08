@@ -100,7 +100,6 @@ fn evidence_requires_exact_sealed_identity_and_immutable_terminal_receipt() {
         output_directory: None,
         runtime_environment: Vec::new(),
         checkpoint_restore: None,
-        checkpoint_restore_root: None,
         datasets: Vec::new(),
         data_preparation: None,
     };

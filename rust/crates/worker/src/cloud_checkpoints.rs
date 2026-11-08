@@ -525,19 +525,25 @@ fn seal_tree(directory: &Directory, depth: usize) -> Result<()> {
 /// training. Nothing here starts training; a copy that cannot be proven stops the start.
 pub fn restore(package: &Package, cancelled: &AtomicBool) -> Result<()> {
     let config = &package.config;
-    let (Some(document), Some(root)) =
-        (&config.checkpoint_restore, &config.checkpoint_restore_root)
-    else {
+    let Some(document) = &config.checkpoint_restore else {
         return Ok(());
     };
     let (source, manifest) =
         checkpoints::validate_document(document, None, None).map_err(|_| Error::Binding)?;
     let plan = checkpoints::restore_plan(document, None).map_err(|_| Error::Binding)?;
-    if *root
-        != archive::restore_root(&config.attempt_root, &plan.checkpoint_id)
-            .map_err(|_| Error::Binding)?
+    let root = archive::restore_root(&config.attempt_root, &plan.checkpoint_id)
+        .map_err(|_| Error::Binding)?;
+    let resume = package
+        .manifest
+        .environment
+        .get("RESUME_DIR")
+        .ok_or(Error::Binding)?;
+    // An Attempt frozen to read the original generation in place has nothing to deliver.
+    if archive::resume_state_root(&plan, &config.attempt_root, resume)
+        .map_err(|_| Error::Binding)?
+        != root.to_str().ok_or(Error::Binding)?
     {
-        return Err(Error::Binding);
+        return Ok(());
     }
     let state = Directory::open(&config.attempt_root.join("state"), false)
         .map_err(crate::managed::storage_failure!())?;

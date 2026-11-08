@@ -140,7 +140,8 @@ impl Service {
         });
         // A worker that never reported its end, as after a preemption, may have written
         // a generation it never registered. Only a request that says so accepts that.
-        if !finished && !(explicit && accept_unfinished) {
+        let accepted = finished || (explicit && accept_unfinished);
+        if !accepted {
             blocked.push("WORKER_NOT_FINISHED");
         }
         if exchange

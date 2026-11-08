@@ -195,13 +195,27 @@ workaround, change the role, or make the bucket public. CPFS mounts and OSS obje
 transfers are independent and remain the supported paths. No native-mount acceptance
 is claimed.
 
-PAI does not upload periodic full checkpoints. It supports backend-resident checkpoint
-registration/restoration and normal worker metric/result transfer. With a `collector`
-configured, three zero-GPU CPU jobs run on explicit request: `data publish` prepares a
-dataset before training ([data](data.md#pai-preparation-using-an-existing-image)),
-`run sync` recovers results after training ([recovery](recovery.md#native-cpu-sync-recovery))
-and `admin execute` removes an Attempt's bytes ([deletion](resource-deletion.md)). A
-missing result upload never starts a CPU job by itself.
+A Run created with `artifacts` and `exchange` configured copies every registered
+checkpoint to OSS while it trains, and the verified copy is the checkpoint's authority;
+personal CPFS is only a working area. A preempted job can therefore resume from OSS
+after its CPFS state is gone. See
+[object-store copies](persistent-checkpoints.md#object-store-copies-on-pai-dlc).
+Runs created before this keep their checkpoints only on CPFS.
+
+With a `collector` configured, zero-GPU CPU jobs run on explicit request: `data publish`
+prepares a dataset before training ([data](data.md#pai-preparation-using-an-existing-image)),
+`run sync` recovers results and copies checkpoints after training
+([recovery](recovery.md#native-cpu-sync-recovery)), `run purge-state` removes an ended
+Attempt's `state/` ([state purge](recovery.md#checkpoint-copies-and-the-state-purge)) and
+`admin execute` removes an Attempt's bytes ([deletion](resource-deletion.md)). The one CPU
+job the server starts by itself is that same state purge, when
+`checkpoint_archive.automatic_purge` is on (the default) and every condition has held for
+`purge_delay_seconds`. A missing result upload never starts a CPU job by itself.
+
+Ended Attempts' `state/` used to stay on CPFS for ever. On 2026-11-08 about 330 GB of it
+filled the personal directory's quota while `df` showed the filesystem 29% used, and
+every new job failed at startup with errno 28. `df` does not show such a quota; the
+purge is what keeps `state/` from accumulating.
 
 ## DSW builder without enterprise ACR
 
@@ -238,6 +252,10 @@ block, at `PREFIX/results/PROJECT/RUN/ATTEMPT/ARCHIVE_SHA256/parts/NUMBER`. A
 release-enabled ACK deletes those parts and `--keep` leaves them. There is no second
 long-term copy, and no timer expires them. After a release, what remains is your
 download and the original `OUTPUT_DIR` on CPFS. See [recovery](recovery.md#collect-and-download).
+
+Checkpoint copies live below the same prefix, at
+`PREFIX/checkpoints/PROJECT/RUN/ATTEMPT/CHECKPOINT_HASH/FILE_SHA256/PART`, one 16 MiB
+object per part of each file. No ACK or timer removes them; they are the checkpoints.
 
 For optional SSH machines see [debug sessions](debug-sessions.md); for storage
 transfer configuration see [data](data.md). Provider reference:

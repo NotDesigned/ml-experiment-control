@@ -55,7 +55,8 @@ generation, not by a later report.
 
 ## Register and restore
 
-Only metadata is uploaded. The checkpoint ID binds project/Run/Attempt,
+Registration uploads only metadata. On PAI DLC the bytes then also go to the object
+store; see [object-store copies](#object-store-copies-on-pai-dlc). The checkpoint ID binds project/Run/Attempt,
 source/image/storage context and sorted file hashes. Registration is idempotent
 and reports REGISTERED / worker-sha256: the worker verified bytes, not an
 independent server read of backend storage. The platform exports acknowledged references
@@ -78,7 +79,9 @@ Create a **new Run** with its exact reference:
 ```
 
 The worker rehashes the
-actual generation before training and exposes it through RESUME_DIR. Your code
+actual generation before training and exposes it through RESUME_DIR. On PAI DLC,
+in a Run that copies checkpoints, RESUME_DIR is the new Attempt's own copy below its
+`STATE_DIR/.restore/`; see below. Your code
 restores all scientific state. Missing/corrupt files block training without a
 latest/older fallback. References must belong to the same project/storage scope;
 GPU profiles may differ when storage is shared, but Slurm and DLC
@@ -99,20 +102,56 @@ latest checkpoint automatically. The parent can have completed successfully;
 its checkpoint must match the same source, image and storage scope. Changed
 scientific configuration requires a new Run. See [recovery](recovery.md).
 
+## Object-store copies on PAI DLC
+
+CPFS is a working area, not where checkpoints are kept. A PAI Run created by this
+release, with the backend's `artifacts` and `exchange` configured, freezes
+`native_cloud.checkpoint_archive: true`; every Attempt of it then copies each
+registered checkpoint to OSS, and the verified copy becomes the checkpoint's
+authority. Older Runs keep their checkpoints only on CPFS, as before.
+
+- **Upload.** While training runs, a worker thread looks every minute for registered
+  checkpoints without a verified copy and sends them, newest first, one 16 MiB part at
+  a time, at most at the backend's `upload_bytes_per_second`. Each part goes straight
+  to `PREFIX/checkpoints/PROJECT/RUN/ATTEMPT/CHECKPOINT_HASH/FILE_SHA256/PART` with a
+  5-minute write ticket that cannot replace an object. Training never waits for it.
+  When training ends the worker finishes the pass, drains the last ready marker and
+  copies what is left before it exits, whatever the training outcome. `ml-exp run
+  sync` does the same for a job that was preempted or killed.
+- **Verification.** The server reads every object back and checks each file's size
+  and SHA256 against the registered document. Only then does it keep a sealed
+  receipt, `verification: server-sha256`, beside the document. The worker's word is
+  never enough, and an unreadable store records nothing.
+- **Restore.** A new Attempt that resumes from a checkpoint gets its own copy at
+  `STATE_DIR/.restore/CHECKPOINT_HASH/checkpoints/GENERATION` before training: a hard
+  link to the original Attempt's sealed file when it still has its registered size and
+  SHA256, otherwise a download of the verified copy, each part checked and each file
+  hashed before it is sealed. Then the usual check hashes the whole generation. No copy,
+  or a copy that does not verify, stops the start; no older checkpoint is chosen.
+- **Purge.** An ended Attempt's `state/` is removed once every condition in
+  [recovery](recovery.md#checkpoint-copies-and-the-state-purge) holds. Snapshots and
+  anything else in `STATE_DIR` that is not a registered checkpoint go with it.
+
+`ml-exp run checkpoints` lists the receipts as `archives` and the purge as `state_purge`.
+
 ## Limits and failures
 
 Backend state bypasses API archive byte limits but remains subject to backend
 disk/quota. Checkpoint metadata is limited to 256 KiB/20,000 files. The complete native
 worker package, including input definitions and restore metadata, must fit
 8 MiB; its serialized size determines whether preparation can proceed.
-The platform exports nothing from `STATE_DIR`. To take recovery state off backend
-storage, write a copy into `OUTPUT_DIR`, where archive and part limits apply.
+Outside the object-store copies above, the platform exports nothing from `STATE_DIR`.
+To take other recovery state off backend storage, write a copy into `OUTPUT_DIR`,
+where archive and part limits apply.
 
 Registration failures retry while the worker remains alive. No acknowledged
 metadata means no registered API reference yet. Result-upload failure does not
 delete persistent state, but a REGISTERED checkpoint alone is not a downloadable
-archive. See [output recovery](recovery.md#output-recovery). Retain referenced
-generations deliberately; no automatic state garbage collection exists.
+archive. See [output recovery](recovery.md#output-recovery). Without object-store
+copies there is no automatic state removal; retain referenced generations deliberately.
+A registered generation whose files were removed from CPFS before its copy was made
+can never be copied, so it keeps its Attempt's `state/` from being purged until an
+administrator removes that checkpoint.
 An administrator can explicitly [remove](resource-deletion.md) a terminal Attempt's
 `outputs`, its `state` or one generation, on Slurm and PAI DLC. On PAI
 this runs as a zero-GPU job and needs the backend's `collector`. A generation

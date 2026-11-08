@@ -114,6 +114,23 @@ pub fn restore_root(attempt_root: &Path, checkpoint_id: &str) -> Result<PathBuf>
         .join(hex(checkpoint_id)?))
 }
 
+/// The state root that a restoring Attempt's frozen `RESUME_DIR` names: the original
+/// Attempt's, or this Attempt's own copy. Nothing else is accepted.
+pub fn resume_state_root(
+    plan: &super::RestorePlan,
+    attempt_root: &Path,
+    resume_dir: &str,
+) -> Result<String> {
+    let own = restore_root(attempt_root, &plan.checkpoint_id)?;
+    let own = own.to_str().ok_or(Error::Identity)?;
+    for root in [plan.state_root.as_str(), own] {
+        if resume_dir == format!("{root}/checkpoints/{}", plan.generation) {
+            return Ok(root.to_owned());
+        }
+    }
+    Err(Error::Identity)
+}
+
 /// The server's record that the object-store copy holds every byte of the
 /// registered document. It is written once and never changed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -239,6 +256,42 @@ mod tests {
                 "b".repeat(64)
             ))
         );
+    }
+
+    #[test]
+    fn resume_dir_names_only_the_original_or_the_attempts_own_copy() {
+        let plan = super::super::RestorePlan {
+            checkpoint_id: format!("checkpoint.{}", "e".repeat(64)),
+            step: 1,
+            generation: "s1".into(),
+            state_root: "/r/demo/train/attempt-001/state".into(),
+            files: Vec::new(),
+        };
+        let attempt = Path::new("/r/demo/train/attempt-002");
+        let own = format!(
+            "/r/demo/train/attempt-002/state/.restore/{}",
+            "e".repeat(64)
+        );
+        assert_eq!(
+            resume_state_root(
+                &plan,
+                attempt,
+                "/r/demo/train/attempt-001/state/checkpoints/s1"
+            )
+            .unwrap(),
+            plan.state_root
+        );
+        assert_eq!(
+            resume_state_root(&plan, attempt, &format!("{own}/checkpoints/s1")).unwrap(),
+            own
+        );
+        for other in [
+            "/r/demo/train/attempt-001/state/checkpoints/s2",
+            "/tmp/checkpoints/s1",
+            "/r/demo/train/attempt-002/state/checkpoints/s1",
+        ] {
+            assert!(resume_state_root(&plan, attempt, other).is_err(), "{other}");
+        }
     }
 
     #[test]
