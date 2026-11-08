@@ -634,3 +634,110 @@ pub fn restore(package: &Package, cancelled: &AtomicBool) -> Result<()> {
     );
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    fn context(root: &Path, attempt: &str) -> checkpoints::Context {
+        checkpoints::Context {
+            project: "demo".into(),
+            run_id: "train".into(),
+            attempt_id: attempt.into(),
+            source_id: format!("source.{}", "a".repeat(64)),
+            image_id: format!("sha256:{}", "b".repeat(64)),
+            storage_scope: format!("sha256:{}", "c".repeat(64)),
+            state_root: root
+                .join(format!("demo/train/{attempt}/state"))
+                .to_str()
+                .unwrap()
+                .into(),
+        }
+    }
+
+    #[test]
+    fn a_restore_links_the_originals_sealed_file_and_then_finds_its_copy_ready() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let root = temp.path().join("runs");
+        let original = root.join("demo/train/attempt-001/state/checkpoints/s1");
+        std::fs::create_dir_all(&original).unwrap();
+        std::fs::create_dir_all(root.join("demo/train/attempt-002/state")).unwrap();
+        let bytes = b"weights".to_vec();
+        std::fs::write(original.join("model.bin"), &bytes).unwrap();
+        std::fs::set_permissions(
+            original.join("model.bin"),
+            std::fs::Permissions::from_mode(0o400),
+        )
+        .unwrap();
+        let ready = json!({"step":1,"files":[{"path":"checkpoints/s1/model.bin","bytes":bytes.len(),
+            "sha256":format!("{:x}", Sha256::digest(&bytes))}]});
+        let document = checkpoints::register(
+            &checkpoints::document(&context(&root, "attempt-001"), &ready).unwrap(),
+            "2026-11-08T00:00:00Z",
+        )
+        .unwrap();
+        let mut package = ml_exp_core::cloud::launch::compile(ml_exp_core::cloud::launch::Input {
+            root: root.to_str().unwrap(),
+            project: "demo",
+            run: "train",
+            attempt: "attempt-002",
+            workdir: temp.path().to_str().unwrap(),
+            argv: &["/bin/true".into()],
+            timeout_seconds: 60,
+            worker_sha256: &format!("sha256:{}", "a".repeat(64)),
+            storage: ml_exp_core::cloud::launch::StorageLayout {
+                mount: temp.path().into(),
+                runs: root.clone(),
+                datasets: temp.path().join("datasets"),
+            },
+            channel: ml_exp_core::cloud::exchange::Channel {
+                url: "https://127.0.0.1:1/api/worker-exchange/demo/train/attempt-002".into(),
+                token: "b".repeat(64),
+            },
+        })
+        .unwrap();
+        package.checkpoint_context = Some(context(&root, "attempt-002"));
+        package.checkpoint_archive = true;
+        package
+            .attach(
+                temp.path().join("datasets").to_str().unwrap(),
+                Vec::new(),
+                Some(document.clone()),
+            )
+            .unwrap();
+        let hex = &document["checkpoint_id"].as_str().unwrap()["checkpoint.".len()..];
+        let own = root.join(format!("demo/train/attempt-002/state/.restore/{hex}"));
+        assert_eq!(
+            package.manifest.environment["RESUME_DIR"],
+            own.join("checkpoints/s1").to_str().unwrap()
+        );
+        restore(&package, &AtomicBool::new(false)).unwrap();
+        let copy = own.join("checkpoints/s1/model.bin");
+        assert_eq!(
+            std::fs::metadata(&copy).unwrap().ino(),
+            std::fs::metadata(original.join("model.bin")).unwrap().ino()
+        );
+        let (_, manifest) = checkpoints::validate_document(&document, None, None).unwrap();
+        ml_exp_io::checkpoints::verify_sealed(&Directory::open(&own, false).unwrap(), &manifest)
+            .unwrap();
+        // Again, as after a restart: the sealed copy is found and nothing is fetched.
+        restore(&package, &AtomicBool::new(false)).unwrap();
+        // An Attempt frozen to read the original in place has nothing delivered.
+        let mut in_place = package.clone();
+        in_place.checkpoint_archive = false;
+        in_place
+            .attach(
+                temp.path().join("datasets").to_str().unwrap(),
+                Vec::new(),
+                Some(document),
+            )
+            .unwrap();
+        assert_eq!(
+            in_place.manifest.environment["RESUME_DIR"],
+            original.to_str().unwrap()
+        );
+        restore(&in_place, &AtomicBool::new(false)).unwrap();
+    }
+}
