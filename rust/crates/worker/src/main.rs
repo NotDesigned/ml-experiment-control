@@ -70,6 +70,11 @@ fn main() -> ExitCode {
             Some("script-prepare") => {
                 return preparation_cli::main_from(std::iter::once(binary).chain(arguments));
             }
+            // What this build can do, as the exact bytes a server finds in its file.
+            Some("capabilities") => {
+                println!("{}", ml_exp_core::checkpoints::archive::WORKER_CAPABILITY);
+                return ExitCode::SUCCESS;
+            }
             Some("storage-maintain") => {
                 return maintenance_cli::main_from(std::iter::once(binary).chain(arguments));
             }

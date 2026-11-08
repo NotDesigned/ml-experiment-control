@@ -201,7 +201,8 @@ experiment file.
    a public HTTPS URL that workers can reach and a private signing key of at least
    32 random bytes, plus `artifacts` for the private object prefix. On PAI the same
    prefix also keeps new Runs' checkpoint copies, which are not temporary: do not put
-   an expiry lifecycle rule on `PREFIX/checkpoints/`. A `collector` lets the server
+   an expiry lifecycle rule on `PREFIX/checkpoints/`, and keep bucket versioning off
+   (never enabled or suspended). A `collector` lets the server
    purge ended Attempts' `state/` from CPFS once those copies are verified; tune it with
    [`checkpoint_archive`](configuration.md#checkpoint-copies-and-the-state-purge).
 3. **Prepare the image builder and registry.** See [image builder](#image-builder).

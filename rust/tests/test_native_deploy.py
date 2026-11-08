@@ -225,6 +225,22 @@ class Deploy(unittest.TestCase):
         self.assertEqual(self.run_tool("--rollback").returncode, 0)
         self.assertEqual(self.version(), "1.0.0")
 
+    def test_rollback_past_checkpoint_archive_names_the_runs_that_copy(self):
+        capability = "ml-expd-worker-capability:checkpoint-archive.v1"
+        self.assertEqual(self.deploy(self.bundle("1.1.0", tag=capability), "--apply").returncode, 0)
+        slots = self.registry / "cloud-submissions/slots"
+        copying = slots / ("a" * 64 + ".json")
+        copying.write_text('{"launch_package":{"checkpoint_archive":true}}')
+        (slots / ("b" * 64 + ".json")).write_text('{"launch_package":{}}')
+        result = self.run_tool("--rollback")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(copying.name, result.stderr)
+        self.assertNotIn("b" * 64, result.stderr)
+        self.assertEqual(self.version(), "1.1.0")
+        copying.unlink()
+        self.assertEqual(self.run_tool("--rollback").returncode, 0)
+        self.assertEqual(self.version(), "1.0.0")
+
     def test_a_later_rollback_needs_no_such_check(self):
         self.assertEqual(self.deploy(self.bundle("1.1.0"), "--apply").returncode, 0)
         self.assertEqual(self.deploy(self.bundle("1.2.0"), "--apply").returncode, 0)

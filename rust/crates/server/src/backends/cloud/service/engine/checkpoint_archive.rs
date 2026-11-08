@@ -184,6 +184,7 @@ impl Service {
                     .map_err(why!(cloud::Error::evidence()))?;
                 Ok(json!({"archived": true, "receipt": kept}))
             }
+            Operation::Synced => self.record_unfinished_sync(&prepared, now),
             Operation::Download { .. } => Err(cloud::Error::evidence()),
         }
     }

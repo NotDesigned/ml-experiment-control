@@ -104,11 +104,16 @@ scientific configuration requires a new Run. See [recovery](recovery.md).
 
 ## Object-store copies on PAI DLC
 
-CPFS is a working area, not where checkpoints are kept. A PAI Run created by this
-release, with the backend's `artifacts` and `exchange` configured, freezes
-`native_cloud.checkpoint_archive: true`; every Attempt of it then copies each
-registered checkpoint to OSS, and the verified copy becomes the checkpoint's
-authority. Older Runs keep their checkpoints only on CPFS, as before.
+CPFS is a working area, not where checkpoints are kept. A new PAI Run freezes
+`native_cloud.checkpoint_archive: true` when the backend has `artifacts` and `exchange`
+and the worker the Run freezes declares that it can copy (`ml-exp-worker-rs
+capabilities` prints `ml-expd-worker-capability:checkpoint-archive.v1`, and the server
+finds those bytes in the stored worker). Every Attempt of such a Run copies each
+registered checkpoint to OSS, and the verified copy becomes the checkpoint's authority.
+Other Runs, including every Run created before this release, keep their checkpoints
+only on CPFS, as before, and are never purged. A new Run without the copy cannot
+`resume_from` a checkpoint of a Run with it (`RESUME_FROM_ARCHIVED_CHECKPOINT_NEEDS_ARCHIVE`),
+because it would read that generation in place from a `state/` that is purged.
 
 - **Upload.** While training runs, a worker thread looks every minute for registered
   checkpoints without a verified copy and sends them, newest first, one 16 MiB part at
@@ -130,13 +135,16 @@ authority. Older Runs keep their checkpoints only on CPFS, as before.
 - **Restore.** A new Attempt that resumes from a checkpoint gets its own copy at
   `STATE_DIR/.restore/CHECKPOINT_HASH/checkpoints/GENERATION` before training: a hard
   link to the original Attempt's sealed file when it still has its registered size and
-  SHA256, otherwise a download of the verified copy, each part checked and each file
-  hashed before it is sealed, after each part's CRC-64 is checked against the
-  receipt. Then the usual check hashes the whole generation. No copy,
+  SHA256; where the filesystem refuses the link, a copy on backend storage hashed as it
+  is written (the job log names the errno); otherwise a download of the verified copy,
+  each part's CRC-64 checked against the receipt and each file hashed before it is
+  sealed. Then the usual check hashes the whole generation. No copy,
   or a copy that does not verify, stops the start; no older checkpoint is chosen.
 - **Purge.** An ended Attempt's `state/` is removed once every condition in
-  [recovery](recovery.md#checkpoint-copies-and-the-state-purge) holds. Snapshots and
-  anything else in `STATE_DIR` that is not a registered checkpoint go with it.
+  [recovery](recovery.md#checkpoint-copies-and-the-state-purge) holds, by default 15
+  minutes later. This is on by default for every Run that copies. Snapshots, unpacked
+  data and anything else in `STATE_DIR` that is not a registered checkpoint are not
+  copied and go with it: keep what you need from them in `OUTPUT_DIR` or register it.
 
 `ml-exp run checkpoints` lists the receipts as `archives` and the purge as `state_purge`.
 

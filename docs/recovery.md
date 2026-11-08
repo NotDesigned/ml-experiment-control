@@ -323,22 +323,31 @@ An ended Attempt's `state/` is removed from CPFS when all of these hold:
 
 | Condition | `blocked_by` when it does not |
 |---|---|
+| The Run copies checkpoints | `CHECKPOINT_ARCHIVE_NOT_ENABLED` |
 | The scheduler job is proven to have ended | `ATTEMPT_NOT_TERMINAL` |
+| No sync job of the Attempt is still running or unobserved | `SYNC_IN_PROGRESS` |
 | Its worker reported its end | `WORKER_NOT_FINISHED` |
+| With `PURGE UNFINISHED` only: a sync delivered the state after training ended | `SYNC_REQUIRED` |
 | The last ready marker verified | `LAST_CHECKPOINT_UNVERIFIED` |
 | A completed training's results are published | `RESULTS_NOT_PUBLISHED` |
 | Every registered checkpoint has a verified OSS copy | `CHECKPOINT_NOT_ARCHIVED` |
-| The Run copies checkpoints (automatic purge only) | `CHECKPOINT_ARCHIVE_NOT_ENABLED` |
 
 The server checks these about once a minute and starts the purge
 `purge_delay_seconds` (default 900) after it first saw all of them hold; 0 starts it at
-once. The purge is the reviewed `state` maintenance plan run as a zero-GPU CPU job on the
+once. When one stops holding before then, the delay starts again when it holds. The
+automatic purge is on by default and removes everything in `state/`, including files
+that are not registered checkpoints, such as snapshots. The purge is the reviewed `state` maintenance plan run as a zero-GPU CPU job on the
 backend's `collector`, with the Attempt's own worker and capability; it is bounded to
 that Attempt's `state/`, deletes through the directory it inspected and is idempotent.
 `outputs/`, checkpoint records and their OSS copies stay. Its plan, trigger, times, the
 checkpoints it relied on and the job's receipt are kept beside the Attempt and shown by
 `ml-exp run checkpoints` as `state_purge`. The plan's identity decides the job, so a
-restart or a repeated request observes the same job.
+restart or a repeated request observes the same job. The record is written before the
+job is asked for; each pass asks again for a job that was never sent and observes one
+that was. After a job proven to have failed, for instance one whose receipt did not
+arrive, a further job runs the same plan: it resumes the targets the first one recorded,
+or returns the receipt it already has. The automatic purge runs at most 3 jobs per plan,
+the explicit command up to 10.
 
 To purge now, without the delay:
 
@@ -350,16 +359,19 @@ ml-exp run purge-state --project my-study --run training --attempt attempt-001 \
 It answers `BLOCKED` with `blocked_by` and changes nothing while a condition fails,
 `PURGING` once the job is asked for, and `PURGED` with the receipt. Repeat it to observe.
 A worker that was preempted never reports its end, and it may have written a generation
-it never registered. Run `ml-exp run sync` first, which registers the last ready marker
-and copies it, then confirm with `'PURGE UNFINISHED my-study/training/attempt-001'` to
-accept that anything still unregistered is removed. After `PURGE_JOB_FAILED`, the same
-command makes one new plan. The automatic purge never does that, and never purges an
+it never registered. Run `ml-exp run sync` first. Its job sends two packets built from
+storage as it is now, which registers the last ready marker, copies every registered
+checkpoint, and then tells the server so; the server keeps that only once the training
+job has ended. Then confirm with `'PURGE UNFINISHED my-study/training/attempt-001'` to
+accept that anything still unregistered is removed. The automatic purge never purges an
 unfinished worker's state. The endpoint is
 `POST /api/runs/P/R/attempts/A/purge-state` with `{"confirmation": ...}`.
 
 A registered checkpoint whose CPFS files were removed before its copy was made cannot
 be copied. Remove it with `admin plan --kind checkpoint` ([deletion](resource-deletion.md))
-to let the purge proceed. Slurm keeps its shared storage and has no purge.
+to let the purge proceed. Runs that do not copy checkpoints, including all Runs created
+before this release, are never purged; use [administrative deletion](resource-deletion.md)
+for them. Slurm keeps its shared storage and has no purge.
 
 ## Read-only collector diagnostics
 

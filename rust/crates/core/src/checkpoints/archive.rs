@@ -17,6 +17,17 @@ use std::path::{Path, PathBuf};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 pub const CONTRACT: &str = "native-checkpoint-archive.v1";
+/// Printed by `ml-exp-worker-rs capabilities`, so these exact bytes are in every worker
+/// build that copies checkpoints and reads a delivered `.restore` copy. A server freezes
+/// the copy in a new Run only when the worker the Run freezes holds them.
+pub const WORKER_CAPABILITY: &str = "ml-expd-worker-capability:checkpoint-archive.v1";
+
+/// Whether a worker file holds the capability marker.
+pub fn declares_capability(worker: &[u8]) -> bool {
+    worker
+        .windows(WORKER_CAPABILITY.len())
+        .any(|window| window == WORKER_CAPABILITY.as_bytes())
+}
 /// The server's independent read of every object; never only the worker's word.
 /// The object store's own CRC-64 of every part, as the server read it, matched the
 /// worker's; the worker's SHA256 of the same bytes matched the registered file.
@@ -260,6 +271,10 @@ pub enum Operation {
     },
     /// Read tickets for parts `start..` of the checkpoint this Attempt restores.
     Download { start: u64 },
+    /// From a sync job of an Attempt whose worker never reported its end: it delivered
+    /// a packet built from storage as it is now and every registered checkpoint has a
+    /// verified copy. The server keeps it only once the training job has ended.
+    Synced,
 }
 impl Operation {
     pub fn checkpoint_id(&self) -> Option<&str> {
@@ -267,7 +282,7 @@ impl Operation {
             Self::Document { checkpoint_id }
             | Self::Upload { checkpoint_id, .. }
             | Self::Complete { checkpoint_id, .. } => Some(checkpoint_id),
-            Self::List | Self::Download { .. } => None,
+            Self::List | Self::Download { .. } | Self::Synced => None,
         }
     }
 }
@@ -283,6 +298,18 @@ mod tests {
             bytes,
             sha256: "a".repeat(64),
         }
+    }
+
+    #[test]
+    fn only_a_worker_that_declares_it_can_copy() {
+        let mut build = b"\x7fELF...".to_vec();
+        assert!(!declares_capability(&build));
+        build.extend_from_slice(WORKER_CAPABILITY.as_bytes());
+        build.extend_from_slice(b"...");
+        assert!(declares_capability(&build));
+        assert!(!declares_capability(
+            b"ml-expd-worker-capability:checkpoint-archive.v"
+        ));
     }
 
     #[test]

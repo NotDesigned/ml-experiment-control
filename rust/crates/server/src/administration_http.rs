@@ -161,9 +161,11 @@ async fn receive(
     http_effect::execute(state, OnTimeout::Effect, move |api, time| {
         // A state purge is the platform's own plan, kept beside its Attempt, and needs
         // no administration. Any other plan is an administrative one.
+        // Its own failure never stops an administrative receipt: a purge receipt that
+        // fails here is refused there too, and the purge runs its plan again.
         if let Some(cloud) = api.cloud() {
-            if let Some(value) =
-                cloud.receive_purge(&project, &run, &attempt, &token, &receipt, &now(time)?)?
+            if let Ok(Some(value)) =
+                cloud.receive_purge(&project, &run, &attempt, &token, &receipt, &now(time)?)
             {
                 return Ok(value);
             }

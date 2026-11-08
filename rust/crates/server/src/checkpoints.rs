@@ -206,10 +206,15 @@ impl Store {
         if !directory.entry_exists(&name)? {
             return Ok(None);
         }
+        let file = directory.open_regular_read(&name)?;
         let receipt: checkpoints::archive::Receipt =
-            serde_json::from_value(Self::read_value(&directory, &name)?)
-                .map_err(why!(Error::Document))?;
+            serde_json::from_slice(&directory.read_whole(&name)?).map_err(why!(Error::Document))?;
         receipt.validate(document).map_err(why!(Error::Document))?;
+        // Publication is followed by sealing. A stop between the two leaves this exact,
+        // valid receipt writable, and sealing it now finishes the same write.
+        if ml_exp_io::directory::require_sealed(&file).is_err() {
+            ml_exp_io::directory::seal_regular(&file, false)?;
+        }
         Ok(Some(receipt))
     }
     /// The verified copy of one registered, not withdrawn checkpoint, if there is one.
@@ -351,7 +356,8 @@ mod tests {
         let document = store
             .register(&context, &ready(4, "step-0004", 7), "2026-10-28T00:00:00Z")
             .unwrap();
-        let id = document["checkpoint_id"].as_str().unwrap();
+        let id = document["checkpoint_id"].as_str().unwrap().to_owned();
+        let id = id.as_str();
         assert_eq!(
             store.archived(&context, id).unwrap(),
             Some((document.clone(), None))
@@ -368,9 +374,22 @@ mod tests {
         );
         // The receipt is not a checkpoint document and is never listed as one.
         assert_eq!(store.list(&context).unwrap(), vec![document]);
-        let mut wrong = receipt;
+        let mut wrong = receipt.clone();
         wrong.bytes = 8;
         assert!(store.record_archive(&context, &wrong).is_err());
+        // A stop between publication and sealing: the receipt is sealed on the next read.
+        let path = temp.path().join(format!(
+            "persistent-checkpoints/demo/trial/attempt-001/archive.{id}.json"
+        ));
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(
+            store.archived(&context, id).unwrap().unwrap().1,
+            Some(receipt)
+        );
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o400
+        );
     }
 
     #[test]

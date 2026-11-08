@@ -437,7 +437,8 @@ pub(crate) fn extend(document: &mut Value) {
                 object(&["kind","checkpoint_id"],json!({"kind":{"const":"document"},"checkpoint_id":{"type":"string"}})),
                 object(&["kind","checkpoint_id","start"],json!({"kind":{"const":"upload"},"checkpoint_id":{"type":"string"},"start":{"type":"integer","minimum":0}})),
                 object(&["kind","checkpoint_id","part_crc64","file_sha256"],json!({"kind":{"const":"complete"},"checkpoint_id":{"type":"string"},"part_crc64":{"type":"array","items":{"type":"integer","minimum":0},"description":"CRC-64/XZ of each part the worker sent, in part order"},"file_sha256":{"type":"array","items":{"type":"string"},"description":"SHA256 of each file computed from the same bytes, in manifest order"}})),
-                object(&["kind","start"],json!({"kind":{"const":"download"},"start":{"type":"integer","minimum":0}}))
+                object(&["kind","start"],json!({"kind":{"const":"download"},"start":{"type":"integer","minimum":0}})),
+                object(&["kind"],json!({"kind":{"const":"synced"},"description":"From a sync job of an Attempt whose worker never reported its end, after it delivered the current state and every copy is verified; kept only once the training job has ended"}))
             ]}}),
         )),
     );

@@ -57,6 +57,16 @@ impl Service {
         Ok(prepared)
     }
     pub fn maintenance_execute(&self, action: &str, plan: &Plan) -> cloud::Result<Value> {
+        self.maintenance_execute_attempt(action, plan, 0)
+    }
+    /// The plan's job, or with `attempt` above 0 a further job running the same plan:
+    /// the worker resumes its retained targets, or returns the receipt it already has.
+    pub(super) fn maintenance_execute_attempt(
+        &self,
+        action: &str,
+        plan: &Plan,
+        attempt: u32,
+    ) -> cloud::Result<Value> {
         if !self.enabled {
             return Err(cloud::Error::configuration());
         }
@@ -66,7 +76,7 @@ impl Service {
             .collector
             .as_ref()
             .ok_or_else(cloud::Error::configuration)?;
-        let job = self.maintenance_job(execution, plan)?;
+        let job = self.maintenance_job(execution, plan, attempt)?;
         let check = || self.maintenance_original(action, plan).map(|_| ());
         self.submit_once_or_reconcile(
             collector,
@@ -81,6 +91,7 @@ impl Service {
         &self,
         execution: &Execution,
         plan: &Plan,
+        attempt: u32,
     ) -> cloud::Result<ml_exp_core::cloud::Job> {
         let package = execution
             .package()
@@ -90,8 +101,15 @@ impl Service {
         let id = plan.id().map_err(why!(cloud::Error::evidence()))?;
         // The run name decides the outbox slot, so each plan is one job of its own and
         // a finished plan cannot close the way to the next. The plan names the Attempt.
-        job.run_id = format!("maintenance-{}", &id[..32]);
-        job.submission_token = id[..32].into();
+        if attempt == 0 {
+            job.run_id = format!("maintenance-{}", &id[..32]);
+            job.submission_token = id[..32].into();
+        } else {
+            job.run_id = format!("maintenance-{}-{attempt}", &id[..24]);
+            job.submission_token = canonical::digest(&json!(["maintenance-attempt", id, attempt]))
+                .map_err(why!(cloud::Error::evidence()))?[..32]
+                .into();
+        }
         job.gpus = 0;
         job.priority = 5;
         let worker = execution

@@ -431,6 +431,12 @@ fn pass(
     Ok(complete)
 }
 
+/// Tell the server this sync delivered the state as it is now and every copy exists.
+pub fn report_synced(package: &Package) -> Result<bool> {
+    let reply = send(&client()?, package, Operation::Synced)?;
+    Ok(reply["recorded"] == true)
+}
+
 /// Copy every registered checkpoint that has no verified copy yet. True when all have one.
 pub fn archive(package: &Package, cancelled: &AtomicBool) -> Result<bool> {
     pass(package, cancelled, &mut BTreeSet::new())
@@ -557,6 +563,55 @@ fn download(
         .map_err(crate::managed::storage_failure!())
 }
 
+/// Copy the original's file within backend storage, hashing what is written. False
+/// when it does not hold its registered size and SHA256; nothing is then left behind.
+fn copy_local(
+    from: &Directory,
+    leaf: &str,
+    directory: &Directory,
+    name: &str,
+    record: &FileRecord,
+) -> Result<bool> {
+    let Ok(mut source) = from.open_regular_read(OsStr::new(leaf)) else {
+        return Ok(false);
+    };
+    if ml_exp_io::directory::require_sealed(&source).is_err() {
+        return Ok(false);
+    }
+    let partial = format!("{name}{PARTIAL_SUFFIX}");
+    let mut file = directory
+        .create_new_regular(OsStr::new(&partial))
+        .map_err(crate::managed::storage_failure!())?;
+    let mut hash = Sha256::new();
+    let mut total = 0u64;
+    let mut buffer = vec![0u8; 1024 * 1024];
+    loop {
+        let n = source
+            .read(&mut buffer)
+            .map_err(crate::managed::storage_failure!())?;
+        if n == 0 {
+            break;
+        }
+        hash.update(&buffer[..n]);
+        file.write_all(&buffer[..n])
+            .map_err(crate::managed::storage_failure!())?;
+        total += n as u64;
+    }
+    if total != record.bytes || format!("{:x}", hash.finalize()) != record.sha256 {
+        drop(file);
+        directory
+            .remove_staged_regular(OsStr::new(&partial))
+            .map_err(crate::managed::storage_failure!())?;
+        return Ok(false);
+    }
+    ml_exp_io::directory::seal_regular(&file, false).map_err(crate::managed::storage_failure!())?;
+    drop(file);
+    directory
+        .publish_regular_as(OsStr::new(&partial), OsStr::new(name))
+        .map_err(crate::managed::storage_failure!())?;
+    Ok(true)
+}
+
 fn seal_tree(directory: &Directory, depth: usize) -> Result<()> {
     if depth > 256 {
         return Err(Error::Binding);
@@ -613,7 +668,7 @@ pub fn restore(package: &Package, cancelled: &AtomicBool) -> Result<()> {
     let original = Directory::open(Path::new(&source.state_root), false).ok();
     let parts = archive::parts(&manifest.files).map_err(|_| Error::Binding)?;
     let mut http = None;
-    let (mut linked, mut downloaded) = (0, 0);
+    let (mut linked, mut copied, mut downloaded) = (0, 0, 0);
     for (index, record) in manifest.files.iter().enumerate() {
         if cancelled.load(Ordering::Relaxed) {
             return Err(Error::Cancelled);
@@ -642,25 +697,37 @@ pub fn restore(package: &Package, cancelled: &AtomicBool) -> Result<()> {
                 .remove_staged_regular(OsStr::new(&name))
                 .map_err(crate::managed::storage_failure!())?;
         }
-        // The original's sealed file, if it is still there with its registered bytes.
+        // The original's sealed file, if it is still there with its registered bytes:
+        // a hard link where the filesystem allows one, else a verified local copy.
         if let Some(original) = &original {
-            let found = parent(original, &record.path, false).and_then(|(from, leaf)| {
-                directory
-                    .link_regular_from(&from, OsStr::new(&leaf), OsStr::new(&name))
-                    .map_err(crate::managed::storage_failure!())
-            });
-            if found.is_ok() {
-                let mut file = directory
-                    .open_regular_read(OsStr::new(&name))
-                    .map_err(crate::managed::storage_failure!())?;
-                if ml_exp_io::directory::require_sealed(&file).is_ok() && holds(&mut file, record)?
-                {
-                    linked += 1;
-                    continue;
+            if let Ok((from, leaf)) = parent(original, &record.path, false) {
+                match directory.link_regular_from(&from, OsStr::new(&leaf), OsStr::new(&name)) {
+                    Ok(()) => {
+                        let mut file = directory
+                            .open_regular_read(OsStr::new(&name))
+                            .map_err(crate::managed::storage_failure!())?;
+                        if ml_exp_io::directory::require_sealed(&file).is_ok()
+                            && holds(&mut file, record)?
+                        {
+                            linked += 1;
+                            continue;
+                        }
+                        directory
+                            .remove_staged_regular(OsStr::new(&name))
+                            .map_err(crate::managed::storage_failure!())?;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        eprintln!(
+                            "ML_EXPD_CHECKPOINT_RESTORE=LINK_FAILED errno={:?}; copying on backend storage",
+                            error.raw_os_error()
+                        );
+                        if copy_local(&from, &leaf, &directory, &name, record)? {
+                            copied += 1;
+                            continue;
+                        }
+                    }
                 }
-                directory
-                    .remove_staged_regular(OsStr::new(&name))
-                    .map_err(crate::managed::storage_failure!())?;
             }
         }
         if !package.checkpoint_archive {
@@ -680,7 +747,7 @@ pub fn restore(package: &Package, cancelled: &AtomicBool) -> Result<()> {
         .map_err(crate::managed::storage_failure!())?;
     seal_tree(&generation, 0)?;
     eprintln!(
-        "ML_EXPD_CHECKPOINT_RESTORE=DELIVERED {} linked={linked} downloaded={downloaded}",
+        "ML_EXPD_CHECKPOINT_RESTORE=DELIVERED {} linked={linked} copied={copied} downloaded={downloaded}",
         plan.checkpoint_id
     );
     Ok(())

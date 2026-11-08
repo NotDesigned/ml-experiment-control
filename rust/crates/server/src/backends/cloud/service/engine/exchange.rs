@@ -188,6 +188,8 @@ impl Service {
             .job(&execution.job)
             .map_err(why!(cloud::Error::configuration()))?;
         let job = self.with_result_limits(&execution.backend_id, job)?;
+        // Before the job exists, so a purge sees a sync that may still copy checkpoints.
+        self.record_sync_job(&prepared, &job)?;
         let check = || self.still_live(&guard, &execution.job.project, &execution.job.run_id);
         let status = self.submit_once_or_reconcile(
             collector,

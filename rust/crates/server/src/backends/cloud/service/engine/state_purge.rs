@@ -3,36 +3,63 @@
 //! authority. Nothing is removed here: the reviewed storage-maintenance plan for `state`
 //! runs as the backend's CPU job with the Attempt's own capability, and its receipt is
 //! kept beside the Attempt. The plan's identity decides the job, so a repeated request or
-//! a restart observes the same job and never makes a second one.
+//! a restart observes the same job and never makes a second one. A further job runs the
+//! same plan only after the last is proven to have failed: the worker then resumes the
+//! targets it retained, or returns the receipt it already has.
 use super::*;
-use ml_exp_core::maintenance::{Plan, Selection};
+use ml_exp_core::{
+    cloud::Job,
+    maintenance::{Plan, Selection},
+    state::RunState,
+};
 
 const CONTRACT: &str = "native-state-purge.v1";
 const LEADER: &str = ".state-purge.lock";
 /// How often the automatic purge looks for Attempts that became eligible.
 const PASS_SECONDS: u64 = 60;
+/// Jobs the automatic purge runs for one plan; an explicit request may run more.
+const AUTOMATIC_JOBS: u32 = 3;
+const EXPLICIT_JOBS: u32 = 10;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Purge {
     contract: String,
-    /// Starts at 0. Only an explicit request after a job that is proven to have failed
-    /// makes the next one, with a new plan and so a new job.
-    generation: u32,
     plan: Plan,
-    /// `automatic` or `explicit`: who asked for this generation.
+    /// `automatic` or `explicit`: who asked first.
     trigger: String,
-    /// When every condition was first seen to hold.
-    eligible_at: String,
+    /// When every condition was seen to hold, until one stops holding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    eligible_at: Option<String>,
     /// The checkpoints whose verified copies made this purge safe.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     checkpoints: Vec<String>,
     /// Written before the job is asked for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     submitted_at: Option<String>,
+    /// The job running the plan: 0 for its first job.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    job_attempt: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     receipt: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     completed_at: Option<String>,
+}
+fn is_zero(value: &u32) -> bool {
+    *value == 0
+}
+
+/// The sync jobs asked for an Attempt, and the sync that delivered an unfinished
+/// worker's state, beside the Attempt.
+#[derive(Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Syncs {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    jobs: Vec<Job>,
+    /// When a sync job of an Attempt whose worker never reported its end said it
+    /// delivered the current state with every copy verified, after training ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    unfinished_delivered_at: Option<String>,
 }
 
 fn io_json(_: serde_json::Error) -> cloud::Error {
@@ -45,6 +72,13 @@ fn seconds(now: &str) -> cloud::Result<i64> {
             .unix_timestamp(),
     )
 }
+/// The job's state, if proven ended.
+fn ended(state: Option<Value>) -> cloud::Result<Option<RunState>> {
+    Ok(match state {
+        Some(state) => super::sync_jobs::proven_terminal(&state)?.map(|o| o.state),
+        None => None,
+    })
+}
 
 impl Service {
     fn purge_name(prepared: &Prepared) -> cloud::Result<String> {
@@ -53,6 +87,66 @@ impl Service {
             "{}.state-purge.json",
             Self::attempt_slot(&job.project, &job.run_id, &job.attempt_id)?
         ))
+    }
+    fn syncs_name(prepared: &Prepared) -> cloud::Result<String> {
+        let job = &prepared.execution.job;
+        Ok(format!(
+            "{}.syncs.json",
+            Self::attempt_slot(&job.project, &job.run_id, &job.attempt_id)?
+        ))
+    }
+    fn syncs_saved(&self, prepared: &Prepared) -> cloud::Result<Syncs> {
+        let name = Self::syncs_name(prepared)?;
+        if !self.slots.entry_exists(OsStr::new(&name)).map_err(io)? {
+            return Ok(Syncs::default());
+        }
+        let saved: Syncs = serde_json::from_value(read(&self.slots, &name)?)
+            .map_err(why!(cloud::Error::evidence()))?;
+        let parent = &prepared.execution.job;
+        if saved.jobs.iter().any(|job| {
+            job.project != parent.project
+                || job.attempt_id != parent.attempt_id
+                || !job.run_id.starts_with("sync-")
+        }) {
+            return Err(cloud::Error::evidence());
+        }
+        Ok(saved)
+    }
+    fn syncs_save(&self, prepared: &Prepared, saved: &Syncs) -> cloud::Result<()> {
+        self.slots
+            .replace_regular(OsStr::new(&Self::syncs_name(prepared)?), &encode(saved)?)
+            .map_err(io)
+    }
+    /// Kept before a sync job is asked for, under the service lock, so a purge can see
+    /// every sync of the Attempt.
+    pub(super) fn record_sync_job(&self, prepared: &Prepared, job: &Job) -> cloud::Result<()> {
+        let mut saved = self.syncs_saved(prepared)?;
+        if !saved.jobs.contains(job) {
+            saved.jobs.push(job.clone());
+            self.syncs_save(prepared, &saved)?;
+        }
+        Ok(())
+    }
+    /// A sync of an Attempt whose worker never reported its end delivered the current
+    /// state and has a verified copy of every checkpoint. Kept only after training ended.
+    pub(super) fn record_unfinished_sync(
+        &self,
+        prepared: &Prepared,
+        now: &str,
+    ) -> cloud::Result<Value> {
+        let _lock = self.lock("state_purge.record_unfinished_sync")?;
+        let terminal = ended(self.outbox.optional_status(&prepared.execution.job)?)?.is_some();
+        let archived = self
+            .archive_rows(prepared)?
+            .iter()
+            .all(|(_, receipt)| receipt.is_some());
+        if !terminal || !archived {
+            return Ok(json!({"recorded": false}));
+        }
+        let mut saved = self.syncs_saved(prepared)?;
+        saved.unfinished_delivered_at = Some(now.into());
+        self.syncs_save(prepared, &saved)?;
+        Ok(json!({"recorded": true}))
     }
     pub(super) fn purge_saved(&self, prepared: &Prepared) -> cloud::Result<Option<Purge>> {
         let name = Self::purge_name(prepared)?;
@@ -66,7 +160,7 @@ impl Service {
             .package()
             .map_err(why!(cloud::Error::evidence()))?;
         if saved.contract != CONTRACT
-            || saved.plan != self.purge_plan(prepared, saved.generation)?
+            || saved.plan != self.purge_plan(prepared)?
             || saved.plan.config != package.config
             || saved
                 .receipt
@@ -86,16 +180,11 @@ impl Service {
                 uncertain: true,
             }))
     }
-    fn purge_plan(&self, prepared: &Prepared, generation: u32) -> cloud::Result<Plan> {
+    fn purge_plan(&self, prepared: &Prepared) -> cloud::Result<Plan> {
         let job = &prepared.execution.job;
-        let request = canonical::digest(&json!([
-            CONTRACT,
-            job.project,
-            job.run_id,
-            job.attempt_id,
-            generation
-        ]))
-        .map_err(why!(cloud::Error::evidence()))?;
+        let request =
+            canonical::digest(&json!([CONTRACT, job.project, job.run_id, job.attempt_id]))
+                .map_err(why!(cloud::Error::evidence()))?;
         let plan = Plan {
             contract: "native-storage-maintenance.v1".into(),
             config: prepared
@@ -109,9 +198,16 @@ impl Service {
         plan.validate().map_err(why!(cloud::Error::evidence()))?;
         Ok(plan)
     }
+    fn purge_job_state(&self, prepared: &Prepared, saved: &Purge) -> cloud::Result<Option<Value>> {
+        self.sync_outbox.optional_status(&self.maintenance_job(
+            &prepared.execution,
+            &saved.plan,
+            saved.job_attempt,
+        )?)
+    }
     /// Everything that still stands in the way, and the checkpoints whose verified
-    /// copies the purge relies on. Only local evidence is read: the observer keeps the
-    /// scheduler observation current, and the worker reports its own receipts.
+    /// copies the purge relies on. Only local evidence is read. The automatic purge
+    /// stops at the first obstacle, so an Attempt still training costs one read.
     fn purge_blocked(
         &self,
         prepared: &Prepared,
@@ -119,19 +215,28 @@ impl Service {
         accept_unfinished: bool,
     ) -> cloud::Result<(Vec<&'static str>, Vec<String>)> {
         let mut blocked = Vec::new();
+        let early = |blocked: &Vec<&'static str>| !explicit && !blocked.is_empty();
         let package = prepared
             .execution
             .package()
             .map_err(why!(cloud::Error::evidence()))?;
-        if !package.checkpoint_archive && !explicit {
+        // Only a Run that copies checkpoints is purged, by either path.
+        if !package.checkpoint_archive || package.checkpoint_context.is_none() {
             blocked.push("CHECKPOINT_ARCHIVE_NOT_ENABLED");
         }
-        let terminal = match self.outbox.optional_status(&prepared.execution.job)? {
-            Some(state) => super::sync_jobs::proven_terminal(&state)?.is_some(),
-            None => false,
-        };
-        if !terminal {
+        if ended(self.outbox.optional_status(&prepared.execution.job)?)?.is_none() {
             blocked.push("ATTEMPT_NOT_TERMINAL");
+        }
+        if early(&blocked) {
+            return Ok((blocked, Vec::new()));
+        }
+        // A sync may still register and copy the last ready generation.
+        let syncs = self.syncs_saved(prepared)?;
+        for job in &syncs.jobs {
+            if ended(self.sync_outbox.optional_status(job)?)?.is_none() {
+                blocked.push("SYNC_IN_PROGRESS");
+                break;
+            }
         }
         let exchange = self.exchange_saved(prepared)?;
         let worker = exchange.as_ref().map(|s| &s.evidence.worker);
@@ -139,10 +244,14 @@ impl Service {
             w.phase == ml_exp_core::managed::evidence::Phase::Finished && w.receipt.is_some()
         });
         // A worker that never reported its end, as after a preemption, may have written
-        // a generation it never registered. Only a request that says so accepts that.
-        let accepted = finished || (explicit && accept_unfinished);
-        if !accepted {
-            blocked.push("WORKER_NOT_FINISHED");
+        // a generation it never registered. Only a request that says so accepts that,
+        // and only after a sync delivered the state as it was after training ended.
+        if !finished {
+            if !(explicit && accept_unfinished) {
+                blocked.push("WORKER_NOT_FINISHED");
+            } else if syncs.unfinished_delivered_at.is_none() {
+                blocked.push("SYNC_REQUIRED");
+            }
         }
         if exchange
             .as_ref()
@@ -160,6 +269,9 @@ impl Service {
             if !published {
                 blocked.push("RESULTS_NOT_PUBLISHED");
             }
+        }
+        if early(&blocked) {
+            return Ok((blocked, Vec::new()));
         }
         let rows = if package.checkpoint_context.is_some() {
             self.archive_rows(prepared)?
@@ -186,21 +298,12 @@ impl Service {
         let status = match &saved {
             Some(s) if s.receipt.is_some() => "PURGED",
             Some(s) if s.submitted_at.is_some() => {
-                match self
-                    .sync_outbox
-                    .optional_status(&self.maintenance_job(&prepared.execution, &s.plan)?)?
-                {
-                    Some(state)
-                        if super::sync_jobs::proven_terminal(&state)?.is_some_and(|o| {
-                            o.state != ml_exp_core::state::RunState::Succeeded
-                        }) =>
-                    {
-                        "PURGE_JOB_FAILED"
-                    }
+                match ended(self.purge_job_state(prepared, s)?)? {
+                    Some(state) if state != RunState::Succeeded => "PURGE_JOB_FAILED",
                     _ => "PURGING",
                 }
             }
-            Some(_) if blocked.is_empty() => "WAITING",
+            Some(s) if blocked.is_empty() && s.eligible_at.is_some() => "WAITING",
             _ if blocked.is_empty() => "ELIGIBLE",
             _ => "BLOCKED",
         };
@@ -213,9 +316,9 @@ impl Service {
             "purge_delay_seconds": self.archive.purge_delay_seconds,
             "path": "state",
             "plan_id": saved.as_ref().map(|s| s.plan.id()).transpose().map_err(why!(cloud::Error::evidence()))?,
-            "generation": saved.as_ref().map(|s| s.generation),
+            "job_attempt": saved.as_ref().map(|s| s.job_attempt),
             "trigger": saved.as_ref().map(|s| s.trigger.clone()),
-            "eligible_at": saved.as_ref().map(|s| s.eligible_at.clone()),
+            "eligible_at": saved.as_ref().and_then(|s| s.eligible_at.clone()),
             "submitted_at": saved.as_ref().and_then(|s| s.submitted_at.clone()),
             "completed_at": saved.as_ref().and_then(|s| s.completed_at.clone()),
             "checkpoints_on_object_store": saved.as_ref().map(|s| s.checkpoints.clone()),
@@ -229,22 +332,53 @@ impl Service {
         Ok(match self.purge_saved(prepared)? {
             None => Value::Null,
             Some(s) => json!({
-                "status": if s.receipt.is_some() { "PURGED" } else if s.submitted_at.is_some() { "PURGING" } else { "WAITING" },
+                "status": if s.receipt.is_some() { "PURGED" } else if s.submitted_at.is_some() { "PURGING" } else if s.eligible_at.is_some() { "WAITING" } else { "BLOCKED" },
                 "plan_id": s.plan.id().map_err(why!(cloud::Error::evidence()))?,
                 "trigger": s.trigger,
                 "eligible_at": s.eligible_at,
                 "submitted_at": s.submitted_at,
+                "job_attempt": s.job_attempt,
                 "completed_at": s.completed_at,
             }),
         })
     }
-    /// Ask for the job once the record that names it is durable. A repeated call
-    /// observes the job the plan already has.
+    /// Ask for the record's job, or observe it. Repeating it is safe: the outbox sends
+    /// a job that was never sent and otherwise reconciles the one there is.
     fn purge_submit(&self, prepared: &Prepared, saved: &Purge) -> cloud::Result<()> {
         let action = prepared.plan["action_id"]
             .as_str()
             .ok_or_else(cloud::Error::evidence)?;
-        self.maintenance_execute(action, &saved.plan).map(|_| ())
+        self.maintenance_execute_attempt(action, &saved.plan, saved.job_attempt)
+            .map(|_| ())
+    }
+    /// A record that asked for a job and has no receipt: observe the job, and after one
+    /// that is proven to have failed, run the same plan in a further job.
+    fn purge_follow_up(&self, prepared: &Prepared, limit: u32) -> cloud::Result<()> {
+        let Some(saved) = self.purge_saved(prepared)? else {
+            return Ok(());
+        };
+        if saved.receipt.is_some() || saved.submitted_at.is_none() {
+            return Ok(());
+        }
+        // A crash between the record and the request leaves no job: this sends it.
+        self.purge_submit(prepared, &saved)?;
+        match ended(self.purge_job_state(prepared, &saved)?)? {
+            Some(RunState::Succeeded) | None => Ok(()),
+            Some(_) if saved.job_attempt + 1 >= limit => Ok(()),
+            Some(_) => {
+                let lock = self.lock("state_purge.purge_follow_up")?;
+                let Some(mut current) = self.purge_saved(prepared)? else {
+                    return Ok(());
+                };
+                if current.job_attempt != saved.job_attempt || current.receipt.is_some() {
+                    return Ok(());
+                }
+                current.job_attempt += 1;
+                self.purge_save(prepared, &current)?;
+                drop(lock);
+                self.purge_submit(prepared, &current)
+            }
+        }
     }
     /// `ml-exp run purge-state`: the same conditions as the automatic purge, without its
     /// delay. A blocked request changes nothing and says what blocks it. Only
@@ -260,112 +394,123 @@ impl Service {
         if !self.enabled {
             return Err(cloud::Error::configuration());
         }
-        let lock = self.lock("state_purge.purge_state")?;
         let prepared = self
             .saved_attempt(project, run, attempt)?
             .ok_or_else(missing)?;
         self.require_live(project, run)?;
-        let (blocked, checkpoints) = self.purge_blocked(&prepared, true, accept_unfinished)?;
-        let saved = self.purge_saved(&prepared)?;
-        let next = match saved {
-            Some(s) if s.receipt.is_some() => {
-                drop(lock);
+        if let Some(saved) = self.purge_saved(&prepared)? {
+            if saved.receipt.is_some() {
                 return self.purge_view(&prepared, &[]);
             }
-            Some(s) if s.submitted_at.is_some() => {
-                let state = self
-                    .sync_outbox
-                    .optional_status(&self.maintenance_job(&prepared.execution, &s.plan)?)?;
-                let failed = match &state {
-                    Some(state) => super::sync_jobs::proven_terminal(state)?
-                        .is_some_and(|o| o.state != ml_exp_core::state::RunState::Succeeded),
-                    None => false,
-                };
-                if !failed {
-                    // The same job again: an interrupted request finishes, an existing
-                    // job is observed.
-                    drop(lock);
-                    self.purge_submit(&prepared, &s)?;
-                    return self.purge_view(&prepared, &[]);
-                }
-                s.generation
-                    .checked_add(1)
-                    .ok_or_else(cloud::Error::evidence)?
+            if saved.submitted_at.is_some() {
+                self.purge_follow_up(&prepared, EXPLICIT_JOBS)?;
+                return self.purge_view(&prepared, &[]);
             }
-            Some(s) => s.generation,
-            None => 0,
-        };
+        }
+        let lock = self.lock("state_purge.purge_state")?;
+        let (blocked, checkpoints) = self.purge_blocked(&prepared, true, accept_unfinished)?;
         if !blocked.is_empty() {
             drop(lock);
             return self.purge_view(&prepared, &blocked);
         }
-        let record = Purge {
-            contract: CONTRACT.into(),
-            generation: next,
-            plan: self.purge_plan(&prepared, next)?,
-            trigger: "explicit".into(),
-            eligible_at: now.into(),
-            checkpoints,
-            submitted_at: Some(now.into()),
-            receipt: None,
-            completed_at: None,
+        let mut record = match self.purge_saved(&prepared)? {
+            Some(record) if record.submitted_at.is_some() => {
+                drop(lock);
+                return self.purge_view(&prepared, &[]);
+            }
+            Some(record) => record,
+            None => Purge {
+                contract: CONTRACT.into(),
+                plan: self.purge_plan(&prepared)?,
+                trigger: "explicit".into(),
+                eligible_at: None,
+                checkpoints: Vec::new(),
+                submitted_at: None,
+                job_attempt: 0,
+                receipt: None,
+                completed_at: None,
+            },
         };
+        record.eligible_at.get_or_insert_with(|| now.into());
+        record.checkpoints = checkpoints;
+        record.submitted_at = Some(now.into());
         self.purge_save(&prepared, &record)?;
         drop(lock);
         self.purge_submit(&prepared, &record)?;
         self.purge_view(&prepared, &[])
     }
-    /// One look at one Attempt by the automatic purge.
+    /// One look at one Attempt by the automatic purge. Conditions are read without the
+    /// service lock; it is taken only to write the record.
     fn purge_automatically(&self, prepared: &Prepared, now: &str) -> cloud::Result<()> {
-        let lock = self.lock("state_purge.purge_automatically")?;
         let saved = self.purge_saved(prepared)?;
-        if saved.is_some_and(|s| s.submitted_at.is_some()) {
-            return Ok(());
+        if saved.as_ref().is_some_and(|s| s.submitted_at.is_some()) {
+            return self.purge_follow_up(prepared, AUTOMATIC_JOBS);
         }
         let (blocked, checkpoints) = self.purge_blocked(prepared, false, false)?;
         if !blocked.is_empty() {
-            return Ok(());
-        }
-        let mut record = match self.purge_saved(prepared)? {
-            Some(record) => record,
-            None => {
-                let record = Purge {
-                    contract: CONTRACT.into(),
-                    generation: 0,
-                    plan: self.purge_plan(prepared, 0)?,
-                    trigger: "automatic".into(),
-                    eligible_at: now.into(),
-                    checkpoints: checkpoints.clone(),
-                    submitted_at: None,
-                    receipt: None,
-                    completed_at: None,
-                };
-                self.purge_save(prepared, &record)?;
-                record
+            // A condition that stopped holding starts the delay again when it holds.
+            if saved.as_ref().is_some_and(|s| s.eligible_at.is_some()) {
+                let _lock = self.lock("state_purge.purge_automatically")?;
+                if let Some(mut current) = self.purge_saved(prepared)? {
+                    if current.submitted_at.is_none() {
+                        current.eligible_at = None;
+                        self.purge_save(prepared, &current)?;
+                    }
+                }
             }
-        };
-        let due = seconds(&record.eligible_at)?
-            .saturating_add(self.archive.purge_delay_seconds.min(i64::MAX as u64) as i64);
-        if seconds(now)? < due {
             return Ok(());
         }
+        let due = |eligible: &str| -> cloud::Result<bool> {
+            Ok(seconds(now)?
+                >= seconds(eligible)?
+                    .saturating_add(self.archive.purge_delay_seconds.min(i64::MAX as u64) as i64))
+        };
+        if let Some(eligible) = saved.as_ref().and_then(|s| s.eligible_at.as_deref()) {
+            if !due(eligible)? {
+                return Ok(());
+            }
+        }
+        let lock = self.lock("state_purge.purge_automatically")?;
+        let mut record = match self.purge_saved(prepared)? {
+            Some(record) if record.submitted_at.is_some() => return Ok(()),
+            Some(record) => record,
+            None => Purge {
+                contract: CONTRACT.into(),
+                plan: self.purge_plan(prepared)?,
+                trigger: "automatic".into(),
+                eligible_at: None,
+                checkpoints: Vec::new(),
+                submitted_at: None,
+                job_attempt: 0,
+                receipt: None,
+                completed_at: None,
+            },
+        };
+        let eligible = record.eligible_at.get_or_insert_with(|| now.into()).clone();
         record.checkpoints = checkpoints;
+        if !due(&eligible)? {
+            return self.purge_save(prepared, &record);
+        }
         record.submitted_at = Some(now.into());
         self.purge_save(prepared, &record)?;
         drop(lock);
         self.purge_submit(prepared, &record)
     }
     /// Every Attempt whose Run copies checkpoints, looked at once. One Attempt's error
-    /// never stops the others; its record says how far it got.
-    pub fn purge_pass(&self, now: &str) -> cloud::Result<()> {
+    /// never stops the others; its record says how far it got. `done` keeps the slots
+    /// that need no further look: a Run that does not copy, or a purge with its receipt.
+    pub fn purge_pass(&self, now: &str, done: &mut std::collections::BTreeSet<String>) {
         if !self.enabled || !self.archive.automatic_purge || !self.has_collectors() {
-            return Ok(());
+            return;
         }
-        for name in self.slots.entry_names().map_err(io)? {
+        let Ok(names) = self.slots.entry_names() else {
+            return;
+        };
+        for name in names {
             let Some(name) = name.to_str() else {
                 continue;
             };
-            if !super::super::observer::preparation_slot(name) {
+            if done.contains(name) || !super::super::observer::preparation_slot(name) {
                 continue;
             }
             let Ok(prepared) = read(&self.slots, name)
@@ -374,26 +519,42 @@ impl Service {
                 continue;
             };
             let b = &prepared.execution.binding;
-            let Ok(Some(prepared)) = self.saved_attempt(&b.project, &b.run_id, &b.attempt_id)
-            else {
+            // The same checks `saved_attempt` makes, without reading the slot again.
+            if Self::attempt_slot(&b.project, &b.run_id, &b.attempt_id)
+                .ok()
+                .as_deref()
+                != Some(name)
+                || action::validate(&prepared.plan, &prepared.execution).is_err()
+                || prepared.plan["native_cloud"]["approval"] != json!(prepared.approval)
+            {
                 continue;
-            };
+            }
             if !prepared
                 .execution
                 .package()
                 .is_ok_and(|p| p.checkpoint_archive)
-                || self.require_live(&b.project, &b.run_id).is_err()
             {
+                done.insert(name.to_owned());
                 continue;
             }
-            if let Err(error) = self.purge_automatically(&prepared, now) {
-                eprintln!(
+            if self.require_live(&b.project, &b.run_id).is_err() {
+                continue;
+            }
+            match self.purge_automatically(&prepared, now) {
+                Ok(()) => {
+                    if self
+                        .purge_saved(&prepared)
+                        .is_ok_and(|s| s.is_some_and(|s| s.receipt.is_some()))
+                    {
+                        done.insert(name.to_owned());
+                    }
+                }
+                Err(error) => eprintln!(
                     "automatic state purge of {}/{}/{} deferred: {}",
                     b.project, b.run_id, b.attempt_id, error.code
-                );
+                ),
             }
         }
-        Ok(())
     }
     /// The receipt of a purge job, if this Attempt's purge plan is the one it names.
     pub fn receive_purge(
@@ -405,11 +566,10 @@ impl Service {
         receipt: &Value,
         now: &str,
     ) -> cloud::Result<Option<Value>> {
-        let _lock = self.lock("state_purge.receive_purge")?;
         let Some(prepared) = self.saved_attempt(project, run, attempt)? else {
             return Ok(None);
         };
-        let Some(mut saved) = self.purge_saved(&prepared)? else {
+        let Some(saved) = self.purge_saved(&prepared)? else {
             return Ok(None);
         };
         let id = saved.plan.id().map_err(why!(cloud::Error::evidence()))?;
@@ -428,6 +588,10 @@ impl Service {
         {
             return Err(cloud::Error::evidence());
         }
+        let _lock = self.lock("state_purge.receive_purge")?;
+        let mut saved = self
+            .purge_saved(&prepared)?
+            .ok_or_else(cloud::Error::evidence)?;
         if saved.receipt.is_none() {
             saved.receipt = Some(receipt.clone());
             saved.completed_at = Some(now.into());
@@ -435,27 +599,33 @@ impl Service {
         }
         Ok(Some(json!({"plan_id": id, "status": "RECEIVED"})))
     }
-    /// One thread that looks for eligible Attempts, when the automatic purge is on.
-    /// Another server holding the leader lock is left to do it.
+    /// One thread that looks for eligible Attempts, when the automatic purge is on. The
+    /// leader lock is tried on every pass, so a second server takes over when the first
+    /// stops, and only the holder purges.
     pub fn start_purger(self: Arc<Self>) -> Option<crate::background::Worker> {
         if !self.enabled || !self.archive.automatic_purge || !self.has_collectors() {
             return None;
         }
-        let leader = self
-            .directory
-            .lock(
-                OsStr::new(LEADER),
-                LockOptions {
-                    create: true,
-                    ..Default::default()
-                },
-            )
-            .ok()?;
         crate::background::Worker::spawn("native-state-purge", move |stop| {
-            let _leader = leader;
+            let mut leader = None;
+            let mut done = std::collections::BTreeSet::new();
             while !stop.requested() {
-                if let Ok((now, _)) = crate::projects::transition_context() {
-                    let _ = self.purge_pass(&now);
+                if leader.is_none() {
+                    leader = self
+                        .directory
+                        .lock(
+                            OsStr::new(LEADER),
+                            LockOptions {
+                                create: true,
+                                ..Default::default()
+                            },
+                        )
+                        .ok();
+                }
+                if leader.is_some() {
+                    if let Ok((now, _)) = crate::projects::transition_context() {
+                        self.purge_pass(&now, &mut done);
+                    }
                 }
                 for _ in 0..PASS_SECONDS {
                     if !stop.pause() {

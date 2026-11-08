@@ -321,6 +321,22 @@ pub fn once(package: &Package, transport: &impl Transport) -> Result<bool> {
     save(&root, &state)?;
     Ok(state.complete)
 }
+/// Whether two packets were acknowledged in turn. Any packet left pending from before
+/// goes first, so the second was built from storage as it is now, including its
+/// current ready marker, which is registered before the acknowledgement.
+pub fn deliver_current(package: &Package, cancelled: &AtomicBool) -> Result<bool> {
+    let transport = Https::new()?;
+    let deadline = Instant::now() + DRAIN_BUDGET;
+    let mut acknowledged = 0;
+    while acknowledged < 2 && Instant::now() < deadline && !cancelled.load(Ordering::Relaxed) {
+        match once(package, &transport) {
+            Ok(_) => acknowledged += 1,
+            Err(Error::Binding | Error::Configuration) => return Err(Error::Binding),
+            Err(_) => std::thread::sleep(Duration::from_millis(500)),
+        }
+    }
+    Ok(acknowledged >= 2)
+}
 pub fn drain(package: &Package, cancelled: &AtomicBool) -> Result<bool> {
     let transport = Https::new()?;
     let deadline = Instant::now() + DRAIN_BUDGET;

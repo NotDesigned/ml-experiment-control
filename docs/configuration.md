@@ -136,7 +136,19 @@ checkpoints to OSS and lets the server purge ended Attempts' `state/`
 | `upload_bytes_per_second` | `67108864` (64 MiB/s) | The most bytes a second one Attempt's worker sends to OSS, beside training and after. `0` is no limit |
 
 Whether a Run copies checkpoints is frozen in the Run when it is created and does not
-change with this file. Omitting `artifacts` stops copies for new Runs only.
+change with this file. Omitting `artifacts` stops copies for new Runs only. A Run also
+copies only when the worker it freezes declares the capability, which the release's own
+worker does; `deploy_native.py` pins `builds.worker_sha256` to that worker when it
+installs the server, in the same step.
+
+The bucket under `artifacts` must not have versioning enabled or suspended. Parts are
+written with `x-oss-forbid-overwrite`, which OSS ignores on a versioned bucket, so a
+copy could then be replaced after it was verified.
+
+Rolling the server back to a release before this one is unsafe once Runs that copy
+exist: that release refuses their packages, which carry `checkpoint_archive`, and
+cannot purge them. `deploy_native.py --rollback` refuses it and names their
+preparations.
 
 Optional capabilities have independent configuration: [image builds](builds.md),
 [W&B](wandb.md) and [temporary debug machines](debug-sessions.md). Enabling a
