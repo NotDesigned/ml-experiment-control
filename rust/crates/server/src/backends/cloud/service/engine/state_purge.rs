@@ -80,6 +80,118 @@ fn ended(state: Option<Value>) -> cloud::Result<Option<RunState>> {
     })
 }
 
+/// What a purge decision reads, gathered from local evidence only.
+#[derive(Clone, Copy, Debug)]
+struct Evidence {
+    /// The Run copies checkpoints to the object store.
+    archive_enabled: bool,
+    /// The training job is proven to have ended.
+    training_ended: bool,
+    /// A recorded sync job of the Attempt is not proven to have ended.
+    sync_running: bool,
+    /// The worker reported its end with a receipt.
+    worker_finished: bool,
+    /// A sync of an unfinished worker delivered its state after training ended.
+    unfinished_sync_delivered: bool,
+    /// The last ready marker failed its verification.
+    last_checkpoint_unverified: bool,
+    /// Completed training whose results are not yet published.
+    results_pending: bool,
+    /// A registered checkpoint has no verified copy.
+    checkpoint_unarchived: bool,
+}
+impl Evidence {
+    /// Facts not read yet, taken as holding, so only the ones read can block.
+    fn first(archive_enabled: bool, training_ended: bool) -> Self {
+        Self {
+            archive_enabled,
+            training_ended,
+            sync_running: false,
+            worker_finished: true,
+            unfinished_sync_delivered: true,
+            last_checkpoint_unverified: false,
+            results_pending: false,
+            checkpoint_unarchived: false,
+        }
+    }
+}
+/// Everything that stands in the way of a purge, in a fixed order. The same rules for
+/// both paths, except that only an explicit request may accept an unfinished worker.
+fn blocked_by(e: &Evidence, explicit: bool, accept_unfinished: bool) -> Vec<&'static str> {
+    let mut blocked = Vec::new();
+    if !e.archive_enabled {
+        blocked.push("CHECKPOINT_ARCHIVE_NOT_ENABLED");
+    }
+    if !e.training_ended {
+        blocked.push("ATTEMPT_NOT_TERMINAL");
+    }
+    if e.sync_running {
+        blocked.push("SYNC_IN_PROGRESS");
+    }
+    if !e.worker_finished {
+        if !(explicit && accept_unfinished) {
+            blocked.push("WORKER_NOT_FINISHED");
+        } else if !e.unfinished_sync_delivered {
+            blocked.push("SYNC_REQUIRED");
+        }
+    }
+    if e.last_checkpoint_unverified {
+        blocked.push("LAST_CHECKPOINT_UNVERIFIED");
+    }
+    if e.results_pending {
+        blocked.push("RESULTS_NOT_PUBLISHED");
+    }
+    if e.checkpoint_unarchived {
+        blocked.push("CHECKPOINT_NOT_ARCHIVED");
+    }
+    blocked
+}
+/// A `synced` report is kept only once training has ended and every copy exists.
+fn accepts_unfinished_sync(training_ended: bool, every_copy_verified: bool) -> bool {
+    training_ended && every_copy_verified
+}
+#[derive(Debug, PartialEq, Eq)]
+enum AfterJob {
+    /// Observe the job again on the next look; it is running, succeeded or unknown.
+    Observe,
+    /// The job is proven to have failed: run the same plan in a further job.
+    Further,
+    /// It failed and the limit of jobs for this plan is reached.
+    GiveUp,
+}
+fn after_job(state: Option<RunState>, job_attempt: u32, limit: u32) -> AfterJob {
+    match state {
+        None | Some(RunState::Succeeded) => AfterJob::Observe,
+        Some(_) if job_attempt.saturating_add(1) >= limit => AfterJob::GiveUp,
+        Some(_) => AfterJob::Further,
+    }
+}
+#[derive(Debug, PartialEq, Eq)]
+enum Automatic {
+    Nothing,
+    /// A condition stopped holding before the purge started.
+    ResetEligible,
+    /// Every condition holds for the first time: the delay starts now.
+    StartDelay,
+    Submit,
+}
+fn automatic(blocked: bool, eligible_at: Option<i64>, now: i64, delay: u64) -> Automatic {
+    let delay = delay.min(i64::MAX as u64) as i64;
+    match (blocked, eligible_at) {
+        (true, Some(_)) => Automatic::ResetEligible,
+        (true, None) => Automatic::Nothing,
+        (false, None) if delay == 0 => Automatic::Submit,
+        (false, None) => Automatic::StartDelay,
+        (false, Some(at)) if now >= at.saturating_add(delay) => Automatic::Submit,
+        (false, Some(_)) => Automatic::Nothing,
+    }
+}
+/// A new Run that reads a generation in place may not read one from a Run whose
+/// Attempts' state/ is purged once copied.
+pub(super) fn resume_refused(new_run: bool, copies: bool, source_copies: bool) -> bool {
+    new_run && !copies && source_copies
+}
+
 impl Service {
     fn purge_name(prepared: &Prepared) -> cloud::Result<String> {
         let job = &prepared.execution.job;
@@ -140,7 +252,7 @@ impl Service {
             .archive_rows(prepared)?
             .iter()
             .all(|(_, receipt)| receipt.is_some());
-        if !terminal || !archived {
+        if !accepts_unfinished_sync(terminal, archived) {
             return Ok(json!({"recorded": false}));
         }
         let mut saved = self.syncs_saved(prepared)?;
@@ -214,63 +326,60 @@ impl Service {
         explicit: bool,
         accept_unfinished: bool,
     ) -> cloud::Result<(Vec<&'static str>, Vec<String>)> {
-        let mut blocked = Vec::new();
-        let early = |blocked: &Vec<&'static str>| !explicit && !blocked.is_empty();
         let package = prepared
             .execution
             .package()
             .map_err(why!(cloud::Error::evidence()))?;
         // Only a Run that copies checkpoints is purged, by either path.
-        if !package.checkpoint_archive || package.checkpoint_context.is_none() {
-            blocked.push("CHECKPOINT_ARCHIVE_NOT_ENABLED");
-        }
-        if ended(self.outbox.optional_status(&prepared.execution.job)?)?.is_none() {
-            blocked.push("ATTEMPT_NOT_TERMINAL");
-        }
-        if early(&blocked) {
-            return Ok((blocked, Vec::new()));
+        let archive_enabled = package.checkpoint_archive && package.checkpoint_context.is_some();
+        let training_ended =
+            ended(self.outbox.optional_status(&prepared.execution.job)?)?.is_some();
+        let first = blocked_by(
+            &Evidence::first(archive_enabled, training_ended),
+            explicit,
+            accept_unfinished,
+        );
+        if !explicit && !first.is_empty() {
+            return Ok((first, Vec::new()));
         }
         // A sync may still register and copy the last ready generation.
         let syncs = self.syncs_saved(prepared)?;
+        let mut sync_running = false;
         for job in &syncs.jobs {
             if ended(self.sync_outbox.optional_status(job)?)?.is_none() {
-                blocked.push("SYNC_IN_PROGRESS");
+                sync_running = true;
                 break;
             }
         }
         let exchange = self.exchange_saved(prepared)?;
         let worker = exchange.as_ref().map(|s| &s.evidence.worker);
-        let finished = worker.is_some_and(|w| {
+        // A worker that never reported its end, as after a preemption, may have written
+        // a generation it never registered.
+        let worker_finished = worker.is_some_and(|w| {
             w.phase == ml_exp_core::managed::evidence::Phase::Finished && w.receipt.is_some()
         });
-        // A worker that never reported its end, as after a preemption, may have written
-        // a generation it never registered. Only a request that says so accepts that,
-        // and only after a sync delivered the state as it was after training ended.
-        if !finished {
-            if !(explicit && accept_unfinished) {
-                blocked.push("WORKER_NOT_FINISHED");
-            } else if syncs.unfinished_delivered_at.is_none() {
-                blocked.push("SYNC_REQUIRED");
-            }
-        }
-        if exchange
-            .as_ref()
-            .is_some_and(|s| s.checkpoint_error.is_some())
-        {
-            blocked.push("LAST_CHECKPOINT_UNVERIFIED");
-        }
         let completed = worker
             .and_then(|w| w.receipt.as_ref())
             .is_some_and(|r| r.training == ml_exp_core::managed::evidence::Training::Completed);
-        if package.result_upload && completed {
-            let published = self
+        let results_pending = package.result_upload
+            && completed
+            && !self
                 .artifact_saved(prepared)?
                 .is_some_and(|s| s.state.is_some() || s.administrative_release.is_some());
-            if !published {
-                blocked.push("RESULTS_NOT_PUBLISHED");
-            }
-        }
-        if early(&blocked) {
+        let mut evidence = Evidence {
+            archive_enabled,
+            training_ended,
+            sync_running,
+            worker_finished,
+            unfinished_sync_delivered: syncs.unfinished_delivered_at.is_some(),
+            last_checkpoint_unverified: exchange
+                .as_ref()
+                .is_some_and(|s| s.checkpoint_error.is_some()),
+            results_pending,
+            checkpoint_unarchived: false,
+        };
+        let blocked = blocked_by(&evidence, explicit, accept_unfinished);
+        if !explicit && !blocked.is_empty() {
             return Ok((blocked, Vec::new()));
         }
         let rows = if package.checkpoint_context.is_some() {
@@ -278,9 +387,8 @@ impl Service {
         } else {
             Vec::new()
         };
-        if rows.iter().any(|(_, receipt)| receipt.is_none()) {
-            blocked.push("CHECKPOINT_NOT_ARCHIVED");
-        }
+        evidence.checkpoint_unarchived = rows.iter().any(|(_, receipt)| receipt.is_none());
+        let blocked = blocked_by(&evidence, explicit, accept_unfinished);
         let checkpoints = rows
             .iter()
             .map(|(document, _)| {
@@ -362,10 +470,13 @@ impl Service {
         }
         // A crash between the record and the request leaves no job: this sends it.
         self.purge_submit(prepared, &saved)?;
-        match ended(self.purge_job_state(prepared, &saved)?)? {
-            Some(RunState::Succeeded) | None => Ok(()),
-            Some(_) if saved.job_attempt + 1 >= limit => Ok(()),
-            Some(_) => {
+        match after_job(
+            ended(self.purge_job_state(prepared, &saved)?)?,
+            saved.job_attempt,
+            limit,
+        ) {
+            AfterJob::Observe | AfterJob::GiveUp => Ok(()),
+            AfterJob::Further => {
                 let lock = self.lock("state_purge.purge_follow_up")?;
                 let Some(mut current) = self.purge_saved(prepared)? else {
                     return Ok(());
@@ -447,9 +558,19 @@ impl Service {
             return self.purge_follow_up(prepared, AUTOMATIC_JOBS);
         }
         let (blocked, checkpoints) = self.purge_blocked(prepared, false, false)?;
-        if !blocked.is_empty() {
-            // A condition that stopped holding starts the delay again when it holds.
-            if saved.as_ref().is_some_and(|s| s.eligible_at.is_some()) {
+        let eligible_at = saved
+            .as_ref()
+            .and_then(|s| s.eligible_at.as_deref())
+            .map(seconds)
+            .transpose()?;
+        match automatic(
+            !blocked.is_empty(),
+            eligible_at,
+            seconds(now)?,
+            self.archive.purge_delay_seconds,
+        ) {
+            Automatic::Nothing => Ok(()),
+            Automatic::ResetEligible => {
                 let _lock = self.lock("state_purge.purge_automatically")?;
                 if let Some(mut current) = self.purge_saved(prepared)? {
                     if current.submitted_at.is_none() {
@@ -457,44 +578,36 @@ impl Service {
                         self.purge_save(prepared, &current)?;
                     }
                 }
+                Ok(())
             }
-            return Ok(());
-        }
-        let due = |eligible: &str| -> cloud::Result<bool> {
-            Ok(seconds(now)?
-                >= seconds(eligible)?
-                    .saturating_add(self.archive.purge_delay_seconds.min(i64::MAX as u64) as i64))
-        };
-        if let Some(eligible) = saved.as_ref().and_then(|s| s.eligible_at.as_deref()) {
-            if !due(eligible)? {
-                return Ok(());
+            step @ (Automatic::StartDelay | Automatic::Submit) => {
+                let lock = self.lock("state_purge.purge_automatically")?;
+                let mut record = match self.purge_saved(prepared)? {
+                    Some(record) if record.submitted_at.is_some() => return Ok(()),
+                    Some(record) => record,
+                    None => Purge {
+                        contract: CONTRACT.into(),
+                        plan: self.purge_plan(prepared)?,
+                        trigger: "automatic".into(),
+                        eligible_at: None,
+                        checkpoints: Vec::new(),
+                        submitted_at: None,
+                        job_attempt: 0,
+                        receipt: None,
+                        completed_at: None,
+                    },
+                };
+                record.eligible_at.get_or_insert_with(|| now.into());
+                record.checkpoints = checkpoints;
+                if step == Automatic::StartDelay {
+                    return self.purge_save(prepared, &record);
+                }
+                record.submitted_at = Some(now.into());
+                self.purge_save(prepared, &record)?;
+                drop(lock);
+                self.purge_submit(prepared, &record)
             }
         }
-        let lock = self.lock("state_purge.purge_automatically")?;
-        let mut record = match self.purge_saved(prepared)? {
-            Some(record) if record.submitted_at.is_some() => return Ok(()),
-            Some(record) => record,
-            None => Purge {
-                contract: CONTRACT.into(),
-                plan: self.purge_plan(prepared)?,
-                trigger: "automatic".into(),
-                eligible_at: None,
-                checkpoints: Vec::new(),
-                submitted_at: None,
-                job_attempt: 0,
-                receipt: None,
-                completed_at: None,
-            },
-        };
-        let eligible = record.eligible_at.get_or_insert_with(|| now.into()).clone();
-        record.checkpoints = checkpoints;
-        if !due(&eligible)? {
-            return self.purge_save(prepared, &record);
-        }
-        record.submitted_at = Some(now.into());
-        self.purge_save(prepared, &record)?;
-        drop(lock);
-        self.purge_submit(prepared, &record)
     }
     /// Every Attempt whose Run copies checkpoints, looked at once. One Attempt's error
     /// never stops the others; its record says how far it got. `done` keeps the slots
@@ -635,5 +748,192 @@ impl Service {
             }
         })
         .ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Evidence under which every condition holds.
+    fn clear() -> Evidence {
+        Evidence::first(true, true)
+    }
+    fn both(e: Evidence) -> (Vec<&'static str>, Vec<&'static str>) {
+        (blocked_by(&e, false, false), blocked_by(&e, true, false))
+    }
+
+    #[test]
+    fn every_condition_holding_blocks_nothing_on_either_path() {
+        assert_eq!(both(clear()), (vec![], vec![]));
+        assert!(blocked_by(&clear(), true, true).is_empty());
+    }
+
+    #[test]
+    fn a_sync_not_proven_ended_blocks_both_paths_until_it_is() {
+        let running = Evidence {
+            sync_running: true,
+            ..clear()
+        };
+        assert_eq!(
+            both(running),
+            (vec!["SYNC_IN_PROGRESS"], vec!["SYNC_IN_PROGRESS"])
+        );
+        assert_eq!(blocked_by(&running, true, true), vec!["SYNC_IN_PROGRESS"]);
+        assert_eq!(both(clear()), (vec![], vec![]));
+    }
+
+    #[test]
+    fn an_unfinished_worker_needs_an_explicit_request_and_an_accepted_sync() {
+        let unfinished = Evidence {
+            worker_finished: false,
+            unfinished_sync_delivered: false,
+            ..clear()
+        };
+        // The automatic purge never accepts it, nor a request that does not say so.
+        assert_eq!(
+            both(unfinished),
+            (vec!["WORKER_NOT_FINISHED"], vec!["WORKER_NOT_FINISHED"])
+        );
+        assert_eq!(
+            blocked_by(&unfinished, false, true),
+            vec!["WORKER_NOT_FINISHED"]
+        );
+        // PURGE UNFINISHED waits for a sync that delivered the state.
+        assert_eq!(blocked_by(&unfinished, true, true), vec!["SYNC_REQUIRED"]);
+        let delivered = Evidence {
+            unfinished_sync_delivered: true,
+            ..unfinished
+        };
+        assert!(blocked_by(&delivered, true, true).is_empty());
+        assert_eq!(
+            blocked_by(&delivered, false, false),
+            vec!["WORKER_NOT_FINISHED"]
+        );
+        // A sync still running blocks even then.
+        let running = Evidence {
+            sync_running: true,
+            ..delivered
+        };
+        assert_eq!(blocked_by(&running, true, true), vec!["SYNC_IN_PROGRESS"]);
+    }
+
+    #[test]
+    fn a_synced_report_is_kept_only_after_training_with_every_copy() {
+        assert!(accepts_unfinished_sync(true, true));
+        assert!(!accepts_unfinished_sync(false, true));
+        assert!(!accepts_unfinished_sync(true, false));
+        assert!(!accepts_unfinished_sync(false, false));
+    }
+
+    #[test]
+    fn a_run_that_does_not_copy_is_never_purged_by_either_path() {
+        let off = Evidence {
+            archive_enabled: false,
+            ..clear()
+        };
+        for (explicit, unfinished) in [(false, false), (true, false), (true, true)] {
+            assert_eq!(
+                blocked_by(&off, explicit, unfinished),
+                vec!["CHECKPOINT_ARCHIVE_NOT_ENABLED"]
+            );
+        }
+        // Whatever else holds, nothing tells the automatic purge to start.
+        assert_eq!(automatic(true, None, 10_000, 0), Automatic::Nothing);
+    }
+
+    #[test]
+    fn every_other_condition_blocks_with_its_own_code() {
+        for (evidence, code) in [
+            (
+                Evidence {
+                    training_ended: false,
+                    ..clear()
+                },
+                "ATTEMPT_NOT_TERMINAL",
+            ),
+            (
+                Evidence {
+                    last_checkpoint_unverified: true,
+                    ..clear()
+                },
+                "LAST_CHECKPOINT_UNVERIFIED",
+            ),
+            (
+                Evidence {
+                    results_pending: true,
+                    ..clear()
+                },
+                "RESULTS_NOT_PUBLISHED",
+            ),
+            (
+                Evidence {
+                    checkpoint_unarchived: true,
+                    ..clear()
+                },
+                "CHECKPOINT_NOT_ARCHIVED",
+            ),
+        ] {
+            assert_eq!(both(evidence), (vec![code], vec![code]), "{code}");
+        }
+    }
+
+    #[test]
+    fn the_delay_starts_when_all_hold_and_restarts_after_a_condition_fails() {
+        let delay = 900;
+        assert_eq!(automatic(false, None, 1_000, delay), Automatic::StartDelay);
+        assert_eq!(
+            automatic(false, Some(1_000), 1_899, delay),
+            Automatic::Nothing
+        );
+        assert_eq!(
+            automatic(false, Some(1_000), 1_900, delay),
+            Automatic::Submit
+        );
+        // A condition stops holding before the purge: the start is forgotten ...
+        assert_eq!(
+            automatic(true, Some(1_000), 1_500, delay),
+            Automatic::ResetEligible
+        );
+        assert_eq!(automatic(true, None, 1_600, delay), Automatic::Nothing);
+        // ... so holding again waits the whole delay from then.
+        assert_eq!(automatic(false, None, 1_700, delay), Automatic::StartDelay);
+        assert_eq!(
+            automatic(false, Some(1_700), 1_900, delay),
+            Automatic::Nothing
+        );
+        assert_eq!(
+            automatic(false, Some(1_700), 2_600, delay),
+            Automatic::Submit
+        );
+        // 0 purges at once.
+        assert_eq!(automatic(false, None, 1_000, 0), Automatic::Submit);
+    }
+
+    #[test]
+    fn only_a_job_proven_failed_leads_to_one_further_job_and_the_automatic_limit_is_three() {
+        for state in [None, Some(RunState::Running), Some(RunState::Succeeded)] {
+            assert_eq!(after_job(state, 0, AUTOMATIC_JOBS), AfterJob::Observe);
+        }
+        for state in [RunState::Failed, RunState::Cancelled, RunState::Preempted] {
+            assert_eq!(after_job(Some(state), 0, AUTOMATIC_JOBS), AfterJob::Further);
+        }
+        let failed = Some(RunState::Failed);
+        assert_eq!(AUTOMATIC_JOBS, 3);
+        assert_eq!(after_job(failed, 1, AUTOMATIC_JOBS), AfterJob::Further);
+        // Jobs 0, 1 and 2 have run: no fourth.
+        assert_eq!(after_job(failed, 2, AUTOMATIC_JOBS), AfterJob::GiveUp);
+        assert_eq!(after_job(failed, 2, EXPLICIT_JOBS), AfterJob::Further);
+        assert_eq!(after_job(failed, 9, EXPLICIT_JOBS), AfterJob::GiveUp);
+    }
+
+    #[test]
+    fn a_new_run_that_reads_in_place_cannot_resume_from_a_run_that_copies() {
+        assert!(resume_refused(true, false, true));
+        assert!(!resume_refused(true, true, true));
+        assert!(!resume_refused(true, false, false));
+        assert!(!resume_refused(true, true, false));
+        // A Run that exists keeps what it was created with.
+        assert!(!resume_refused(false, false, true));
     }
 }

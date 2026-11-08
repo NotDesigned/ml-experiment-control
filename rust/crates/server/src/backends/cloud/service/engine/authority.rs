@@ -330,15 +330,17 @@ impl Service {
         };
         // A Run that reads a generation in place must not read one whose Attempt's
         // state/ the platform purges once copied; it would have to copy as well.
-        if existing.is_none() && archive.is_none() {
-            if let Some(reference) = &request.resume_from {
-                if self.checkpoint_source_archives(project, reference)? {
-                    return Err(cloud::Error {
-                        code: "RESUME_FROM_ARCHIVED_CHECKPOINT_NEEDS_ARCHIVE".into(),
-                        http_status: Some(409),
-                        uncertain: false,
-                    });
-                }
+        if let Some(reference) = &request.resume_from {
+            if super::state_purge::resume_refused(
+                existing.is_none(),
+                archive.is_some(),
+                self.checkpoint_source_archives(project, reference)?,
+            ) {
+                return Err(cloud::Error {
+                    code: "RESUME_FROM_ARCHIVED_CHECKPOINT_NEEDS_ARCHIVE".into(),
+                    http_status: Some(409),
+                    uncertain: false,
+                });
             }
         }
         if let Some(worker) = worker {
