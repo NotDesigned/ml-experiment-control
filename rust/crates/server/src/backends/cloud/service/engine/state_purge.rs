@@ -162,6 +162,8 @@ enum AfterJob {
 fn after_job(state: Option<RunState>, job_attempt: u32, limit: u32) -> AfterJob {
     match state {
         None | Some(RunState::Succeeded) => AfterJob::Observe,
+        // Never a further job beside one that may still run.
+        Some(state) if !state.is_terminal() => AfterJob::Observe,
         Some(_) if job_attempt.saturating_add(1) >= limit => AfterJob::GiveUp,
         Some(_) => AfterJob::Further,
     }
