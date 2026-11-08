@@ -427,6 +427,30 @@ pub(crate) fn extend(document: &mut Value) {
         )),
     );
     insert(
+        "/api/worker-exchange/{project}/{run}/{attempt}/checkpoints",
+        "post",
+        "Object-store copies of this Attempt's registered checkpoints: list them with whether each has a verified copy, read one document, obtain write tickets for its parts, or have the server read every object back and record the receipt that makes the copy the checkpoint's authority. download returns read tickets for the verified copy of the checkpoint this Attempt restores. Independent from training; nothing is started or replayed",
+        Some(object(
+            &["package_sha256", "operation"],
+            json!({"package_sha256":{"type":"string"},"operation":{"oneOf":[
+                object(&["kind"],json!({"kind":{"const":"list"}})),
+                object(&["kind","checkpoint_id"],json!({"kind":{"const":"document"},"checkpoint_id":{"type":"string"}})),
+                object(&["kind","checkpoint_id","start"],json!({"kind":{"const":"upload"},"checkpoint_id":{"type":"string"},"start":{"type":"integer","minimum":0}})),
+                object(&["kind","checkpoint_id"],json!({"kind":{"const":"complete"},"checkpoint_id":{"type":"string"}})),
+                object(&["kind","start"],json!({"kind":{"const":"download"},"start":{"type":"integer","minimum":0}}))
+            ]}}),
+        )),
+    );
+    insert(
+        "/api/runs/{project}/{run}/attempts/{attempt}/purge-state",
+        "post",
+        "Remove one ended Attempt's state/ on backend storage now, through the backend's CPU job, under the conditions of the automatic purge without its delay: the scheduler job ended, its worker reported its end, published results are published, and every registered checkpoint has a verified object-store copy. A blocked request changes nothing and answers BLOCKED with blocked_by. outputs/ and checkpoint records are kept. Repeating it observes the same job",
+        Some(object(
+            &["confirmation"],
+            json!({"confirmation":{"type":"string","description":"PURGE {project}/{run}/{attempt}, or PURGE UNFINISHED {project}/{run}/{attempt} to accept a worker that never reported its end"}}),
+        )),
+    );
+    insert(
         "/api/worker-exchange/{project}/{run}/{attempt}/maintenance",
         "post",
         "Receive the exact reviewed maintenance receipt; it cannot authorize another deletion plan",

@@ -253,6 +253,7 @@ pub fn run(
         if package.result_upload {
             report_deferred(crate::cloud_artifacts::publish(package));
         }
+        report_archive(crate::cloud_checkpoints::archive(package, cancelled));
         return Ok(original);
     }
     let stop = std::sync::atomic::AtomicBool::new(false);
@@ -277,18 +278,36 @@ pub fn run(
                     .wait_timeout(guard, std::time::Duration::from_secs(5));
             }
         });
+        // Registered checkpoints go to the object store beside training, never in its way.
+        let archiver = package.checkpoint_archive.then(|| {
+            scope.spawn(move || {
+                crate::cloud_checkpoints::beside_training(package, stop_ref, cancelled)
+            })
+        });
         // STARTED cannot run again, so it has no use for code and `managed::run` says so.
-        let delivered = if original.phase == managed::Phase::Prepared {
+        let prepared = original.phase == managed::Phase::Prepared;
+        let delivered = if prepared {
             crate::cloud_code::deliver(package, cancelled)
         } else {
             Ok(())
         };
         let result = delivered
             .and_then(|_| crate::cloud_data::materialize(package, cancelled))
+            .and_then(|_| {
+                if prepared {
+                    crate::cloud_checkpoints::restore(package, cancelled)
+                } else {
+                    Ok(())
+                }
+            })
             .and_then(|_| managed::run(&package.config, cancelled));
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
         if let Ok(_guard) = wake.0.lock() {
             wake.1.notify_all();
+        }
+        // A copy that failed never changes what training did.
+        if archiver.is_some_and(|archiver| archiver.join().is_err()) {
+            eprintln!("ML_EXPD_CHECKPOINT_ARCHIVE=DEFERRED; the copy beside training stopped");
         }
         if sender.join().is_err() {
             return Err(managed::Error::Uncertain);
@@ -310,7 +329,24 @@ pub fn run(
     if result.is_ok() && package.result_upload {
         report_deferred(crate::cloud_artifacts::publish(package));
     }
+    // At the latest when the Attempt ends: whatever the training's outcome, every
+    // checkpoint it registered is copied before the job exits, unless it is cancelled.
+    if package.checkpoint_archive {
+        report_archive(crate::cloud_checkpoints::archive(package, cancelled));
+    }
     result
+}
+/// Copies that could not be made stay on backend storage, and the purge waits for them.
+fn report_archive(archived: managed::Result<bool>) {
+    match archived {
+        Ok(true) => {}
+        Ok(false) => {
+            eprintln!("ML_EXPD_CHECKPOINT_ARCHIVE=INCOMPLETE; retained on backend storage")
+        }
+        Err(error) => {
+            eprintln!("ML_EXPD_CHECKPOINT_ARCHIVE=DEFERRED; retained on backend storage: {error}")
+        }
+    }
 }
 /// The job's outcome does not depend on this, and the reason is all anyone will have.
 fn report_deferred(published: managed::Result<()>) {

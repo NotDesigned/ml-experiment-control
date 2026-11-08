@@ -31,6 +31,10 @@ pub struct Package {
     /// The frozen source the worker must fetch before this Attempt starts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code_source_id: Option<String>,
+    /// Frozen with the Run: this worker copies each registered checkpoint to the
+    /// object store, and a restore reads its own delivered copy of the generation.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub checkpoint_archive: bool,
 }
 /// Pure storage plan. The mount itself must already exist; no provider or local
 /// filesystem operation is permitted by this value alone.
@@ -87,10 +91,23 @@ impl Package {
         if let Some(value) = &checkpoint {
             let plan = crate::checkpoints::restore_plan(value, None)
                 .map_err(|_| Error("cloud restore plan"))?;
+            let state_root = if self.checkpoint_archive {
+                let root = crate::checkpoints::archive::restore_root(
+                    &self.config.attempt_root,
+                    &plan.checkpoint_id,
+                )
+                .map_err(|_| Error("cloud restore plan"))?;
+                let text = root.to_str().ok_or(Error("cloud restore path"))?.to_owned();
+                self.config.checkpoint_restore_root = Some(root);
+                text
+            } else {
+                self.config.checkpoint_restore_root = None;
+                plan.state_root.clone()
+            };
             self.manifest.environment.extend([
                 (
                     "RESUME_DIR".into(),
-                    format!("{}/checkpoints/{}", plan.state_root, plan.generation),
+                    format!("{state_root}/checkpoints/{}", plan.generation),
                 ),
                 ("RESUME_CHECKPOINT_ID".into(), plan.checkpoint_id),
                 ("RESUME_STEP".into(), plan.step.to_string()),
@@ -123,6 +140,11 @@ impl Package {
         }
         if let Some(policy) = &self.artifacts {
             policy.validate().map_err(|_| Error("artifact policy"))?;
+        }
+        if self.config.checkpoint_restore_root.is_some()
+            && (!self.checkpoint_archive || self.checkpoint_context.is_none())
+        {
+            return Err(Error("checkpoint restore delivery"));
         }
         self.config
             .validate()
@@ -328,6 +350,7 @@ pub fn compile(input: Input<'_>) -> Result<Package> {
             "LD_LIBRARY_PATH".into(),
         ],
         checkpoint_restore: None,
+        checkpoint_restore_root: None,
         datasets: Vec::new(),
         data_preparation: None,
     };
@@ -343,6 +366,7 @@ pub fn compile(input: Input<'_>) -> Result<Package> {
         artifacts: None,
         result_upload: false,
         code_source_id: None,
+        checkpoint_archive: false,
     };
     package.validate()?;
     Ok(package)

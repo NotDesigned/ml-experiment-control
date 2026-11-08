@@ -462,6 +462,30 @@ impl Directory {
         Ok(())
     }
 
+    /// Give an existing regular file of `source` a second name here, on the same
+    /// filesystem, without copying it. No link is followed and nothing is replaced;
+    /// the content is the caller's to verify through the new name.
+    pub fn link_regular_from(
+        &self,
+        source: &Directory,
+        name: &OsStr,
+        target: &OsStr,
+    ) -> io::Result<()> {
+        leaf(target)?;
+        source
+            .regular_identity(name)?
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+        rfs::linkat(
+            &source.inner.file,
+            name,
+            &self.inner.file,
+            target,
+            AtFlags::empty(),
+        )?;
+        rfs::fsync(&self.inner.file)?;
+        Ok(())
+    }
+
     /// No-replace publication of an operation-owned completed regular file.
     pub fn publish_regular_as(&self, source: &OsStr, target: &OsStr) -> io::Result<()> {
         leaf(source)?;

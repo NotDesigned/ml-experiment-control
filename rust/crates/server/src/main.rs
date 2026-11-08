@@ -400,6 +400,11 @@ async fn main() -> std::process::ExitCode {
         },
         None => None,
     };
+    // The automatic purge of ended Attempts' state/, when configured; it needs collectors.
+    let _state_purger = reads
+        .as_ref()
+        .and_then(|api| api.cloud())
+        .and_then(|service| service.start_purger());
     let publisher = match tracking.filter(|runtime| runtime.routing().enabled) {
         Some(runtime) => match ml_exp_server::tracking::Publisher::start(
             reads

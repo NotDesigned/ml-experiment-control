@@ -62,14 +62,30 @@ impl Service {
         }
         let original = self.maintenance_original(action, plan)?;
         let execution = &original.execution;
-        let package = execution
-            .package()
-            .map_err(why!(cloud::Error::evidence()))?;
-        let channel = package.channel;
         let collector = self.backends[&execution.backend_id]
             .collector
             .as_ref()
             .ok_or_else(cloud::Error::configuration)?;
+        let job = self.maintenance_job(execution, plan)?;
+        let check = || self.maintenance_original(action, plan).map(|_| ());
+        self.submit_once_or_reconcile(
+            collector,
+            &job,
+            ml_exp_core::cloud::pai::Allocation::Guaranteed,
+            &check,
+            &AtomicBool::new(false),
+        )
+    }
+    /// The CPU job that runs one plan with the Attempt's own worker and capability.
+    pub(super) fn maintenance_job(
+        &self,
+        execution: &Execution,
+        plan: &Plan,
+    ) -> cloud::Result<ml_exp_core::cloud::Job> {
+        let package = execution
+            .package()
+            .map_err(why!(cloud::Error::evidence()))?;
+        let channel = package.channel;
         let mut job = execution.job.clone();
         let id = plan.id().map_err(why!(cloud::Error::evidence()))?;
         // The run name decides the outbox slot, so each plan is one job of its own and
@@ -91,15 +107,7 @@ impl Service {
             "--channel-json".into(),
             String::from_utf8(encode(&channel)?).map_err(why!(cloud::Error::evidence()))?,
         ];
-        let job = self.with_result_limits(&execution.backend_id, job)?;
-        let check = || self.maintenance_original(action, plan).map(|_| ());
-        self.submit_once_or_reconcile(
-            collector,
-            &job,
-            ml_exp_core::cloud::pai::Allocation::Guaranteed,
-            &check,
-            &AtomicBool::new(false),
-        )
+        self.with_result_limits(&execution.backend_id, job)
     }
     pub fn maintenance_auth(&self, action: &str, plan: &Plan, token: &str) -> cloud::Result<()> {
         use subtle::ConstantTimeEq;

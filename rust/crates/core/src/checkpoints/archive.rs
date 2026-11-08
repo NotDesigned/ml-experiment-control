@@ -1,0 +1,273 @@
+//! Object-store copies of registered checkpoints. Pure layout and receipts only.
+//!
+//! Each file of a registered generation is cut into `PART_BYTES` objects named by
+//! the checkpoint's identity, the file's SHA256 and the part number, so a key names
+//! exactly one byte range of one immutable file. The worker sends the bytes directly
+//! to the object store with short-lived tickets; the server then reads every object
+//! back and checks each file's size and SHA256 against the registered document before
+//! it records a receipt. Only that receipt makes the copy the checkpoint's authority.
+use super::{Error, FileRecord, Result, validate_checkpoint_id};
+use crate::multipart::PART_BYTES;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::path::{Path, PathBuf};
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+
+pub const CONTRACT: &str = "native-checkpoint-archive.v1";
+/// The server's independent read of every object; never only the worker's word.
+pub const VERIFICATION: &str = "server-sha256";
+/// At most this many tickets per request, so each one is used well before it expires.
+pub const TICKETS_PER_REQUEST: u64 = 8;
+/// Every part of every file of one checkpoint: 16 TiB.
+pub const MAX_PARTS: u64 = 1 << 20;
+/// Below a restoring Attempt's own `STATE_DIR`. The generation it restores is
+/// placed at `.restore/<checkpoint hash>/checkpoints/<generation>`.
+pub const RESTORE_DIRECTORY: &str = ".restore";
+
+/// One object: `part` of the file at `file` in the sorted manifest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Part {
+    /// The object's place among every part of the checkpoint, from zero.
+    pub index: u64,
+    pub file: usize,
+    pub part: u64,
+    pub offset: u64,
+    pub bytes: u64,
+}
+
+/// Every object of these files, in manifest order. An empty file has none.
+pub fn parts(files: &[FileRecord]) -> Result<Vec<Part>> {
+    let mut result = Vec::new();
+    for (file, record) in files.iter().enumerate() {
+        let count = record.bytes.div_ceil(PART_BYTES);
+        for part in 0..count {
+            if result.len() as u64 >= MAX_PARTS {
+                return Err(Error::Manifest);
+            }
+            let offset = part * PART_BYTES;
+            result.push(Part {
+                index: result.len() as u64,
+                file,
+                part,
+                offset,
+                bytes: (record.bytes - offset).min(PART_BYTES),
+            });
+        }
+    }
+    Ok(result)
+}
+
+/// The total object count, without building the list.
+pub fn part_count(files: &[FileRecord]) -> Result<u64> {
+    let count = files
+        .iter()
+        .try_fold(0u64, |n, f| n.checked_add(f.bytes.div_ceil(PART_BYTES)))
+        .ok_or(Error::Manifest)?;
+    if count > MAX_PARTS {
+        return Err(Error::Manifest);
+    }
+    Ok(count)
+}
+
+pub fn total_bytes(files: &[FileRecord]) -> Result<u64> {
+    files
+        .iter()
+        .try_fold(0u64, |n, f| n.checked_add(f.bytes))
+        .ok_or(Error::Manifest)
+}
+
+fn hex(checkpoint_id: &str) -> Result<&str> {
+    validate_checkpoint_id(checkpoint_id)?
+        .strip_prefix("checkpoint.")
+        .ok_or(Error::Identity)
+}
+
+/// The object key below the operator's prefix. Every component is already validated
+/// by the document, so nothing in it comes from a request.
+pub fn object_suffix(
+    project: &str,
+    run_id: &str,
+    attempt_id: &str,
+    checkpoint_id: &str,
+    file: &FileRecord,
+    part: u64,
+) -> Result<String> {
+    crate::identity::validate_id(project).map_err(|_| Error::Identity)?;
+    crate::identity::validate_id(run_id).map_err(|_| Error::Identity)?;
+    crate::identity::validate_attempt(attempt_id).map_err(|_| Error::Identity)?;
+    if file.sha256.len() != 64 || !file.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(Error::Manifest);
+    }
+    Ok(format!(
+        "checkpoints/{project}/{run_id}/{attempt_id}/{}/{}/{part:05}",
+        hex(checkpoint_id)?,
+        file.sha256
+    ))
+}
+
+/// Where a restoring Attempt keeps its own copy of the generation it restores.
+pub fn restore_root(attempt_root: &Path, checkpoint_id: &str) -> Result<PathBuf> {
+    Ok(attempt_root
+        .join("state")
+        .join(RESTORE_DIRECTORY)
+        .join(hex(checkpoint_id)?))
+}
+
+/// The server's record that the object-store copy holds every byte of the
+/// registered document. It is written once and never changed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Receipt {
+    pub contract: String,
+    pub checkpoint_id: String,
+    pub part_bytes: u64,
+    pub parts: u64,
+    pub bytes: u64,
+    pub verification: String,
+    pub verified_at: String,
+}
+impl Receipt {
+    pub fn new(document: &Value, verified_at: &str) -> Result<Self> {
+        let (_, manifest) = super::validate_document(document, None, None)?;
+        if OffsetDateTime::parse(verified_at, &Rfc3339).is_err() {
+            return Err(Error::Timestamp);
+        }
+        Ok(Self {
+            contract: CONTRACT.into(),
+            checkpoint_id: document["checkpoint_id"]
+                .as_str()
+                .ok_or(Error::Document)?
+                .into(),
+            part_bytes: PART_BYTES,
+            parts: part_count(&manifest.files)?,
+            bytes: total_bytes(&manifest.files)?,
+            verification: VERIFICATION.into(),
+            verified_at: verified_at.into(),
+        })
+    }
+    /// This receipt describes exactly this document.
+    pub fn validate(&self, document: &Value) -> Result<()> {
+        let expected = Self::new(document, &self.verified_at)?;
+        if *self != expected {
+            return Err(Error::Document);
+        }
+        Ok(())
+    }
+}
+
+/// One worker request on its Attempt capability.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Request {
+    pub package_sha256: String,
+    pub operation: Operation,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Operation {
+    /// This Attempt's registered checkpoints and which of them have a verified copy.
+    List,
+    /// One registered document of this Attempt.
+    Document { checkpoint_id: String },
+    /// Write tickets for parts `start..` of one of this Attempt's checkpoints.
+    Upload { checkpoint_id: String, start: u64 },
+    /// Read every object back and record the receipt.
+    Complete { checkpoint_id: String },
+    /// Read tickets for parts `start..` of the checkpoint this Attempt restores.
+    Download { start: u64 },
+}
+impl Operation {
+    pub fn checkpoint_id(&self) -> Option<&str> {
+        match self {
+            Self::Document { checkpoint_id }
+            | Self::Upload { checkpoint_id, .. }
+            | Self::Complete { checkpoint_id } => Some(checkpoint_id),
+            Self::List | Self::Download { .. } => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn record(path: &str, bytes: u64) -> FileRecord {
+        FileRecord {
+            path: path.into(),
+            bytes,
+            sha256: "a".repeat(64),
+        }
+    }
+
+    #[test]
+    fn parts_cover_every_byte_once_and_skip_empty_files() {
+        let files = [
+            record("checkpoints/g/a", PART_BYTES * 2 + 5),
+            record("checkpoints/g/b", 0),
+            record("checkpoints/g/c", 3),
+        ];
+        let parts = parts(&files).unwrap();
+        assert_eq!(parts.len() as u64, part_count(&files).unwrap());
+        assert_eq!(parts.len(), 4);
+        assert_eq!(parts[2].bytes, 5);
+        assert_eq!(parts[2].offset, PART_BYTES * 2);
+        assert_eq!((parts[3].file, parts[3].part, parts[3].bytes), (2, 0, 3));
+        assert!(parts.iter().enumerate().all(|(i, p)| p.index == i as u64));
+        assert_eq!(total_bytes(&files).unwrap(), PART_BYTES * 2 + 8);
+    }
+
+    #[test]
+    fn keys_and_restore_paths_name_only_validated_components() {
+        let id = format!("checkpoint.{}", "b".repeat(64));
+        let file = record("checkpoints/g/a", 1);
+        assert_eq!(
+            object_suffix("demo", "train", "attempt-002", &id, &file, 3).unwrap(),
+            format!(
+                "checkpoints/demo/train/attempt-002/{}/{}/00003",
+                "b".repeat(64),
+                "a".repeat(64)
+            )
+        );
+        assert!(object_suffix("../x", "train", "attempt-002", &id, &file, 0).is_err());
+        assert!(object_suffix("demo", "train", "attempt-002", "checkpoint.x", &file, 0).is_err());
+        assert_eq!(
+            restore_root(Path::new("/r/demo/train/attempt-002"), &id).unwrap(),
+            PathBuf::from(format!(
+                "/r/demo/train/attempt-002/state/.restore/{}",
+                "b".repeat(64)
+            ))
+        );
+    }
+
+    #[test]
+    fn a_receipt_binds_the_exact_document() {
+        let context = super::super::Context {
+            project: "demo".into(),
+            run_id: "trial".into(),
+            attempt_id: "attempt-001".into(),
+            source_id: format!("source.{}", "a".repeat(64)),
+            image_id: format!("sha256:{}", "b".repeat(64)),
+            storage_scope: format!("storage.{}", "c".repeat(64)),
+            state_root: "/data/demo/trial/attempt-001/state".into(),
+        };
+        let ready = json!({"step":1,"files":[{"path":"checkpoints/s1/m.pt","bytes":7,"sha256":"d".repeat(64)}]});
+        let document = super::super::document(&context, &ready).unwrap();
+        let receipt = Receipt::new(&document, "2026-11-08T00:00:00Z").unwrap();
+        assert_eq!((receipt.parts, receipt.bytes), (1, 7));
+        assert!(receipt.validate(&document).is_ok());
+        let mut other = receipt.clone();
+        other.parts = 2;
+        assert!(other.validate(&document).is_err());
+        assert!(Receipt::new(&document, "yesterday").is_err());
+        let request: Request = serde_json::from_value(json!({"package_sha256":"x","operation":{"kind":"upload","checkpoint_id":"c","start":0}})).unwrap();
+        assert_eq!(request.operation.checkpoint_id(), Some("c"));
+        assert!(
+            serde_json::from_value::<Request>(
+                json!({"package_sha256":"x","operation":{"kind":"list","path":"/"}})
+            )
+            .is_err()
+        );
+    }
+}

@@ -677,6 +677,20 @@ enum Run {
         #[arg(long)]
         checkpoint: Option<String>,
     },
+    /// Remove an ended Attempt's state/ on backend storage once every checkpoint it
+    /// registered has a verified object-store copy; outputs/ and records stay.
+    PurgeState {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        run: String,
+        /// The Run's current Attempt unless given.
+        #[arg(long)]
+        attempt: Option<String>,
+        /// PURGE PROJECT/RUN/ATTEMPT; a wrong value prints the exact one.
+        #[arg(long)]
+        confirmation: String,
+    },
     /// Show independent scheduler, training and result-publication evidence.
     Status {
         #[command(flatten)]
@@ -1538,6 +1552,18 @@ fn run(mut args: Args) -> Result<(), Box<dyn std::error::Error>> {
                         Run::Collect { submission } => {
                             Output::Json(artifacts::observe(&client, &submission, true, &health)?)
                         }
+                        Run::PurgeState {
+                            project,
+                            run,
+                            attempt,
+                            confirmation,
+                        } => Output::Json(ml_exp_client::purge_state::purge(
+                            &client,
+                            &project,
+                            &run,
+                            attempt.as_deref(),
+                            &confirmation,
+                        )?),
                         Run::Artifacts { submission } => {
                             Output::Json(artifacts::observe(&client, &submission, false, &health)?)
                         }

@@ -1006,6 +1006,7 @@ mod schema_tests {
                 || path == "/api/local-runs/{project}/{run}/metrics"
                 || path.ends_with("/derived-metrics")
                 || path.ends_with("/wandb-rebuilds")
+                || path.ends_with("/purge-state")
                 || path.starts_with("/api/submissions/")
                     && path != "/api/submissions/{identity}"
                     && path != "/api/submissions/{identity}/progress"

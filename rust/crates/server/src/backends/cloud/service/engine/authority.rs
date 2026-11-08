@@ -316,9 +316,20 @@ impl Service {
                 .worker_for_new_run(project, &request.runtime_id)?
                 .map(Value::from),
         };
+        // A new Run copies its checkpoints to the object store only with a worker that
+        // can, frozen with it, and an object store to copy to. Every later Attempt keeps
+        // what the Run was created with.
+        let archive = match &existing {
+            Some(run) => run["native_cloud"].get("checkpoint_archive").cloned(),
+            None => (worker.is_some() && self.has_artifacts()).then(|| json!(true)),
+        };
         if let Some(worker) = worker {
             documents.run["native_cloud"]["worker_sha256"] = worker.clone();
             documents.attempt["native_cloud"]["worker_sha256"] = worker;
+        }
+        if let Some(archive) = archive {
+            documents.run["native_cloud"]["checkpoint_archive"] = archive.clone();
+            documents.attempt["native_cloud"]["checkpoint_archive"] = archive;
         }
         Ok(documents)
     }

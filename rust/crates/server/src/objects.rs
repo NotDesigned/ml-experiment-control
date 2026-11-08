@@ -470,6 +470,149 @@ impl Store {
         Ok(())
     }
 }
+/// Registered checkpoints. The document decides every key, size and hash; a request
+/// only chooses which of its parts to name.
+impl Store {
+    fn checkpoint_key(
+        &self,
+        document: &serde_json::Value,
+        part: &ml_exp_core::checkpoints::archive::Part,
+    ) -> io::Result<String> {
+        let (context, manifest) = ml_exp_core::checkpoints::validate_document(document, None, None)
+            .map_err(why!(invalid()))?;
+        let file = manifest.files.get(part.file).ok_or_else(invalid)?;
+        let suffix = ml_exp_core::checkpoints::archive::object_suffix(
+            &context.project,
+            &context.run_id,
+            &context.attempt_id,
+            document["checkpoint_id"].as_str().ok_or_else(invalid)?,
+            file,
+            part.part,
+        )
+        .map_err(why!(invalid()))?;
+        Ok(format!("{}{suffix}", self.settings.prefix))
+    }
+    /// Short-lived tickets for parts `start..start+count` of a registered document: PUT
+    /// that cannot replace an object, or GET.
+    pub fn checkpoint_tickets(
+        &self,
+        document: &serde_json::Value,
+        start: u64,
+        count: u64,
+        upload: bool,
+        now: i64,
+    ) -> io::Result<serde_json::Value> {
+        let (_, manifest) = ml_exp_core::checkpoints::validate_document(document, None, None)
+            .map_err(why!(invalid()))?;
+        let parts =
+            ml_exp_core::checkpoints::archive::parts(&manifest.files).map_err(why!(invalid()))?;
+        let total = parts.len() as u64;
+        if start > total {
+            return Err(invalid());
+        }
+        let expires = now.checked_add(300).ok_or_else(invalid)?;
+        let mut tickets = Vec::new();
+        for part in parts.iter().skip(start as usize).take(count as usize) {
+            let key = self.checkpoint_key(document, part)?;
+            tickets.push(serde_json::json!({
+                "index": part.index,
+                "file": manifest.files[part.file].path,
+                "part": part.part,
+                "offset": part.offset,
+                "bytes": part.bytes,
+                "url": self.signed_url(if upload { "PUT" } else { "GET" }, &key, expires)?,
+                "headers": if upload { serde_json::json!({"x-oss-forbid-overwrite":"true"}) } else { serde_json::json!({}) },
+            }));
+        }
+        Ok(serde_json::json!({
+            "parts": total,
+            "part_bytes": PART_BYTES,
+            "tickets": tickets,
+            "expires_in_seconds": 300,
+        }))
+    }
+    /// Read every object of the document back. True when each file has exactly its
+    /// registered size and SHA256; false when the bytes are refused or missing. An
+    /// error means the store could not be read, which says nothing about the bytes.
+    pub fn verify_checkpoint(&self, document: &serde_json::Value) -> io::Result<bool> {
+        let (_, manifest) = ml_exp_core::checkpoints::validate_document(document, None, None)
+            .map_err(why!(invalid()))?;
+        let parts =
+            ml_exp_core::checkpoints::archive::parts(&manifest.files).map_err(why!(invalid()))?;
+        let mut buffer = vec![0u8; 1024 * 1024];
+        let mut current: Option<(usize, Sha256, u64)> = None;
+        let finish = |state: Option<(usize, Sha256, u64)>| -> bool {
+            match state {
+                None => true,
+                Some((file, hash, bytes)) => {
+                    let record = &manifest.files[file];
+                    bytes == record.bytes && format!("{:x}", hash.finalize()) == record.sha256
+                }
+            }
+        };
+        let mut next_file = 0usize;
+        for part in &parts {
+            // Files before this one that have no parts are empty: their hash is fixed.
+            if current
+                .as_ref()
+                .is_none_or(|(file, _, _)| *file != part.file)
+            {
+                if !finish(current.take()) {
+                    return Ok(false);
+                }
+                for record in &manifest.files[next_file..part.file] {
+                    if record.bytes != 0 || format!("{:x}", Sha256::digest(b"")) != record.sha256 {
+                        return Ok(false);
+                    }
+                }
+                next_file = part.file + 1;
+                current = Some((part.file, Sha256::new(), 0));
+            }
+            let key = self.checkpoint_key(document, part)?;
+            let response = self
+                .http
+                .get(self.signed_url(
+                    "GET",
+                    &key,
+                    time::OffsetDateTime::now_utc().unix_timestamp() + 300,
+                )?)
+                .timeout(Duration::from_secs(600))
+                .send()
+                .map_err(|error| error.without_url())
+                .map_err(why_chain!(invalid()))?;
+            match response.status().as_u16() {
+                404 => return Ok(false),
+                200 if response.content_length() != Some(part.bytes) => return Ok(false),
+                200 => {}
+                _ => return Err(invalid()),
+            }
+            let (_, hash, bytes) = current.as_mut().ok_or_else(invalid)?;
+            let mut body = response.take(part.bytes + 1);
+            let mut read = 0u64;
+            loop {
+                let n = body.read(&mut buffer)?;
+                if n == 0 {
+                    break;
+                }
+                hash.update(&buffer[..n]);
+                read += n as u64;
+            }
+            if read != part.bytes {
+                return Err(invalid());
+            }
+            *bytes += read;
+        }
+        if !finish(current.take()) {
+            return Ok(false);
+        }
+        for file in &manifest.files[next_file..] {
+            if file.bytes != 0 || format!("{:x}", Sha256::digest(b"")) != file.sha256 {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+}
 struct Reader<'a> {
     store: &'a Store,
     archive: &'a ArchiveReceipt,
@@ -859,6 +1002,53 @@ mod tests {
         lying.parts.get_mut(&0).unwrap().sha256 = "9".repeat(64);
         assert!(!verify(&lying).unwrap());
         assert_eq!(store.wrong_data_parts("demo", "pai", &lying).unwrap(), [0]);
+    }
+    #[test]
+    fn a_checkpoint_copy_verifies_only_with_every_registered_byte() {
+        let oss = Arc::new(Oss::default());
+        let (_temp, store) = store(&oss);
+        let context = ml_exp_core::checkpoints::Context {
+            project: "demo".into(),
+            run_id: "train".into(),
+            attempt_id: "attempt-001".into(),
+            source_id: format!("source.{}", "a".repeat(64)),
+            image_id: format!("sha256:{}", "b".repeat(64)),
+            storage_scope: format!("storage.{}", "c".repeat(64)),
+            state_root: "/data/demo/train/attempt-001/state".into(),
+        };
+        let model = b"weights".to_vec();
+        let sha = |b: &[u8]| format!("{:x}", Sha256::digest(b));
+        let ready = serde_json::json!({"step":3,"files":[
+            {"path":"checkpoints/s3/empty","bytes":0,"sha256":sha(b"")},
+            {"path":"checkpoints/s3/model.pt","bytes":model.len(),"sha256":sha(&model)}
+        ]});
+        let document = ml_exp_core::checkpoints::document(&context, &ready).unwrap();
+        let tickets = store
+            .checkpoint_tickets(&document, 0, 8, true, 1_000_000)
+            .unwrap();
+        assert_eq!(tickets["parts"], 1);
+        let ticket = &tickets["tickets"][0];
+        assert_eq!(ticket["file"], "checkpoints/s3/model.pt");
+        assert_eq!(ticket["headers"]["x-oss-forbid-overwrite"], "true");
+        let url = url::Url::parse(ticket["url"].as_str().unwrap()).unwrap();
+        let hex = &document["checkpoint_id"].as_str().unwrap()["checkpoint.".len()..];
+        let key = format!(
+            "/users/alice/ml-expd/checkpoints/demo/train/attempt-001/{hex}/{}/00000",
+            sha(&model)
+        );
+        assert_eq!(url.path(), key);
+        assert!(!store.verify_checkpoint(&document).unwrap());
+        let mut wrong = model.clone();
+        wrong[0] ^= 1;
+        oss.objects.lock().unwrap().insert(key.clone(), wrong);
+        assert!(!store.verify_checkpoint(&document).unwrap());
+        oss.objects.lock().unwrap().insert(key, model);
+        assert!(store.verify_checkpoint(&document).unwrap());
+        assert!(
+            store
+                .checkpoint_tickets(&document, 2, 8, false, 1_000_000)
+                .is_err()
+        );
     }
     #[test]
     fn an_unreachable_store_says_nothing_about_the_bytes() {

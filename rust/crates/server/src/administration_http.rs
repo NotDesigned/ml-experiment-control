@@ -158,7 +158,16 @@ async fn receive(
         Ok(m) => Value::Object(m),
         Err(_) => return http_effect::failure(invalid()),
     };
-    http_effect::execute(state, OnTimeout::Effect, move |api, _| {
+    http_effect::execute(state, OnTimeout::Effect, move |api, time| {
+        // A state purge is the platform's own plan, kept beside its Attempt, and needs
+        // no administration. Any other plan is an administrative one.
+        if let Some(cloud) = api.cloud() {
+            if let Some(value) =
+                cloud.receive_purge(&project, &run, &attempt, &token, &receipt, &now(time)?)?
+            {
+                return Ok(value);
+            }
+        }
         service(api)?.receive(&project, &run, &attempt, &token, receipt)
     })
     .await

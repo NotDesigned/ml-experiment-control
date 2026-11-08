@@ -287,6 +287,12 @@ pub fn execution(
         .get("artifacts")
         .map(|p| serde_json::from_value(p.clone()).map_err(|_| Error("artifact policy")))
         .transpose()?;
+    // Only a Run whose frozen worker can copy checkpoints to the object store says so.
+    package.checkpoint_archive = run["native_cloud"]
+        .get("checkpoint_archive")
+        .map(|value| value.as_bool().ok_or(Error("frozen checkpoint archive")))
+        .transpose()?
+        .unwrap_or(false);
     let datasets = match run.get("native_datasets") {
         None => Vec::new(),
         Some(v) => serde_json::from_value(v.clone()).map_err(|_| Error("frozen cloud datasets"))?,

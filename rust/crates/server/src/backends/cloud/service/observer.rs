@@ -112,7 +112,7 @@ impl Service {
 /// A first Attempt's preparation is a raw SHA256 plus `.json`; a retry's adds its
 /// Attempt, as in `<sha256>.attempt-002.json`. Progress, history, exchange and other
 /// files beside them cannot be mistaken for an Action.
-fn preparation_slot(name: &str) -> bool {
+pub(super) fn preparation_slot(name: &str) -> bool {
     let Some(stem) = name.strip_suffix(".json") else {
         return false;
     };
