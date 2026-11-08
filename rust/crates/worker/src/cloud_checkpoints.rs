@@ -429,13 +429,15 @@ fn download(
         if cancelled.load(Ordering::Relaxed) {
             return Err(Error::Cancelled);
         }
+        // No verified copy, or none that can be read now: the start stops here.
         let reply = send(
             http,
             package,
             Operation::Download {
                 start: parts[index].index,
             },
-        )?;
+        )
+        .map_err(|_| restore_failed("ARCHIVE_UNAVAILABLE"))?;
         let tickets = reply["tickets"].as_array().ok_or(Error::Binding)?;
         let before = index;
         for ticket in tickets {

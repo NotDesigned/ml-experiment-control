@@ -318,7 +318,7 @@ mod tests {
         assert_eq!(request.operation.checkpoint_id(), Some("c"));
         assert!(
             serde_json::from_value::<Request>(
-                json!({"package_sha256":"x","operation":{"kind":"list","path":"/"}})
+                json!({"package_sha256":"x","operation":{"kind":"delete","checkpoint_id":"c"}})
             )
             .is_err()
         );
