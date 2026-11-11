@@ -46,9 +46,7 @@ impl Store {
         self.database.transaction(||self.require_guard(guard),|tx| {
             self.require_guard(guard)?;
             tx.execute("INSERT INTO native_publications VALUES (?,?) ON CONFLICT(scope) DO UPDATE SET state=excluded.state",params![scope,encoded])?;
-            // Waiting for W&B to show what was sent is the normal state between
-            // batches, not a failure: only real errors reach the failure count.
-            tx.execute("UPDATE scopes SET status=?,error=?,last_attempt_at=?,failures=CASE WHEN ? IS NULL THEN 0 WHEN ? LIKE '%_ACK_PENDING' THEN failures ELSE failures+1 END WHERE id=?",params![status,error,at,error,error,scope])?;
+            tx.execute("UPDATE scopes SET status=?,error=?,last_attempt_at=?,failures=CASE WHEN ? IS NULL THEN 0 ELSE failures+1 END WHERE id=?",params![status,error,at,error,scope])?;
             // The first time a rebuilt W&B Run is finished completes its rebuild.
             if status == "FINISHED" {
                 tx.execute("UPDATE wandb_rebuilds SET finished_at=? WHERE finished_at IS NULL AND scope=? AND new_wandb_id=(SELECT wandb_id FROM scopes WHERE id=?)",params![at,scope,scope])?;

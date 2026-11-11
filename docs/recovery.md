@@ -31,7 +31,7 @@ explicitly. Before an Attempt is bound, only status can inspect preparation.
 | Checkpoint REGISTERED | Worker verified a complete persistent generation, not an API archive |
 | Checkpoint in `archives` | OSS's size and CRC-64 of every part matched the worker's, and the worker's file SHA256 values the registered ones; see [state purge](#checkpoint-copies-and-the-state-purge) |
 | Process exit 0 | Entry process succeeded; publication/scientific validity remain separate |
-| AVAILABLE + SHA256_VERIFIED | Result archive is ready for verified client download |
+| AVAILABLE + SHA256_VERIFIED | Result archive is ready for verified client download. On PAI, OSS's size and CRC-64 of every part matched the worker's; see [result archive verification](#how-a-result-archive-is-verified) |
 | Download ACK accepted | Exact verified local receipt and retention choice were recorded |
 
 A worker's captured log is one file of at most 8 MiB. Past that it keeps its first
@@ -250,6 +250,29 @@ The CPU job takes the backend's `result_job` limits, by default 2 CPUs, 4 GiB an
 from nothing, so the time limit must cover packing, hashing and uploading the whole
 result. A job keeps the limits it was first recorded with: to give more time after a
 limit was hit, raise it and start a new `run sync --request-id`, or retry a failed one.
+
+### How a result archive is verified
+
+The worker packs the archive, verifies it from its own file (archive SHA256 and every
+file), then PUTs its 16 MiB parts straight to OSS, computing each part's CRC-64/XZ from
+the bytes it sends. `complete` carries those CRCs. The server asks OSS for each part's
+size and its own CRC (`HEAD`, eight at a time, no lock held) and publishes only when
+every one matches; no byte of the archive passes through the API host. A part that is
+missing or differs answers 409 `ARTIFACT_PART_REJECTED` and nothing is published; the
+worker's local archive and the original outputs stay, and the parts cannot be
+overwritten, so this needs an operator to look at the objects.
+
+The trust model is the same as for [checkpoint copies](#checkpoint-copies-and-the-state-purge)
+and [direct dataset uploads](data.md#how-a-direct-upload-is-verified): OSS's CRC binds
+the stored bytes to what the worker hashed, the worker's archive and file SHA256 values
+are trusted, and every consumer verifies before use. `ml-exp run download` checks each
+part's CRC as it arrives (the download ticket carries it), then the archive SHA256 and
+every file, before it writes the output or sends an ACK.
+
+A worker frozen into a Runtime before part CRCs existed sends none. For it alone the
+server still reads the whole archive back to check the SHA256 and every file, as it did
+before; that read can take minutes for a large archive. Archives published either way
+stay valid.
 
 ### What an archive can leave out
 

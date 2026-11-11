@@ -1,7 +1,6 @@
 use std::path::Path;
 
 use ml_exp_core::records::{self, Event, ImportEmission, Scope};
-pub use ml_exp_core::records::{RemoteHistoryEvidence, RemoteObservation};
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Map, Value, json};
 
@@ -738,12 +737,16 @@ impl Store {
         })
     }
 
-    pub fn confirm_publication(
+    /// Move the W&B cursor to `through` once the SDK accepted every row up to it,
+    /// and with `display` record that the summary for it was sent too. W&B is a
+    /// best-effort mirror, so no remote read-back is required.
+    pub fn advance_publication(
         &self,
         guard: &RecordGuard<'_>,
         scope: &str,
-        proof: &RemoteHistoryEvidence,
-        error: Option<&str>,
+        wandb_id: &str,
+        through: i64,
+        display: bool,
         at: &str,
     ) -> Result<()> {
         if self.read_only {
@@ -759,40 +762,17 @@ impl Store {
             |row| row.get(0),
         )?;
         let route: Value = serde_json::from_str(&route)?;
-        let events: Vec<(i64, String)> = {
-            let mut statement = tx.prepare(&format!(
-                "SELECT seq,event_id FROM {} WHERE scope=? AND seq>=? AND seq<=? ORDER BY seq",
-                self.published()
-            ))?;
-            statement
-                .query_map(
-                    params![
-                        scope,
-                        state["confirmed"]
-                            .as_i64()
-                            .ok_or(Error::Invalid("confirmed cursor"))?
-                            .max(1),
-                        proof.through
-                    ],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )?
-                .collect::<std::result::Result<_, _>>()?
-        };
-        let plan = records::confirmation_plan(&state, &route, &events, proof, error)
+        let plan = records::cursor_advance(&state, &route, wandb_id, through, display)
             .map_err(why!(Error::Confirmation))?;
         tx.execute(
-            "UPDATE scopes SET confirmed=MAX(confirmed,?),last_confirmed_at=? WHERE id=?",
-            params![plan.confirmed, at, scope],
+            "UPDATE scopes SET confirmed=MAX(confirmed,?),last_confirmed_at=CASE WHEN ?>confirmed THEN ? ELSE last_confirmed_at END WHERE id=?",
+            params![plan.confirmed, plan.confirmed, at, scope],
         )?;
         if let Some(version) = plan.display_version {
-            tx.execute("UPDATE scopes SET display_version=MAX(display_version,?),display_confirmed=MAX(display_confirmed,confirmed) WHERE id=?",params![version,scope])?;
+            tx.execute("UPDATE scopes SET display_version=?,display_confirmed=? WHERE id=?",params![version,plan.confirmed,scope])?;
         }
-        let total: i64 = tx.query_row(
-            &format!("SELECT {}", self.total_sql("?1")),
-            [scope],
-            |row| row.get(0),
-        )?;
-        tx.execute("UPDATE scopes SET status=CASE WHEN ? IS NOT NULL THEN 'RETRY_PENDING' WHEN confirmed>=? THEN 'SYNCED' ELSE 'PENDING' END,error=?,last_attempt_at=?,failures=CASE WHEN ? IS NULL THEN 0 ELSE failures+1 END WHERE id=?",params![error,total,error,at,error,scope])?;
+        let total = state["total"].as_i64().ok_or(Error::Invalid("journal total"))?;
+        tx.execute("UPDATE scopes SET status=CASE WHEN confirmed>=? THEN 'SYNCED' ELSE 'PENDING' END,error=NULL,last_attempt_at=?,failures=0 WHERE id=?",params![total,at,scope])?;
         self.require_guard(guard)?;
             Ok(())
         })

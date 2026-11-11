@@ -24,7 +24,12 @@ pub enum ArtifactOperation {
     Ticket {
         part: u64,
     },
-    Complete,
+    /// `part_crc64` is the CRC-64/XZ of each part the worker sent, in part order. A
+    /// worker built before it sends none, and its archive is read back instead.
+    Complete {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        part_crc64: Vec<u64>,
+    },
 }
 /// Resources of the CPU job that collects a finished Attempt's results or removes its
 /// storage. Packing restarts from nothing when interrupted, so the limit must cover a

@@ -1,10 +1,9 @@
 """Offline test double for SDK transport; never contacts W&B.
 
-Behaves like W&B where publication depends on it: logged rows wait in the SDK
-process until a flush, so a dead process loses them unless `flush_on_crash` models
-wandb-core delivering them on its way out, and its Run then reads as crashed. A row
-logged below the Run's next step is dropped. `hidden` delays visibility, and
-`reveal` shows that many waiting rows per scan.
+A logged row lands in the Run's history at once; a row logged below the Run's
+next step is dropped, as W&B drops it. `fail_logs` lists the log calls (by the
+total count of calls so far) that raise once, and `finish_failures` is how
+many finish calls raise.
 """
 import json
 import os
@@ -18,32 +17,6 @@ def read():
 def write(value):
     with open(os.environ["TEST_CLOUD"], "w") as stream:
         json.dump(value, stream)
-
-
-def alive(pid):
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    return True
-
-
-def settle(data):
-    """What W&B shows once a sending process is gone."""
-    for run in data["runs"].values():
-        kept = []
-        for row in run["pending"]:
-            if alive(row["_owner"]):
-                kept.append(row)
-            elif data.get("flush_on_crash"):
-                kept.append({**row, "_owner": os.getpid()})
-        run["pending"] = kept
-        if run["state"] == "running" and "owner" in run and not alive(run["owner"]):
-            run["state"] = "crashed"
-
-
-def visible(rows):
-    return [{key: item for key, item in row.items() if key != "_owner"} for row in rows]
 
 
 class Settings:
@@ -89,47 +62,8 @@ class Handle:
         return read()["runs"][self.id]["project"]
 
     @property
-    def config(self):
-        return read()["runs"][self.id]["config"]
-
-    @property
-    def state(self):
-        data = read()
-        settle(data)
-        write(data)
-        return data["runs"][self.id]["state"]
-
-    @property
-    def lastHistoryStep(self):
-        return max((row["_step"] for row in read()["runs"][self.id]["history"]), default=-1)
-
-    @property
     def step(self):
-        run = read()["runs"][self.id]
-        return max((row["_step"] for row in run['history'] + run['pending']), default=-1) + 1
-
-    def scan_history(self, min_step, keys=None, max_step=None, **kwargs):
-        data = read()
-        settle(data)
-        run = data["runs"][self.id]
-        data["scans"] = data.get("scans", 0) + 1
-        shown = len(run["pending"]) if not data["hidden"] else data.get("reveal", 0)
-        run["history"].extend(visible(run["pending"][:shown]))
-        run["pending"] = run["pending"][shown:]
-        write(data)
-        rows = [({key: row[key] for key in keys} if keys else row.copy())
-                for row in run["history"] if min_step <= row["_step"]
-                and (max_step is None or row["_step"] < max_step)]
-        if data.get("repeat_pages"):
-            rows += [row.copy() for row in rows]
-        if data.get("conflicting_page") and rows:
-            rows += [{**rows[0], "curves/loss": -9}]
-        if data.get("duplicate_sequence") and rows:
-            rows += [{**rows[0], "_step": self.lastHistoryStep + 1}]
-        if data.get("conflicting_sequence") and rows:
-            rows += [{**rows[0], "_step": self.lastHistoryStep + 1,
-                      "ml_expd/event_id": "another"}]
-        return rows
+        return max((row["_step"] for row in read()["runs"][self.id]["history"]), default=-1) + 1
 
     def define_metric(self, name, **options):
         data = read()
@@ -141,10 +75,14 @@ class Handle:
         data = read()
         run = data["runs"][self.id]
         data["logs"] += 1
-        if step < max((row["_step"] for row in run["history"] + run["pending"]), default=-1) + 1:
+        if data["logs"] in data.get("fail_logs", []):
+            data["fail_logs"].remove(data["logs"])
+            write(data)
+            raise RuntimeError("log failed")
+        if step < self.step:
             data["dropped"] = data.get("dropped", 0) + 1
         else:
-            run["pending"].append({**record, "_step": step, "_owner": os.getpid()})
+            run["history"].append({**record, "_step": step})
         write(data)
 
     def finish(self, exit_code):
@@ -153,9 +91,6 @@ class Handle:
             data["finish_failures"] -= 1
             write(data)
             raise RuntimeError("finish failed")
-        run = data["runs"][self.id]
-        run["history"].extend(visible(run["pending"]))
-        run["pending"] = []
         data["runs"][self.id]["state"] = "finished" if exit_code == 0 else "failed"
         data["finishes"] += 1
         write(data)
@@ -183,8 +118,6 @@ def init(**kwargs):
     identity = kwargs["id"]
     if kwargs["resume"] == "must":
         assert identity in data["runs"]
-    if kwargs["resume"] == "never":
-        assert identity not in data["runs"]
     data["inits"] += 1
     def visible(value):
         if type(value) is float and value == 3.4976104655686546:
@@ -199,8 +132,7 @@ def init(**kwargs):
                 if (item := visible(value)) != {}}
     data["runs"].setdefault(identity, {"entity": kwargs["entity"], "name": kwargs["name"],
         "project": kwargs["project"], "config": visible(kwargs["config"]),
-        "history": [], "pending": [], "definitions": {}, "summary": {}})
+        "history": [], "definitions": {}, "summary": {}})
     data["runs"][identity]["state"] = "running"
-    data["runs"][identity]["owner"] = os.getpid()
     write(data)
     return Handle(identity)

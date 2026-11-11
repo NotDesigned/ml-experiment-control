@@ -65,28 +65,47 @@ to a minute between attempts.
 
 | Situation | What happens |
 | --- | --- |
-| The server is older and offers no tickets | The whole upload goes through the server |
+| The server is older and offers no tickets, or only `native-dataset-direct-upload.v1` | The whole upload goes through the server |
+| The client is older (it sends no CRC-64) | The server refuses its first ticket with 422 `DATASET_DIRECT_UPLOAD_UNSUPPORTED` (a current server does not list v1, so such a client does not ask), and the client sends the whole upload through the server. Upgrade the client to upload directly |
 | The executor has no object store (Slurm) | The whole upload goes through the server, chosen before any part is sent |
 | OSS cannot be reached, or refuses | The upload stops and says so. Repeat it to resume, or add `--via-server` to send the remaining parts through the server. It never changes path by itself once parts are moving |
 
 `--via-server` works anywhere, and both paths record the same parts, so one can finish
 what the other started.
 
-The signature does not cover the bytes, and the server does not read a part back when
-it records it: it checks that the object exists at the exact size. So during an upload,
-`parts` lists what the client claims. Nothing can use that. Only `complete` makes an
-asset `ARCHIVED`, by reading the whole archive and checking the archive hash, every
-member and every part against its record, and only `ARCHIVED` assets give out read
-tickets. A wrong part means `complete` answers 409 `DATASET_PART_REJECTED`, removes that
-part and accepts nothing, and repeating the upload sends it again. If every part
-matches its record and the archive still does not match the asset, the answer is 409
-`DATASET_ARCHIVE_REFUSED`, nothing is removed because no part can be blamed, and
-changing any file makes a new asset. That needs a client that hashed other bytes than
-it packed, which `ml-exp` does only if its own disk corrupts the file.
+#### How a direct upload is verified
 
-`complete` holds no lock while it reads, but it reads everything within one request.
-An archive that takes longer than the 1230-second limit reports an uncertain outcome
-while the read continues on the server; inspect the asset, then repeat the upload.
+No byte of a direct upload passes through the server, then or later. The trust model:
+
+- **The object store's CRC binds the stored bytes to what the client hashed.** For each
+  part the client computes its SHA256 and its CRC-64/XZ, which OSS also computes and
+  reports as `x-oss-hash-crc64ecma`. `part-uploaded` sends both. The server asks OSS for
+  the object's size and CRC (`HEAD`) and records the part only when both match; a wrong
+  object is removed and 409 `DATASET_PART_REJECTED` asks for it again.
+- **The client's SHA256 is trusted.** The archive SHA256 is the asset's identity, and the
+  member list with each file's SHA256 is its definition: the client computed both while
+  packing and the server does not recompute them. A CRC-64 detects corruption in transit
+  or in storage; it is not a cryptographic hash, so it does not defend against a client
+  that lies about its own bytes. A client that can upload can already choose any bytes.
+- **Every consumer verifies before use.** The PAI worker checks every member's SHA256
+  before it publishes a tree, and a worker of this version or later also checks each
+  part's CRC as it arrives; `data download` checks each part's CRC, then the archive and
+  every member, before it writes the output.
+
+`complete` makes an asset `ARCHIVED`. It sends one `HEAD` per part, with no lock held,
+and requires each object to exist with its exact size and recorded CRC. Only `ARCHIVED`
+assets give out read tickets, and each read ticket carries the part's `crc64`. A part
+that is missing or changed means `complete` answers 409 `DATASET_PART_REJECTED`,
+removes that part and accepts nothing; repeating the upload sends it again. A part
+recorded before CRCs were kept (by a server older than this one) has nothing binding
+its stored bytes to its record, so `complete` treats it the same way: one repeat of
+the upload sends it again. Assets already `ARCHIVED` stay valid.
+
+`--via-server` sends the bytes through the server, which hashes them itself, stores
+the part, and checks the stored object by `HEAD` and CRC rather than reading it back.
+
+`complete` costs one round trip to the object store per 16 MiB part, eight at a time;
+the client allows it 1230 seconds.
 
 ### Using an asset
 
@@ -99,10 +118,6 @@ Run inputs use the ordinary native `data` field:
 The worker supplies `DATASETS_JSON`, mapping each input name to its verified
 shared-storage directory. Training code reads the named directory from this map.
 See [paths in the job](#paths-in-the-job).
-
-The server reads the whole archive once, at `complete`. A large archive can outlast
-the request, and the read goes on. A repeat during it answers 409 `DATASET_VERIFYING`,
-and `data upload` waits and asks again.
 
 `ARCHIVED` means the uploaded archive passed verification. `READY` additionally
 means the selected backend has a verified shared-storage tree. These states are
@@ -298,17 +313,21 @@ filesystem mounts remain disabled; CPFS supplies the training filesystem.
 - `GET /api/projects/P/datasets/E/A`: retained state.
 - `PUT /api/projects/P/datasets/E/A/parts/NUMBER/SHA256`: exact raw part bytes, through
   the server. Older clients use this, and it stays.
-- `POST /api/projects/P/datasets/E/A/upload-ticket`: `part` and `sha256`; one part's
-  signed PUT. 422 `DATASET_DIRECT_UPLOAD_UNSUPPORTED` means this executor has no object
-  store. Health lists `native-dataset-direct-upload.v1` when the server has tickets.
-- `POST /api/projects/P/datasets/E/A/part-uploaded`: `part` and `sha256`; record a part
-  sent with a ticket, once the object exists at its exact size.
-- `POST /api/projects/P/datasets/E/A/complete`: verify the uploaded archive.
+- `POST /api/projects/P/datasets/E/A/upload-ticket`: `part`, `sha256` and `crc64`; one
+  part's signed PUT. 422 `DATASET_DIRECT_UPLOAD_UNSUPPORTED` means this executor has no
+  object store, or the request has no `crc64`: send the parts through the server.
+  Health lists `native-dataset-direct-upload.v2` when the server has tickets.
+- `POST /api/projects/P/datasets/E/A/part-uploaded`: `part`, `sha256` and `crc64`
+  (CRC-64/XZ of the part, an unsigned integer); record a part sent with a ticket, once
+  a `HEAD` shows the object at its exact size with that CRC.
+- `POST /api/projects/P/datasets/E/A/complete`: verify every part by `HEAD`; no byte is
+  read.
 - `POST /api/projects/P/datasets/E/A/publish`: explicit backend preparation.
 - `GET/POST /api/projects/P/datasets/E/A/publications/REQUEST/diagnostic`:
   retained diagnostic or explicit create/observe.
 - `POST /api/projects/P/datasets/E/import-oss`: object key, SHA256 and archive bytes.
-- `POST /api/projects/P/datasets/E/A/download-ticket`: one part's private ticket.
+- `POST /api/projects/P/datasets/E/A/download-ticket`: one part's private ticket, with
+  the part's `crc64` when the server kept one.
 
 Part numbers start at zero. Identical parts are idempotent; changed bytes cannot
 replace an accepted part, and a part removed by `complete` was never accepted. The native policy uses 16 MiB parts and at most 65,536

@@ -13,7 +13,10 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-const DIRECT_UPLOAD: &str = "native-dataset-direct-upload.v1";
+/// v2: each part is sent with its CRC-64/XZ, which the server compares with the object
+/// store's own, so `complete` reads no byte. A server that offers only v1 would read
+/// the archive back, and this client sends through it instead.
+const DIRECT_UPLOAD: &str = "native-dataset-direct-upload.v2";
 /// One part's bytes, shared with the request sending them: a retry sends them again
 /// without a second copy, so an upload holds about one part in memory.
 #[derive(Clone)]
@@ -131,10 +134,11 @@ impl Direct<'_> {
         store: &mut dyn ObjectStore,
         number: u64,
         sha256: &str,
+        crc64: u64,
         part: &Part,
         first: bool,
     ) -> Result<Option<Value>, Error> {
-        let identity = serde_json::json!({"part":number,"sha256":sha256});
+        let identity = serde_json::json!({"part":number,"sha256":sha256,"crc64":crc64});
         let tail = format!("{}/{number:05}", self.tail);
         let mut unsupported = false;
         repeated(store, PUT_GAVE_UP, |store| {
@@ -154,7 +158,8 @@ impl Direct<'_> {
             };
             let uri = ticket_url(&ticket, number, part.len(), &tail).map_err(Attempt::Stop)?;
             match store.put(&uri, part) {
-                // 409: already stored and never replaced. Complete proves its bytes.
+                // 409: already stored and never replaced. The server compares the stored
+                // object's CRC-64 with this part's before it records it.
                 Ok(200 | 409) => Ok(()),
                 Ok(status) if ml_exp_core::retry::may_pass(status) => Err(Attempt::Again(format!(
                     "object storage answered HTTP {status}"
@@ -374,7 +379,6 @@ pub fn upload(
 }
 /// [`upload`], with what it does to the object store supplied.
 #[doc(hidden)]
-const VERIFYING_WAIT: Duration = Duration::from_secs(30);
 pub fn upload_with(
     client: &Client,
     project: &str,
@@ -446,6 +450,7 @@ pub fn upload_with(
                 let mut part = vec![0u8; count as usize];
                 archive.read_exact(&mut part).map_err(|_| Error::Response)?;
                 let sha256 = format!("{:x}", Sha256::digest(&part));
+                let crc64 = ml_exp_core::checkpoints::archive::crc64(&part);
                 let record = PartRecord {
                     sha256: sha256.clone(),
                     bytes: count,
@@ -465,7 +470,7 @@ pub fn upload_with(
                 let part = Part::new(part);
                 let mut stored = None;
                 if use_direct {
-                    stored = direct.send(store, number, &sha256, &part, !sent_directly)?;
+                    stored = direct.send(store, number, &sha256, crc64, &part, !sent_directly)?;
                     sent_directly = stored.is_some();
                     if stored.is_none() {
                         eprintln!("This executor has no object store; sending through the server.");
@@ -492,22 +497,15 @@ pub fn upload_with(
                 current = next;
             }
         }
-        // A request gives up before a large archive is read, and that read goes on.
-        let value = loop {
-            match send(
-                client,
-                format!("{base}/{asset}/complete"),
-                reqwest::Method::POST,
-                Vec::new(),
-                true,
-            ) {
-                Err(Error::Http(failure)) if failure.error_code == "DATASET_VERIFYING" => {
-                    eprintln!("The server is still verifying this archive; waiting.");
-                    std::thread::sleep(VERIFYING_WAIT);
-                }
-                other => break other?,
-            }
-        };
+        // The server asks the object store for each part's size and CRC-64; no byte
+        // passes through it again.
+        let value = send(
+            client,
+            format!("{base}/{asset}/complete"),
+            reqwest::Method::POST,
+            Vec::new(),
+            true,
+        )?;
         let archived = value["archive_verified"] == true;
         let ready = state(value.clone(), project, executor, &asset)?;
         current
@@ -571,11 +569,16 @@ pub fn download(
         if ticket["part"] != part || ticket["bytes"] != expected {
             return Err(Error::Response);
         }
-        client.download_object(
+        let crc64 = client.download_object(
             ticket["url"].as_str().ok_or(Error::Response)?,
             expected,
             temporary.as_file_mut(),
         )?;
+        if !crate::transport::crc64_matches(&ticket, crc64) {
+            return Err(Error::Observation(
+                "a dataset part differs from what was uploaded (CRC-64); output was not published",
+            ));
+        }
     }
     temporary
         .as_file_mut()

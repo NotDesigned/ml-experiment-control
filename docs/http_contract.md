@@ -232,8 +232,14 @@ changing source, parameters or restore reference requires a new Run.
 | `POST /api/runs/P/R/attempts/A/derived-metrics` | Add one post-hoc JSONL file to an ended Attempt as a separate [derived batch](metrics.md#add-derived-metrics-to-an-ended-run) |
 | `POST /api/runs/P/R/attempts/A/wandb-rebuilds` | Publish a finished Attempt again to a new W&B Run without the metric names of one [exclusion list](wandb.md#rebuild-a-finished-wb-run-without-some-metrics) |
 
-The signed object GET carries no API token. Validate archive and file hashes,
-then follow the ticket's acknowledgement contract. Signed URLs are temporary;
+The signed object GET carries no API token. A download ticket may carry `crc64`, the
+CRC-64/XZ (OSS's `x-oss-hash-crc64ecma`) of that part as its uploader computed it; check
+each part against it when present. Then validate archive and file hashes, and follow
+the ticket's acknowledgement contract. The server publishes a result archive, or marks
+a directly uploaded dataset `ARCHIVED`, after comparing OSS's size and CRC-64 of each
+part with the uploader's (`HEAD` only); it trusts the uploader's SHA256 values, and
+consumers re-verify before use. See [result archive verification](recovery.md#how-a-result-archive-is-verified)
+and [direct dataset uploads](data.md#how-a-direct-upload-is-verified). Signed URLs are temporary;
 do not treat them as artifact identities. Download ACK can release the server
 archive; it does not delete checkpoints or the metric journal.
 

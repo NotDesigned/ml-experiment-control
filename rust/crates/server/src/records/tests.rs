@@ -4,7 +4,7 @@ use ml_exp_core::records::{Event, JsonlImporter, Scope, normalized_metric};
 use rusqlite::Connection;
 use serde_json::{Value, json};
 
-use super::{Error, RemoteHistoryEvidence, RemoteObservation, Store};
+use super::{Error, Store};
 use crate::deletion::RunFence;
 
 const SEED: &str = "0123456789abcdef0123456789abcdef";
@@ -25,30 +25,6 @@ fn bound(store: &Store, run: &str, route: Value, config: Value) -> String {
     let guard = store.guard("demo", run).unwrap();
     store.bind(&guard, &route, &config).unwrap();
     store.scope(&guard, "attempt-001").unwrap()
-}
-fn proof(
-    store: &Store,
-    guard: &super::RecordGuard<'_>,
-    scope: &str,
-    through: i64,
-    display: bool,
-) -> RemoteHistoryEvidence {
-    let state = store.scope_status(guard, scope).unwrap().unwrap();
-    let first = state["confirmed"].as_i64().unwrap().max(1);
-    let observed = (first..=through)
-        .map(|sequence| RemoteObservation {
-            sequence,
-            event_id: store.event_id(guard, scope, sequence).unwrap().unwrap(),
-        })
-        .collect();
-    RemoteHistoryEvidence {
-        route: store.binding(guard).unwrap().unwrap()["route"].clone(),
-        wandb_id: state["wandb_id"].as_str().unwrap().into(),
-        through,
-        observed,
-        display_version: display.then_some(4),
-        display_through: display.then_some(through),
-    }
 }
 fn enabled() -> Value {
     json!({"enabled":true,"entity":"fixture-team","project":"fixture-science"})
@@ -128,7 +104,7 @@ fn frozen_binding_batch_atomicity_and_metric_dedup_preserve_event_identities() {
 }
 
 #[test]
-fn publication_requires_exact_remote_prefix_and_ack_never_deletes_canonical_records() {
+fn a_publication_cursor_stays_in_its_journal_and_never_deletes_canonical_records() {
     let temp = tempfile::tempdir().unwrap();
     let store = Store::open(temp.path(), SEED).unwrap();
     let scope = bound(&store, "run-a", enabled(), json!({}));
@@ -147,37 +123,14 @@ fn publication_requires_exact_remote_prefix_and_ack_never_deletes_canonical_reco
         )
         .unwrap();
     assert_eq!(store.pending(&guard).unwrap().len(), 1);
-    let valid = proof(&store, &guard, &scope, 1, false);
-    let mut invalid = Vec::new();
-    let mut p = valid.clone();
-    p.route["project"] = json!("other");
-    invalid.push(p);
-    let mut p = valid.clone();
-    p.wandb_id = "foreign".into();
-    invalid.push(p);
-    let mut p = valid.clone();
-    p.through = 3;
-    invalid.push(p);
-    let mut p = valid.clone();
-    p.observed.clear();
-    invalid.push(p);
-    let mut p = valid.clone();
-    p.observed[0].event_id = "foreign".into();
-    invalid.push(p);
-    let mut p = valid.clone();
-    p.observed.push(p.observed[0].clone());
-    invalid.push(p);
-    let mut p = valid.clone();
-    p.display_version = Some(999);
-    p.display_through = Some(1);
-    invalid.push(p);
-    let mut p = valid.clone();
-    p.display_version = Some(3);
-    p.display_through = Some(1);
-    invalid.push(p);
-    for p in invalid {
+    let id = store.scope_status(&guard, &scope).unwrap().unwrap()["wandb_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // Another W&B id (a rebuild moved the scope) or a cursor past the journal.
+    for (wandb_id, through) in [("foreign", 1), (id.as_str(), 3), (id.as_str(), -1)] {
         assert!(matches!(
-            store.confirm_publication(&guard, &scope, &p, None, "bad"),
+            store.advance_publication(&guard, &scope, wandb_id, through, false, "bad"),
             Err(Error::Confirmation)
         ));
         assert_eq!(
@@ -186,29 +139,26 @@ fn publication_requires_exact_remote_prefix_and_ack_never_deletes_canonical_reco
         );
     }
     store
-        .confirm_publication(&guard, &scope, &valid, Some("REMOTE_ACK_PENDING"), "t1")
+        .advance_publication(&guard, &scope, &id, 1, false, "t1")
         .unwrap();
-    assert_eq!(
-        store.scope_status(&guard, &scope).unwrap().unwrap()["confirmed"],
-        1
-    );
-    let complete = proof(&store, &guard, &scope, 2, false);
+    let state = store.scope_status(&guard, &scope).unwrap().unwrap();
+    assert_eq!(state["confirmed"], 1);
+    assert_eq!(state["status"], "PENDING");
     store
-        .confirm_publication(&guard, &scope, &complete, None, "t2")
+        .advance_publication(&guard, &scope, &id, 2, false, "t2")
         .unwrap();
     assert_eq!(
         store.scope_status(&guard, &scope).unwrap().unwrap()["status"],
         "SYNCED"
     );
-    assert_eq!(store.pending(&guard).unwrap().len(), 1); // Display repair remains pending.
-    let display = proof(&store, &guard, &scope, 2, true);
+    assert_eq!(store.pending(&guard).unwrap().len(), 1); // The display is still to send.
     store
-        .confirm_publication(&guard, &scope, &display, None, "t3")
+        .advance_publication(&guard, &scope, &id, 2, true, "t3")
         .unwrap();
     assert!(store.pending(&guard).unwrap().is_empty());
     let before = store.events(&guard, &scope, 0, 128).unwrap();
     assert!(matches!(
-        store.confirm_publication(&guard, &scope, &valid, None, "stale"),
+        store.advance_publication(&guard, &scope, &id, 1, false, "stale"),
         Err(Error::Confirmation)
     ));
     assert_eq!(store.events(&guard, &scope, 0, 128).unwrap(), before);

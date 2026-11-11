@@ -261,6 +261,9 @@ pub fn publish(package: &Package) -> Result<()> {
             .map_err(crate::managed::storage_failure!())?;
         ml_exp_io::artifacts::verify(&mut file, &bundle.archive).map_err(|_| Error::Binding)?;
         let mut buffer = vec![0u8; PART_BYTES as usize];
+        // The server checks the object store's CRC-64 of each part against these, and
+        // reads no byte back. The archive and files were just verified from this file.
+        let mut part_crc64 = Vec::with_capacity(count as usize);
         for part in 0..count {
             let ticket = send(&http, package, ArtifactOperation::Ticket { part })?;
             let bytes = (bundle.archive.bytes - part * PART_BYTES).min(PART_BYTES);
@@ -283,8 +286,11 @@ pub fn publish(package: &Package) -> Result<()> {
                 .map_err(crate::managed::storage_failure!())?;
             file.read_exact(&mut buffer[..bytes as usize])
                 .map_err(crate::managed::storage_failure!())?;
-            // A duplicate immutable part is verified in the full server-side
-            // read before publication; it is never overwritten on retry.
+            part_crc64.push(ml_exp_core::checkpoints::archive::crc64(
+                &buffer[..bytes as usize],
+            ));
+            // A duplicate immutable part is never overwritten on retry. Its stored CRC
+            // must still be this one before the server publishes.
             repeated("a part", || {
                 let response = http
                     .put(uri.clone())
@@ -300,7 +306,7 @@ pub fn publish(package: &Package) -> Result<()> {
                 }
             })?;
         }
-        let complete = send(&http, package, ArtifactOperation::Complete)?;
+        let complete = send(&http, package, ArtifactOperation::Complete { part_crc64 })?;
         if complete["published"] != true
             || complete["sha256"] != bundle.archive.sha256
             || complete["bytes"] != bundle.archive.bytes
