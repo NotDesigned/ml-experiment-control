@@ -259,6 +259,7 @@ impl Service {
                         && finished
                         && self.history_complete(&prepared)?
                         && self.journal_terminal_recorded(&prepared)
+                        && self.results_settled(&prepared)?
                     {
                         continue;
                     }
@@ -283,8 +284,48 @@ impl Service {
                 self.refresh_scheduler_with_limit(action, now, cancelled, Some(timeout))
             }
             Phase::Worker => self.refresh_with_limit(action, now, cancelled, Some(timeout)),
-            Phase::History => self.ingest_history_with_limit(action, cancelled, Some(timeout)),
+            Phase::History => {
+                let value = self.ingest_history_with_limit(action, cancelled, Some(timeout))?;
+                self.collect_when_finished(&prepared, action, cancelled)?;
+                Ok(value)
+            }
         }
+    }
+    /// Results of a finished attempt are packaged on the gateway without a
+    /// client request, as PAI publishes them at job end. A collection that keeps
+    /// failing counts as History failures and stops after `COLLECT_TRIES`, so
+    /// `ml-exp results --collect` remains the manual path.
+    fn collect_when_finished(
+        &self,
+        prepared: &Prepared,
+        action: &str,
+        cancelled: &AtomicBool,
+    ) -> Result<()> {
+        let terminal = self
+            .scheduler_observation(prepared)?
+            .is_some_and(|saved| saved.observation.status.state.is_terminal());
+        let finished = self.observation(prepared)?.is_some_and(|saved| {
+            saved.evidence.worker.phase == ml_exp_core::managed::evidence::Phase::Finished
+        });
+        if !terminal
+            || !finished
+            || !self.history_complete(prepared)?
+            || self.results_settled(prepared)?
+        {
+            return Ok(());
+        }
+        self.collect_artifacts(action, cancelled).map(|_| ())
+    }
+    fn results_settled(&self, prepared: &Prepared) -> Result<bool> {
+        const COLLECT_TRIES: u32 = 5;
+        if self.artifact_saved(prepared)?.is_some() {
+            return Ok(true);
+        }
+        Ok(self
+            .polling_samples(prepared)?
+            .phases
+            .get("History")
+            .is_some_and(|sample| sample.failures >= COLLECT_TRIES))
     }
     fn background_admitted(prepared: &Prepared) -> Result<()> {
         let (manifest, _) = prepared

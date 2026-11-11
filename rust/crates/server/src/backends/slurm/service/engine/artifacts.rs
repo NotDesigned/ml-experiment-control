@@ -24,7 +24,7 @@ impl Service {
             )?
         ))
     }
-    fn artifact_saved(&self, prepared: &Prepared) -> Result<Option<State>> {
+    pub(super) fn artifact_saved(&self, prepared: &Prepared) -> Result<Option<State>> {
         let name = Self::artifact_name(prepared)?;
         if !self
             .slots
