@@ -447,6 +447,13 @@ impl From<crate::backends::cloud::Error> for Error {
                 ),
                 // The effects journal lock: kept as CLOUD_RUN_BUSY for clients,
                 // told apart from the cloud run lock by this detail.
+                // A failed Slurm SIF conversion is not a busy lock; the build
+                // record keeps the gateway process diagnostic.
+                ("OCI_TO_SIF_UNCONFIRMED", _) => (
+                    503,
+                    "OCI_TO_SIF_UNCONFIRMED",
+                    "the Slurm image conversion on the gateway did not finish; see `ml-exp env show` for the gateway output, then run `ml-exp env materialize` for this Runtime",
+                ),
                 ("CLOUD_EFFECT_BUSY", _) => (
                     503,
                     "CLOUD_RUN_BUSY",
