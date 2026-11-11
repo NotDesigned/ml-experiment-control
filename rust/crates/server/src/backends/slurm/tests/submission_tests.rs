@@ -182,6 +182,7 @@ impl Fixture {
                 runtimes: BTreeMap::from([(self.runtime.runtime_id.clone(), self.runtime.clone())]),
                 data_helper_config: None,
                 script_preparation: false,
+                delivery: None,
             }],
             enabled,
         )
@@ -2005,5 +2006,452 @@ fn an_expired_execute_makes_no_provider_call_and_renew_still_works() {
     assert_eq!(
         fs::read_to_string(f.root.path().join("sbatch-calls")).unwrap(),
         "call\n"
+    );
+}
+
+const CODE_CHILD: &str = "ML_EXPD_SYNTHETIC_CODE_CHILD";
+/// The gateway's `code-receive` in a delivery test: the real receiver, run in this test
+/// binary by the worker script below. Its answer goes through files, because the test
+/// harness writes to its own standard output.
+#[test]
+fn code_receive_child() {
+    use ml_exp_core::slurm::delivery::{CODE_ABSENT, CODE_READY, CODE_REFUSED, CODE_REUSED};
+    let Some(root) = std::env::var_os(CODE_CHILD) else {
+        return;
+    };
+    let root = PathBuf::from(root);
+    let args: Vec<String> = fs::read_to_string(root.join("code-args"))
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(args[..2], ["code-receive".to_owned(), "--root".into()]);
+    let parent = PathBuf::from(&args[2]);
+    let source = &args[4];
+    let answer = if args.iter().any(|arg| arg == "--check") {
+        ml_exp_worker::cloud_code::check_shared(&parent, source)
+            .map(|ready| if ready { CODE_READY } else { CODE_ABSENT })
+    } else {
+        ml_exp_worker::cloud_code::receive_shared(&parent, source, &mut std::io::stdin().lock())
+            .map(|reused| if reused { CODE_REUSED } else { CODE_READY })
+    };
+    let (line, exit) = match answer {
+        Ok(line) => (line, 0),
+        Err(error) => {
+            fs::write(root.join("code-refusal"), error.to_string()).unwrap();
+            (CODE_REFUSED, 1)
+        }
+    };
+    fs::write(root.join("code-answer"), line).unwrap();
+    fs::write(root.join("code-exit"), exit.to_string()).unwrap();
+}
+/// The server's store of every release's worker, counting what it sends.
+struct Workers {
+    store: PathBuf,
+    current: String,
+    sent: std::sync::atomic::AtomicUsize,
+}
+impl crate::submissions::RuntimeBuilder for Workers {
+    fn slurm_runtime(&self, _: &str, _: &str, _: &str) -> Result<Runtime, ServiceError> {
+        Err(ServiceError::Authority)
+    }
+    fn current_worker(&self) -> Option<String> {
+        Some(self.current.clone())
+    }
+    fn worker_file(&self, sha256: &str) -> Result<(u64, fs::File), ServiceError> {
+        self.sent.fetch_add(1, Ordering::SeqCst);
+        let file = fs::File::open(self.store.join(&sha256[7..]))
+            .map_err(|_| ServiceError::WorkerUnavailable)?;
+        Ok((file.metadata().unwrap().len(), file))
+    }
+}
+/// A backend with a delivery root, and a worker store whose worker is a script.
+struct Delivering {
+    f: Fixture,
+    workers: Arc<Workers>,
+    bytes: Vec<u8>,
+    root: String,
+    helper: PathBuf,
+}
+impl Delivering {
+    fn new() -> Self {
+        let f = Fixture::new();
+        let base = f.root.path().to_owned();
+        let bytes = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > {args}\n{CODE_CHILD}={root} {exe} --exact backends::slurm::tests::submission_tests::code_receive_child --nocapture > {log} 2>&1\ncat {answer}\nexit \"$(cat {exit})\"\n",
+            args = quote(&base.join("code-args")),
+            root = quote(&base),
+            exe = quote(&std::env::current_exe().unwrap()),
+            log = quote(&base.join("code-harness.log")),
+            answer = quote(&base.join("code-answer")),
+            exit = quote(&base.join("code-exit")),
+        )
+        .into_bytes();
+        let current = helper::sha256_bytes(&bytes);
+        let store = base.join("worker-store");
+        fs::create_dir(&store).unwrap();
+        fs::write(store.join(&current[7..]), &bytes).unwrap();
+        fs::create_dir(base.join("gateway-bin")).unwrap();
+        let root = format!("{}/ml-exp", f.profile.mount_root);
+        Self {
+            workers: Arc::new(Workers {
+                store,
+                current,
+                sent: Default::default(),
+            }),
+            bytes,
+            root,
+            helper: base.join("gateway-bin/ml-exp-worker-rs"),
+            f,
+        }
+    }
+    fn service(&self) -> Service {
+        let mut ssh = config(self.f.root.path(), "ledger");
+        ssh.helper_path = self.helper.to_str().unwrap().into();
+        for name in ["ssh-config", "known-hosts"] {
+            fs::set_permissions(
+                self.f.root.path().join(name),
+                fs::Permissions::from_mode(0o600),
+            )
+            .unwrap();
+        }
+        let builder: Arc<dyn crate::submissions::RuntimeBuilder> = self.workers.clone();
+        Service::open(
+            self.f.settings.clone(),
+            self.f.source.clone(),
+            None,
+            vec![Backend {
+                profile: self.f.profile.clone(),
+                ssh,
+                runtimes: BTreeMap::from([(
+                    self.f.runtime.runtime_id.clone(),
+                    self.f.runtime.clone(),
+                )]),
+                data_helper_config: None,
+                script_preparation: false,
+                delivery: Some(ml_exp_core::slurm::delivery::Settings {
+                    root: self.root.clone(),
+                }),
+            }],
+            true,
+        )
+        .unwrap()
+        .with_runtime_builder(Some(builder))
+        .with_run_creation(true)
+        .unwrap()
+    }
+    fn worker_path(&self) -> String {
+        format!("{}/bin/workers/{}", self.root, &self.workers.current[7..])
+    }
+    fn sent(&self) -> usize {
+        self.workers.sent.load(Ordering::SeqCst)
+    }
+    /// The delivery commands the gateway ran, in order.
+    fn deliveries(&self) -> Vec<String> {
+        fs::read_to_string(self.f.root.path().join("deliveries"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+    fn sbatch_calls(&self) -> usize {
+        fs::read_to_string(self.f.root.path().join("sbatch-calls"))
+            .unwrap_or_default()
+            .lines()
+            .count()
+    }
+    fn slot(&self, run: &str) -> Prepared {
+        serde_json::from_slice(
+            &fs::read(
+                self.f
+                    .settings
+                    .registry_root
+                    .join("submissions/slots")
+                    .join(format!("{}.json", native::slot("demo", run).unwrap())),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    }
+    /// sbatch answers with this job, and sacct shows it running under the Attempt's name.
+    fn observed(&self, prepared: &Prepared, job: &str) {
+        let sbatch = self.f.root.path().join("sbatch");
+        fs::write(
+            &sbatch,
+            format!(
+                "#!/bin/sh\ncat >/dev/null; printf 'call\\n' >> \"$COUNTER\"; printf '{job}\\n'\n"
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&sbatch, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(
+            self.f.root.path().join("evidence"),
+            format!(
+                "{job}|{}|{}|h100|RUNNING|0:01|0:0",
+                scheduler_job_name(&prepared.binding.run_id, &prepared.binding.attempt_id).unwrap(),
+                ml_exp_core::identity::submission_marker(
+                    &prepared.request.intent().submission_token
+                )
+                .unwrap()
+            ),
+        )
+        .unwrap();
+    }
+}
+fn at(transition_id: &'static str) -> Context<'static> {
+    Context {
+        now: NOW,
+        expires: "2026-10-28T01:00:00Z",
+        transition_id,
+    }
+}
+
+#[test]
+fn delivered_worker_and_code_go_once_by_content_and_every_later_run_reuses_them() {
+    let d = Delivering::new();
+    let service = d.service();
+    // What a client needs to name the Runtime before it uploads anything.
+    assert_eq!(
+        service.catalogue()[0]["capabilities"]["code_delivery"]["worker_sha256"],
+        d.workers.current.as_str()
+    );
+    let code = d.f.runtime.source_id.clone();
+    let run = |id: &str| {
+        let mut request = creation_request(&d.f);
+        request.run_id = id.into();
+        request.code_source_id = Some(code.clone());
+        request
+    };
+    let created = service.create_run("demo", run("first"), NOW).unwrap();
+    assert_eq!(created["creation_state"], "CREATED");
+    let manifest: Value = serde_json::from_slice(
+        &fs::read(d.f.root.path().join("project/runs/first/manifest.json")).unwrap(),
+    )
+    .unwrap();
+    let workdir = format!("{}/code/{code}/code", d.root);
+    assert_eq!(manifest["execution"]["workdir"], workdir.as_str());
+    assert_eq!(manifest["code_source_id"], code.as_str());
+    assert_eq!(
+        manifest["native_slurm_delivery"]["worker_sha256"],
+        d.workers.current.as_str()
+    );
+    // Created and prepared, nothing has reached the gateway yet.
+    let id = service
+        .prepare(
+            "demo",
+            "first",
+            approval(),
+            at("00000000000000000000000000000011"),
+        )
+        .unwrap()["submission_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let prepared = d.slot("first");
+    let (_, script) = prepared.request.prepared_content().unwrap();
+    let worker = d.worker_path();
+    assert!(
+        script.contains(&format!("{worker} managed-launch")),
+        "{script}"
+    );
+    assert!(script.contains("ML_EXPD_WORKER=VERIFIED"));
+    assert!(!script.contains("/opt/ml-expd/bin/ml-exp-worker-rs"));
+    assert!(d.deliveries().is_empty());
+    d.f.tools(&prepared);
+    d.observed(&prepared, "24827");
+    let done = service
+        .execute(
+            &id,
+            &format!("EXECUTE {id}"),
+            "",
+            at("00000000000000000000000000000012"),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert_eq!(done["status"], "VERIFIED");
+    // The worker went once, under its hash, and the gateway's helper is now that worker:
+    // nothing is uploaded by hand.
+    assert_eq!(fs::read(&worker).unwrap(), d.bytes);
+    assert_eq!(
+        fs::metadata(&worker).unwrap().permissions().mode() & 0o777,
+        0o555
+    );
+    assert_eq!(fs::read(&d.helper).unwrap(), d.bytes);
+    assert_eq!(d.sent(), 1);
+    // The code is the frozen tree, sealed, beside its listing.
+    let train = Path::new(&workdir).join("train.py");
+    assert_eq!(
+        fs::read(&train).unwrap(),
+        b"raise RuntimeError('source must not execute during admission')\n"
+    );
+    assert_eq!(
+        fs::metadata(&train).unwrap().permissions().mode() & 0o777,
+        0o400
+    );
+    assert!(
+        Path::new(&workdir)
+            .parent()
+            .unwrap()
+            .join(".code-manifest.json")
+            .exists()
+    );
+    // Checked, placed, proven with the helper; code checked, then received.
+    assert_eq!(d.deliveries().len(), 5, "{:?}", d.deliveries());
+    assert_eq!(d.sbatch_calls(), 1);
+
+    // Another Run of the same code reuses both copies: two checks, and nothing is sent.
+    service.create_run("demo", run("second"), NOW).unwrap();
+    let id = service
+        .prepare(
+            "demo",
+            "second",
+            approval(),
+            at("00000000000000000000000000000013"),
+        )
+        .unwrap()["submission_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    d.observed(&d.slot("second"), "24828");
+    let done = service
+        .execute(
+            &id,
+            &format!("EXECUTE {id}"),
+            "",
+            at("00000000000000000000000000000014"),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert_eq!(done["status"], "VERIFIED");
+    let deliveries = d.deliveries();
+    assert_eq!(deliveries.len(), 7, "{deliveries:?}");
+    assert!(deliveries[6].ends_with("--check"), "{deliveries:?}");
+    assert_eq!(d.sent(), 1);
+    assert_eq!(d.sbatch_calls(), 2);
+
+    // A delivered file changed afterwards, even keeping its size, stops the next
+    // submission before the scheduler, and is never overwritten.
+    fs::set_permissions(&train, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::write(
+        &train,
+        b"Raise RuntimeError('source must not execute during admission')\n",
+    )
+    .unwrap();
+    fs::set_permissions(&train, fs::Permissions::from_mode(0o400)).unwrap();
+    service.create_run("demo", run("third"), NOW).unwrap();
+    let id = service
+        .prepare(
+            "demo",
+            "third",
+            approval(),
+            at("00000000000000000000000000000015"),
+        )
+        .unwrap()["submission_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(matches!(
+        service.execute(
+            &id,
+            &format!("EXECUTE {id}"),
+            "",
+            at("00000000000000000000000000000016"),
+            &AtomicBool::new(false),
+        ),
+        Err(ServiceError::DeliveryRefused)
+    ));
+    let refusal = fs::read_to_string(d.f.root.path().join("code-refusal")).unwrap();
+    assert!(refusal.contains("code file train.py"), "{refusal}");
+    assert_eq!(service.get(&id, NOW).unwrap()["status"], "PREPARED");
+    assert_eq!(d.sbatch_calls(), 2);
+    assert!(fs::read(&train).unwrap().starts_with(b"Raise"));
+}
+
+#[test]
+fn a_run_frozen_before_delivery_keeps_its_image_worker_while_the_helper_is_kept_current() {
+    let d = Delivering::new();
+    let service = d.service();
+    // `train` was written without a delivery, as every Run before this change was.
+    service
+        .prepare("demo", "train", approval(), context(1))
+        .unwrap();
+    let prepared = d.f.prepared();
+    let (_, script) = prepared.request.prepared_content().unwrap();
+    assert!(script.contains("/opt/ml-expd/bin/ml-exp-worker-rs managed-launch"));
+    assert!(!script.contains("bin/workers"));
+    assert!(!script.contains("ML_EXPD_WORKER=VERIFIED"));
+    assert_eq!(
+        prepared.request.intent().staging.worker.program,
+        "/opt/ml-expd/bin/ml-exp-worker-rs"
+    );
+    d.f.tools(&prepared);
+    let id = prepared.plan["action_id"].as_str().unwrap().to_owned();
+    let done = service
+        .execute(
+            &id,
+            &format!("EXECUTE {id}"),
+            "",
+            context(3),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert_eq!(done["status"], "VERIFIED");
+    // Only the helper: checked, placed and proven. No code goes for this Run.
+    let deliveries = d.deliveries();
+    assert_eq!(deliveries.len(), 3, "{deliveries:?}");
+    assert!(deliveries.iter().all(|line| !line.contains("code-receive")));
+    assert_eq!(fs::read(&d.helper).unwrap(), d.bytes);
+}
+
+#[test]
+fn without_a_delivery_root_or_a_worker_store_code_stays_in_the_image() {
+    let f = Fixture::new();
+    let service = f.service("ledger", true).with_run_creation(true).unwrap();
+    assert!(
+        service.catalogue()[0]["capabilities"]
+            .get("code_delivery")
+            .is_none()
+    );
+    let mut request = creation_request(&f);
+    request.code_source_id = Some(f.runtime.source_id.clone());
+    match service.create_run("demo", request, NOW) {
+        Err(ServiceError::Admission(cause)) => {
+            assert_eq!(cause.0, native::creation::CODE_DELIVERY_UNSUPPORTED)
+        }
+        other => panic!("expected a refusal, got {:?}", other.map(|_| ())),
+    }
+    // A root alone is not enough: the server must keep the workers it would send.
+    let d = Delivering::new();
+    let mut ssh = config(d.f.root.path(), "ledger");
+    ssh.helper_path = d.helper.to_str().unwrap().into();
+    for name in ["ssh-config", "known-hosts"] {
+        fs::set_permissions(
+            d.f.root.path().join(name),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+    }
+    let storeless = Service::open(
+        d.f.settings.clone(),
+        d.f.source.clone(),
+        None,
+        vec![Backend {
+            profile: d.f.profile.clone(),
+            ssh,
+            runtimes: BTreeMap::new(),
+            data_helper_config: None,
+            script_preparation: false,
+            delivery: Some(ml_exp_core::slurm::delivery::Settings {
+                root: d.root.clone(),
+            }),
+        }],
+        true,
+    )
+    .unwrap();
+    assert!(!storeless.delivers_code("slurm-test"));
+    assert!(
+        storeless.catalogue()[0]["capabilities"]
+            .get("code_delivery")
+            .is_none()
     );
 }

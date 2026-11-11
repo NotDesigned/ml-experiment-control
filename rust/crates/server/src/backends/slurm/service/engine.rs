@@ -66,6 +66,16 @@ pub enum Error {
     RunCreationDisabled,
     #[error("native preparation may have been saved; query the same Run before retry")]
     Uncertain,
+    #[error(
+        "the worker or code this Run froze is not confirmed on the cluster's shared storage; no scheduler operation was issued"
+    )]
+    DeliveryUnavailable,
+    #[error(
+        "a delivered worker or code on the cluster's shared storage differs from its frozen identity; it is never overwritten, and no scheduler operation was issued"
+    )]
+    DeliveryRefused,
+    #[error("this server does not keep the worker this Run froze")]
+    WorkerUnavailable,
     #[error(transparent)]
     Admission(#[from] native::Error),
     #[error(transparent)]
@@ -83,6 +93,7 @@ pub struct Backend {
     pub runtimes: BTreeMap<String, Runtime>,
     pub data_helper_config: Option<String>,
     pub script_preparation: bool,
+    pub delivery: Option<ml_exp_core::slurm::delivery::Settings>,
 }
 pub use crate::runs::Context;
 pub struct Service {
@@ -102,9 +113,20 @@ pub struct Service {
     runtime_builder: Option<Arc<dyn RuntimeBuilder>>,
 }
 /// A Runtime this backend does not list in its configuration but may have had
-/// built for it. This one question is all Slurm asks of whoever keeps the builds.
+/// built for it, and the workers those builds keep. This is all Slurm asks of
+/// whoever keeps the builds.
 pub trait RuntimeBuilder: Send + Sync {
     fn slurm_runtime(&self, project: &str, executor: &str, id: &str) -> Result<Runtime>;
+    /// The worker a new Run freezes, when every release's worker is kept to deliver.
+    /// None keeps Slurm jobs on the worker in their image.
+    fn current_worker(&self) -> Option<String> {
+        None
+    }
+    /// The kept copy of one worker, proven to have that hash: its size and an open file.
+    fn worker_file(&self, sha256: &str) -> Result<(u64, std::fs::File)> {
+        let _ = sha256;
+        Err(Error::WorkerUnavailable)
+    }
 }
 struct Facts {
     reference: RunRef,
@@ -124,6 +146,15 @@ impl Backend {
             let mut data = self.ssh.clone();
             data.helper_config_path = path.clone();
             data.validate().map_err(why!(Error::Configuration))?;
+        }
+        if let Some(delivery) = &self.delivery {
+            delivery
+                .validate(
+                    &self.profile.mount_root,
+                    &self.profile.run_root,
+                    &self.profile.data_root,
+                )
+                .map_err(why!(Error::Configuration))?;
         }
         if self.profile.target != self.ssh.target
             || self.profile.ssh_alias != self.ssh.target_alias
@@ -158,6 +189,7 @@ mod cancellation;
 mod checkpoints;
 mod creation;
 mod datasets;
+mod delivery;
 mod history;
 mod journal;
 mod observation;
@@ -377,6 +409,14 @@ impl Service {
             execution_manifest_sha256: Some(prepared.request.intent().manifest_sha256.clone()),
         };
         self.check(&prepared)?;
+        // Idempotent preparation, before the one submission: the worker and code this
+        // Attempt froze, placed and proven on shared storage. Nothing here reaches the
+        // scheduler, and a failure leaves the Action as it was.
+        if confirmation == format!("EXECUTE {action}")
+            && self.actions.observe(action)?["execution"]["status"] == "PREPARED"
+        {
+            self.deliver(backend, &prepared, cancelled)?;
+        }
         let check = || {
             self.still_live(&guard, &prepared.binding.project, &prepared.binding.run_id)
                 .map_err(why!(crate::backends::slurm::action::Error::Guard))

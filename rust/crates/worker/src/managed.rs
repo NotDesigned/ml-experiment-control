@@ -519,6 +519,11 @@ pub fn run(config: &Config, cancelled: &AtomicBool) -> Result<Observation> {
     {
         return Err(Error::Uncertain);
     }
+    // Code a Slurm job reads from shared storage: every file against its frozen source,
+    // before the working directory is opened and before anything starts.
+    if let Some(source) = &config.code_source_id {
+        crate::cloud_code::require_shared(&config.workdir, source, true)?;
+    }
     Directory::open(&config.workdir, false).map_err(crate::managed::storage_failure!())?;
     // flock does not exclude across every shared filesystem, so a tree that another
     // node has been working on is refused here, under the last check before the start.

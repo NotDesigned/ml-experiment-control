@@ -126,6 +126,10 @@ pub struct WorkerContent {
     file: std::fs::File,
 }
 impl WorkerContent {
+    /// The proven file itself, for a transfer that reads it by offset.
+    pub fn into_file(self) -> std::fs::File {
+        self.file
+    }
     pub fn each_chunk(
         self,
         mut send: impl FnMut(Vec<u8>) -> std::io::Result<()>,

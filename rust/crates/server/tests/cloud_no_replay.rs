@@ -1336,6 +1336,7 @@ fn slurm_open(
             runtimes: BTreeMap::from([(runtime.runtime_id.clone(), runtime)]),
             data_helper_config: None,
             script_preparation: false,
+            delivery: None,
         }],
         true,
     )

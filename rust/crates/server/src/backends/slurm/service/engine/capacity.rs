@@ -10,9 +10,25 @@ impl Service {
             .map(|(id, backend)| (id.clone(), backend.script_preparation))
             .collect()
     }
+    /// The executors whose Runs may name a code source to deliver.
+    pub fn code_executors(&self) -> std::collections::BTreeSet<String> {
+        self.backends
+            .keys()
+            .filter(|id| self.delivers_code(id))
+            .cloned()
+            .collect()
+    }
     pub fn catalogue(&self) -> Vec<Value> {
-        self.backends.iter().map(|(id,b)|json!({"executor_id":id,"kind":"slurm","enabled":self.enabled,"run_creation":self.can_create_runs(),"limits":{"gpus":b.profile.max_gpus,"cpus":b.profile.max_cpus,"memory_gb":b.profile.max_memory_gb,"walltime_seconds":b.profile.max_walltime_seconds},"partition":b.profile.partition,
-            "capabilities":{"oci_to_sif":true,"persistent_checkpoints":true,"dataset_upload":b.data_helper_config.is_some(),"data_preparation":if b.script_preparation{serde_json::json!("before_job")}else{serde_json::Value::Null},"metrics":true,"backend_result_stream":true,"capacity_query":true},"live_availability_checked":false})).collect()
+        self.backends.iter().map(|(id,b)|{
+            let mut value = json!({"executor_id":id,"kind":"slurm","enabled":self.enabled,"run_creation":self.can_create_runs(),"limits":{"gpus":b.profile.max_gpus,"cpus":b.profile.max_cpus,"memory_gb":b.profile.max_memory_gb,"walltime_seconds":b.profile.max_walltime_seconds},"partition":b.profile.partition,
+            "capabilities":{"oci_to_sif":true,"persistent_checkpoints":true,"dataset_upload":b.data_helper_config.is_some(),"data_preparation":if b.script_preparation{serde_json::json!("before_job")}else{serde_json::Value::Null},"metrics":true,"backend_result_stream":true,"capacity_query":true},"live_availability_checked":false});
+            // What a client needs to name the Runtime before it uploads anything: Slurm
+            // Runtimes are named by the worker they were built with.
+            if let Some((_, worker)) = self.delivery_offer(b) {
+                value["capabilities"]["code_delivery"] = json!({"worker_sha256":worker});
+            }
+            value
+        }).collect()
     }
     pub fn accepts(&self, executor: &str) -> bool {
         self.backends.contains_key(executor)

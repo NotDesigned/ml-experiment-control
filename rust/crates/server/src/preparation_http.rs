@@ -25,7 +25,10 @@ fn invalid() -> Error {
     }
 }
 fn external(slurm: &Option<Arc<slurm::Service>>) -> Option<ExternalExecutors> {
-    slurm.as_deref().map(slurm::Service::executors)
+    slurm.as_deref().map(|service| ExternalExecutors {
+        executors: service.executors(),
+        code_delivery: service.code_executors(),
+    })
 }
 pub(crate) fn routes() -> Router<Arc<AppState>> {
     Router::new()

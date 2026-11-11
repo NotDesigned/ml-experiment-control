@@ -9,6 +9,7 @@ pub mod action;
 mod allocation;
 pub mod cancellation;
 mod config;
+pub mod delivery;
 pub mod helper;
 pub mod managed;
 mod observation;

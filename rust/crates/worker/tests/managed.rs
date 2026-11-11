@@ -54,6 +54,7 @@ impl Fixture {
             checkpoint_restore: None,
             datasets: Vec::new(),
             data_preparation: None,
+            code_source_id: None,
         };
         let mut fixture = Self {
             _root: root,

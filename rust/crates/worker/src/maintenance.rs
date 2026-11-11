@@ -219,6 +219,7 @@ mod tests {
             checkpoint_restore: None,
             datasets: Vec::new(),
             data_preparation: None,
+            code_source_id: None,
         }
     }
     fn plan(config: &Config, selection: Selection, request: char) -> Plan {

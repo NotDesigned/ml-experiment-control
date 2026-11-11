@@ -199,6 +199,21 @@ impl From<crate::backends::slurm::service::Error> for Error {
                 (422, "CODE_DELIVERY_UNSUPPORTED", cause.0)
             }
             E::Admission(cause) => (422, "SUBMISSION_ADMISSION_REJECTED", cause.0),
+            E::DeliveryUnavailable => (
+                503,
+                "SLURM_DELIVERY_UNCONFIRMED",
+                "the worker or code this Run froze is not confirmed on the cluster's shared storage; execute again; no scheduler operation was issued",
+            ),
+            E::DeliveryRefused => (
+                409,
+                "SLURM_DELIVERY_REFUSED",
+                "a worker or code copy on the cluster's shared storage differs from its frozen identity and is never overwritten; see the server log for the file, and have an operator move it aside; no scheduler operation was issued",
+            ),
+            E::WorkerUnavailable => (
+                409,
+                "WORKER_BINARY_UNAVAILABLE",
+                "this server does not hold the worker this Run froze, or its copy differs; check builds.worker_store",
+            ),
             E::Authority | E::Conflict | E::Configuration => (
                 409,
                 "SUBMISSION_EVIDENCE_UNAVAILABLE",
