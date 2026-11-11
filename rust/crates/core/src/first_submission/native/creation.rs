@@ -704,7 +704,7 @@ mod tests {
             oci_image: format!("registry.example/team/code@{digest}"),
             worker: slurm::managed::Runtime {
                 program: "/opt/ml-expd/worker".into(),
-                base_environment: BTreeMap::new(),
+                base_environment: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
                 runtime_environment: Vec::new(),
             },
             source_dir: "/workspace".into(),

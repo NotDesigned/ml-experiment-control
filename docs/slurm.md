@@ -114,7 +114,7 @@ asks the scheduler for nothing:
 | What | Where | How it is proven |
 |---|---|---|
 | Worker | `ROOT/bin/workers/SHA256`, mode 0555 | A fixed `sh` command checks `sha256sum`; only if the file is absent the server sends it from its store, and it is renamed into place only after its hash matches |
-| Gateway helper | `ssh.helper_path` | Made a verified copy of the server's own worker, through a copy beside it and one rename, whenever it differs |
+| Gateway helper | `ssh.helper_path` | At each submission and dataset upload, made a verified copy of the server's own worker when it differs, through a copy beside it and one rename |
 | Code | `ROOT/code/SOURCE_ID/code`, sealed read-only, with `.code-manifest.json` beside it | `ml-exp-worker-rs code-receive` checks every file and the tree's source identity; only if absent does the server send the listing and content, and the listing is published after the tree is proven |
 
 Each copy is named by its content and never replaced or removed, so any number of Runs
