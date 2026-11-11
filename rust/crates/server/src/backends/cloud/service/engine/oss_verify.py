@@ -169,7 +169,9 @@ def main():
     except Exception as error:
         # Exception strings may contain a signed URL. Only fixed error classes
         # are recorded; failures never publish a usable dataset.
-        code = str(error) if isinstance(error, ValueError) and str(error).isupper() else "ARCHIVE_VERIFICATION_FAILED"
+        text = str(error)
+        code = text if (isinstance(error, ValueError) and 0 < len(text) <= 64
+                        and all(c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" for c in text)) else "ARCHIVE_VERIFICATION_FAILED"
         try:
             call(config, "oss-failed", {"request_id": config["request_id"], "code": code})
         except Exception:

@@ -363,7 +363,8 @@ impl Service {
                 .filter(|s| {
                     !s.is_empty()
                         && s.len() <= 64
-                        && s.bytes().all(|c| c.is_ascii_uppercase() || c == b'_')
+                        && s.bytes()
+                            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == b'_')
                 })
                 .ok_or_else(cloud::Error::configuration)?;
             let _lock = self.lock("oss_import.failed")?;
