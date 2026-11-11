@@ -22,6 +22,9 @@ pub struct Definition {
     #[serde(default)]
     pub imports: Vec<ml_exp_core::datasets::import::Config>,
     pub collector: Option<Profile>,
+    /// Immutable Python 3 image for the independent, zero-GPU OSS verifier.
+    #[serde(default)]
+    pub oss_import_image: Option<String>,
     /// Limits of a new CPU job on `collector`, for result sync and storage maintenance.
     #[serde(default)]
     pub result_job: domain::exchange::ResultJobLimits,
@@ -84,6 +87,31 @@ impl Definition {
         ml_exp_core::identity::validate_id(&self.executor)
             .map_err(why!(cloud::Error::configuration()))?;
         self.profile.validate()?;
+        if let Some(image) = &self.oss_import_image {
+            let Some(Profile::Pai(collector)) = &self.collector else {
+                return Err(cloud::Error::configuration());
+            };
+            if collector.max_cpus < 2 || collector.max_memory_gb < 4 {
+                return Err(cloud::Error::configuration());
+            }
+            domain::Job {
+                project: "check".into(),
+                run_id: "oss-import-check".into(),
+                attempt_id: "attempt-001".into(),
+                submission_token: "0".repeat(32),
+                source_id: format!("source.{}", "0".repeat(64)),
+                image: image.clone(),
+                command: vec!["python3".into(), "--version".into()],
+                gpus: 0,
+                cpus: 2,
+                memory_gb: 4,
+                max_time_seconds: 3600,
+                priority: 5,
+                read_only_storage: true,
+            }
+            .validate()
+            .map_err(why!(cloud::Error::configuration()))?;
+        }
         let limits = &self.result_job;
         if limits.cpus == 0
             || limits.memory_gb == 0
@@ -244,7 +272,10 @@ impl Settings {
             || settings.backends.len() > 64
             || !settings.polling.validate()
             || (settings.builds.is_none()
-                && settings.backends.iter().any(|b| b.runtimes.is_empty()))
+                && settings
+                    .backends
+                    .iter()
+                    .any(|b| b.runtimes.is_empty() && b.oss_import_image.is_none()))
         {
             return Err(cloud::Error::configuration());
         }

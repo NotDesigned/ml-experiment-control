@@ -80,6 +80,7 @@ jobs:
       - run: python rust/tests/test_storage_probe.py
       - run: python rust/tests/test_build_native_release.py
       - run: python -m unittest discover -s tests -p test_sync_diagnostic.py -v
+      - run: python -m unittest discover -s tests -p test_oss_verify.py -v
 
   client-platforms:
     env:

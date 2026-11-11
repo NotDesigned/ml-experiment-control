@@ -258,13 +258,32 @@ ml-exp data download --project study --executor pai-h200 \
   --asset asset.ACTUAL_HASH --output ./downloaded-data.tar
 ```
 
-Import is a copy. The API reads the object once to verify the archive and list its
-members, then again part by part, storing the bytes as ordinary dataset parts under the
-platform's prefix. The original stays where it is, so the bucket holds both until you
-remove the original yourself. Every part passes through the API host. A large object
-can exceed the 1230-second request limit; repeating the same request reads from the
-first part again and does not store accepted parts twice. The result is `ARCHIVED`, not
-a claim that CPFS is ready. Use separate CPU publication or the PAI inline import above.
+Import creates one durable CPU job (0 GPUs, 2 CPUs, 4 GiB, up to one hour),
+returning an `oss-import.v2` progress response without waiting for the tar. Repeat
+`import-oss` with the identical source to reconcile the same job; it never submits
+another job after an uncertain provider response. `data show --project study
+--executor pai-h200 --asset asset.ACTUAL_HASH` reads its retained progress without
+contacting the provider. A failed import stays failed; repeating it does not spend
+another job. Inspect `error` before deciding on recovery.
+
+OSS copies byte ranges into the ordinary immutable 16 MiB dataset objects. The
+source ETag is pinned and conditional copies refuse a changed source. A trusted
+Python verifier reads the actual destination objects once over the region's
+internal OSS endpoint, checks the complete archive SHA256, each file and each
+part, and reports through an import-only capability. No payload bytes or cloud
+credentials pass through the API host. This does not depend on CRC64 being
+available for copied objects. Parts of an unverified import cannot be downloaded
+or used for training. Successful verification publishes `ARCHIVED`; separate CPU
+publication is still required for CPFS `READY`. The source object stays intact.
+
+Operators configure `oss_import_image` on the selected backend: an immutable
+`repository@sha256:...` image providing `python3` (3.9 or later). A CPU `collector`,
+object storage and exchange must also be configured; the collector and OSS must
+be in the same region. The job mounts CPFS read-only and runs only the frozen
+server-authored verifier script. The API advertises
+`native-oss-dataset-import.v2`. Upgrade the client to 0.11.0 or later; the new
+client requires this protocol and has no fallback to synchronous import.
+Verified archives imported before this upgrade remain reusable without a job.
 
 Downloads obtain object-part tickets, verify the archive and every file, and publish
 one tar file at `--output`, which must not already exist. They do not unpack it.

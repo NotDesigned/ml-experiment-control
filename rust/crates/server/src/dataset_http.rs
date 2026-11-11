@@ -65,7 +65,7 @@ async fn import_oss(
     http_effect::execute_timeout(
         state,
         OnTimeout::Effect,
-        Duration::from_secs(1230),
+        Duration::from_secs(30),
         move |api, _| {
             let _permit = permit;
             let cloud = api.cloud().filter(|c| c.accepts(&executor)).ok_or(Error {

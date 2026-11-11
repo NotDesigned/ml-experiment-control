@@ -47,6 +47,8 @@ fn safe_component(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
         && !matches!(s, "." | "..")
 }
+mod oss_import;
+pub use oss_import::ObjectIdentity;
 pub fn parts(archive: &ArchiveReceipt) -> io::Result<u64> {
     let n = archive.bytes.div_ceil(PART_BYTES);
     if n == 0 || n > MAX_PARTS {
@@ -62,42 +64,6 @@ impl Store {
     }
     pub fn validate_import(&self, request: &ml_exp_core::datasets::oss::Import) -> io::Result<()> {
         request.bind(&self.settings.prefix).map_err(why!(invalid()))
-    }
-    pub fn open_import(
-        &self,
-        request: &ml_exp_core::datasets::oss::Import,
-    ) -> io::Result<reqwest::blocking::Response> {
-        self.validate_import(request)?;
-        let response = self
-            .http
-            .get(self.signed_url(
-                "GET",
-                &request.object_key,
-                time::OffsetDateTime::now_utc().unix_timestamp() + 300,
-            )?)
-            .timeout(Duration::from_secs(1200))
-            .send()
-            .map_err(why_chain!(invalid()))?;
-        if response.status() != 200 || response.content_length() != Some(request.archive_bytes) {
-            return Err(invalid());
-        }
-        Ok(response)
-    }
-    pub fn inspect_import(
-        &self,
-        request: &ml_exp_core::datasets::oss::Import,
-    ) -> io::Result<ml_exp_core::datasets::Definition> {
-        ml_exp_io::artifacts::inspect_data_stream(
-            &mut self.open_import(request)?,
-            &request.sha256,
-            request.archive_bytes,
-        )
-        .map_err(why!({
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "dataset archive verification failed",
-            )
-        }))
     }
     pub fn open(settings: Settings) -> io::Result<Self> {
         let expected = format!("https://{}.{}", settings.bucket, settings.endpoint);

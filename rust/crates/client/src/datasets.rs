@@ -243,10 +243,10 @@ pub fn import_oss(
     capability(health)?;
     if !health["capabilities"]
         .as_array()
-        .is_some_and(|a| a.iter().any(|v| v == "native-oss-dataset-import.v1"))
+        .is_some_and(|a| a.iter().any(|v| v == "native-oss-dataset-import.v2"))
     {
         return Err(Error::Observation(
-            "server has not enabled OSS dataset import",
+            "in-region OSS import requires the upgraded client and server (native-oss-dataset-import.v2)",
         ));
     }
     let asset = source.asset_id();
@@ -256,13 +256,13 @@ pub fn import_oss(
             format!("/api/projects/{project}/datasets/{executor}/import-oss"),
             reqwest::Method::POST,
             serde_json::to_vec(&source).map_err(|_| Error::Response)?,
-            true,
+            false,
         )?;
-        let saved = state(value.clone(), project, executor, &asset)?;
-        source
-            .matches(&saved.definition)
-            .map_err(|_| Error::Response)?;
-        if value["archive_verified"] != true {
+        if value["contract"] != "oss-import.v2" {
+            return Err(Error::Response);
+        }
+        import_progress(&value, project, executor, &asset)?;
+        if value["import_source"] != serde_json::to_value(&source).map_err(|_| Error::Response)? {
             return Err(Error::Response);
         }
         Ok(value)
@@ -271,6 +271,31 @@ pub fn import_oss(
         asset,
         source: Box::new(source),
     })
+}
+fn import_progress(value: &Value, project: &str, executor: &str, asset: &str) -> Result<(), Error> {
+    let source: datasets::oss::Import =
+        serde_json::from_value(value["import_source"].clone()).map_err(|_| Error::Response)?;
+    source.validate().map_err(|_| Error::Response)?;
+    let copied = value["copied_parts"].as_u64().ok_or(Error::Response)?;
+    let total =
+        ml_exp_core::multipart::part_count(source.archive_bytes).map_err(|_| Error::Response)?;
+    let status = value["status"].as_str().ok_or(Error::Response)?;
+    if value["project"] != project
+        || value["executor"] != executor
+        || value["asset_id"] != asset
+        || source.asset_id() != asset
+        || value["total_parts"] != total
+        || copied > total
+        || !matches!(
+            status,
+            "SUBMITTING" | "QUEUED" | "COPYING_VERIFYING" | "FAILED" | "ARCHIVED"
+        )
+        || value["archive_verified"] != (status == "ARCHIVED")
+        || status == "ARCHIVED" && copied != total
+    {
+        return Err(Error::Response);
+    }
+    Ok(())
 }
 fn send(
     client: &Client,
@@ -298,6 +323,10 @@ pub fn show(
     let value = client.get(&format!(
         "/api/projects/{project}/datasets/{executor}/{asset}"
     ))?;
+    if value["contract"] == "oss-import.v2" {
+        import_progress(&value, project, executor, asset)?;
+        return Ok(value);
+    }
     state(value.clone(), project, executor, asset)?;
     Ok(value)
 }
