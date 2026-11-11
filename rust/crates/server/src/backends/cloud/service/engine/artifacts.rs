@@ -17,6 +17,10 @@ pub(super) struct Saved {
     pub(super) state: Option<State>,
     pub(super) released_parts: u64,
     pub(super) administrative_release: Option<String>,
+    /// The worker's CRC-64 of each part, which matched the object store's at
+    /// publication. Empty for an archive published by reading it back.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) part_crc64: Vec<u64>,
 }
 impl Service {
     pub(super) fn apply_artifacts(
@@ -92,8 +96,11 @@ impl Service {
         }
         let saved: Saved = serde_json::from_value(read(&self.slots, &name)?)
             .map_err(why!(cloud::Error::evidence()))?;
+        let parts = crate::objects::parts(&saved.bundle.archive).map_err(io)?;
         if self.artifact_binding(prepared, &saved.bundle)? != saved.package_sha256
-            || saved.released_parts > crate::objects::parts(&saved.bundle.archive).map_err(io)?
+            || saved.released_parts > parts
+            || !saved.part_crc64.is_empty()
+                && (saved.part_crc64.len() as u64 != parts || saved.state.is_none())
         {
             return Err(cloud::Error::evidence());
         }
@@ -214,6 +221,7 @@ impl Service {
                     state: None,
                     released_parts: 0,
                     administrative_release: None,
+                    part_crc64: Vec::new(),
                 };
                 self.artifact_save(&prepared, &pending)?;
                 saved = Some(pending);
@@ -239,12 +247,28 @@ impl Service {
                     .ticket(&saved.bundle.archive, part, true, now)
                     .map_err(io)
             }
-            ArtifactOperation::Complete => {
+            ArtifactOperation::Complete { part_crc64 } => {
                 if !published {
-                    // Reading a whole archive can take minutes, and holding the lock
-                    // for that answered every other job and command with BUSY.
+                    // No lock while the object store is asked: holding it answered
+                    // every other job and command with BUSY.
                     drop(lock);
-                    objects.verify(&saved.bundle.archive).map_err(io)?;
+                    if part_crc64.is_empty() {
+                        // A frozen worker from before part CRCs, which cannot be
+                        // replaced: read the whole archive back, as it always was.
+                        objects.verify(&saved.bundle.archive).map_err(io)?;
+                    } else if !objects
+                        .wrong_archive_parts(&saved.bundle.archive, &part_crc64)
+                        .map_err(io)?
+                        .is_empty()
+                    {
+                        // A part that is missing or differs from what the worker sent.
+                        // Nothing is published; the worker's archive and outputs stay.
+                        return Err(cloud::Error {
+                            code: "ARTIFACT_PART_REJECTED".into(),
+                            http_status: Some(409),
+                            uncertain: false,
+                        });
+                    }
                     let _lock = self.lock("artifacts.receive_artifacts#2")?;
                     let mut current = self
                         .artifact_saved(&prepared)?
@@ -264,6 +288,7 @@ impl Service {
                             State::new(current.bundle.clone())
                                 .map_err(why!(cloud::Error::evidence()))?,
                         );
+                        current.part_crc64 = part_crc64;
                         self.artifact_save(&prepared, &current)?;
                     }
                 }
@@ -312,11 +337,18 @@ impl Service {
             time::OffsetDateTime::parse(now, &time::format_description::well_known::Rfc3339)
                 .map_err(why!(cloud::Error::configuration()))?
                 .unix_timestamp();
-        self.objects
+        let mut ticket = self
+            .objects
             .as_ref()
             .ok_or_else(cloud::Error::configuration)?
             .ticket(&state.bundle.archive, part, false, timestamp)
-            .map_err(io)
+            .map_err(io)?;
+        // Lets the client check each part as it arrives. It checks the archive and
+        // every file's SHA256 before any acknowledgement either way.
+        if let Some(crc) = saved.part_crc64.get(part as usize) {
+            ticket["crc64"] = json!(crc);
+        }
+        Ok(ticket)
     }
     pub fn collect_artifacts(
         &self,
@@ -397,5 +429,29 @@ impl Service {
         }
         drop(lock);
         self.artifacts(action)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A frozen worker from before part CRCs still completes; a current one names them.
+    #[test]
+    fn complete_from_an_old_worker_carries_no_crc_and_a_new_one_does() {
+        let old: ArtifactOperation = serde_json::from_value(json!({"kind":"complete"})).unwrap();
+        assert!(matches!(old, ArtifactOperation::Complete { part_crc64 } if part_crc64.is_empty()));
+        let new: ArtifactOperation =
+            serde_json::from_value(json!({"kind":"complete","part_crc64":[1,2]})).unwrap();
+        assert!(matches!(new, ArtifactOperation::Complete { part_crc64 } if part_crc64 == [1, 2]));
+        assert!(
+            serde_json::from_value::<ArtifactOperation>(json!({"kind":"complete","other":1}))
+                .is_err()
+        );
+        // What an old server would be sent by a worker with no CRCs is unchanged.
+        assert_eq!(
+            serde_json::to_value(ArtifactOperation::Complete { part_crc64: vec![] }).unwrap(),
+            json!({"kind":"complete"})
+        );
     }
 }

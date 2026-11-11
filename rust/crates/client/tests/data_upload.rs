@@ -37,7 +37,7 @@ fn a_dataset_no_run_could_mount_is_refused_before_any_request() {
 }
 
 const TWO_PARTS: usize = 17 * 1024 * 1024;
-const DIRECT: &str = "native-dataset-direct-upload.v1";
+const DIRECT: &str = "native-dataset-direct-upload.v2";
 
 /// The dataset routes as the real service answers them, over a real socket.
 #[derive(Default)]
@@ -48,6 +48,8 @@ struct Server {
     /// Answered to every ticket request, as (status, error code).
     refuse_tickets: Mutex<Option<(u16, &'static str)>>,
     ticket_url: Mutex<Option<String>>,
+    /// The CRC-64 each part-uploaded named, by part.
+    crcs: Mutex<Vec<(u64, u64)>>,
 }
 impl Server {
     fn start(self: &Arc<Self>) -> String {
@@ -147,6 +149,10 @@ impl Server {
             }
             ("POST", "part-uploaded") => {
                 let asked: Value = serde_json::from_slice(body).unwrap();
+                self.crcs.lock().unwrap().push((
+                    asked["part"].as_u64().unwrap(),
+                    asked["crc64"].as_u64().unwrap(),
+                ));
                 self.record(
                     asked["part"].as_u64().unwrap(),
                     asked["sha256"].as_str().unwrap(),
@@ -185,6 +191,8 @@ impl Server {
 #[derive(Default)]
 struct Store {
     puts: Vec<(String, u64)>,
+    /// The CRC-64 of each PUT's bytes, as the object store would report it.
+    crcs: Vec<u64>,
     script: Vec<Result<u16, String>>,
     waits: Vec<Duration>,
 }
@@ -192,6 +200,8 @@ impl ObjectStore for Store {
     fn put(&mut self, url: &url::Url, part: &Part) -> Result<u16, String> {
         let bytes: &[u8] = part.as_ref();
         self.puts.push((url.to_string(), bytes.len() as u64));
+        self.crcs
+            .push(ml_exp_core::checkpoints::archive::crc64(bytes));
         if self.script.is_empty() {
             Ok(200)
         } else {
@@ -250,6 +260,12 @@ fn parts_go_to_object_storage_and_the_server_receives_only_metadata() {
     assert_eq!(server.count("POST part-uploaded"), 2);
     assert_eq!(server.count("PUT parts"), 0);
     assert_eq!(server.count("POST complete"), 1);
+    // Each record names the CRC-64 of exactly the bytes that went to the object store.
+    assert_eq!(
+        *server.crcs.lock().unwrap(),
+        [(0, store.crcs[0]), (1, store.crcs[1])]
+    );
+    assert_ne!(store.crcs[0], store.crcs[1]);
 }
 #[test]
 fn a_repeat_skips_accepted_parts_and_a_refusal_names_the_way_out_without_the_ticket() {
@@ -340,14 +356,20 @@ fn the_server_path_is_chosen_only_before_anything_is_sent() {
     assert!(store.puts.is_empty());
     assert_eq!(server.count("POST upload-ticket"), 0);
     assert_eq!(server.count("PUT parts"), 1);
-    // An older server offers no tickets, and is not asked for one.
-    let server = Arc::new(Server::default());
-    let c = client(&server);
-    let mut store = Store::default();
-    send(&c, &path, &health(false), false, &mut store).unwrap();
-    assert!(store.puts.is_empty());
-    assert_eq!(server.count("POST upload-ticket"), 0);
-    assert_eq!(server.count("PUT parts"), 1);
+    // An older server offers no tickets, and is not asked for one. Nor is one that
+    // offers only v1, whose `complete` would read every part back.
+    for names in [
+        json!(["native-datasets.v1"]),
+        json!(["native-datasets.v1", "native-dataset-direct-upload.v1"]),
+    ] {
+        let server = Arc::new(Server::default());
+        let c = client(&server);
+        let mut store = Store::default();
+        send(&c, &path, &json!({"capabilities":names}), false, &mut store).unwrap();
+        assert!(store.puts.is_empty());
+        assert_eq!(server.count("POST upload-ticket"), 0);
+        assert_eq!(server.count("PUT parts"), 1);
+    }
     // An executor with no object store, such as Slurm, on a server that has one.
     let server = Arc::new(Server::default());
     *server.refuse_tickets.lock().unwrap() = Some((422, "DATASET_DIRECT_UPLOAD_UNSUPPORTED"));

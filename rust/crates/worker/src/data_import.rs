@@ -61,6 +61,14 @@ fn io_error(error: io::Error) -> Error {
         }),
     }
 }
+/// The uploader's CRC-64 of a part, when the server kept one, against the bytes read:
+/// a part that differs fails as it arrives, before the member hashes would catch it.
+/// A ticket for an asset verified before CRCs were kept names none.
+fn crc_holds(ticket: &serde_json::Value, bytes: &[u8]) -> bool {
+    ticket
+        .get("crc64")
+        .is_none_or(|crc| crc.as_u64() == Some(ml_exp_core::checkpoints::archive::crc64(bytes)))
+}
 enum Reader {
     Parts {
         url: String,
@@ -222,6 +230,9 @@ impl Reader {
                     .map_err(|_| failed("HTTPS_READ_FAILED"))?;
                 if bytes.len() != count {
                     return Err(failed("HTTP_SIZE_MISMATCH"));
+                }
+                if !crc_holds(&ticket, &bytes) {
+                    return Err(failed("OBJECT_PART_CRC_MISMATCH"));
                 }
                 Ok(bytes)
             }

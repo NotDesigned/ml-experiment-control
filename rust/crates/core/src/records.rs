@@ -541,35 +541,23 @@ impl JsonlImporter {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct RemoteObservation {
-    pub sequence: i64,
-    pub event_id: String,
-}
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct RemoteHistoryEvidence {
-    pub route: Value,
-    pub wandb_id: String,
-    pub through: i64,
-    pub observed: Vec<RemoteObservation>,
-    pub display_version: Option<i64>,
-    pub display_through: Option<i64>,
-}
 #[derive(Clone, Debug, PartialEq)]
 pub struct CursorAdvance {
     pub confirmed: i64,
     pub display_version: Option<i64>,
 }
 
-/// Validate explicit observations supplied by a trusted publisher reader. This
-/// function itself makes no claim that a remote read happened. The HTTP/public
-/// worker ingress must never expose a cursor advancement API.
-pub fn confirmation_plan(
+/// Check a cursor advance the trusted publisher reports after the W&B SDK
+/// accepted rows through `through`. W&B is a best-effort mirror: this proves
+/// only that the advance belongs to this scope's frozen route and current W&B
+/// id and stays inside its journal. The HTTP/public worker ingress must never
+/// expose a cursor advancement API.
+pub fn cursor_advance(
     state: &Value,
     frozen_route: &Value,
-    events: &[(i64, String)],
-    proof: &RemoteHistoryEvidence,
-    error: Option<&str>,
+    wandb_id: &str,
+    through: i64,
+    display: bool,
 ) -> Result<CursorAdvance> {
     let current = state["confirmed"]
         .as_i64()
@@ -587,50 +575,15 @@ pub fn confirmation_plan(
             _ => false,
         });
     if !enabled
-        || encoded(&proof.route)? != encoded(frozen_route)?
-        || state["wandb_id"].as_str() != Some(proof.wandb_id.as_str())
-        || proof.through < current
-        || proof.through > total
+        || state["wandb_id"].as_str() != Some(wandb_id)
+        || through < current
+        || through > total
     {
-        return Err(Error::Invalid("remote confirmation identity or range"));
-    }
-    let mut seen = std::collections::BTreeMap::new();
-    for item in &proof.observed {
-        if item.sequence <= 0
-            || item.sequence > proof.through
-            || seen.insert(item.sequence, item.event_id.as_str()).is_some()
-        {
-            return Err(Error::Invalid("remote sequence evidence"));
-        }
-    }
-    let first = if current == 0 { 1 } else { current };
-    let expected_count = if proof.through < first {
-        0
-    } else {
-        proof.through - first + 1
-    };
-    let expected: std::collections::BTreeMap<_, _> = events
-        .iter()
-        .filter(|(seq, _)| *seq >= first && *seq <= proof.through)
-        .map(|(seq, id)| (*seq, id.as_str()))
-        .collect();
-    if expected.len() as i64 != expected_count
-        || seen.len() as i64 != expected_count
-        || expected.iter().any(|(seq, id)| seen.get(seq) != Some(id))
-    {
-        return Err(Error::Invalid(
-            "remote history is not a complete exact prefix",
-        ));
-    }
-    match (proof.display_version, proof.display_through) {
-        (None, None) => {}
-        (Some(crate::tracking::DISPLAY_VERSION), Some(through))
-            if through == proof.through && error.is_none() => {}
-        _ => return Err(Error::Invalid("remote display acknowledgement")),
+        return Err(Error::Invalid("publication cursor identity or range"));
     }
     Ok(CursorAdvance {
-        confirmed: proof.through,
-        display_version: proof.display_version,
+        confirmed: through,
+        display_version: display.then_some(crate::tracking::DISPLAY_VERSION),
     })
 }
 

@@ -49,31 +49,43 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
 struct DirectPart {
     part: u64,
     sha256: String,
+    /// CRC-64/XZ of the part's bytes. A client that sends none predates verification by
+    /// the object store's CRC and is told to send its parts through the server.
+    #[serde(default)]
+    crc64: Option<u64>,
 }
-/// The shape of the request. The service checks it against the asset's definition.
-fn direct_part(query: Option<&str>, asset: &str, body: &[u8]) -> Result<DirectPart, Error> {
+/// The shape of the request, and its CRC-64. The service checks it against the
+/// asset's definition.
+fn direct_part(query: Option<&str>, asset: &str, body: &[u8]) -> Result<(DirectPart, u64), Error> {
     api::no_parameters(query).map_err(|_| invalid())?;
     if !ml_exp_core::datasets::asset_id(asset) {
         return Err(invalid());
     }
-    ml_exp_core::json::mapping(body)
+    let request: DirectPart = ml_exp_core::json::mapping(body)
         .ok()
         .and_then(|m| serde_json::from_value(Value::Object(m)).ok())
-        .ok_or_else(invalid)
+        .ok_or_else(invalid)?;
+    let crc64 = request.crc64.ok_or_else(unsupported)?;
+    Ok((request, crc64))
+}
+fn unsupported() -> Error {
+    Error {
+        status: 422,
+        code: "DATASET_DIRECT_UPLOAD_UNSUPPORTED",
+        detail: "this executor has no object store, or this client sends no part CRC-64; send the parts through the server or upgrade the client",
+    }
 }
 /// Slurm has no object store, and a client takes this refusal to mean "send through
 /// the server". An older server has no route at all and no capability to say it does.
+/// A client that sends no CRC-64 gets the same refusal from `direct_part`, before it
+/// sends any part: an old client then sends through the server, which sees the bytes.
 fn direct_service(
     api: &api::Api,
     executor: &str,
 ) -> Result<Arc<crate::backends::cloud::service::Service>, Error> {
     api.cloud()
         .filter(|cloud| cloud.accepts(executor) && cloud.has_datasets())
-        .ok_or(Error {
-            status: 422,
-            code: "DATASET_DIRECT_UPLOAD_UNSUPPORTED",
-            detail: "this executor has no object store; send the parts through the server",
-        })
+        .ok_or_else(unsupported)
 }
 async fn upload_ticket(
     State(state): State<Arc<AppState>>,
@@ -81,7 +93,7 @@ async fn upload_ticket(
     RawQuery(query): RawQuery,
     body: Bytes,
 ) -> Response {
-    let request = match direct_part(query.as_deref(), &asset, &body) {
+    let (request, _) = match direct_part(query.as_deref(), &asset, &body) {
         Ok(request) => request,
         Err(error) => return http_effect::failure(error),
     };
@@ -98,13 +110,20 @@ async fn part_uploaded(
     RawQuery(query): RawQuery,
     body: Bytes,
 ) -> Response {
-    let request = match direct_part(query.as_deref(), &asset, &body) {
+    let (request, crc64) = match direct_part(query.as_deref(), &asset, &body) {
         Ok(request) => request,
         Err(error) => return http_effect::failure(error),
     };
     http_effect::execute(state, OnTimeout::Effect, move |api, _| {
         direct_service(api, &executor)?
-            .dataset_part_uploaded(&project, &executor, &asset, request.part, &request.sha256)
+            .dataset_part_uploaded(
+                &project,
+                &executor,
+                &asset,
+                request.part,
+                &request.sha256,
+                crc64,
+            )
             .map_err(Into::into)
     })
     .await

@@ -240,7 +240,9 @@ async fn health(State(state): State<Arc<AppState>>) -> Response {
                 enabled.extend([
                     "native-datasets.v1",
                     "native-object-datasets.v1",
-                    "native-dataset-direct-upload.v1",
+                    // v2: each part carries its CRC-64, and `complete` reads no byte.
+                    // A v1 client finds no direct upload and sends through the server.
+                    "native-dataset-direct-upload.v2",
                 ]);
                 if cloud.has_oss_import() {
                     enabled.push("native-oss-dataset-import.v2");
@@ -848,9 +850,19 @@ mod tests {
     async fn direct_upload_routes_are_authorized_and_refuse_an_executor_with_no_object_store() {
         let (_temp, state) = http_effect::tests::state();
         let asset = format!("asset.{}", "a".repeat(64));
-        for route in ["upload-ticket", "part-uploaded"] {
+        // Without a CRC-64, as an older client asks, the same refusal sends it the
+        // other way before it has sent anything.
+        for (route, body) in ["upload-ticket", "part-uploaded"]
+            .into_iter()
+            .flat_map(|route| {
+                [
+                    (route, json!({"part":0,"sha256":"b".repeat(64),"crc64":1})),
+                    (route, json!({"part":0,"sha256":"b".repeat(64)})),
+                ]
+            })
+        {
             let uri = format!("/api/projects/demo/datasets/slurm/{asset}/{route}");
-            let body = json!({"part":0,"sha256":"b".repeat(64)}).to_string();
+            let body = body.to_string();
             for (token, status, code) in [
                 (None, 401, None),
                 (Some("wrong"), 401, None),

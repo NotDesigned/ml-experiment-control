@@ -16,18 +16,28 @@ pub struct Client {
     http: reqwest::blocking::Client,
 }
 
+/// Whether a downloaded part has the CRC-64 its ticket names. A ticket from an older
+/// server, or for a part recorded before CRCs were kept, names none.
+pub(crate) fn crc64_matches(ticket: &serde_json::Value, crc64: u64) -> bool {
+    ticket
+        .get("crc64")
+        .is_none_or(|expected| expected.as_u64() == Some(crc64))
+}
+
 impl Client {
     /// A signed object URL gets no API bearer, cookies, proxy credentials or
-    /// redirect following. The caller verifies the concatenated archive SHA.
+    /// redirect following. Returns the CRC-64/XZ of the bytes written, for the
+    /// caller to compare with the ticket's; it still verifies the archive SHA.
     pub(crate) fn download_object(
         &self,
         url: &str,
         expected: u64,
         file: &mut std::fs::File,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         use std::io::Write;
         let mut response = self.object_reader(url, expected)?;
         let mut total = 0u64;
+        let mut crc = ml_exp_core::checkpoints::archive::Crc64::default();
         let mut buffer = [0u8; 65536];
         loop {
             let n = response.read(&mut buffer).map_err(|_| Error::Transport)?;
@@ -38,12 +48,13 @@ impl Client {
             if total > expected {
                 return Err(Error::Response);
             }
+            crc.update(&buffer[..n]);
             file.write_all(&buffer[..n]).map_err(|_| Error::Response)?;
         }
         if total != expected {
             return Err(Error::Response);
         }
-        Ok(())
+        Ok(crc.finish())
     }
     pub(crate) fn object_reader(
         &self,
@@ -348,6 +359,16 @@ mod tests {
     use std::io::Write;
     use std::net::TcpListener;
 
+    #[test]
+    fn a_part_is_checked_against_the_crc_its_ticket_names() {
+        let crc = ml_exp_core::checkpoints::archive::crc64(b"part");
+        assert!(crc64_matches(&serde_json::json!({"crc64": crc}), crc));
+        // A corrupted part, or a ticket naming a value that is not a CRC.
+        assert!(!crc64_matches(&serde_json::json!({"crc64": crc}), crc ^ 1));
+        assert!(!crc64_matches(&serde_json::json!({"crc64": "x"}), crc));
+        // An older server, or a part recorded before CRCs were kept.
+        assert!(crc64_matches(&serde_json::json!({}), crc));
+    }
     fn read_request(socket: &mut std::net::TcpStream) -> String {
         socket
             .set_read_timeout(Some(Duration::from_secs(5)))
