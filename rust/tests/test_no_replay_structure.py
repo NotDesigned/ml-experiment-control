@@ -35,7 +35,7 @@ PINS = {
     "rust/crates/core/src/operations.rs": "c4c0886556a0a303e1c22b604cb4af8ff5017c009e29da5d4603cb1870b1fde5",
     "rust/crates/core/src/slurm/action.rs": "61d6fb7e14248434b39f5a73208412d232d9134c784512e114c12892b8de9548",
     "rust/crates/core/src/cloud/action.rs": "5829a8a03252f9100341b46217e37e9f40f202630f251377d3777f6faba3d13f",
-    "rust/crates/core/src/cloud/exchange.rs": "6fb94d93efc28d95019297bdef532d82e7e116c32bf10c6dd1ca54d70df28a65",
+    "rust/crates/core/src/cloud/exchange.rs": "5c4c50c845dc17010e8cb075cc367558cce53b6884060165140ec3dffdb6794b",
     "rust/crates/worker/src/slurm/ledger.rs": "0ec0b45b7a7001c69fa29a13e8f8abbcc26c9db29b787c2650b09ba8b13afa75",
     "rust/crates/worker/src/slurm/ledger/artifacts.rs": "bf3d78251276a34e3c764b5898f9952e800d60f136e6b4d6499c8a97426a6056",
     "rust/crates/worker/src/slurm/ledger/checkpoints.rs": "f54f98d9a36bf7d47ad75e79202e69c7b56035af2ec62048b08b3a774a6e082c",

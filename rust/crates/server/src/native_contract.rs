@@ -262,19 +262,20 @@ pub(crate) fn extend(document: &mut Value) {
         )),
     );
     let direct_part = object(
-        &["part", "sha256"],
-        json!({"part":{"type":"integer","minimum":0},"sha256":{"type":"string"}}),
+        &["part", "sha256", "crc64"],
+        json!({"part":{"type":"integer","minimum":0},"sha256":{"type":"string"},
+            "crc64":{"type":"integer","minimum":0,"description":"CRC-64/XZ of the part's bytes, which OSS reports as x-oss-hash-crc64ecma"}}),
     );
     insert(
         "/api/projects/{project}/datasets/{executor}/{asset}/upload-ticket",
         "post",
-        "Obtain a short-lived signed PUT for one part, which cannot overwrite an object. 422 DATASET_DIRECT_UPLOAD_UNSUPPORTED means this executor has no object store.",
+        "Obtain a short-lived signed PUT for one part, which cannot overwrite an object. 422 DATASET_DIRECT_UPLOAD_UNSUPPORTED means this executor has no object store or the request has no crc64; send the parts through the server.",
         Some(direct_part.clone()),
     );
     insert(
         "/api/projects/{project}/datasets/{executor}/{asset}/part-uploaded",
         "post",
-        "Record a part sent directly to the object store once it exists at its exact size; complete proves its bytes",
+        "Record a part sent directly to the object store once a HEAD shows its exact size and that the object store's CRC-64 equals crc64; complete HEADs every part again and reads no byte",
         Some(direct_part),
     );
     insert(
@@ -416,13 +417,13 @@ pub(crate) fn extend(document: &mut Value) {
     insert(
         "/api/worker-exchange/{project}/{run}/{attempt}/artifacts",
         "post",
-        "Prepare verified result metadata, obtain a part upload ticket or verify complete publication; these are independent from training completion",
+        "Prepare verified result metadata, obtain a part upload ticket or complete publication: the server HEADs every part and requires the object store's size and x-oss-hash-crc64ecma to match part_crc64, and reads no byte. A worker that sends no part_crc64 predates this, and the server reads its archive back. Independent from training completion",
         Some(object(
             &["package_sha256", "operation"],
             json!({"package_sha256":{"type":"string"},"operation":{"oneOf":[
                 object(&["kind","bundle"],json!({"kind":{"const":"prepare"},"bundle":{"type":"object"}})),
                 object(&["kind","part"],json!({"kind":{"const":"ticket"},"part":{"type":"integer","minimum":0}})),
-                object(&["kind"],json!({"kind":{"const":"complete"}}))
+                object(&["kind"],json!({"kind":{"const":"complete"},"part_crc64":{"type":"array","items":{"type":"integer","minimum":0},"description":"CRC-64/XZ of each part the worker sent, in part order"}}))
             ]}}),
         )),
     );

@@ -3101,8 +3101,10 @@ fn a_slurm_run_finds_an_unlisted_runtime_only_through_its_builder() {
 #[derive(Default)]
 struct FakeOss {
     objects: Mutex<BTreeMap<String, Vec<u8>>>,
-    /// While set, a GET waits to be let through: `reached` says one has arrived.
+    /// While set, a HEAD waits to be let through: `reached` says one has arrived.
     hold: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+    /// The method of every request, in order.
+    methods: Mutex<Vec<String>>,
 }
 impl FakeOss {
     fn start(self: &Arc<Self>) -> String {
@@ -3142,7 +3144,8 @@ impl FakeOss {
                     }
                     let mut body = vec![0; length];
                     reader.read_exact(&mut body).unwrap();
-                    let held = if method == "GET" {
+                    oss.methods.lock().unwrap().push(method.clone());
+                    let held = if method == "HEAD" {
                         oss.hold.lock().unwrap().take()
                     } else {
                         None
@@ -3152,6 +3155,14 @@ impl FakeOss {
                         release.recv().unwrap();
                     }
                     let mut objects = oss.objects.lock().unwrap();
+                    // OSS reports its own CRC-64 of every stored object.
+                    let crc = match objects.get(&key) {
+                        Some(found) if matches!(method.as_str(), "HEAD" | "GET") => format!(
+                            "x-oss-hash-crc64ecma: {}\r\n",
+                            ml_exp_core::checkpoints::archive::crc64(found)
+                        ),
+                        _ => String::new(),
+                    };
                     let (status, reply, size) = match method.as_str() {
                         "PUT" if forbid && objects.contains_key(&key) => {
                             ("409 Conflict", vec![], 0)
@@ -3173,13 +3184,28 @@ impl FakeOss {
                     drop(objects);
                     let _ = write!(
                         socket,
-                        "HTTP/1.1 {status}\r\nContent-Length: {size}\r\nConnection: close\r\n\r\n"
+                        "HTTP/1.1 {status}\r\nContent-Length: {size}\r\n{crc}Connection: close\r\n\r\n"
                     );
                     let _ = socket.write_all(&reply);
                 });
             }
         });
         origin
+    }
+    /// How many object bodies were read, through any host.
+    fn gets(&self) -> usize {
+        self.methods
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|m| *m == "GET")
+            .count()
+    }
+    /// Replace a stored object behind every record, as a corruption would.
+    fn tamper(&self) {
+        for bytes in self.objects.lock().unwrap().values_mut() {
+            bytes[0] ^= 1;
+        }
     }
 }
 /// A service with an object store, one real tar and its Begin already done.
@@ -3190,6 +3216,7 @@ struct DirectUpload {
     archive: Vec<u8>,
     definition: Definition,
     sha: String,
+    crc: u64,
 }
 impl DirectUpload {
     fn new(kind: Kind) -> Self {
@@ -3233,6 +3260,7 @@ impl DirectUpload {
                 bytes: content.len() as u64,
             }],
         };
+        let crc = ml_exp_core::checkpoints::archive::crc64(&archive);
         let upload = Self {
             f,
             oss,
@@ -3240,6 +3268,7 @@ impl DirectUpload {
             archive,
             definition: definition.clone(),
             sha,
+            crc,
         };
         upload
             .transfer(ml_exp_core::datasets::Command::Begin { definition })
@@ -3271,8 +3300,18 @@ impl DirectUpload {
             .as_u16()
     }
     fn uploaded(&self) -> cloud::Result<Value> {
-        self.service
-            .dataset_part_uploaded("demo", self.f.executor, &self.asset(), 0, &self.sha)
+        self.uploaded_with(self.crc)
+    }
+    /// What the client says about the part: its SHA256 and CRC-64.
+    fn uploaded_with(&self, crc: u64) -> cloud::Result<Value> {
+        self.service.dataset_part_uploaded(
+            "demo",
+            self.f.executor,
+            &self.asset(),
+            0,
+            &self.sha,
+            crc,
+        )
     }
     fn complete(&self) -> cloud::Result<Value> {
         self.transfer(ml_exp_core::datasets::Command::Complete {
@@ -3283,6 +3322,23 @@ impl DirectUpload {
         self.service
             .dataset_state("demo", self.f.executor, &self.asset())
             .unwrap()
+    }
+    fn slot(&self) -> std::path::PathBuf {
+        let digest = canonical::digest(&json!(["demo", self.f.executor, self.asset()])).unwrap();
+        self.f
+            .settings
+            .registry_root
+            .join("cloud-submissions/slots")
+            .join(format!("dataset-{digest}.json"))
+    }
+    fn saved(&self) -> Value {
+        serde_json::from_slice(&fs::read(self.slot()).unwrap()).unwrap()
+    }
+    fn save(&self, value: &Value) {
+        private(&self.slot(), value);
+    }
+    fn saved_crcs(&self) -> Value {
+        self.saved()["part_crc64"].clone()
     }
 }
 #[test]
@@ -3312,68 +3368,160 @@ fn a_ticket_needs_the_exact_project_asset_and_part() {
         assert!(ask("demo", executor, &asset, 0, &other), "another claim");
         let record = c
             .service
-            .dataset_part_uploaded("demo", executor, &asset, 0, &other);
+            .dataset_part_uploaded("demo", executor, &asset, 0, &other, c.crc);
         assert!(record.is_err(), "a record cannot change");
+        assert!(c.uploaded_with(c.crc ^ 1).is_err(), "nor its CRC");
     }
 }
 #[test]
-fn a_wrong_part_is_refused_at_complete_and_the_repeat_can_replace_it() {
+fn an_upload_completes_by_head_alone_and_a_reader_gets_each_parts_crc() {
+    for kind in KINDS {
+        let c = DirectUpload::new(kind);
+        assert_eq!(c.put(&c.archive), 200);
+        c.uploaded().unwrap();
+        let view = c.complete().unwrap();
+        assert_eq!(view["archive_verified"], true);
+        assert!(
+            view.get("part_crc64").is_none(),
+            "the client's view is unchanged"
+        );
+        assert_eq!(
+            c.oss.gets(),
+            0,
+            "no byte of the archive passed through the server"
+        );
+        assert_eq!(c.saved_crcs(), json!({"0": c.crc}));
+        let ticket = c
+            .service
+            .dataset_download("demo", c.f.executor, &c.asset(), 0)
+            .unwrap();
+        assert_eq!(ticket["crc64"], c.crc);
+        // A repeat changes nothing and asks nothing.
+        let heads = c.oss.methods.lock().unwrap().len();
+        assert_eq!(c.complete().unwrap()["archive_verified"], true);
+        assert_eq!(c.oss.methods.lock().unwrap().len(), heads);
+    }
+}
+#[test]
+fn a_part_whose_crc_differs_is_refused_when_recorded_and_the_repeat_can_replace_it() {
     for kind in KINDS {
         let c = DirectUpload::new(kind);
         let mut wrong = c.archive.clone();
         *wrong.last_mut().unwrap() ^= 1;
         assert_eq!(c.put(&wrong), 200);
-        // The size is right, so it is recorded. That accepts nothing.
-        let recorded = c.uploaded().unwrap();
-        assert_eq!(recorded["parts"].as_object().unwrap().len(), 1);
-        assert_eq!(recorded["archive_verified"], false);
-        let refused = c.complete().unwrap_err();
-        assert_eq!(refused.code, "DATASET_PART_REJECTED");
-        assert_eq!(
-            error::Error::from(refused).code,
-            "DATASET_PART_REJECTED",
-            "the code reaches the client"
-        );
-        let view = c.view();
-        assert_eq!(view["archive_verified"], false);
-        assert!(view["ready"].is_null());
-        assert_eq!(view["parts"].as_object().unwrap().len(), 0);
+        // The right size, other bytes: the object store's CRC is not the client's.
+        assert_eq!(c.uploaded().unwrap_err().code, "DATASET_PART_REJECTED");
+        assert_eq!(c.view()["parts"].as_object().unwrap().len(), 0);
         assert!(c.oss.objects.lock().unwrap().is_empty());
-        // Nothing that reads an asset can get a ticket for it.
-        assert!(
-            c.service
-                .dataset_download("demo", c.f.executor, &c.asset(), 0)
-                .is_err()
+        // The right bytes, with a client that reports another CRC for them.
+        assert_eq!(c.put(&c.archive), 200);
+        assert_eq!(
+            c.uploaded_with(c.crc ^ 1).unwrap_err().code,
+            "DATASET_PART_REJECTED"
         );
-        // The same upload again.
+        assert!(c.oss.objects.lock().unwrap().is_empty());
         assert_eq!(c.put(&c.archive), 200);
         c.uploaded().unwrap();
         assert_eq!(c.complete().unwrap()["archive_verified"], true);
-        // Accepted now: no more tickets, and no later observation can remove the part.
-        assert!(
-            c.service
-                .dataset_upload_ticket("demo", c.f.executor, &c.asset(), 0, &c.sha)
-                .is_err()
-        );
-        assert_eq!(c.uploaded().unwrap()["archive_verified"], true);
-        assert_eq!(c.oss.objects.lock().unwrap().len(), 1);
-        assert!(
-            c.service
-                .dataset_download("demo", c.f.executor, &c.asset(), 0)
-                .is_ok()
-        );
+        assert_eq!(c.oss.gets(), 0);
     }
 }
-/// A read that began before a part was removed may have seen the right bytes, and the
-/// part may have been replaced by wrong ones of the same size since. The record is the
-/// same either way, so only the count of removals tells them apart.
 #[test]
-fn a_read_from_before_a_removal_accepts_nothing() {
+fn complete_heads_every_part_again_and_refuses_one_missing_or_changed() {
+    for kind in KINDS {
+        for missing in [false, true] {
+            let c = DirectUpload::new(kind);
+            assert_eq!(c.put(&c.archive), 200);
+            let recorded = c.uploaded().unwrap();
+            assert_eq!(recorded["parts"].as_object().unwrap().len(), 1);
+            assert_eq!(recorded["archive_verified"], false);
+            if missing {
+                c.oss.objects.lock().unwrap().clear();
+            } else {
+                c.oss.tamper();
+            }
+            let refused = c.complete().unwrap_err();
+            assert_eq!(refused.code, "DATASET_PART_REJECTED");
+            assert_eq!(
+                error::Error::from(refused).code,
+                "DATASET_PART_REJECTED",
+                "the code reaches the client"
+            );
+            let view = c.view();
+            assert_eq!(view["archive_verified"], false);
+            assert!(view["ready"].is_null());
+            assert_eq!(view["parts"].as_object().unwrap().len(), 0);
+            assert!(c.saved_crcs().is_null(), "its CRC went with its record");
+            assert!(c.oss.objects.lock().unwrap().is_empty());
+            // Nothing that reads an asset can get a ticket for it.
+            assert!(
+                c.service
+                    .dataset_download("demo", c.f.executor, &c.asset(), 0)
+                    .is_err()
+            );
+            // The same upload again.
+            assert_eq!(c.put(&c.archive), 200);
+            c.uploaded().unwrap();
+            assert_eq!(c.complete().unwrap()["archive_verified"], true);
+            // Accepted now: no more tickets, and no later observation can remove the part.
+            assert!(
+                c.service
+                    .dataset_upload_ticket("demo", c.f.executor, &c.asset(), 0, &c.sha)
+                    .is_err()
+            );
+            assert_eq!(c.uploaded().unwrap()["archive_verified"], true);
+            assert_eq!(c.oss.objects.lock().unwrap().len(), 1);
+            assert_eq!(c.oss.gets(), 0);
+        }
+    }
+}
+/// A part recorded before CRCs were kept has nothing that binds its stored bytes to
+/// its record, so `complete` sends it round again rather than read it.
+#[test]
+fn a_part_recorded_without_a_crc_is_sent_again_and_a_verified_asset_stays_verified() {
     for kind in KINDS {
         let c = DirectUpload::new(kind);
-        let mut wrong = c.archive.clone();
-        *wrong.last_mut().unwrap() ^= 1;
-        assert_eq!(c.put(&wrong), 200);
+        assert_eq!(c.put(&c.archive), 200);
+        c.uploaded().unwrap();
+        let mut saved = c.saved();
+        saved.as_object_mut().unwrap().remove("part_crc64");
+        c.save(&saved);
+        assert_eq!(c.complete().unwrap_err().code, "DATASET_PART_REJECTED");
+        assert_eq!(c.view()["parts"].as_object().unwrap().len(), 0);
+        assert_eq!(c.put(&c.archive), 200);
+        c.uploaded().unwrap();
+        assert_eq!(c.complete().unwrap()["archive_verified"], true);
+        // An asset verified by an older server, with no CRCs, is still verified and
+        // readable; its tickets name no CRC.
+        let mut saved = c.saved();
+        saved.as_object_mut().unwrap().remove("part_crc64");
+        c.save(&saved);
+        assert_eq!(c.view()["archive_verified"], true);
+        let ticket = c
+            .service
+            .dataset_download("demo", c.f.executor, &c.asset(), 0)
+            .unwrap();
+        assert!(ticket.get("crc64").is_none());
+        // A CRC for a part with no record is a contradiction.
+        let mut saved = c.saved();
+        saved["part_crc64"] = json!({"0": c.crc, "1": 1});
+        c.save(&saved);
+        assert!(
+            c.service
+                .dataset_state("demo", c.f.executor, &c.asset())
+                .is_err()
+        );
+        assert_eq!(c.oss.gets(), 0);
+    }
+}
+/// A check that began before a part was removed may have seen the right object, and
+/// the part may have been replaced since. The record is the same either way, so only
+/// the count of removals tells them apart.
+#[test]
+fn a_check_from_before_a_removal_accepts_nothing() {
+    for kind in KINDS {
+        let c = DirectUpload::new(kind);
+        assert_eq!(c.put(&c.archive), 200);
         let recorded = c.uploaded().unwrap();
         let mut state = recorded.clone();
         for field in [
@@ -3389,8 +3537,9 @@ fn a_read_from_before_a_removal_accepts_nothing() {
             state.as_object_mut().unwrap().remove(field);
         }
         let state: State = serde_json::from_value(state).unwrap();
+        c.oss.tamper();
         assert_eq!(c.complete().unwrap_err().code, "DATASET_PART_REJECTED");
-        assert_eq!(c.put(&wrong), 200);
+        assert_eq!(c.put(&c.archive), 200);
         assert_eq!(c.uploaded().unwrap()["parts"], recorded["parts"]);
         assert!(
             c.service
@@ -3398,10 +3547,6 @@ fn a_read_from_before_a_removal_accepts_nothing() {
                 .is_err()
         );
         assert_eq!(c.view()["archive_verified"], false);
-        // The wrong part is still found, and the upload still recovers.
-        assert_eq!(c.complete().unwrap_err().code, "DATASET_PART_REJECTED");
-        assert_eq!(c.put(&c.archive), 200);
-        c.uploaded().unwrap();
         assert_eq!(c.complete().unwrap()["archive_verified"], true);
     }
 }
@@ -3445,12 +3590,16 @@ fn through_the_server_recovers_from_a_wrong_object_no_record_accepted() {
             )
             .unwrap();
         assert_eq!(value["parts"].as_object().unwrap().len(), 1);
+        assert_eq!(c.saved_crcs(), json!({"0": c.crc}));
         assert_eq!(c.complete().unwrap()["archive_verified"], true);
+        // The server had the bytes: it checked the stored copy by HEAD, not by a read.
+        assert_eq!(c.oss.gets(), 0);
     }
 }
-/// A large archive takes minutes to read, and everything else needs this lock.
+/// A large archive has many parts, each HEAD crosses regions, and everything else needs
+/// this lock.
 #[test]
-fn complete_does_not_hold_the_service_lock_while_it_reads() {
+fn complete_does_not_hold_the_service_lock_while_it_asks_the_object_store() {
     let c = DirectUpload::new(Kind::Pai);
     assert_eq!(c.put(&c.archive), 200);
     c.uploaded().unwrap();

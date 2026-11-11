@@ -193,6 +193,8 @@ impl Store {
             "headers":if upload{serde_json::json!({"x-oss-forbid-overwrite":"true"})}else{serde_json::json!({})},"expires_in_seconds":300}),
         )
     }
+    /// Read the whole archive back through this host. Only for a worker too old to
+    /// report its parts' CRC-64: its frozen binary cannot be replaced.
     pub fn verify(&self, archive: &ArchiveReceipt) -> io::Result<()> {
         let mut reader = Reader {
             store: self,
@@ -203,6 +205,96 @@ impl Store {
         };
         ml_exp_io::artifacts::verify_stream(&mut reader, archive)?;
         Ok(())
+    }
+    /// Verify a result archive without moving its bytes: every part must exist with its
+    /// exact size and the CRC-64/XZ the worker computed from the bytes it sent. Returns
+    /// the parts that are missing or differ, so empty means all match. An error means the
+    /// store could not be asked. The worker's archive SHA256 is the receipt's own.
+    pub fn wrong_archive_parts(
+        &self,
+        archive: &ArchiveReceipt,
+        part_crc64: &[u64],
+    ) -> io::Result<Vec<u64>> {
+        let count = parts(archive)?;
+        if part_crc64.len() as u64 != count {
+            return Ok((0..count).collect());
+        }
+        let mut expected = Vec::with_capacity(part_crc64.len());
+        for (part, crc) in (0..count).zip(part_crc64) {
+            let bytes = (archive.bytes - part * PART_BYTES).min(PART_BYTES);
+            expected.push((self.key(archive, part)?, bytes, *crc));
+        }
+        Ok(self
+            .wrong_objects(&expected)?
+            .into_iter()
+            .map(|index| index as u64)
+            .collect())
+    }
+    /// The object store's own size and CRC-64/XZ of one object, without its bytes.
+    /// `None` when there is no object. A HEAD without the CRC header is an error: it
+    /// says nothing about the bytes.
+    fn head(&self, key: &str) -> io::Result<Option<(u64, u64)>> {
+        let response = self
+            .http
+            .head(self.signed_url(
+                "HEAD",
+                key,
+                time::OffsetDateTime::now_utc().unix_timestamp() + 300,
+            )?)
+            .send()
+            .map_err(|error| error.without_url())
+            .map_err(why_chain!(invalid()))?;
+        // Read directly: reqwest reports the empty body of a HEAD as length 0.
+        let header = |name: &str| -> io::Result<u64> {
+            response
+                .headers()
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse().ok())
+                .ok_or_else(invalid)
+        };
+        match response.status().as_u16() {
+            404 => Ok(None),
+            200 => Ok(Some((
+                header("content-length")?,
+                header("x-oss-hash-crc64ecma")?,
+            ))),
+            _ => Err(invalid()),
+        }
+    }
+    /// HEAD each `(key, bytes, crc64)` and return the indices whose object is missing or
+    /// has another size or CRC. A failed HEAD is an error and names nothing.
+    fn wrong_objects(&self, expected: &[(String, u64, u64)]) -> io::Result<Vec<usize>> {
+        // A few HEADs at once: each is a round trip to another region.
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let results: Vec<io::Result<Vec<usize>>> = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| -> io::Result<Vec<usize>> {
+                        let mut wrong = Vec::new();
+                        loop {
+                            let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let Some((key, bytes, crc)) = expected.get(index) else {
+                                return Ok(wrong);
+                            };
+                            if self.head(key)? != Some((*bytes, *crc)) {
+                                wrong.push(index);
+                            }
+                        }
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap_or_else(|_| Err(invalid())))
+                .collect()
+        });
+        let mut wrong = Vec::new();
+        for result in results {
+            wrong.extend(result?);
+        }
+        wrong.sort_unstable();
+        Ok(wrong)
     }
     fn data_key(
         &self,
@@ -236,7 +328,7 @@ impl Store {
     }
     /// One PUT of one part of one asset, for 300 seconds, that cannot replace an object:
     /// the header is signed, so a request without it is refused. The signature does not
-    /// cover the bytes, so `verify_data` decides whether they are accepted.
+    /// cover the bytes: the object store's CRC-64 of them, against the client's, does.
     pub fn data_upload_ticket(
         &self,
         project: &str,
@@ -253,37 +345,16 @@ impl Store {
             "expires_in_seconds": 300,
         }))
     }
-    /// The size of a stored part, without reading it. `None` when there is no object.
-    /// The header is read directly: reqwest reports the empty body of a HEAD as length 0.
-    pub fn data_part_size(
+    /// The size and the object store's CRC-64 of a stored part, without reading it.
+    /// `None` when there is no object.
+    pub fn data_part_head(
         &self,
         project: &str,
         executor: &str,
         definition: &ml_exp_core::datasets::Definition,
         part: u64,
-    ) -> io::Result<Option<u64>> {
-        let key = self.data_key(project, executor, definition, part)?;
-        let response = self
-            .http
-            .head(self.signed_url(
-                "HEAD",
-                &key,
-                time::OffsetDateTime::now_utc().unix_timestamp() + 300,
-            )?)
-            .send()
-            .map_err(|error| error.without_url())
-            .map_err(why_chain!(invalid()))?;
-        match response.status().as_u16() {
-            404 => Ok(None),
-            200 => response
-                .headers()
-                .get(reqwest::header::CONTENT_LENGTH)
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.parse().ok())
-                .map(Some)
-                .ok_or_else(invalid),
-            _ => Err(invalid()),
-        }
+    ) -> io::Result<Option<(u64, u64)>> {
+        self.head(&self.data_key(project, executor, definition, part)?)
     }
     /// Remove one part of an asset the caller holds unaccepted. Missing is fine.
     pub fn delete_data(
@@ -309,41 +380,45 @@ impl Store {
         }
         Ok(())
     }
-    /// The recorded parts whose object is missing or differs from its record. Only for
-    /// after a refused archive. A failed read is an error and names no part.
+    /// The parts of an asset whose object is missing, or whose size or CRC-64 in the
+    /// object store differs from the one recorded for it. A part with no recorded CRC
+    /// is wrong: nothing binds its stored bytes to its record. A failed HEAD is an
+    /// error and names no part. No byte is read.
     pub fn wrong_data_parts(
         &self,
         project: &str,
         executor: &str,
-        state: &ml_exp_core::datasets::State,
+        definition: &ml_exp_core::datasets::Definition,
+        part_crc64: &BTreeMap<u64, u64>,
     ) -> io::Result<Vec<u64>> {
+        let count = definition.part_count().map_err(why!(invalid()))?;
         let mut wrong = Vec::new();
-        for (part, record) in &state.parts {
-            let key = self.data_key(project, executor, &state.definition, *part)?;
-            let response = self
-                .http
-                .get(self.signed_url(
-                    "GET",
-                    &key,
-                    time::OffsetDateTime::now_utc().unix_timestamp() + 300,
-                )?)
-                .send()
-                .map_err(|error| error.without_url())
-                .map_err(why_chain!(invalid()))?;
-            match response.status().as_u16() {
-                404 => wrong.push(*part),
-                200 => {
-                    let (hash, size) =
-                        ml_exp_io::artifacts::hash(&mut response.take(record.bytes + 1))?;
-                    if hash != record.sha256 || size != record.bytes {
-                        wrong.push(*part);
-                    }
+        let mut expected = Vec::new();
+        let mut numbers = Vec::new();
+        for part in 0..count {
+            match part_crc64.get(&part) {
+                None => wrong.push(part),
+                Some(crc) => {
+                    expected.push((
+                        self.data_key(project, executor, definition, part)?,
+                        definition.part_size(part).map_err(why!(invalid()))?,
+                        *crc,
+                    ));
+                    numbers.push(part);
                 }
-                _ => return Err(invalid()),
             }
         }
+        wrong.extend(
+            self.wrong_objects(&expected)?
+                .into_iter()
+                .map(|index| numbers[index]),
+        );
+        wrong.sort_unstable();
         Ok(wrong)
     }
+    /// Store one part that came through this server, and return its CRC-64. A HEAD
+    /// then shows the stored object has these bytes' size and CRC: a lost PUT response
+    /// or a duplicate never overwrites a different object, and nothing is read back.
     pub fn put_data(
         &self,
         project: &str,
@@ -352,7 +427,7 @@ impl Store {
         part: u64,
         sha256: &str,
         bytes: &[u8],
-    ) -> io::Result<()> {
+    ) -> io::Result<u64> {
         if definition.part_size(part).map_err(why!(invalid()))? != bytes.len() as u64
             || format!("{:x}", Sha256::digest(bytes)) != sha256
         {
@@ -373,52 +448,16 @@ impl Store {
         if !matches!(response.status().as_u16(), 200 | 409) {
             return Err(invalid());
         }
-        // Lost PUT responses and duplicates never overwrite a different object.
-        let response = self
-            .http
-            .get(self.signed_url(
-                "GET",
-                &key,
-                time::OffsetDateTime::now_utc().unix_timestamp() + 300,
-            )?)
-            .send()
-            .map_err(why_chain!(invalid()))?;
-        if response.status() != 200 || response.content_length() != Some(bytes.len() as u64) {
-            return Err(invalid());
-        }
-        let (hash, size) = ml_exp_io::artifacts::hash(&mut response.take(bytes.len() as u64 + 1))?;
-        if hash != sha256 || size != bytes.len() as u64 {
+        let crc = ml_exp_core::checkpoints::archive::crc64(bytes);
+        match self.head(&key)? {
+            Some(found) if found == (bytes.len() as u64, crc) => Ok(crc),
+            // A 200 or 409 with nothing there says nothing about the bytes.
+            None => Err(invalid()),
             // An unrecorded object from a direct PUT can differ. It cannot be overwritten.
-            return Err(io::Error::new(
+            Some(_) => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "stored object differs from this part",
-            ));
-        }
-        Ok(())
-    }
-    /// Read the whole archive: the only proof of the bytes of a part that went straight
-    /// to the object store. True when the archive, every member and every part's record
-    /// all hold. False when the bytes are refused. An error says nothing about them.
-    pub fn verify_data(
-        &self,
-        project: &str,
-        executor: &str,
-        state: &ml_exp_core::datasets::State,
-    ) -> io::Result<bool> {
-        let mut reader = DataReader {
-            store: self,
-            project,
-            executor,
-            state,
-            part: 0,
-            current: None,
-            remaining: 0,
-            hash: Sha256::new(),
-            unreachable: None,
-        };
-        match ml_exp_io::artifacts::verify_data_stream(&mut reader, &state.definition) {
-            Ok(()) => Ok(true),
-            Err(_) => reader.unreachable.map_or(Ok(false), Err),
+            )),
         }
     }
     /// Delete exactly one generated immutable part. Missing means the original
@@ -506,42 +545,6 @@ impl Store {
             "expires_in_seconds": 300,
         }))
     }
-    /// The object store's own size and CRC-64/XZ of one part, without its bytes.
-    /// `None` when there is no object. A HEAD without the CRC header is an error: it
-    /// says nothing about the bytes.
-    fn checkpoint_part_head(
-        &self,
-        document: &serde_json::Value,
-        part: &ml_exp_core::checkpoints::archive::Part,
-    ) -> io::Result<Option<(u64, u64)>> {
-        let key = self.checkpoint_key(document, part)?;
-        let response = self
-            .http
-            .head(self.signed_url(
-                "HEAD",
-                &key,
-                time::OffsetDateTime::now_utc().unix_timestamp() + 300,
-            )?)
-            .send()
-            .map_err(|error| error.without_url())
-            .map_err(why_chain!(invalid()))?;
-        let header = |name: &str| -> io::Result<u64> {
-            response
-                .headers()
-                .get(name)
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.parse().ok())
-                .ok_or_else(invalid)
-        };
-        match response.status().as_u16() {
-            404 => Ok(None),
-            200 => Ok(Some((
-                header("content-length")?,
-                header("x-oss-hash-crc64ecma")?,
-            ))),
-            _ => Err(invalid()),
-        }
-    }
     /// Verify a copy without moving its bytes: every part object must exist with its
     /// exact size and the CRC-64/XZ the worker computed from the bytes it sent. True when
     /// all match; false when an object is missing or differs. An error means the store
@@ -559,36 +562,11 @@ impl Store {
         if parts.len() != part_crc64.len() {
             return Ok(false);
         }
-        // A few HEADs at once: each is a round trip to another region.
-        let next = std::sync::atomic::AtomicUsize::new(0);
-        let results: Vec<io::Result<bool>> = std::thread::scope(|scope| {
-            let workers: Vec<_> = (0..8)
-                .map(|_| {
-                    scope.spawn(|| -> io::Result<bool> {
-                        loop {
-                            let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            let Some(part) = parts.get(index) else {
-                                return Ok(true);
-                            };
-                            match self.checkpoint_part_head(document, part)? {
-                                Some((bytes, crc))
-                                    if bytes == part.bytes && crc == part_crc64[index] => {}
-                                _ => return Ok(false),
-                            }
-                        }
-                    })
-                })
-                .collect();
-            workers
-                .into_iter()
-                .map(|worker| worker.join().unwrap_or_else(|_| Err(invalid())))
-                .collect()
-        });
-        let mut all = true;
-        for result in results {
-            all &= result?;
+        let mut expected = Vec::with_capacity(parts.len());
+        for (part, crc) in parts.iter().zip(part_crc64) {
+            expected.push((self.checkpoint_key(document, part)?, part.bytes, *crc));
         }
-        Ok(all)
+        Ok(self.wrong_objects(&expected)?.is_empty())
     }
 }
 struct Reader<'a> {
@@ -632,123 +610,6 @@ impl Read for Reader<'_> {
             self.remaining = (self.archive.bytes - self.part * PART_BYTES).min(PART_BYTES);
             if response.status() != 200 || response.content_length() != Some(self.remaining) {
                 return Err(invalid());
-            }
-            self.current = Some(response);
-            self.part += 1;
-        }
-    }
-}
-
-struct DataReader<'a> {
-    store: &'a Store,
-    project: &'a str,
-    executor: &'a str,
-    state: &'a ml_exp_core::datasets::State,
-    part: u64,
-    current: Option<reqwest::blocking::Response>,
-    remaining: u64,
-    hash: Sha256,
-    /// The read itself failed, so nothing is known about the bytes.
-    unreachable: Option<io::Error>,
-}
-impl DataReader<'_> {
-    fn unreachable(&mut self, error: io::Error) -> io::Error {
-        let reply = io::Error::new(error.kind(), "object store read failed");
-        self.unreachable = Some(error);
-        reply
-    }
-    /// A part's own hash, against its record, as soon as its last byte is read. The
-    /// archive hash alone would accept an archive whose records name other bytes.
-    fn finish_part(&mut self) -> io::Result<()> {
-        let hash = format!(
-            "{:x}",
-            std::mem::replace(&mut self.hash, Sha256::new()).finalize()
-        );
-        if self
-            .state
-            .parts
-            .get(&(self.part - 1))
-            .map(|r| r.sha256.as_str())
-            != Some(hash.as_str())
-        {
-            return Err(invalid());
-        }
-        Ok(())
-    }
-}
-impl Read for DataReader<'_> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if buf.is_empty() {
-            return Ok(0);
-        }
-        loop {
-            if let Some(response) = &mut self.current {
-                let limit = buf.len().min(self.remaining.saturating_add(1) as usize);
-                let n = match response.read(&mut buf[..limit]) {
-                    Ok(n) => n,
-                    Err(error) => return Err(self.unreachable(error)),
-                };
-                if n as u64 > self.remaining {
-                    return Err(invalid());
-                }
-                if n > 0 {
-                    self.hash.update(&buf[..n]);
-                    self.remaining -= n as u64;
-                    if self.remaining == 0 {
-                        self.finish_part()?;
-                    }
-                    return Ok(n);
-                }
-                if self.remaining != 0 {
-                    let short = invalid();
-                    return Err(self.unreachable(short));
-                }
-                self.current = None;
-            }
-            if self.part
-                >= self
-                    .state
-                    .definition
-                    .part_count()
-                    .map_err(why!(invalid()))?
-            {
-                return Ok(0);
-            }
-            let key = self.store.data_key(
-                self.project,
-                self.executor,
-                &self.state.definition,
-                self.part,
-            )?;
-            let url = self.store.signed_url(
-                "GET",
-                &key,
-                time::OffsetDateTime::now_utc().unix_timestamp() + 300,
-            )?;
-            let response = match self.store.http.get(url).send() {
-                Ok(response) => response,
-                Err(error) => {
-                    crate::why::record_chain(file!(), line!(), &error.without_url());
-                    let failed = invalid();
-                    return Err(self.unreachable(failed));
-                }
-            };
-            self.remaining = self
-                .state
-                .definition
-                .part_size(self.part)
-                .map_err(why!(invalid()))?;
-            match response.status().as_u16() {
-                // An object that is gone or the wrong size is a fact about the bytes.
-                404 => return Err(invalid()),
-                200 if response.content_length() != Some(self.remaining) => {
-                    return Err(invalid());
-                }
-                200 => {}
-                _ => {
-                    let failed = invalid();
-                    return Err(self.unreachable(failed));
-                }
             }
             self.current = Some(response);
             self.part += 1;
@@ -940,54 +801,107 @@ mod tests {
         );
     }
     #[test]
-    fn the_size_of_a_part_is_read_from_a_real_head_without_its_bytes() {
+    fn the_size_and_crc_of_a_part_are_read_from_a_real_head_without_its_bytes() {
         let oss = Arc::new(Oss::default());
         let (_temp, store) = store(&oss);
         let (archive, state) = asset();
-        let size = || store.data_part_size("demo", "pai", &state.definition, 0);
-        assert_eq!(size().unwrap(), None);
+        let head = || store.data_part_head("demo", "pai", &state.definition, 0);
+        assert_eq!(head().unwrap(), None);
         oss.objects
             .lock()
             .unwrap()
             .insert(key(&state), archive.clone());
-        assert_eq!(size().unwrap(), Some(archive.len() as u64));
+        let crc = ml_exp_core::checkpoints::archive::crc64(&archive);
+        assert_eq!(head().unwrap(), Some((archive.len() as u64, crc)));
         store
             .delete_data("demo", "pai", &state.definition, 0)
             .unwrap();
-        assert_eq!(size().unwrap(), None);
+        assert_eq!(head().unwrap(), None);
+        assert!(no_get(&oss));
+    }
+    /// No object body was ever read through this host.
+    fn no_get(oss: &Oss) -> bool {
+        !oss.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r.starts_with("GET "))
     }
     #[test]
-    fn only_the_exact_bytes_verify_and_a_wrong_part_is_named() {
+    fn only_the_recorded_crc_verifies_a_part_and_a_wrong_part_is_named() {
         let oss = Arc::new(Oss::default());
         let (_temp, store) = store(&oss);
         let (archive, state) = asset();
-        let verify = |state| store.verify_data("demo", "pai", state);
+        let crc = ml_exp_core::checkpoints::archive::crc64(&archive);
+        let recorded = Map::from([(0u64, crc)]);
+        let wrong = |crcs: &Map<u64, u64>| {
+            store
+                .wrong_data_parts("demo", "pai", &state.definition, crcs)
+                .unwrap()
+        };
         // Missing.
-        assert!(!verify(&state).unwrap());
-        assert_eq!(store.wrong_data_parts("demo", "pai", &state).unwrap(), [0]);
-        // The right size with other bytes.
-        let mut wrong = archive.clone();
-        *wrong.last_mut().unwrap() ^= 1;
-        oss.objects.lock().unwrap().insert(key(&state), wrong);
-        assert!(!verify(&state).unwrap());
-        assert_eq!(store.wrong_data_parts("demo", "pai", &state).unwrap(), [0]);
+        assert_eq!(wrong(&recorded), [0]);
+        // The right size with other bytes: the object store's CRC differs.
+        let mut other = archive.clone();
+        *other.last_mut().unwrap() ^= 1;
+        oss.objects.lock().unwrap().insert(key(&state), other);
+        assert_eq!(wrong(&recorded), [0]);
         // The exact bytes.
         oss.objects
             .lock()
             .unwrap()
             .insert(key(&state), archive.clone());
-        assert!(verify(&state).unwrap());
+        assert!(wrong(&recorded).is_empty());
+        // The exact bytes under another CRC, or no CRC at all: nothing binds them.
+        assert_eq!(wrong(&Map::from([(0u64, crc ^ 1)])), [0]);
+        assert_eq!(wrong(&Map::new()), [0]);
+        assert!(no_get(&oss));
+    }
+    #[test]
+    fn a_result_archive_verifies_by_head_only() {
+        let oss = Arc::new(Oss::default());
+        let (_temp, store) = store(&oss);
+        let (bytes, _) = asset();
+        let receipt = ArchiveReceipt {
+            project: "demo".into(),
+            run_id: "train".into(),
+            attempt_id: "attempt-001".into(),
+            object_key: format!("demo/train/attempt-001/{:x}.tar", Sha256::digest(&bytes)),
+            sha256: format!("{:x}", Sha256::digest(&bytes)),
+            bytes: bytes.len() as u64,
+            files: vec![FileReceipt {
+                path: "train.bin".into(),
+                sha256: format!("{:x}", Sha256::digest(vec![7u8; 1024])),
+                bytes: 1024,
+            }],
+        };
+        let key = format!(
+            "/users/alice/ml-expd/results/demo/train/attempt-001/{}/parts/00000",
+            receipt.sha256
+        );
+        let crc = ml_exp_core::checkpoints::archive::crc64(&bytes);
+        assert_eq!(store.wrong_archive_parts(&receipt, &[crc]).unwrap(), [0]);
+        let mut other = bytes.clone();
+        other[0] ^= 1;
+        oss.objects.lock().unwrap().insert(key.clone(), other);
+        assert_eq!(store.wrong_archive_parts(&receipt, &[crc]).unwrap(), [0]);
+        oss.objects.lock().unwrap().insert(key.clone(), bytes);
         assert!(
             store
-                .wrong_data_parts("demo", "pai", &state)
+                .wrong_archive_parts(&receipt, &[crc])
                 .unwrap()
                 .is_empty()
         );
-        // The exact bytes under a record naming others: the record is what a resume trusts.
-        let mut lying = state.clone();
-        lying.parts.get_mut(&0).unwrap().sha256 = "9".repeat(64);
-        assert!(!verify(&lying).unwrap());
-        assert_eq!(store.wrong_data_parts("demo", "pai", &lying).unwrap(), [0]);
+        assert_eq!(
+            store.wrong_archive_parts(&receipt, &[crc ^ 1]).unwrap(),
+            [0]
+        );
+        // The wrong number of CRCs names every part.
+        assert_eq!(store.wrong_archive_parts(&receipt, &[]).unwrap(), [0]);
+        assert!(no_get(&oss));
+        // The legacy read, for a worker that reports no CRC, reads the bytes.
+        let _ = store.verify(&receipt);
+        assert!(!no_get(&oss));
     }
     #[test]
     fn a_checkpoint_copy_verifies_only_with_every_registered_byte() {
@@ -1067,11 +981,15 @@ mod tests {
         let origin = format!("http://{}", closed.local_addr().unwrap());
         drop(closed);
         store.redirect_for_tests(origin);
-        assert!(store.verify_data("demo", "pai", &state).is_err());
-        assert!(store.wrong_data_parts("demo", "pai", &state).is_err());
+        let crcs = Map::from([(0u64, 1u64)]);
         assert!(
             store
-                .data_part_size("demo", "pai", &state.definition, 0)
+                .wrong_data_parts("demo", "pai", &state.definition, &crcs)
+                .is_err()
+        );
+        assert!(
+            store
+                .data_part_head("demo", "pai", &state.definition, 0)
                 .is_err()
         );
     }
@@ -1088,5 +1006,21 @@ mod tests {
             .put_data("demo", "pai", &state.definition, 0, &sha, &archive)
             .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        // Once the wrong object is gone the same bytes are stored and checked by HEAD.
+        store
+            .delete_data("demo", "pai", &state.definition, 0)
+            .unwrap();
+        let crc = store
+            .put_data("demo", "pai", &state.definition, 0, &sha, &archive)
+            .unwrap();
+        assert_eq!(crc, ml_exp_core::checkpoints::archive::crc64(&archive));
+        // A repeat is answered 409 and still checks out.
+        assert_eq!(
+            store
+                .put_data("demo", "pai", &state.definition, 0, &sha, &archive)
+                .unwrap(),
+            crc
+        );
+        assert!(no_get(&oss));
     }
 }
