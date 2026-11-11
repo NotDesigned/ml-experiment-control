@@ -637,14 +637,12 @@ fn a_claim_that_died_after_its_create_recovers_with_one_create() {
         let (action, execution) = f.ready(&service, "train");
         drop(service);
         let outbox = f.die_after_claim(&action, &execution);
-        let slot = Outbox::slot(&execution.job).unwrap();
         let adapter = Adapter::new(f.provider.profile.clone(), &*f.provider).unwrap();
         let sent = outbox
             .execute(
                 &adapter,
                 &execution.job,
                 execution.allocation,
-                &format!("SUBMIT {slot}"),
                 &|| Ok(()),
                 &AtomicBool::new(false),
             )
