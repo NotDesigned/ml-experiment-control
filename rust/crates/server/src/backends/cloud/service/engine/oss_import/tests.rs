@@ -219,6 +219,26 @@ fn a_bound_report_publishes_once_without_reading_any_object_body() {
         true
     );
     assert_eq!(fixture.provider.actions.lock().unwrap().len(), before);
+    // A crash after the dataset commit but before the progress commit cannot
+    // hide an accepted dataset or let a delayed failure demote it.
+    let mut stale = service.oss_saved("demo", "pai", &asset).unwrap().unwrap();
+    stale.status = "COPYING_VERIFYING".into();
+    service.oss_write(&stale).unwrap();
+    assert_eq!(
+        fixture.open().dataset_state("demo", "pai", &asset).unwrap()["archive_verified"],
+        true
+    );
+    let reconciled = service
+        .oss_import_exchange(
+            "demo",
+            "pai",
+            &asset,
+            &channel.token,
+            "oss-failed",
+            json!({"request_id":stale.request_id,"code":"IMPORT_TRANSPORT_FAILED"}),
+        )
+        .unwrap();
+    assert_eq!(reconciled["status"], "ARCHIVED");
     assert!(fixture.temp.path().exists());
 }
 #[test]
@@ -233,4 +253,35 @@ fn a_changed_source_is_refused_before_any_new_effect() {
     changed.object_key = "users/alice/datasets/other.tar".into();
     assert!(service.import_oss_dataset("demo", "pai", changed).is_err());
     assert_eq!(fixture.provider.creates.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn import_only_configuration_requires_a_pinned_image_and_a_cpu_collector() {
+    let fixture = Fixture::new();
+    assert!(Settings::from_slice(&fixture.config).is_ok());
+    for (key, value) in [
+        ("oss_import_image", json!("docker.io/library/python:latest")),
+        ("collector", Value::Null),
+    ] {
+        let mut config: Value = serde_json::from_slice(&fixture.config).unwrap();
+        config["backends"][0][key] = value;
+        assert!(Settings::from_slice(&encode(&config).unwrap()).is_err());
+    }
+    let mut config: Value = serde_json::from_slice(&fixture.config).unwrap();
+    config["artifacts"]["endpoint"] = json!("oss-cn-hangzhou.aliyuncs.com");
+    let service = Service::open_with_transport(
+        fixture.settings.clone(),
+        Settings::from_slice(&encode(&config).unwrap()).unwrap(),
+        fixture.sources.clone(),
+        None,
+        Default::default(),
+        fixture.provider.clone(),
+    )
+    .unwrap();
+    assert!(
+        service
+            .import_oss_dataset("demo", "pai", fixture.source())
+            .is_err()
+    );
+    assert_eq!(fixture.provider.creates.load(Ordering::SeqCst), 0);
 }

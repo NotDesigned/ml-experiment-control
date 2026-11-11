@@ -370,7 +370,17 @@ impl Service {
             let mut saved = self
                 .oss_saved(project, executor, asset)?
                 .ok_or_else(missing)?;
-            if saved.status != "ARCHIVED" {
+            if self
+                .data_saved(project, executor, asset)?
+                .is_some_and(|s| s.archive_verified)
+            {
+                // The dataset commit precedes the progress commit. A lost final
+                // response or a crash between them cannot turn verified bytes
+                // into a failed import.
+                saved.status = "ARCHIVED".into();
+                saved.error = None;
+                self.oss_write(&saved)?;
+            } else if saved.status != "ARCHIVED" {
                 saved.status = "FAILED".into();
                 saved.error = Some(code.into());
                 self.oss_write(&saved)?;

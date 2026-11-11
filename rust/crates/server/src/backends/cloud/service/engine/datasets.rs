@@ -264,15 +264,16 @@ impl Service {
         executor: &str,
         asset: &str,
     ) -> cloud::Result<Value> {
+        let dataset = self.data_saved(project, executor, asset)?;
+        if dataset.as_ref().is_some_and(|saved| saved.archive_verified) {
+            return Ok(Self::data_view(dataset.ok_or_else(missing)?));
+        }
         if let Some(view) = self.oss_import_view(project, executor, asset)? {
             if view["archive_verified"] != true {
                 return Ok(view);
             }
         }
-        Ok(Self::data_view(
-            self.data_saved(project, executor, asset)?
-                .ok_or_else(missing)?,
-        ))
+        Ok(Self::data_view(dataset.ok_or_else(missing)?))
     }
     pub fn dataset_download(
         &self,
