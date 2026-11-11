@@ -772,7 +772,8 @@ mod tests {
                 max_gpu_hours: 1.0,
                 reason: String::new(),
             },
-            &"a".repeat(32),
+            // Unlike the fixture hashes, so the plan cannot appear to contain it.
+            &"0123456789abcdef".repeat(2),
             "2026-10-29T00:00:00Z",
             "2026-10-29T01:00:00Z",
         )
