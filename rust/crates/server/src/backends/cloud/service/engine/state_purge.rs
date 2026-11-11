@@ -75,8 +75,7 @@ fn seconds(now: &str) -> cloud::Result<i64> {
 /// The job's state, if proven ended.
 fn ended(state: Option<Value>) -> cloud::Result<Option<RunState>> {
     Ok(match state {
-        // An entry not observed yet proves nothing about the job.
-        Some(state) if state["observation"].is_null() => None,
+        // An entry not observed yet proves nothing; proven_terminal returns None.
         Some(state) => super::sync_jobs::proven_terminal(&state)?.map(|o| o.state),
         None => None,
     })

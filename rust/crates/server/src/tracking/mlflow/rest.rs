@@ -34,6 +34,9 @@ impl Client {
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())
             .connect_timeout(Duration::from_secs(5))
+            // uvicorn closes an idle keep-alive connection after 5 s; reusing one it
+            // has just closed fails with "connection closed before message completed".
+            .pool_idle_timeout(Duration::from_secs(3))
             .timeout(timeout);
         if let Some(pem) = ca_pem {
             builder = builder.add_root_certificate(

@@ -5,8 +5,12 @@ use ml_exp_core::cloud::{Job, JobObservation, exchange::ResultJobLimits, pai::Al
 
 /// A fresh read proving that this exact job ended. A failed read leaves a diagnostic
 /// beside the old observation, so that observation proves nothing. An unreadable
-/// observation is an error; anything else that falls short returns None.
+/// observation is an error; anything else that falls short, including an entry not
+/// observed yet, returns None.
 pub(super) fn proven_terminal(state: &Value) -> cloud::Result<Option<JobObservation>> {
+    if state["observation"].is_null() {
+        return Ok(None);
+    }
     let observation: JobObservation = serde_json::from_value(state["observation"].clone())
         .map_err(why!(cloud::Error::evidence()))?;
     Ok((state["diagnostic"].is_null()
@@ -52,5 +56,25 @@ impl Service {
             self.sync_outbox
                 .reconcile(adapter, job, allocation, check, cancelled)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::proven_terminal;
+    use serde_json::json;
+
+    #[test]
+    fn an_entry_not_observed_yet_proves_nothing() {
+        let state = json!({"handle": {"job_id": "dlc-1"}, "diagnostic": null});
+        assert!(proven_terminal(&state).unwrap().is_none());
+        let state = json!({"handle": {"job_id": "dlc-1"}, "observation": null});
+        assert!(proven_terminal(&state).unwrap().is_none());
+    }
+
+    #[test]
+    fn an_unreadable_observation_is_an_error() {
+        let state = json!({"handle": {"job_id": "dlc-1"}, "observation": {"state": 7}});
+        assert!(proven_terminal(&state).is_err());
     }
 }
