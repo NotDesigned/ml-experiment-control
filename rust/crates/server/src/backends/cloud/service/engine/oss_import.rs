@@ -173,16 +173,26 @@ impl Service {
         if !objects.import_region(&profile.region) {
             return Err(cloud::Error::configuration());
         }
-        let _effect = self
-            .slots
-            .lock(
-                OsStr::new(&format!("{}.lock", name(project, executor, &asset)?)),
-                LockOptions {
-                    create: true,
-                    ..Default::default()
-                },
-            )
-            .map_err(why_lock!(cloud::Error::evidence()))?;
+        let effect = self.slots.lock(
+            OsStr::new(&format!("{}.lock", name(project, executor, &asset)?)),
+            LockOptions {
+                create: true,
+                ..Default::default()
+            },
+        );
+        let _effect = match effect {
+            Ok(lock) => lock,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                let existing = self
+                    .oss_saved(project, executor, &asset)?
+                    .ok_or_else(missing)?;
+                if existing.source != source {
+                    return Err(conflict());
+                }
+                return Self::oss_view(&existing);
+            }
+            Err(error) => return Err((why_lock!(cloud::Error::evidence()))(error)),
+        };
         let saved = match self.oss_saved(project, executor, &asset)? {
             Some(saved) => {
                 if saved.source != source {
@@ -406,6 +416,14 @@ impl Service {
             &[],
         )?;
         let _lock = self.lock("oss_import.complete")?;
+        if self
+            .oss_saved(project, executor, asset)?
+            .ok_or_else(missing)?
+            .status
+            == "FAILED"
+        {
+            return Err(conflict());
+        }
         let mut dataset = self
             .data_saved(project, executor, asset)?
             .ok_or_else(missing)?;
@@ -464,6 +482,9 @@ impl Service {
             saved = self
                 .oss_saved(&saved.project, &saved.executor, &asset)?
                 .ok_or_else(missing)?;
+            if matches!(saved.status.as_str(), "FAILED" | "ARCHIVED") {
+                return Err(conflict());
+            }
             if saved
                 .source_identity
                 .as_ref()
@@ -534,3 +555,6 @@ impl Service {
             .map_err(io)
     }
 }
+
+#[cfg(test)]
+mod tests;

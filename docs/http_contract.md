@@ -175,7 +175,7 @@ it is not proof that file contents contain no secrets. See [builds](builds.md).
 | `GET /api/projects/P/datasets/E` | Retained dataset identities and readiness |
 | `POST /api/projects/P/datasets/E` | Begin one target-backed upload |
 | `GET /api/projects/P/datasets/E/A` | Read one asset's status |
-| `POST /api/projects/P/datasets/E/import-oss` | Import an approved plain tar from OSS |
+| `POST /api/projects/P/datasets/E/import-oss` | Start or reconcile one in-region CPU OSS import; returns retained progress |
 | `POST /api/projects/P/experiment-preparations` | Combined Runtime/data/Run/Submission preparation |
 | `GET /api/projects/P/experiment-preparations/PREPARATION_ID` | Dependencies, phase and next action |
 | `POST …/experiment-preparations/PREPARATION_ID/continue` | Explicitly advance inspected dependencies |

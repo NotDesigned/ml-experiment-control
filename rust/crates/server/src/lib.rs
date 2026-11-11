@@ -493,7 +493,7 @@ fn schema_document() -> serde_json::Value {
         ),
     );
     paths.insert("/api/projects/{project}/datasets/{executor}/{asset}/complete".into(),post("Verify and publish the existing backend dataset, then remove owned parts and archive; send an empty request body",json!({"type":"object","maxProperties":0}),data_asset_parameters()));
-    paths.insert("/api/projects/{project}/datasets/{executor}/import-oss".into(),post("Verify an existing approved OSS tar and import through bounded immutable parts; no scheduler operation or local disk spool",
+    paths.insert("/api/projects/{project}/datasets/{executor}/import-oss".into(),post("Start or reconcile one durable zero-GPU in-region OSS import; no payload relay or local disk spool",
         json!({"type":"object","additionalProperties":false,"required":["object_key","sha256","archive_bytes"],"properties":{"object_key":{"type":"string","maxLength":1024},"sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"},"archive_bytes":{"type":"integer","minimum":1}}}),data_parameters()));
     let mut data_part = post(
         "Persist one exact zero-based part on the gateway; fixed 16 MiB maximum; no API disk spool",

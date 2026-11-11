@@ -83,10 +83,11 @@ impl Store {
             }
         );
         let expires = time::OffsetDateTime::now_utc().unix_timestamp() + 300;
-        let signed_headers = headers
-            .iter()
-            .map(|(k, v)| format!("{k}:{v}\n"))
-            .collect::<String>();
+        let mut signed_headers = String::new();
+        for (key, value) in &headers {
+            use std::fmt::Write;
+            writeln!(signed_headers, "{key}:{value}").map_err(|_| invalid())?;
+        }
         let canonical = format!("{method}\n\n\n{expires}\n{signed_headers}{resource}");
         let mut mac = Hmac::<Sha1>::new_from_slice(self.credentials.access_key_secret.as_bytes())
             .map_err(|_| invalid())?;
@@ -190,6 +191,7 @@ impl Store {
         Ok(id)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn finish_import_part(
         &self,
         project: &str,
