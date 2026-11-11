@@ -327,6 +327,7 @@ fn publish_ended(
         session.mark_idle(scope, total);
         return Ok(Next::Idle);
     }
+    let mut reopened = false;
     if saved.remote_finished {
         // A finished W&B Run is resumed only for derived rows added after the Run
         // ended. They are then sent and the Run finished again like any other.
@@ -338,6 +339,7 @@ fn publish_ended(
         }
         saved.remote_finished = false;
         saved.state.finished = false;
+        reopened = true;
     }
     let (at, _) = crate::projects::transition_context().map_err(why!(Error::Storage))?;
     let visit = Visit {
@@ -348,6 +350,9 @@ fn publish_ended(
         at: &at,
         total,
     };
+    if reopened {
+        save(&visit, &saved, "PENDING", None)?;
+    }
     // An earlier release waited to see reserved rows in W&B history. They were
     // handed to the SDK, so they count as sent once and are not sent again.
     if !saved.state.sent.is_empty() {
