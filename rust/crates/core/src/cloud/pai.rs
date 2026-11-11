@@ -246,7 +246,8 @@ impl Profile {
             method == Method::Get,
         )
     }
-    pub fn create(&self, job: &Job, allocation: Allocation) -> Result<Request> {
+    /// Compiles the CreateJob request. Sending it is `Adapter::create`, behind the outbox.
+    pub fn create_request(&self, job: &Job, allocation: Allocation) -> Result<Request> {
         self.validate()?;
         job.validate()?;
         if job.max_time_seconds > MAX_JOB_SECONDS
@@ -320,6 +321,9 @@ impl Profile {
                 ("PageSize".into(), "100".into()),
                 ("StartTime".into(), "2020-01-01T00:00:00Z".into()),
                 ("DisplayName".into(), job.name()?),
+                // The default mode is a fuzzy match. `term` asks for the exact name;
+                // `validate_job` still compares every row, so a wider answer fails.
+                ("DisplayNameSearchMode".into(), "term".into()),
                 (
                     "Tags".into(),
                     serde_json::to_string(&job.tags(&self.scope()?)?).map_err(|_| Error("tags"))?,

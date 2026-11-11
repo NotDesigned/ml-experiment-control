@@ -1,0 +1,1 @@
+{"provider":"pai","region":"cn-fixture-1","workspace_id":"100001","quota_id":"quotafixture01","max_gpus":8,"max_cpus":128,"max_memory_gb":1024,"storage":{"cpfs_uri":"bmcpfs://cpfs-0fixture.cn-fixture-1.cpfs.aliyuncs.com/","workspace_user":"fixture","role_arn":"acs:ram::1000000000000001:role/pai-data-fixture"}}

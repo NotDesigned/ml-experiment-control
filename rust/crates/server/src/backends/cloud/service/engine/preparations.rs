@@ -91,20 +91,22 @@ impl Service {
                 priority: run.scheduling.as_ref().map(|s| s.priority).unwrap_or(5),
                 read_only_storage: false,
             };
-            match &backend.adapter.profile {
-                cloud::adapter::Profile::Pai(p) => p.create(
+            backend
+                .adapter
+                .profile
+                .pai()
+                .create_request(
                     &job,
                     run.scheduling
                         .as_ref()
                         .map(|s| s.allocation)
                         .unwrap_or(backend.definition.allocation),
-                ),
-            }
-            .map_err(why!(cloud::Error {
-                code: "INVALID_CLOUD_REQUEST".into(),
-                http_status: Some(422),
-                uncertain: false,
-            }))?;
+                )
+                .map_err(why!(cloud::Error {
+                    code: "INVALID_CLOUD_REQUEST".into(),
+                    http_status: Some(422),
+                    uncertain: false,
+                }))?;
             let mut mounts = Vec::with_capacity(run.data.len());
             for input in &run.data {
                 let receipt = match backend

@@ -88,7 +88,7 @@ impl Definition {
             .map_err(why!(cloud::Error::configuration()))?;
         self.profile.validate()?;
         if let Some(image) = &self.oss_import_image {
-            let Some(Profile::Pai(collector)) = &self.collector else {
+            let Some(collector) = self.collector.as_ref().map(Profile::pai) else {
                 return Err(cloud::Error::configuration());
             };
             if collector.max_cpus < 2 || collector.max_memory_gb < 4 {
@@ -117,26 +117,23 @@ impl Definition {
             || limits.memory_gb == 0
             || limits.max_time_seconds == 0
             || limits.max_time_seconds > 1000 * 3600
-            || match &self.collector {
-                Some(Profile::Pai(p)) => {
-                    limits.cpus > p.max_cpus
-                        || limits.memory_gb > p.max_memory_gb
-                        || limits.max_time_seconds > domain::pai::MAX_JOB_SECONDS
-                }
-                None => false,
-            }
+            || self.collector.as_ref().map(Profile::pai).is_some_and(|p| {
+                limits.cpus > p.max_cpus
+                    || limits.memory_gb > p.max_memory_gb
+                    || limits.max_time_seconds > domain::pai::MAX_JOB_SECONDS
+            })
         {
             return Err(cloud::Error::configuration());
         }
         if let Some(collector) = &self.collector {
             collector.validate()?;
-            match (&self.profile, collector) {
-                (Profile::Pai(training), Profile::Pai(copy))
-                    if training.region == copy.region
-                        && training.workspace_id == copy.workspace_id
-                        && training.storage == copy.storage
-                        && training.vpc == copy.vpc => {}
-                _ => return Err(cloud::Error::configuration()),
+            let (training, copy) = (self.profile.pai(), collector.pai());
+            if training.region != copy.region
+                || training.workspace_id != copy.workspace_id
+                || training.storage != copy.storage
+                || training.vpc != copy.vpc
+            {
+                return Err(cloud::Error::configuration());
             }
         }
         if !(1..=120).contains(&self.timeout_seconds)
@@ -145,7 +142,7 @@ impl Definition {
         {
             return Err(cloud::Error::configuration());
         }
-        let Profile::Pai(p) = &self.profile;
+        let p = self.profile.pai();
         if p.storage.is_none() || !self.run_root.starts_with("/mnt/workspace/") {
             return Err(cloud::Error::configuration());
         }

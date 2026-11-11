@@ -132,9 +132,8 @@ fn sync_recovery_lost_reply_keeps_failed_parent_and_cannot_create_a_second_child
         confirmation: format!("RETRY SYNC {action} {request_id} dlc-failed"),
     };
     let child = retry.job(action, &request_id, &parent).unwrap();
-    let Profile::Pai(p) = &profile;
     row["DisplayName"] = json!(child.name().unwrap());
-    row["Settings"]["Tags"] = json!(child.tags(&p.scope().unwrap()).unwrap());
+    row["Settings"]["Tags"] = json!(child.tags(&profile.pai().scope().unwrap()).unwrap());
     let state = Arc::new(Mutex::new(State::default()));
     let adapter = Adapter::new(
         profile.clone(),
@@ -145,18 +144,11 @@ fn sync_recovery_lost_reply_keeps_failed_parent_and_cannot_create_a_second_child
     )
     .unwrap();
     for _ in 0..2 {
-        let prepared = outbox
+        outbox
             .prepare(&profile, &child, allocation, &|| Ok(()))
             .unwrap();
         outbox
-            .execute(
-                &adapter,
-                &child,
-                allocation,
-                prepared["confirmation"].as_str().unwrap(),
-                &|| Ok(()),
-                &flag,
-            )
+            .execute(&adapter, &child, allocation, &|| Ok(()), &flag)
             .unwrap();
     }
     assert_eq!(state.lock().unwrap().creates, 1);
@@ -207,16 +199,17 @@ fn lost_create_and_stop_replies_restart_absence_and_foreign_identity_never_repla
     let guard = || Ok(());
     let allocation = Allocation::Guaranteed;
     let prepared = outbox.prepare(&profile, &job, allocation, &guard).unwrap();
-    let confirmation = prepared["confirmation"].as_str().unwrap();
+    assert_eq!(prepared["phase"], "PREPARED");
+    assert_eq!(prepared["retry_safe"], true);
     let result = outbox
-        .execute(&adapter, &job, allocation, confirmation, &guard, &flag)
+        .execute(&adapter, &job, allocation, &guard, &flag)
         .unwrap();
     assert_eq!(result["phase"], "RECONCILE_REQUIRED");
     assert_eq!(state.lock().unwrap().creates, 1);
     drop(outbox);
     let outbox = Outbox::open(temp.path()).unwrap();
     outbox
-        .execute(&adapter, &job, allocation, confirmation, &guard, &flag)
+        .execute(&adapter, &job, allocation, &guard, &flag)
         .unwrap();
     assert_eq!(state.lock().unwrap().creates, 1);
     let absent = outbox
@@ -240,14 +233,13 @@ fn lost_create_and_stop_replies_restart_absence_and_foreign_identity_never_repla
         .unwrap();
     assert_eq!(owned["handle"]["job_id"], "dlc1");
     assert_eq!(owned["observation"]["state"], "RUNNING");
-    let confirmation = format!("STOP {}", Outbox::slot(&job).unwrap());
     let stopped = outbox
-        .stop(&adapter, &job, allocation, &confirmation, &guard, &flag)
+        .stop(&adapter, &job, allocation, &guard, &flag)
         .unwrap();
     assert_eq!(stopped["termination_verified"], false);
     assert_eq!(state.lock().unwrap().stops, 1);
     outbox
-        .stop(&adapter, &job, allocation, &confirmation, &guard, &flag)
+        .stop(&adapter, &job, allocation, &guard, &flag)
         .unwrap();
     assert_eq!(state.lock().unwrap().stops, 1);
     let verified = outbox
@@ -255,7 +247,7 @@ fn lost_create_and_stop_replies_restart_absence_and_foreign_identity_never_repla
         .unwrap();
     assert_eq!(verified["termination_verified"], true);
     assert_eq!(verified["observation"]["state"], "CANCELLED");
-    let Profile::Pai(mut changed) = profile;
+    let mut changed = profile.pai().clone();
     changed.quota_id = "different-quota".into();
     assert!(
         outbox
@@ -440,18 +432,11 @@ fn owned(outbox: &Outbox, adapter: &Adapter<impl Transport>, state: &Mutex<State
     let (job, profile, _) = setup();
     let allocation = Allocation::Guaranteed;
     let flag = AtomicBool::new(false);
-    let prepared = outbox
+    outbox
         .prepare(&profile, &job, allocation, &|| Ok(()))
         .unwrap();
     outbox
-        .execute(
-            adapter,
-            &job,
-            allocation,
-            prepared["confirmation"].as_str().unwrap(),
-            &|| Ok(()),
-            &flag,
-        )
+        .execute(adapter, &job, allocation, &|| Ok(()), &flag)
         .unwrap();
     state.lock().unwrap().visible = true;
     let found = outbox
@@ -541,4 +526,103 @@ fn an_observation_is_read_unlocked_and_discarded_when_the_entry_changed() {
     assert!(observed["diagnostic"].is_null());
     assert_eq!(observed["observation"]["state"], "RUNNING");
     assert_eq!(state.lock().unwrap().creates, 1);
+}
+/// Entries exactly as production wrote them before Profile matching was removed.
+/// The fixtures keep a real entry's field names, order and null-ness; every value
+/// is a placeholder. The digests below come from the canonical form that the
+/// previous release used, checked against every retained production entry.
+const V1_PAI_ENTRY: &str = include_str!("fixtures/v1_pai_entry.json");
+const V1_SENSECORE_ENTRY: &str = include_str!("fixtures/v1_sensecore_entry.json");
+const V1_PAI_PROFILE: &str = include_str!("fixtures/v1_pai_profile.json");
+const V1_PROFILE_SHA256: &str =
+    "sha256:aa29111ab9fe880ce7aaa28bb70f2c4210234e3f4480eeecfd957c558c1a1bd4";
+const V1_REQUEST_SHA256: &str =
+    "sha256:4b52902136b8813af5e11c0f01d7297ec0ea36d5ba59b0742cdd53750e3f4329";
+const V1_SLOT: &str = "6c1966e173c2719c3f95486e46f45c9e489a5db805ef0eaf42a2141c3871704d.json";
+fn v1_outbox(entry: &str) -> (tempfile::TempDir, Outbox, Job) {
+    let temp = tempfile::tempdir().unwrap();
+    Outbox::initialize(temp.path()).unwrap();
+    let outbox = Outbox::open(temp.path()).unwrap();
+    let value: Value = serde_json::from_str(entry).unwrap();
+    let job: Job = serde_json::from_value(value["job"].clone()).unwrap();
+    assert_eq!(Outbox::slot(&job).unwrap(), V1_SLOT);
+    outbox
+        .directory
+        .publish_new(OsStr::new(V1_SLOT), entry.as_bytes())
+        .unwrap();
+    (temp, outbox, job)
+}
+fn inert_adapter(profile: Profile) -> Adapter<Fake> {
+    Adapter::new(
+        profile,
+        Fake {
+            state: Arc::new(Mutex::new(State::default())),
+            row: Value::Null,
+        },
+    )
+    .unwrap()
+}
+#[test]
+fn v1_entries_written_before_this_release_still_load_validate_and_rewrite_identically() {
+    // The configured profile keeps the derived `{"provider":"pai",...}` form, and
+    // its digest is the one every recorded entry and handle carries.
+    let profile: Profile = serde_json::from_str(V1_PAI_PROFILE).unwrap();
+    let mut written: Value = serde_json::from_str(V1_PAI_PROFILE).unwrap();
+    written["gpu_type"] = Value::Null;
+    written["vpc"] = Value::Null;
+    assert_eq!(serde_json::to_value(&profile).unwrap(), written);
+    assert_eq!(profile.digest().unwrap(), V1_PROFILE_SHA256);
+
+    let (_temp, outbox, job) = v1_outbox(V1_PAI_ENTRY);
+    assert_eq!(job_digest(&job).unwrap(), V1_REQUEST_SHA256);
+    let status = outbox.status(&job).unwrap();
+    assert_eq!(status["phase"], "OWNED");
+    assert_eq!(status["handle"]["job_id"], "dlcfixture0001");
+    assert!(status["handle"]["provider_uid"].is_null());
+    assert_eq!(status["observation"]["state"], "SUCCEEDED");
+    let entry = outbox.load(V1_SLOT).unwrap();
+    let adapter = inert_adapter(profile);
+    outbox
+        .check(&entry, &adapter, &job, Allocation::Guaranteed)
+        .unwrap();
+    entry
+        .handle
+        .as_ref()
+        .unwrap()
+        .validate(&adapter.profile, &job)
+        .unwrap();
+    // A rewrite, as the next observation makes, keeps the bytes and the null uid.
+    assert_eq!(serde_json::to_vec(&entry).unwrap(), V1_PAI_ENTRY.as_bytes());
+    let lock = outbox.lock("test").unwrap();
+    outbox.save(&entry, &lock).unwrap();
+    drop(lock);
+    assert_eq!(
+        outbox
+            .directory
+            .read_regular(OsStr::new(V1_SLOT), 2 * 1024 * 1024)
+            .unwrap(),
+        V1_PAI_ENTRY.as_bytes()
+    );
+}
+#[test]
+fn a_retained_sensecore_entry_still_reads_and_no_pai_profile_accepts_it() {
+    let (_temp, outbox, job) = v1_outbox(V1_SENSECORE_ENTRY);
+    let status = outbox.optional_status(&job).unwrap().unwrap();
+    assert_eq!(status["phase"], "OWNED");
+    assert!(status["handle"]["provider_uid"].is_string());
+    let entry = outbox.load(V1_SLOT).unwrap();
+    assert_eq!(
+        serde_json::to_vec(&entry).unwrap(),
+        V1_SENSECORE_ENTRY.as_bytes()
+    );
+    let adapter = inert_adapter(serde_json::from_str(V1_PAI_PROFILE).unwrap());
+    assert!(
+        outbox
+            .check(&entry, &adapter, &job, Allocation::Guaranteed)
+            .is_err()
+    );
+    // Even under a PAI profile digest, a handle with a uid is not a PAI handle.
+    let mut handle = entry.handle.clone().unwrap();
+    handle.profile_sha256 = adapter.profile.digest().unwrap();
+    assert!(handle.validate(&adapter.profile, &job).is_err());
 }

@@ -3,7 +3,7 @@
 use super::{Client, Error, Result};
 use ml_exp_core::cloud::{self, Job, JobObservation, Page, Request, pai};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{
     collections::BTreeSet,
     sync::{Arc, atomic::AtomicBool},
@@ -30,17 +30,22 @@ impl Transport for Shared {
         (**self).request(request, cancelled)
     }
 }
+/// A backend's provider profile. PAI DLC is the only provider, but the enum
+/// stays: its derived form `{"provider":"pai",...}` is what configurations hold
+/// and what `digest` hashes, so every recorded `profile_sha256` depends on it.
+/// Code reads the PAI profile through `pai()` instead of matching.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "provider", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Profile {
     Pai(pai::Profile),
 }
 impl Profile {
+    pub fn pai(&self) -> &pai::Profile {
+        let Self::Pai(p) = self;
+        p
+    }
     pub fn validate(&self) -> Result<()> {
-        match self {
-            Self::Pai(p) => p.validate(),
-        }
-        .map_err(why!(Error::configuration()))
+        self.pai().validate().map_err(why!(Error::configuration()))
     }
     pub fn digest(&self) -> Result<String> {
         self.validate()?;
@@ -56,7 +61,9 @@ pub struct Handle {
     pub profile_sha256: String,
     pub request_sha256: String,
     pub job_id: String,
-    pub provider_uid: Option<String>,
+    /// Always null for PAI, and written so. Retained SenseCore records carry a
+    /// string here; they still load, and no PAI profile validates them.
+    pub(super) provider_uid: Option<String>,
 }
 pub fn job_digest(job: &Job) -> Result<String> {
     job.validate().map_err(why!(Error::evidence()))?;
@@ -70,15 +77,9 @@ impl Handle {
         if self.profile_sha256 != profile.digest()?
             || self.request_sha256 != job_digest(job)?
             || cloud::component(&self.job_id).is_err()
+            || self.provider_uid.is_some()
         {
             return Err(Error::evidence());
-        }
-        match profile {
-            Profile::Pai(_) => {
-                if self.provider_uid.is_some() {
-                    return Err(Error::evidence());
-                }
-            }
         }
         Ok(())
     }
@@ -100,26 +101,22 @@ impl<T: Transport> Adapter<T> {
             .request(&request.map_err(why!(Error::configuration()))?, cancelled)
     }
     fn handle(&self, job: &Job, row: &Value) -> Result<Handle> {
-        let (observation, uid) = match &self.profile {
-            Profile::Pai(p) => (
-                p.validate_job(row, job, None)
-                    .map_err(why!(Error::evidence()))?,
-                None,
-            ),
-        };
+        let observation = self
+            .profile
+            .pai()
+            .validate_job(row, job, None)
+            .map_err(why!(Error::evidence()))?;
         let handle = Handle {
             profile_sha256: self.profile.digest()?,
             request_sha256: job_digest(job)?,
             job_id: observation.job_id,
-            provider_uid: uid,
+            provider_uid: None,
         };
         handle.validate(&self.profile, job)?;
         Ok(handle)
     }
     fn raw_job(&self, id: &str, cancelled: &AtomicBool) -> Result<Value> {
-        match &self.profile {
-            Profile::Pai(p) => self.call(p.get(id), cancelled),
-        }
+        self.call(self.profile.pai().get(id), cancelled)
     }
     /// The caller must durably reserve its submit effect before this method.
     /// The native outbox provides that boundary; no HTTP route calls it directly.
@@ -129,13 +126,12 @@ impl<T: Transport> Adapter<T> {
         allocation: pai::Allocation,
         cancelled: &AtomicBool,
     ) -> Result<Handle> {
-        let response = match &self.profile {
-            Profile::Pai(p) => self.call(p.create(job, allocation), cancelled)?,
-        };
-        let id = match &self.profile {
-            Profile::Pai(_) => response["JobId"].as_str(),
-        };
-        let id = id
+        let response = self.call(
+            self.profile.pai().create_request(job, allocation),
+            cancelled,
+        )?;
+        let id = response["JobId"]
+            .as_str()
             .filter(|id| cloud::component(id).is_ok())
             .ok_or_else(|| Error {
                 code: "CLOUD_CREATE_UNCONFIRMED".into(),
@@ -169,22 +165,19 @@ impl<T: Transport> Adapter<T> {
     ) -> Result<JobObservation> {
         handle.validate(&self.profile, job)?;
         let row = self.raw_job(&handle.job_id, cancelled)?;
-        match &self.profile {
-            Profile::Pai(p) => {
-                let mut observation = p
-                    .validate_job(&row, job, Some(&handle.job_id))
-                    .map_err(why!(Error::evidence()))?;
-                if observation.state == ml_exp_core::state::RunState::Queued {
-                    // A separate diagnostic failure cannot erase a known job.
-                    if let Ok(queue) = self.call(p.queue(&handle.job_id), cancelled) {
-                        if let Ok(diagnostic) = p.validate_queue(&queue, &handle.job_id) {
-                            observation.queue = diagnostic;
-                        }
-                    }
+        let p = self.profile.pai();
+        let mut observation = p
+            .validate_job(&row, job, Some(&handle.job_id))
+            .map_err(why!(Error::evidence()))?;
+        if observation.state == ml_exp_core::state::RunState::Queued {
+            // A separate diagnostic failure cannot erase a known job.
+            if let Ok(queue) = self.call(p.queue(&handle.job_id), cancelled) {
+                if let Ok(diagnostic) = p.validate_queue(&queue, &handle.job_id) {
+                    observation.queue = diagnostic;
                 }
-                Ok(observation)
             }
         }
+        Ok(observation)
     }
     /// Positive absence requires complete, stable and duplicate-free pages.
     /// A failure remains an error, never `None` or permission to submit again.
@@ -199,14 +192,9 @@ impl<T: Transport> Adapter<T> {
             if !tokens.insert(token.clone()) {
                 return Err(Error::evidence());
             }
-            let page = match &self.profile {
-                Profile::Pai(p) => {
-                    let page = token.parse().map_err(why!(Error::evidence()))?;
-                    let value = self.call(p.list(job, page), cancelled)?;
-                    Page::pai(&value, "Jobs", page, 100)
-                }
-            }
-            .map_err(why!(Error::evidence()))?;
+            let number = token.parse().map_err(why!(Error::evidence()))?;
+            let value = self.call(self.profile.pai().list(job, number), cancelled)?;
+            let page = Page::pai(&value, "Jobs", number, 100).map_err(why!(Error::evidence()))?;
             if total.is_some_and(|previous| page.total != Some(previous)) {
                 return Err(Error::evidence());
             }
@@ -244,79 +232,12 @@ impl<T: Transport> Adapter<T> {
         if observation.state.is_terminal() {
             return Ok(observation);
         }
-        match &self.profile {
-            Profile::Pai(p) => self.call(p.stop(&handle.job_id), cancelled)?,
-        };
+        self.call(self.profile.pai().stop(&handle.job_id), cancelled)?;
         // A successful POST is not proof of termination.
         self.observe(job, handle, cancelled).map_err(|mut e| {
             e.uncertain = true;
             e
         })
     }
-    pub fn pai_quota(&self, cancelled: &AtomicBool) -> Result<Value> {
-        let Profile::Pai(p) = &self.profile;
-        let value = self.call(p.quota(), cancelled)?;
-        let quota = value.get("Quota").unwrap_or(&value);
-        if quota["QuotaId"] != p.quota_id {
-            return Err(Error::evidence());
-        }
-        Ok(quota.clone())
-    }
-    pub fn pai_diagnostic_logs(
-        &self,
-        job: &Job,
-        handle: &Handle,
-        cancelled: &AtomicBool,
-    ) -> Result<Value> {
-        handle.validate(&self.profile, job)?;
-        let Profile::Pai(p) = &self.profile;
-        let value = self.raw_job(&handle.job_id, cancelled)?;
-        p.validate_job(&value, job, Some(&handle.job_id))
-            .map_err(why!(Error::evidence()))?;
-        let pods = value["Pods"].as_array().ok_or_else(Error::evidence)?;
-        let mut logs = Vec::new();
-        for pod in pods {
-            let id = pod["PodId"].as_str().ok_or_else(Error::evidence)?;
-            logs.push(self.call(p.pod_logs(&handle.job_id, id, 100), cancelled)?);
-        }
-        Ok(Value::Array(logs))
-    }
-    /// Read-only provider account of one job. A failed logs or events read
-    /// stays beside the job's state instead of hiding it.
-    pub fn pai_provider_diagnostics(
-        &self,
-        job: &Job,
-        handle: &Handle,
-        lines: u32,
-        cancelled: &AtomicBool,
-    ) -> Result<Value> {
-        handle.validate(&self.profile, job)?;
-        let Profile::Pai(p) = &self.profile;
-        let row = self.raw_job(&handle.job_id, cancelled)?;
-        p.validate_job(&row, job, Some(&handle.job_id))
-            .map_err(why!(Error::evidence()))?;
-        let failure = |error: Error| json!({"code":error.code,"http_status":error.http_status});
-        let all = row["Pods"].as_array().cloned().unwrap_or_default();
-        let mut pods = Vec::new();
-        for pod in all.iter().take(4) {
-            let mut view = pai::diagnostic_pod(pod);
-            let id = pod["PodId"].as_str().ok_or_else(Error::evidence)?;
-            match self.call(p.pod_logs(&handle.job_id, id, lines), cancelled) {
-                Ok(value) => {
-                    view["logs"] = json!(pai::diagnostic_tail(&value["Logs"], lines as usize))
-                }
-                Err(error) => view["logs_error"] = failure(error),
-            }
-            pods.push(view);
-        }
-        let mut result = pai::diagnostic_job(&row);
-        result["job_id"] = json!(handle.job_id);
-        result["pods"] = json!(pods);
-        result["pods_total"] = json!(all.len());
-        match self.call(p.job_events(&handle.job_id), cancelled) {
-            Ok(value) => result["events"] = json!(pai::diagnostic_tail(&value["Events"], 100)),
-            Err(error) => result["events_error"] = failure(error),
-        }
-        Ok(experiment_redact::redact_json(result))
-    }
 }
+mod diagnostics;
