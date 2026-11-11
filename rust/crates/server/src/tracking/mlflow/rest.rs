@@ -33,7 +33,9 @@ impl Client {
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())
-            .connect_timeout(Duration::from_secs(5))
+            // The Tokyo-Shenzhen link drops SYNs; retransmits take 1 s and 3 s,
+            // so a 5 s limit failed several connects an hour.
+            .connect_timeout(Duration::from_secs(15))
             // uvicorn closes an idle keep-alive connection after 5 s; reusing one it
             // has just closed fails with "connection closed before message completed".
             .pool_idle_timeout(Duration::from_secs(3))
