@@ -70,10 +70,15 @@ pub struct RestorePlan {
 }
 
 /// An explicit choice in the same Project; neither "latest" nor a free path.
+///
+/// A request may leave `attempt_id` out: the checkpoint identity already names its
+/// Attempt, so the server fills it from the registry before anything is frozen.
+/// Every stored reference is resolved, so it serializes exactly as before.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Reference {
     pub run_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub attempt_id: String,
     pub checkpoint_id: String,
 }
@@ -83,6 +88,20 @@ impl Reference {
         identity::validate_attempt(&self.attempt_id).map_err(|_| Error::Identity)?;
         validate_checkpoint_id(&self.checkpoint_id)?;
         Ok(())
+    }
+    /// Whether the server still has to fill the Attempt from the registry.
+    pub fn unresolved(&self) -> bool {
+        self.attempt_id.is_empty()
+    }
+    /// Validate a reference as received, whose Attempt may be left to the server.
+    /// Every use of a reference validates it again with [`Reference::validate`].
+    pub fn validate_received(&self) -> Result<()> {
+        if self.unresolved() {
+            identity::validate_id(&self.run_id).map_err(|_| Error::Identity)?;
+            validate_checkpoint_id(&self.checkpoint_id)?;
+            return Ok(());
+        }
+        self.validate()
     }
 }
 
@@ -448,6 +467,34 @@ mod tests {
                 {"path":"checkpoints/step-0042/optimizer.bin","bytes":3,"sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}
             ]
         })
+    }
+
+    #[test]
+    fn a_reference_without_its_attempt_is_received_but_never_valid_to_use() {
+        let id = format!("checkpoint.{}", "e".repeat(64));
+        let received: Reference =
+            serde_json::from_value(json!({"run_id":"trial","checkpoint_id":id})).unwrap();
+        assert!(received.unresolved());
+        received.validate_received().unwrap();
+        assert!(received.validate().is_err());
+        assert_eq!(
+            serde_json::to_value(&received).unwrap(),
+            json!({"run_id":"trial","checkpoint_id":id})
+        );
+        let resolved = Reference {
+            attempt_id: "attempt-001".into(),
+            ..received
+        };
+        resolved.validate().unwrap();
+        assert_eq!(
+            serde_json::to_value(&resolved).unwrap(),
+            json!({"run_id":"trial","attempt_id":"attempt-001","checkpoint_id":id})
+        );
+        let bad = Reference {
+            attempt_id: "attempt-1".into(),
+            ..resolved
+        };
+        assert!(bad.validate_received().is_err());
     }
 
     #[test]

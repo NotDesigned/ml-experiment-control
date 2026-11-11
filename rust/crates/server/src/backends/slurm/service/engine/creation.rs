@@ -36,10 +36,21 @@ impl Service {
         }
         Ok(self)
     }
-    pub fn create_run(&self, project: &str, request: Request, now: &str) -> Result<Value> {
+    pub fn create_run(&self, project: &str, mut request: Request, now: &str) -> Result<Value> {
         let _admission = crate::administration::authorship_guard(&self.settings.registry_root)
             .map_err(why!(Error::Authority))?;
         request.validate(project)?;
+        // The Run freezes the reference with its Attempt, whether or not it was given.
+        let resolved = match request.resume_from.as_mut() {
+            Some(reference) => {
+                crate::checkpoints::resolve(&self.settings.registry_root, project, reference)
+                    .map_err(why!(Error::CheckpointConflict))?
+            }
+            None => true,
+        };
+        if !resolved {
+            return Err(Error::CheckpointMissing);
+        }
         let root = self
             .creation_roots
             .get(project)

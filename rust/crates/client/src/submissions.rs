@@ -4,6 +4,9 @@ use crate::{Client, Error, session};
 use ml_exp_core::{identity, operations::validate_action_id};
 use serde_json::{Value, json};
 
+/// The server fills in an Attempt a request leaves out; the same name as the server's.
+pub const RUN_CENTRIC: &str = "run-centric-attempts.v1";
+
 pub enum Command<'a> {
     Renew {
         submission: &'a str,
@@ -76,10 +79,11 @@ pub enum Command<'a> {
     Checkpoint {
         submission: &'a str,
     },
+    /// Without an Attempt: the Run's current one, or the one holding `checkpoint`.
     Checkpoints {
         project: &'a str,
         run: &'a str,
-        attempt: &'a str,
+        attempt: Option<&'a str>,
         checkpoint: Option<&'a str>,
     },
     Reconcile {
@@ -105,22 +109,22 @@ enum Expected {
         project: String,
         run: String,
     },
+    /// A request that left its Attempt out is checked once the answer names it.
     Retry {
         parent: String,
         request: ml_exp_core::first_submission::native::retry::Request,
-        request_sha256: String,
     },
     Checkpoints {
         project: String,
         run: String,
-        attempt: String,
+        attempt: Option<String>,
         checkpoint: Option<String>,
     },
     Creation {
         project: String,
         run: String,
         runtime: String,
-        request_sha256: String,
+        request: Box<ml_exp_core::first_submission::native::creation::Request>,
     },
     Run {
         project: String,
@@ -288,14 +292,15 @@ pub fn plan(command: Command<'_>) -> Result<Plan, Error> {
         request,
     } = &command
     {
-        let request_sha256 = request.identity(submission).map_err(|_| invalid())?;
+        request
+            .validate_received(submission)
+            .map_err(|_| invalid())?;
         return Ok(Plan {
             path: format!("/api/submissions/{submission}/retry"),
             body: Some(serde_json::to_vec(request).map_err(|_| invalid())?),
             expected: Expected::Retry {
                 parent: (*submission).into(),
                 request: (*request).clone(),
-                request_sha256,
             },
             executes: false,
             refreshes: false,
@@ -311,20 +316,25 @@ pub fn plan(command: Command<'_>) -> Result<Plan, Error> {
     {
         identity::validate_id(project).map_err(|_| invalid())?;
         identity::validate_id(run).map_err(|_| invalid())?;
-        identity::validate_attempt(attempt).map_err(|_| invalid())?;
+        if let Some(attempt) = attempt {
+            identity::validate_attempt(attempt).map_err(|_| invalid())?;
+        }
         if let Some(id) = checkpoint {
             ml_exp_core::checkpoints::validate_checkpoint_id(id).map_err(|_| invalid())?;
         }
         return Ok(Plan {
             path: format!(
-                "/api/runs/{project}/{run}/attempts/{attempt}/checkpoints{}",
+                "/api/runs/{project}/{run}{}/checkpoints{}",
+                attempt
+                    .map(|attempt| format!("/attempts/{attempt}"))
+                    .unwrap_or_default(),
                 checkpoint.map(|id| format!("/{id}")).unwrap_or_default()
             ),
             body: None,
             expected: Expected::Checkpoints {
                 project: (*project).into(),
                 run: (*run).into(),
-                attempt: (*attempt).into(),
+                attempt: attempt.map(str::to_owned),
                 checkpoint: checkpoint.map(str::to_owned),
             },
             executes: false,
@@ -333,7 +343,7 @@ pub fn plan(command: Command<'_>) -> Result<Plan, Error> {
         });
     }
     if let Command::Create { project, request } = &command {
-        let request_sha256 = request
+        request
             .identity(project)
             .map_err(|_| Error::Observation("invalid Run creation request; no request sent"))?;
         return Ok(Plan {
@@ -343,7 +353,7 @@ pub fn plan(command: Command<'_>) -> Result<Plan, Error> {
                 project: (*project).into(),
                 run: request.run_id.clone(),
                 runtime: request.runtime_id.clone(),
-                request_sha256,
+                request: Box::new((*request).clone()),
             },
             executes: false,
             refreshes,
@@ -478,6 +488,72 @@ pub fn diagnostic_response(value: Value, lineage: &Value) -> Result<Value, Error
     }
     Ok(value)
 }
+/// The reference a request left its Attempt out of, as the answer says it was frozen:
+/// the same Run and checkpoint with a valid Attempt. A named Attempt stays as it was.
+fn resolved_reference(
+    sent: &ml_exp_core::checkpoints::Reference,
+    frozen: &Value,
+) -> Result<ml_exp_core::checkpoints::Reference, Error> {
+    if !sent.unresolved() {
+        return Ok(sent.clone());
+    }
+    let attempt = frozen["attempt_id"].as_str().ok_or(Error::Response)?;
+    if frozen["run_id"] != sent.run_id.as_str()
+        || frozen["checkpoint_id"] != sent.checkpoint_id.as_str()
+        || identity::validate_attempt(attempt).is_err()
+    {
+        return Err(Error::Response);
+    }
+    Ok(ml_exp_core::checkpoints::Reference {
+        attempt_id: attempt.into(),
+        ..sent.clone()
+    })
+}
+fn resolved_retry(
+    sent: &ml_exp_core::first_submission::native::retry::Request,
+    value: &Value,
+) -> Result<ml_exp_core::first_submission::native::retry::Request, Error> {
+    let mut request = sent.clone();
+    if let Some(reference) = &sent.resume_from {
+        request.resume_from = Some(resolved_reference(reference, &value["resume_from"])?);
+    }
+    if let Some(start) = request
+        .restart_from
+        .as_mut()
+        .filter(|start| start.attempt_id.is_empty())
+    {
+        if value["restart_from"]["run_id"] != start.run_id.as_str() {
+            return Err(Error::Response);
+        }
+        start.attempt_id = value["restart_from"]["attempt_id"]
+            .as_str()
+            .ok_or(Error::Response)?
+            .into();
+    }
+    Ok(request)
+}
+fn resolved_creation(
+    sent: &ml_exp_core::first_submission::native::creation::Request,
+    value: &Value,
+) -> Result<ml_exp_core::first_submission::native::creation::Request, Error> {
+    let mut request = sent.clone();
+    if let Some(reference) = &sent.resume_from {
+        request.resume_from = Some(resolved_reference(reference, &value["resume_from"])?);
+    }
+    Ok(request)
+}
+/// Whether the plan leaves an Attempt for the server to choose.
+fn leaves_attempt(plan: &Plan) -> bool {
+    match &plan.expected {
+        Expected::Checkpoints { attempt, .. } => attempt.is_none(),
+        Expected::Retry { request, .. } => request.unresolved(),
+        Expected::Creation { request, .. } => request
+            .resume_from
+            .as_ref()
+            .is_some_and(ml_exp_core::checkpoints::Reference::unresolved),
+        _ => false,
+    }
+}
 pub fn response(plan: &Plan, value: Value) -> Result<Value, Error> {
     if let Expected::Diagnostic(lineage) = &plan.expected {
         return diagnostic_response(value, lineage);
@@ -544,19 +620,16 @@ pub fn response(plan: &Plan, value: Value) -> Result<Value, Error> {
         }
         return Ok(value);
     }
-    if let Expected::Retry {
-        parent,
-        request,
-        request_sha256,
-    } = &plan.expected
-    {
+    if let Expected::Retry { parent, request } = &plan.expected {
+        let request = resolved_retry(request, &value)?;
+        let request_sha256 = request.identity(parent).map_err(|_| Error::Response)?;
         let (run, attempt) = request.parent().map_err(|_| Error::Response)?;
         let next = ml_exp_core::first_submission::native::retry::next(attempt)
             .map_err(|_| Error::Response)?;
         if value["parent_submission_id"] != *parent
             || value["run_id"] != run
             || value["attempt_id"] != next
-            || value["request_sha256"] != *request_sha256
+            || value["request_sha256"] != request_sha256
             || value["resume_from"] != json!(request.resume_from)
             || value["restart_from"] != json!(request.restart_from)
             || value["max_gpu_hours"] != request.max_gpu_hours
@@ -585,9 +658,13 @@ pub fn response(plan: &Plan, value: Value) -> Result<Value, Error> {
         checkpoint,
     } = &plan.expected
     {
-        if value["project"] != *project
-            || value["run_id"] != *run
-            || value["attempt_id"] != *attempt
+        // Named by the Run alone, the answer names the Attempt the server chose.
+        let attempt = match attempt {
+            Some(attempt) => attempt.as_str(),
+            None => value["attempt_id"].as_str().ok_or(Error::Response)?,
+        };
+        identity::validate_attempt(attempt).map_err(|_| Error::Response)?;
+        if value["project"] != *project || value["run_id"] != *run || value["attempt_id"] != attempt
         {
             return Err(Error::Response);
         }
@@ -629,9 +706,12 @@ pub fn response(plan: &Plan, value: Value) -> Result<Value, Error> {
         project,
         run,
         runtime,
-        request_sha256,
+        request,
     } = &plan.expected
     {
+        let request_sha256 = resolved_creation(request, &value)?
+            .identity(project)
+            .map_err(|_| Error::Response)?;
         if value["project"] != *project
             || value["run_id"] != *run
             || value["attempt_id"] != "attempt-001"
@@ -639,7 +719,7 @@ pub fn response(plan: &Plan, value: Value) -> Result<Value, Error> {
             || value["source_id"]
                 .as_str()
                 .is_none_or(|id| ml_exp_core::sources::validate_source_id(id).is_err())
-            || value["request_sha256"] != *request_sha256
+            || value["request_sha256"] != request_sha256
             || value["creation_state"] != "CREATED"
             || value["scheduler_mutation_performed"] != false
             || !value["reused"].is_boolean()
@@ -790,6 +870,15 @@ pub fn execute(client: &Client, plan: &Plan, health: &Value) -> Result<Value, Er
     {
         return Err(Error::Observation(
             "daemon has not enabled this native submission operation; no request sent",
+        ));
+    }
+    if leaves_attempt(plan)
+        && !health["capabilities"]
+            .as_array()
+            .is_some_and(|caps| caps.iter().any(|v| v == RUN_CENTRIC))
+    {
+        return Err(Error::Observation(
+            "this server cannot choose the Attempt; name it with --attempt or its attempt_id; no request sent",
         ));
     }
     client

@@ -16,11 +16,25 @@ impl Service {
     ) -> Result<Value> {
         let _admission = crate::administration::authorship_guard(&self.settings.registry_root)
             .map_err(why!(Error::Authority))?;
-        request.validate(action)?;
+        request.validate_received(action)?;
         let _lock = self.lock()?;
         let parent = self.load(action)?;
         let project = &parent.binding.project;
         let run = &parent.binding.run_id;
+        // A left-out Attempt is filled in first, so what is hashed and frozen is the
+        // same request that names it.
+        let mut request = request;
+        if !crate::checkpoints::resolve_retry(
+            &self.settings.registry_root,
+            project,
+            &parent.binding.attempt_id,
+            &mut request,
+        )
+        .map_err(why!(Error::CheckpointConflict))?
+        {
+            return Err(Error::CheckpointMissing);
+        }
+        request.validate(action)?;
         if request.parent()? != (run.as_str(), parent.binding.attempt_id.as_str()) {
             return Err(Error::Conflict);
         }
@@ -196,7 +210,7 @@ impl Service {
             json!({"project":project,"run_id":run,"attempt_id":next,"parent_submission_id":action,
             "retry_state":"CREATED","reused":exists,"request_sha256":request.identity(action)?,
             "run_sha256":binding.run_sha256,"attempt_sha256":binding.attempt_sha256,
-            "resume_from":request.resume_from,"reserved_gpu_seconds":attempt["native_retry"]["reserved_gpu_seconds"],
+            "resume_from":request.resume_from,"restart_from":request.restart_from,"reserved_gpu_seconds":attempt["native_retry"]["reserved_gpu_seconds"],
             "max_gpu_hours":request.max_gpu_hours,"scheduler_mutation_performed":false,"next_action":"PREPARE_NEW_ACTION"}),
         )
     }

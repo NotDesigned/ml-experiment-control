@@ -56,12 +56,14 @@ the retired Python service and its documentation.
 code + Dockerfile → immutable Runtime image
 local data / backend download → verified backend storage
                            ↓
-Runtime + inputs + command + resources → Run → Submission → Attempt
-                                                        ↓
-                          progress, metrics, checkpoints, verified results
+Runtime + inputs + command + resources → Run → Submission
+                                              ↓
+                   progress, metrics, checkpoints, verified results
 ```
 
-A Run freezes the experiment definition; each execution is a separate Attempt.
+A Run freezes the experiment definition, and every command acts on a Run.
+A retried Run keeps its earlier executions; see
+[recovery](docs/recovery.md#cancel-or-retry-an-exact-attempt).
 Training and evaluation use the same mechanism. Experiment code defines metric
 meaning, checkpoint contents, recovery and model selection. The platform handles
 preparation, scheduling requests, evidence, transfer and result verification.

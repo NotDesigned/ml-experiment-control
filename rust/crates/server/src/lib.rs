@@ -151,6 +151,9 @@ async fn guard(State(state): State<Arc<AppState>>, request: Request, next: Next)
     next.run(request).await
 }
 
+/// Checkpoint reads by Run alone, and checkpoint references and retries whose
+/// Attempt the server fills in. A client leaves the Attempt out only when this is listed.
+pub const RUN_CENTRIC: &str = "run-centric-attempts.v1";
 fn health_document(
     projects: usize,
     workspace_id: &str,
@@ -172,6 +175,7 @@ fn health_document(
         capabilities.push("execution-progress.v1");
         capabilities.push("native-checkpoints.v1");
         capabilities.push("checkpoint-record-read.v1");
+        capabilities.push(RUN_CENTRIC);
         capabilities.push("native-artifacts.v1");
         capabilities.push("native-cancellation.v1");
         capabilities.push("native-metric-history.v1");
@@ -226,6 +230,7 @@ async fn health(State(state): State<Arc<AppState>>) -> Response {
                 "native-cancellation.v1",
                 "native-scheduler-observation.v1",
                 "checkpoint-record-read.v1",
+                RUN_CENTRIC,
             ]);
             if cloud.can_create_runs() {
                 enabled.extend(["native-run-creation.v1", "native-attempt-retry.v1"]);
@@ -423,6 +428,24 @@ fn schema_document() -> serde_json::Value {
             checkpoint_parameters.clone(),
         ),
     );
+    paths.insert(
+        "/api/runs/{project}/{run}/checkpoints".into(),
+        operation(
+            "Read the registered checkpoint metadata of the Run's current Attempt; the answer names that Attempt",
+            vec![parameter("project"), parameter("run")],
+        ),
+    );
+    paths.insert(
+        "/api/runs/{project}/{run}/checkpoints/{checkpoint}".into(),
+        operation(
+            "Read one exact registered checkpoint of the Run in whichever Attempt registered it; the answer names that Attempt",
+            vec![
+                parameter("project"),
+                parameter("run"),
+                json!({"name":"checkpoint","in":"path","required":true,"schema":{"type":"string","pattern":"^checkpoint[.][0-9a-f]{64}$"}}),
+            ],
+        ),
+    );
     let mut checkpoint = checkpoint_parameters;
     checkpoint.push(json!({"name":"checkpoint","in":"path","required":true,"schema":{"type":"string","pattern":"^checkpoint[.][0-9a-f]{64}$"}}));
     paths.insert(
@@ -533,7 +556,7 @@ fn schema_document() -> serde_json::Value {
         (
             "retry",
             "Append a new Attempt from an explicit checkpoint or full restart after exact terminal scheduler evidence; never submits",
-            json!({"type":"object","additionalProperties":false,"oneOf":[{"required":["resume_from"]},{"required":["restart_from"]}],"properties":{"confirmation":{"type":"string","default":""},"max_gpu_hours":{"type":"number","default":0},"reason":{"type":"string"},"restart_from":{"type":"object","additionalProperties":false,"required":["run_id","attempt_id"],"properties":{"run_id":{"type":"string"},"attempt_id":{"type":"string"}}},"resume_from":{"type":"object","additionalProperties":false,"required":["run_id","attempt_id","checkpoint_id"],"properties":{"run_id":{"type":"string"},"attempt_id":{"type":"string"},"checkpoint_id":{"type":"string"}}}}}),
+            json!({"type":"object","additionalProperties":false,"oneOf":[{"required":["resume_from"]},{"required":["restart_from"]}],"properties":{"confirmation":{"type":"string","default":""},"max_gpu_hours":{"type":"number","default":0},"reason":{"type":"string"},"restart_from":{"type":"object","additionalProperties":false,"required":["run_id"],"properties":{"run_id":{"type":"string"},"attempt_id":{"type":"string","description":"Optional: the retried Attempt"}}},"resume_from":{"type":"object","additionalProperties":false,"required":["run_id","checkpoint_id"],"properties":{"run_id":{"type":"string"},"attempt_id":{"type":"string","description":"Optional: the server fills in the Attempt that registered checkpoint_id and freezes it; given, it must be that Attempt"},"checkpoint_id":{"type":"string"}}}}}),
         ),
         (
             "cancel",

@@ -63,20 +63,25 @@ independent server read of backend storage. The platform exports acknowledged re
 and restore provenance in `checkpoints.json`.
 
 ```bash
-ml-exp run checkpoints --project my-study --run training --attempt attempt-001
+ml-exp run checkpoints --project my-study --run training
+ml-exp run checkpoints --project my-study --run training --checkpoint CHECKPOINT_ID
 ```
 
-Queries: `GET /api/runs/P/R/attempts/A/checkpoints` and `/checkpoints/CHECKPOINT_ID`.
-Create a **new Run** with its exact reference:
+Queries: `GET /api/runs/P/R/checkpoints` and `/checkpoints/CHECKPOINT_ID`; `--json`
+returns the documents unchanged. Create a **new Run** with its exact reference:
 
 ```json
 {
   "resume_from": {
-    "run_id":"training", "attempt_id":"attempt-001",
+    "run_id":"training",
     "checkpoint_id":"checkpoint.ACTUAL_64_HEX_HASH"
   }
 }
 ```
+
+The server freezes the reference together with the execution that registered the
+checkpoint, so the new Run is the same as one created with that `attempt_id` given;
+a given `attempt_id` must be that one.
 
 The worker rehashes the
 actual generation before training and exposes it through RESUME_DIR. On PAI DLC,
@@ -88,16 +93,16 @@ GPU profiles may differ when storage is shared, but Slurm and DLC
 are different scopes. DLC scope also binds the approved user and storage
 endpoint. Cross-backend use requires explicit state export/data asset delivery.
 
-The initial `resume_from` is frozen in the Run. Native cloud retry can explicitly
-select a checkpoint produced by a terminal Attempt of that same Run:
+The initial `resume_from` is frozen in the Run. A retry can explicitly select a
+checkpoint the Run registered before it stopped:
 
 ```bash
-ml-exp run retry ACTION --run training --attempt attempt-001 \
-  --checkpoint checkpoint.ACTUAL_64_HEX_HASH --max-gpu-hours 0.5
+ml-exp retry --run training --checkpoint checkpoint.ACTUAL_64_HEX_HASH
 ```
 
-This creates the next Attempt with its selected restore reference, leaving the
-original Run and Attempt unchanged. It does not submit training or choose the
+This continues the same Run from that checkpoint as a new
+[Attempt](recovery.md#cancel-or-retry-an-exact-attempt), leaving what was already
+recorded unchanged. It does not submit training or choose the
 latest checkpoint automatically. The parent can have completed successfully;
 its checkpoint must match the same source, image and storage scope. Changed
 scientific configuration requires a new Run. See [recovery](recovery.md).

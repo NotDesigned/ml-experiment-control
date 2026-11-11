@@ -1604,6 +1604,32 @@ fn backend_checkpoint_registration_and_explicit_new_run_restore_are_scoped_and_i
         service.create_run("demo", request.clone(), NOW).unwrap()["reused"],
         true
     );
+    // Named by the Run alone, the checkpoint resolves to the same frozen reference,
+    // so the same Run is found with the same request identity.
+    let mut run_only = request.clone();
+    run_only.resume_from.as_mut().unwrap().attempt_id = String::new();
+    let again = service.create_run("demo", run_only, NOW).unwrap();
+    assert_eq!(again["reused"], true);
+    assert_eq!(again["request_sha256"], created["request_sha256"]);
+    assert_eq!(again["run_sha256"], created["run_sha256"]);
+    assert_eq!(again["resume_from"], json!(request.resume_from));
+    // A named Attempt that did not register the checkpoint is refused.
+    let mut wrong = request.clone();
+    wrong.run_id = "created-wrong".into();
+    wrong.resume_from.as_mut().unwrap().attempt_id = "attempt-002".into();
+    assert!(service.create_run("demo", wrong, NOW).is_err());
+    assert_eq!(
+        service
+            .run_checkpoints("demo", "train", Some(checkpoint_id))
+            .unwrap(),
+        document
+    );
+    assert_eq!(
+        service.run_checkpoints("demo", "train", None).unwrap(),
+        service
+            .checkpoints("demo", "train", "attempt-001", None)
+            .unwrap()
+    );
     let value: Value = serde_json::from_slice(
         &fs::read(f.root.path().join("project/runs/created/manifest.json")).unwrap(),
     )

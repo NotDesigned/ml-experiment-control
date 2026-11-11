@@ -234,7 +234,7 @@ check the new Run, then delete the old one yourself in W&B.
 
 ```bash
 printf 'loss/old\neval/old_accuracy\n' > names.txt
-ml-exp run rebuild-wandb --project demo --run train --attempt attempt-001 \
+ml-exp run rebuild-wandb --project demo --run train \
   --exclude-names names.txt --confirmation 'REBUILD demo/train/attempt-001'
 ```
 

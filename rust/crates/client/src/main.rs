@@ -572,8 +572,9 @@ enum Run {
         confirmation: String,
         #[arg(long)]
         run: String,
+        /// The submission's Attempt unless given; a checkpoint names its own.
         #[arg(long)]
-        attempt: String,
+        attempt: Option<String>,
         #[arg(
             long,
             required_unless_present = "from_start",
@@ -672,8 +673,10 @@ enum Run {
         project: String,
         #[arg(long)]
         run: String,
-        #[arg(long, default_value = "attempt-001")]
-        attempt: String,
+        /// The Run's current Attempt unless given; with --checkpoint, the Attempt that
+        /// registered it.
+        #[arg(long)]
+        attempt: Option<String>,
         #[arg(long)]
         checkpoint: Option<String>,
     },
@@ -853,7 +856,7 @@ impl Run {
             } => submissions::Command::Checkpoints {
                 project,
                 run,
-                attempt,
+                attempt: attempt.as_deref(),
                 checkpoint: checkpoint.as_deref(),
             },
             _ => return Ok(None),
@@ -893,7 +896,11 @@ fn chosen(
     }
 }
 /// The short commands are the `run` commands, with the latest submission filled in.
-fn expand(command: Command, config: &std::path::Path) -> Result<Command, ml_exp_client::Error> {
+/// `ml-exp results` also returns the Run it acts on, which its summary leads with.
+fn expand(
+    command: Command,
+    config: &std::path::Path,
+) -> Result<(Command, Option<(String, String)>), ml_exp_client::Error> {
     let directory = submissions_directory(config);
     let unnamed = |target: &Target| {
         target.state.is_none() && target.project.is_none() && target.run.is_none()
@@ -906,94 +913,111 @@ fn expand(command: Command, config: &std::path::Path) -> Result<Command, ml_exp_
         }
         Ok(())
     };
-    Ok(match command {
-        Command::Status {
-            mut target,
-            details,
-            watch,
-            seconds,
-        } => {
-            // A submit that has not sent a job yet has only its preparation to show.
-            if unnamed(&target) {
-                let latest = ml_exp_client::submit::latest(&directory)?;
-                if latest.submission_id.is_none() {
-                    return Ok(Command::Run {
-                        command: Run::Preparation {
-                            project: latest.project,
-                            run: latest.run_id,
-                        },
-                    });
+    Ok((
+        match command {
+            Command::Status {
+                mut target,
+                details,
+                watch,
+                seconds,
+            } => {
+                // A submit that has not sent a job yet has only its preparation to show.
+                if unnamed(&target) {
+                    let latest = ml_exp_client::submit::latest(&directory)?;
+                    if latest.submission_id.is_none() {
+                        return Ok((
+                            Command::Run {
+                                command: Run::Preparation {
+                                    project: latest.project,
+                                    run: latest.run_id,
+                                },
+                            },
+                            None,
+                        ));
+                    }
+                }
+                fill(&mut target)?;
+                Command::Run {
+                    command: Run::Status {
+                        target,
+                        details,
+                        watch,
+                        seconds,
+                    },
                 }
             }
-            fill(&mut target)?;
-            Command::Run {
-                command: Run::Status {
-                    target,
-                    details,
-                    watch,
-                    seconds,
-                },
-            }
-        }
-        Command::Logs {
-            mut target,
-            stream,
-            lines,
-        } => {
-            if unnamed(&target)
-                && ml_exp_client::submit::latest(&directory)?
-                    .submission_id
-                    .is_none()
-            {
-                return Err(ml_exp_client::Error::Observation(
-                    "the latest submission has not sent a job, so it has no logs; \
+            Command::Logs {
+                mut target,
+                stream,
+                lines,
+            } => {
+                if unnamed(&target)
+                    && ml_exp_client::submit::latest(&directory)?
+                        .submission_id
+                        .is_none()
+                {
+                    return Err(ml_exp_client::Error::Observation(
+                        "the latest submission has not sent a job, so it has no logs; \
                      `ml-exp status` shows its preparation",
+                    ));
+                }
+                fill(&mut target)?;
+                Command::Run {
+                    command: Run::Logs {
+                        target,
+                        stream,
+                        lines,
+                    },
+                }
+            }
+            Command::Results {
+                output,
+                keep,
+                collect,
+                run,
+                project,
+            } => {
+                let latest = ml_exp_client::submit::latest(&chosen(
+                    &directory,
+                    project.as_deref(),
+                    run.as_deref(),
+                )?)?;
+                let submission = latest
+                    .submission_id
+                    .ok_or(ml_exp_client::Error::Observation(
+                        "the latest submission is still being prepared, so it has no results yet",
+                    ))?;
+                let name = format!("{}{}", latest.run_id, sources::RESULTS_SUFFIX);
+                return Ok((
+                    Command::Run {
+                        command: if collect {
+                            Run::Collect { submission }
+                        } else {
+                            Run::Download {
+                                output: output.unwrap_or_else(|| name.into()),
+                                submission,
+                                keep,
+                            }
+                        },
+                    },
+                    Some((latest.project, latest.run_id)),
                 ));
             }
-            fill(&mut target)?;
-            Command::Run {
-                command: Run::Logs {
-                    target,
-                    stream,
-                    lines,
-                },
-            }
-        }
-        Command::Results {
-            output,
-            keep,
-            collect,
-            run,
-            project,
-        } => {
-            let latest = ml_exp_client::submit::latest(&chosen(
-                &directory,
-                project.as_deref(),
-                run.as_deref(),
-            )?)?;
-            let submission = latest
-                .submission_id
-                .ok_or(ml_exp_client::Error::Observation(
-                    "the latest submission is still being prepared, so it has no results yet",
-                ))?;
-            let name = format!("{}{}", latest.run_id, sources::RESULTS_SUFFIX);
-            Command::Run {
-                command: if collect {
-                    Run::Collect { submission }
-                } else {
-                    Run::Download {
-                        output: output.unwrap_or_else(|| name.into()),
-                        submission,
-                        keep,
-                    }
-                },
-            }
-        }
-        other => other,
-    })
+            other => other,
+        },
+        None,
+    ))
 }
 fn run(mut args: Args) -> Result<(), Box<dyn std::error::Error>> {
-    args.command = expand(args.command, &config_path(args.config.clone()))?;
+    let (command, results_of) = expand(args.command, &config_path(args.config.clone()))?;
+    args.command = command;
+    // Human summaries lead with the Run; JSON keeps every field as it was.
+    let results = |value: serde_json::Value| match &results_of {
+        Some((project, run)) if !args.json => {
+            Output::Text(presentation::results(project, run, &value))
+        }
+        _ => Output::Json(value),
+    };
     if let Command::Backend {
         executor: Some(executor),
         ..
@@ -1153,14 +1177,14 @@ fn run(mut args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 resume_from: checkpoint.as_ref().map(|checkpoint| {
                     ml_exp_core::checkpoints::Reference {
                         run_id: run.clone(),
-                        attempt_id: attempt.clone(),
+                        attempt_id: attempt.clone().unwrap_or_default(),
                         checkpoint_id: checkpoint.clone(),
                     }
                 }),
                 restart_from: if *from_start {
                     Some(ml_exp_core::first_submission::native::retry::StartFrom {
                         run_id: run.clone(),
-                        attempt_id: attempt.clone(),
+                        attempt_id: attempt.clone().unwrap_or_default(),
                     })
                 } else {
                     None
@@ -1550,7 +1574,7 @@ fn run(mut args: Args) -> Result<(), Box<dyn std::error::Error>> {
                             &confirmation,
                         )?),
                         Run::Collect { submission } => {
-                            Output::Json(artifacts::observe(&client, &submission, true, &health)?)
+                            results(artifacts::observe(&client, &submission, true, &health)?)
                         }
                         Run::PurgeState {
                             project,
@@ -1585,7 +1609,7 @@ fn run(mut args: Args) -> Result<(), Box<dyn std::error::Error>> {
                             submission,
                             output,
                             keep,
-                        } => Output::Json(artifacts::download(
+                        } => results(artifacts::download(
                             &client,
                             &submission,
                             &output,
@@ -1594,6 +1618,23 @@ fn run(mut args: Args) -> Result<(), Box<dyn std::error::Error>> {
                         )?),
                         Run::Attach { .. } | Run::LocalStatus { .. } => {
                             unreachable!("local commands handled above")
+                        }
+                        Run::Checkpoints { attempt, .. } if !args.json => {
+                            Output::Text(presentation::checkpoints(
+                                &submissions::execute(
+                                    &client,
+                                    submission_plan.as_ref().expect("validated native plan"),
+                                    &health,
+                                )?,
+                                attempt.is_some(),
+                            ))
+                        }
+                        Run::Tracking { .. } if !args.json => {
+                            Output::Text(presentation::tracking(&submissions::execute(
+                                &client,
+                                submission_plan.as_ref().expect("validated native plan"),
+                                &health,
+                            )?))
                         }
                         Run::Tracking { .. }
                         | Run::Sync { .. }
@@ -1617,6 +1658,7 @@ fn run(mut args: Args) -> Result<(), Box<dyn std::error::Error>> {
                         Run::Status {
                             target, details, ..
                         } => {
+                            let named = target.attempt.is_some();
                             let value = if let Some(duration) = watch_duration {
                                 watch::observe(
                                     &client,
@@ -1630,7 +1672,7 @@ fn run(mut args: Args) -> Result<(), Box<dyn std::error::Error>> {
                                             serde_json::to_string(value)
                                                 .map_err(|_| ml_exp_client::Error::Response)?
                                         } else {
-                                            presentation::status_summary(value).map_err(|_| {
+                                            presentation::status_summary_for(value, named).map_err(|_| {
                                                 ml_exp_client::Error::Observation(
                                                     "cannot render malformed experiment evidence",
                                                 )
@@ -1652,7 +1694,7 @@ fn run(mut args: Args) -> Result<(), Box<dyn std::error::Error>> {
                             if args.json {
                                 Output::Json(value)
                             } else {
-                                Output::Text(presentation::status_summary(&value)?)
+                                Output::Text(presentation::status_summary_for(&value, named)?)
                             }
                         }
                         Run::Logs {

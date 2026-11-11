@@ -100,8 +100,10 @@ impl Request {
             policy.validate().map_err(|_| Error("artifact policy"))?;
         }
         if let Some(reference) = &self.resume_from {
+            // The server fills a left-out Attempt before the Run is frozen, and the
+            // restore check refuses any reference that is still unresolved.
             reference
-                .validate()
+                .validate_received()
                 .map_err(|_| Error("checkpoint reference"))?;
             if reference.run_id == self.run_id {
                 return Err(Error("checkpoint source is the new Run"));
@@ -344,14 +346,17 @@ pub fn receipt(
     attempt: &Value,
     reused: bool,
 ) -> Result<Value> {
-    Ok(
-        json!({"project":project,"run_id":request.run_id,"attempt_id":"attempt-001","creation_state":"CREATED",
+    let mut value = json!({"project":project,"run_id":request.run_id,"attempt_id":"attempt-001","creation_state":"CREATED",
         "source_id":run["source_id"],"runtime_id":request.runtime_id,"request_sha256":request.identity(project)?,
         "run_sha256":slurm::helper::sha256_bytes(&serde_json::to_vec(run).map_err(|_|Error("Run hash"))?),
         "attempt_sha256":slurm::helper::sha256_bytes(&serde_json::to_vec(attempt).map_err(|_|Error("Attempt hash"))?),
         "protocol_id":run["evaluation"]["protocol_id"],"created_at":run["created_at"],"reused":reused,
-        "scheduler_mutation_performed":false}),
-    )
+        "scheduler_mutation_performed":false});
+    // What was frozen, so a client that left the Attempt out can check its request.
+    if let Some(reference) = &request.resume_from {
+        value["resume_from"] = json!(reference);
+    }
+    Ok(value)
 }
 
 #[cfg(test)]

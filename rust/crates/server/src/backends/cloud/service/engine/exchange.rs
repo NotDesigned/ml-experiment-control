@@ -709,6 +709,36 @@ impl Service {
             }
         }
     }
+    /// The Run's checkpoints: those of its current Attempt, or the one checkpoint `id`
+    /// of whichever Attempt registered it. The answer names that Attempt.
+    pub fn run_checkpoints(
+        &self,
+        project: &str,
+        run: &str,
+        id: Option<&str>,
+    ) -> cloud::Result<Value> {
+        let attempt = match id {
+            None => self.current_attempt(project, run)?,
+            Some(id) => {
+                let mut reference = ml_exp_core::checkpoints::Reference {
+                    run_id: run.into(),
+                    attempt_id: String::new(),
+                    checkpoint_id: id.into(),
+                };
+                if !crate::checkpoints::resolve(
+                    &self.settings.registry_root,
+                    project,
+                    &mut reference,
+                )
+                .map_err(why!(cloud::Error::evidence()))?
+                {
+                    return Err(missing());
+                }
+                reference.attempt_id
+            }
+        };
+        self.checkpoints(project, run, &attempt, id)
+    }
     pub fn tracking_status(&self, project: &str, run: &str) -> cloud::Result<Value> {
         let prepared = self.saved(project, run)?.ok_or_else(missing)?;
         let records = self.exchange_records(&prepared)?;
