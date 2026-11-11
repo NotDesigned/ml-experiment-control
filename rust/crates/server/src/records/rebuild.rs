@@ -207,10 +207,10 @@ impl Store {
                     ],
                 )?;
                 // A new W&B Run, published from the first record as any new scope
-                // is. An older server cannot load this state, so it never
-                // publishes the excluded names to the new id.
+                // is. A server that predates rebuilds cannot load this state, so
+                // it never publishes the excluded names to the new id.
                 let fresh = json!({"state":serde_json::to_value(ml_exp_core::tracking::publication::PublicationState::default())?,
-                    "finish_requested":false,"remote_finished":false,"ever_opened":false,"wandb_rebuild":sha256});
+                    "remote_finished":false,"ever_opened":false,"wandb_rebuild":sha256});
                 tx.execute(
                     "INSERT INTO native_publications VALUES (?,?) ON CONFLICT(scope) DO UPDATE SET state=excluded.state",
                     params![scope, records::encoded(&fresh)?],

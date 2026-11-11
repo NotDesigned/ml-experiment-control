@@ -1,4 +1,4 @@
-//! Persistent bounded SDK pipe. State and replay decisions live in Rust core.
+//! Persistent bounded SDK pipe. Cursor and retry decisions live in Rust.
 use super::{Error, Result};
 use ml_exp_io::framing;
 use serde_json::Value;
@@ -26,13 +26,19 @@ impl Sdk {
         }
         Ok(bytes)
     }
-    /// Split effects, in order, into complete requests within the pipe's bound.
-    pub(super) fn frames(job: &Value, effects: Vec<Value>) -> Result<Vec<Value>> {
-        let base = Self::validate_request(job)?.len();
+    /// Split history rows, in order, into complete requests within the pipe's
+    /// bound. Only the last request carries `display`, so the summary follows
+    /// the rows it describes; room for it is kept in every request.
+    pub(super) fn frames(job: &Value, history: Vec<Value>, display: Value) -> Result<Vec<Value>> {
+        let base = Self::validate_request(job)?.len()
+            + serde_json::to_vec(&display)
+                .map_err(why!(Error::Transport))?
+                .len()
+            + 32;
         let mut chunks = vec![Vec::new()];
         let mut size = base;
-        for effect in effects {
-            let length = serde_json::to_vec(&effect)
+        for record in history {
+            let length = serde_json::to_vec(&record)
                 .map_err(why!(Error::Transport))?
                 .len()
                 + 1;
@@ -42,13 +48,20 @@ impl Sdk {
                 size = base;
             }
             size += length;
-            chunks.last_mut().ok_or(Error::Transport)?.push(effect);
+            chunks.last_mut().ok_or(Error::Transport)?.push(record);
         }
+        let last = chunks.len() - 1;
         chunks
             .into_iter()
-            .map(|effects| {
+            .enumerate()
+            .map(|(index, history)| {
                 let mut frame = job.clone();
-                frame["effects"] = Value::Array(effects);
+                frame["history"] = Value::Array(history);
+                frame["display"] = if index == last {
+                    display.clone()
+                } else {
+                    Value::Null
+                };
                 Self::validate_request(&frame)?;
                 Ok(frame)
             })
@@ -130,7 +143,6 @@ impl Sdk {
                 "WANDB_PERMISSION_DENIED" => Err(Error::SdkRequest("WANDB_PERMISSION_DENIED")),
                 "WANDB_REMOTE_RUN_MISSING" => Err(Error::SdkRequest("WANDB_REMOTE_RUN_MISSING")),
                 "WANDB_INIT_FAILED" => Err(Error::SdkRequest("WANDB_INIT_FAILED")),
-                "WANDB_HISTORY_READ_FAILED" => Err(Error::SdkRequest("WANDB_HISTORY_READ_FAILED")),
                 "WANDB_REMOTE_READ_FAILED" => Err(Error::SdkRequest("WANDB_REMOTE_READ_FAILED")),
                 "WANDB_WRITE_FAILED" => Err(Error::SdkRequest("WANDB_WRITE_FAILED")),
                 "WANDB_DEFAULT_ENTITY_FAILED" => {

@@ -72,7 +72,7 @@ Research code may use Python/PyTorch or another image language.
 | List and select result archive files | `client/artifacts/files.rs`, `io/artifacts.rs` | Selected-file persistence only after full archive verification; no partial ACK; direct original-file recovery still pending |
 | DSW debug lifecycle | `core/cloud/debug.rs`, `server/backends/cloud/service/engine/debug.rs`, `client/debug.rs` | Actual zero-GPU DSW create/SSH/CPFS/stop/delete passed |
 | Backend catalogue/cached capacity | `core/capacity.rs`, `server/backends/cloud/service/engine/capacity.rs`, `capacity_http.rs` | Local GET is effect-free; real PAI quota refresh and retained timestamp accepted; Slurm cached capacity refresh passed |
-| Optional W&B publication | `core/tracking`, `server/tracking` | Fake SDK and durable ACK tests; same-Run official-cloud CPU acceptance passed; uncertain sends reserved pending remote proof |
+| Optional W&B publication | `core/tracking`, `server/tracking` | Fake SDK tests; same-Run official-cloud CPU acceptance passed; best-effort mirror: cursor advances on SDK acceptance, errors retry from the cursor |
 | Scoped administrative maintenance and record retirement | `core/maintenance.rs`, `server/administration.rs`, `worker/maintenance.rs` | Confined plans and worker receipts; actual provider cleanup pending |
 | Standalone verified client update | `core/distribution.rs`, `client/update.rs` | Public assets verified; public installer and update check passed on Tokyo |
 
@@ -184,8 +184,9 @@ run produces artifacts only; a stable native tag enables public publication.
 ## Deliberate limits and remaining acceptance
 
 The registry carries its own marker. Normal startup and GET never
-initialize or repair it. Do not initialize over existing state. Unknown submissions and uncertain W&B
-sends remain reserved; a successful connection check never authorizes replay.
+initialize or repair it. Do not initialize over existing state. Unknown submissions
+remain reserved; a successful connection check never authorizes replay. W&B is a
+best-effort mirror and may rarely miss or repeat a row.
 
 Campaign authoring is intentionally absent; a Run does not need a research
 question or Campaign. Batch commands perform explicit passes, not an unattended

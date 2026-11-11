@@ -19,9 +19,9 @@ struct Args {
     /// Existing/partial registries are refused; no provider job is created.
     #[arg(long, requires = "config", conflicts_with = "check")]
     initialize: bool,
-    /// With the API stopped, append proven reserved W&B history gaps to the
-    /// original remote Run. Arguments are PROJECT RUN ATTEMPT.
-    #[arg(long, num_args=3, requires="config", conflicts_with_all=["check","initialize"])]
+    /// Retired: W&B publication is a best-effort mirror that resends from its
+    /// cursor by itself. Accepted so old scripts get an explanation, not an error.
+    #[arg(long, num_args=3, hide=true, conflicts_with_all=["check","initialize"])]
     repair_tracking: Vec<String>,
     #[arg(long, default_value = "127.0.0.1:18765")]
     bind: SocketAddr,
@@ -31,7 +31,7 @@ struct Args {
     #[arg(long,requires="read_config",conflicts_with_all=["token_file","administration"])]
     initialize_administration: bool,
     #[arg(long)]
-    #[arg(required_unless_present_any = ["config", "initialize_registry", "initialize_project_lifecycle", "initialize_source_archives", "initialize_submissions", "initialize_cloud_submissions", "initialize_administration"])]
+    #[arg(required_unless_present_any = ["config", "initialize_registry", "initialize_project_lifecycle", "initialize_source_archives", "initialize_submissions", "initialize_cloud_submissions", "initialize_administration", "repair_tracking"])]
     token_file: Option<PathBuf>,
     /// Private approved source configuration.
     #[arg(long, conflicts_with = "initialize_registry")]
@@ -70,6 +70,14 @@ struct Args {
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     let mut args = Args::parse();
+    if !args.repair_tracking.is_empty() {
+        println!(
+            "--repair-tracking does nothing now: W&B is a best-effort mirror. The publisher \
+             resends unacknowledged rows from its cursor after a restart; the journal, \
+             results and MLflow are the authoritative record."
+        );
+        return std::process::ExitCode::SUCCESS;
+    }
     if let Some(path) = args.config.take() {
         let settings = match ml_exp_server::deployment::Settings::load(&path) {
             Ok(value) => value,
@@ -332,35 +340,6 @@ async fn main() -> std::process::ExitCode {
         }
         None => (None, None),
     };
-    if !args.repair_tracking.is_empty() {
-        let scope = serde_json::to_string(&args.repair_tracking).expect("string scope");
-        let Some(source) = reads.clone() else {
-            eprintln!("native tracking authority unavailable");
-            return std::process::ExitCode::FAILURE;
-        };
-        let Some(runtime) = tracking.as_ref().filter(|r| r.routing().enabled).cloned() else {
-            eprintln!("W&B publisher is not configured");
-            return std::process::ExitCode::FAILURE;
-        };
-        return match tokio::task::spawn_blocking(move || {
-            ml_exp_server::tracking::repair(source, runtime, &scope)
-        })
-        .await
-        {
-            Ok(Ok(value)) => {
-                println!("{value}");
-                std::process::ExitCode::SUCCESS
-            }
-            Ok(Err(error)) => {
-                eprintln!("{error}");
-                std::process::ExitCode::FAILURE
-            }
-            Err(_) => {
-                eprintln!("tracking repair unavailable");
-                std::process::ExitCode::FAILURE
-            }
-        };
-    }
     let listener = match tokio::net::TcpListener::bind(args.bind).await {
         Ok(listener) => listener,
         Err(_) => {
