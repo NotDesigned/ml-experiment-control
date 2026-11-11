@@ -1649,9 +1649,18 @@ pub fn retry(
         let request = Request {
             confirmation: String::new(),
             restart_from: checkpoint.is_none().then_some(start),
+            // A checkpoint names its Attempt, and a server that can say which one
+            // refuses a checkpoint of another Attempt by saying so.
             resume_from: checkpoint.map(|checkpoint_id| Reference {
                 run_id: latest.run_id.clone(),
-                attempt_id: attempt.clone(),
+                attempt_id: if health["capabilities"]
+                    .as_array()
+                    .is_some_and(|caps| caps.iter().any(|v| v == submissions::RUN_CENTRIC))
+                {
+                    String::new()
+                } else {
+                    attempt.clone()
+                },
                 checkpoint_id,
             }),
             max_gpu_hours: spend,

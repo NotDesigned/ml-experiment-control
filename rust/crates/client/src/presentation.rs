@@ -1,7 +1,7 @@
 //! Pure human summaries of already-bound evidence. No clock, configuration,
 //! provider reads, scientific selection or mutation is hidden in rendering.
 use ml_exp_core::metrics::json_text;
-use serde_json::Value;
+use serde_json::{Value, json};
 use time::OffsetDateTime;
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -440,9 +440,35 @@ fn root(value: &Value) -> Result<()> {
         Err(PresentationError)
     }
 }
+/// The Attempt, worth showing only once its Run has more than one. Attempts are
+/// numbered from attempt-001 and only a retry adds the next, so a later number
+/// means the Run was retried.
+pub fn retried_attempt(attempt: &Value) -> Option<&str> {
+    attempt.as_str().filter(|attempt| {
+        ml_exp_core::first_submission::native::retry::number(attempt).is_ok_and(|n| n > 1)
+    })
+}
+/// `Run: PROJECT/RUN`, then the Attempt when the Run has more than one or `named`
+/// says the reader chose it.
+fn heading(value: &Value, named: bool) -> String {
+    let mut line = format!(
+        "Run: {}/{}",
+        show(get(value, "project")),
+        show(get(value, "run_id"))
+    );
+    let attempt = get(value, "attempt_id");
+    if retried_attempt(attempt).is_some() || (named && attempt.is_string()) {
+        line.push_str(&format!(" · {}", show(attempt)));
+    }
+    line
+}
 /// Render reported scheduler, process/model and publication states separately.
 /// Absolute timestamps and already-computed ages come only from `value`.
 pub fn status_summary(value: &Value) -> Result<String> {
+    status_summary_for(value, false)
+}
+/// As [`status_summary`]; `named` shows the Attempt the reader chose with --attempt.
+pub fn status_summary_for(value: &Value, named: bool) -> Result<String> {
     root(value)?;
     let preparation = object(get(value, "preparation"));
     let scheduler = object(get(value, "scheduler"));
@@ -456,12 +482,7 @@ pub fn status_summary(value: &Value) -> Result<String> {
         object(get(progress, "worker_phase")),
     ]);
     let mut lines = vec![
-        format!(
-            "Run: {}/{} · {}",
-            show(get(value, "project")),
-            show(get(value, "run_id")),
-            text(get(value, "attempt_id"), "Attempt not observed")
-        ),
+        heading(value, named),
         stage_line(
             first(&[
                 get(progress, "phase"),
@@ -566,10 +587,8 @@ pub fn status_summary(value: &Value) -> Result<String> {
 pub fn provider_diagnostics(value: &Value) -> String {
     let word = |value: &Value| value.as_str().unwrap_or("not reported").to_owned();
     let mut lines = vec![format!(
-        "Run: {}/{} · {} · {}",
-        word(&value["project"]),
-        word(&value["run_id"]),
-        word(&value["attempt_id"]),
+        "{} · {}",
+        heading(value, false),
         word(&value["backend"])
     )];
     lines.extend(startup_failure_line(&value["startup_failure"]));
@@ -617,6 +636,122 @@ pub fn provider_diagnostics(value: &Value) -> String {
     for event in list(&provider["events"]) {
         lines.push(format!("Event: {}", event.as_str().unwrap_or_default()));
     }
+    lines.join("\n")
+}
+
+/// `ml-exp run checkpoints`: the Run first, then each checkpoint with the id that
+/// `--checkpoint` takes. `named` shows the Attempt the reader chose.
+pub fn checkpoints(value: &Value, named: bool) -> String {
+    let mut lines = vec![heading(value, named)];
+    let row = |document: &Value, archived: bool| {
+        let files = get(document, "files").as_array().map_or(0, Vec::len);
+        format!(
+            "{} · step {} · {files} file{} · registered {}{}",
+            show(get(document, "checkpoint_id")),
+            show(get(document, "step")),
+            if files == 1 { "" } else { "s" },
+            text(get(document, "registered_at"), "at an unrecorded time"),
+            if archived {
+                " · object-store copy verified"
+            } else {
+                ""
+            }
+        )
+    };
+    match get(value, "checkpoints").as_array() {
+        // One exact checkpoint is its own document.
+        None => lines.push(format!("Checkpoint: {}", row(value, false))),
+        Some(rows) if rows.is_empty() => lines.push("Checkpoints: none registered".into()),
+        Some(rows) => {
+            lines.push(format!("Checkpoints: {}", rows.len()));
+            let archives = object(get(value, "archives"));
+            for document in rows {
+                let id = get(document, "checkpoint_id").as_str().unwrap_or_default();
+                lines.push(format!("  {}", row(document, truth(get(archives, id)))));
+            }
+            lines.push(
+                "Resume from one: ml-exp retry --checkpoint ID (the Run continues as a new Attempt)"
+                    .into(),
+            );
+        }
+    }
+    lines.join("\n")
+}
+/// `ml-exp run tracking`: the Run's W&B destination and how much of it is confirmed.
+/// One line per W&B Run, named by its Attempt only when the Run has more than one.
+pub fn tracking(value: &Value) -> String {
+    let mut lines = vec![heading(value, false)];
+    let route = object(get(value, "wandb"));
+    lines.push(if get(route, "enabled") == true {
+        format!(
+            "W&B: {}/{}",
+            show(get(route, "entity")),
+            show(get(route, "project"))
+        )
+    } else {
+        "W&B: disabled for this Run".into()
+    });
+    let scopes = get(value, "scopes").as_array().cloned().unwrap_or_default();
+    let several = scopes.len() > 1;
+    for scope in &scopes {
+        let mut line = String::new();
+        if several {
+            line.push_str(&format!("{}: ", text(get(scope, "attempt"), "Attempt")));
+        }
+        line.push_str(&format!(
+            "{} · {} of {} records confirmed · {}",
+            text(
+                get(scope, "url"),
+                &text(get(scope, "wandb_id"), "no W&B Run")
+            ),
+            text(get(scope, "confirmed"), "0"),
+            text(get(scope, "total"), "0"),
+            show(get(scope, "status"))
+        ));
+        if let Some(error) = get(scope, "error").as_str().filter(|e| !e.is_empty()) {
+            line.push_str(&format!(" · {}", text(&json!(error), "")));
+        }
+        lines.push(line);
+    }
+    if scopes.is_empty() {
+        lines.push("Records: none published yet".into());
+    }
+    lines.join("\n")
+}
+/// `ml-exp results`: the Run, where its verified results are and what the server kept.
+pub fn results(project: &str, run: &str, value: &Value) -> String {
+    let mut lines = vec![heading(&json!({"project":project,"run_id":run}), false)];
+    if get(value, "local_archive").is_null() {
+        // `--collect` starts publication; the download comes after.
+        lines.push(format!(
+            "Results: {}; `ml-exp results` downloads them once published",
+            text(get(value, "status"), "collection requested")
+        ));
+        return lines.join("\n");
+    }
+    lines.push(format!(
+        "Results: {}; every file verified{}",
+        show(get(value, "local_archive")),
+        if get(value, "reused_existing_archive") == true {
+            " (the archive already here)"
+        } else {
+            ""
+        }
+    ));
+    if let Some(skipped) = get(value, "skipped").as_array().filter(|s| !s.is_empty()) {
+        lines.push(format!(
+            "Not published: {} file(s), see --json",
+            skipped.len()
+        ));
+    }
+    lines.push(
+        if get(value, "release_requested") == true {
+            "Server copy: released"
+        } else {
+            "Server copy: kept"
+        }
+        .into(),
+    );
     lines.join("\n")
 }
 

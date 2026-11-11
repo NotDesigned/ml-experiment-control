@@ -33,11 +33,22 @@ impl Service {
     pub(super) fn author_run(
         &self,
         project: &str,
-        request: run::Create,
+        mut request: run::Create,
         now: &str,
     ) -> cloud::Result<Value> {
         let _admission = crate::administration::authorship_guard(&self.settings.registry_root)
             .map_err(why!(cloud::Error::evidence()))?;
+        // The Run freezes the reference with its Attempt, whether or not it was given.
+        let resolved = match request.resume_from.as_mut() {
+            Some(reference) => {
+                crate::checkpoints::resolve(&self.settings.registry_root, project, reference)
+                    .map_err(why!(cloud::Error::evidence()))?
+            }
+            None => true,
+        };
+        if !resolved {
+            return Err(missing());
+        }
         if !self.creation {
             return Err(cloud::Error {
                 code: "CLOUD_RUN_CREATION_DISABLED".into(),

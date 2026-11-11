@@ -320,6 +320,11 @@ impl From<crate::backends::cloud::Error> for Error {
                     "SYNC_RETRY_NOT_ELIGIBLE",
                     "CPU recovery requires the exact failed synchronization job and terminal training evidence",
                 ),
+                ("RETRY_SOURCE_NOT_THIS_ATTEMPT", _) => (
+                    409,
+                    "RETRY_SOURCE_NOT_THIS_ATTEMPT",
+                    "a retry continues the Attempt it retries, from a checkpoint that Attempt registered; this checkpoint or Attempt is another one",
+                ),
                 ("DIAGNOSTIC_PARENT_NOT_TERMINAL", _) => (
                     409,
                     "DIAGNOSTIC_PARENT_NOT_TERMINAL",

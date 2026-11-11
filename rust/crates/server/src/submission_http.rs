@@ -34,6 +34,14 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
         .route("/api/runs/{project}/{run}/tracking", get(tracking))
         .route("/api/submissions/{identity}/{operation}", post(change))
         .route(
+            "/api/runs/{project}/{run}/checkpoints",
+            get(run_checkpoint_list),
+        )
+        .route(
+            "/api/runs/{project}/{run}/checkpoints/{checkpoint}",
+            get(run_checkpoint_read),
+        )
+        .route(
             "/api/runs/{project}/{run}/attempts/{attempt}/checkpoints",
             get(checkpoint_list),
         )
@@ -112,6 +120,59 @@ async fn checkpoint_read(
         return http_effect::failure(error);
     }
     checkpoint_get(state, project, run, attempt, Some(id)).await
+}
+/// The Run's current Attempt's checkpoints, named by the Run alone.
+async fn run_checkpoint_list(
+    State(state): State<Arc<AppState>>,
+    path: Result<Path<(String, String)>, PathRejection>,
+    RawQuery(raw): RawQuery,
+) -> Response {
+    let Ok(Path((project, run))) = path else {
+        return http_effect::failure(invalid());
+    };
+    if let Err(error) = api::no_parameters(raw.as_deref()) {
+        return http_effect::failure(error);
+    }
+    run_checkpoint_get(state, project, run, None).await
+}
+/// One checkpoint of the Run, in whichever Attempt registered it.
+async fn run_checkpoint_read(
+    State(state): State<Arc<AppState>>,
+    path: Result<Path<(String, String, String)>, PathRejection>,
+    RawQuery(raw): RawQuery,
+) -> Response {
+    let Ok(Path((project, run, id))) = path else {
+        return http_effect::failure(invalid());
+    };
+    if let Err(error) = api::no_parameters(raw.as_deref()) {
+        return http_effect::failure(error);
+    }
+    run_checkpoint_get(state, project, run, Some(id)).await
+}
+async fn run_checkpoint_get(
+    state: Arc<AppState>,
+    project: String,
+    run: String,
+    id: Option<String>,
+) -> Response {
+    if identities(&project, &run).is_err()
+        || id
+            .as_ref()
+            .is_some_and(|id| ml_exp_core::checkpoints::validate_checkpoint_id(id).is_err())
+    {
+        return http_effect::failure(invalid());
+    }
+    http_effect::execute(state, OnTimeout::NoEffect, move |api, _| {
+        match api.run_owner(&project, &run)? {
+            Owner::Cloud(cloud) => cloud
+                .run_checkpoints(&project, &run, id.as_deref())
+                .map_err(Into::into),
+            Owner::Slurm(slurm) => slurm
+                .run_checkpoints(&project, &run, id.as_deref())
+                .map_err(Into::into),
+        }
+    })
+    .await
 }
 async fn checkpoint_get(
     state: Arc<AppState>,
@@ -370,7 +431,7 @@ async fn change(
         }),
         "retry" => {
             decode::<ml_exp_core::first_submission::native::retry::Request>(body).and_then(|r| {
-                r.validate(&identity).map_err(|_| invalid())?;
+                r.validate_received(&identity).map_err(|_| invalid())?;
                 Ok(Operation::Retry(r))
             })
         }

@@ -186,6 +186,104 @@ impl Store {
 
 use std::ffi::OsString;
 
+/// Which Attempt registered a checkpoint, for a request that names only the Run.
+impl Store {
+    /// The Attempt of this Run holding this registered, not withdrawn checkpoint.
+    /// A checkpoint identity covers its Attempt, so a second holder is refused.
+    pub fn attempt_of(
+        &self,
+        project: &str,
+        run: &str,
+        checkpoint_id: &str,
+    ) -> Result<Option<String>> {
+        ml_exp_core::identity::validate_id(project).map_err(why!(Error::Document))?;
+        ml_exp_core::identity::validate_id(run).map_err(why!(Error::Document))?;
+        checkpoints::validate_checkpoint_id(checkpoint_id).map_err(why!(Error::Document))?;
+        let child =
+            |directory: &Directory, name: &str| match directory.child(OsStr::new(name), false) {
+                Ok(directory) => Ok(Some(directory)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(Error::Io(error)),
+            };
+        let _guard = self.lock()?;
+        let Some(project) = child(&self.namespace, project)? else {
+            return Ok(None);
+        };
+        let Some(run) = child(&project, run)? else {
+            return Ok(None);
+        };
+        let name = OsString::from(format!("{checkpoint_id}.json"));
+        let withdrawn = OsString::from(format!("withdrawn.{checkpoint_id}.json"));
+        let mut found = None;
+        for attempt in run.entry_names_limited(checkpoints::MAX_FILES)? {
+            let Some(attempt) = attempt
+                .to_str()
+                .filter(|a| ml_exp_core::identity::validate_attempt(a).is_ok())
+            else {
+                continue;
+            };
+            let Some(directory) = child(&run, attempt)? else {
+                continue;
+            };
+            if directory.entry_exists(&name)? && !directory.entry_exists(&withdrawn)? {
+                if found.is_some() {
+                    return Err(Error::Document);
+                }
+                found = Some(attempt.to_owned());
+            }
+        }
+        Ok(found)
+    }
+}
+
+/// Fill the Attempt a reference left out from the registry. `Ok(false)` means no
+/// Attempt of that Run registered the checkpoint. A named Attempt is kept as given,
+/// and the exact read that follows refuses it when the checkpoint is not its own.
+pub fn resolve(
+    registry_root: &Path,
+    project: &str,
+    reference: &mut checkpoints::Reference,
+) -> Result<bool> {
+    if !reference.unresolved() {
+        return Ok(true);
+    }
+    let store = match Store::open_existing(registry_root) {
+        Ok(store) => store,
+        Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(false);
+        }
+        Err(error) => return Err(error),
+    };
+    match store.attempt_of(project, &reference.run_id, &reference.checkpoint_id)? {
+        Some(attempt) => {
+            reference.attempt_id = attempt;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+/// A retry may leave its Attempt out: a restart is from the retried Attempt, and a
+/// checkpoint belongs to the Attempt that registered it. `Ok(false)` as [`resolve`].
+pub fn resolve_retry(
+    registry_root: &Path,
+    project: &str,
+    retried: &str,
+    request: &mut ml_exp_core::first_submission::native::retry::Request,
+) -> Result<bool> {
+    if let Some(start) = request
+        .restart_from
+        .as_mut()
+        .filter(|start| start.attempt_id.is_empty())
+    {
+        start.attempt_id = retried.into();
+    }
+    match request.resume_from.as_mut() {
+        Some(reference) => resolve(registry_root, project, reference),
+        None => Ok(true),
+    }
+}
+
 /// Object-store copies. A receipt lives beside the document it describes, sealed,
 /// and is written only after the server has read every object back.
 impl Store {
@@ -345,6 +443,67 @@ mod tests {
                 .unwrap(),
             Some(first)
         );
+    }
+
+    #[test]
+    fn a_checkpoint_names_its_attempt_and_a_named_one_is_kept() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let store = Store::open(temp.path()).unwrap();
+        let first = context();
+        let second = Context {
+            attempt_id: "attempt-002".into(),
+            state_root: "/data/demo/trial/attempt-002/state".into(),
+            ..context()
+        };
+        let one = store
+            .register(&first, &ready(4, "step-0004", 7), "2026-10-28T00:00:00Z")
+            .unwrap();
+        let two = store
+            .register(&second, &ready(8, "step-0008", 7), "2026-10-28T00:00:00Z")
+            .unwrap();
+        for (document, attempt) in [(&one, "attempt-001"), (&two, "attempt-002")] {
+            let id = document["checkpoint_id"].as_str().unwrap();
+            let mut received = checkpoints::Reference {
+                run_id: "trial".into(),
+                attempt_id: String::new(),
+                checkpoint_id: id.into(),
+            };
+            assert!(resolve(temp.path(), "demo", &mut received).unwrap());
+            assert_eq!(received.attempt_id, attempt);
+            let mut explicit = received.clone();
+            assert!(resolve(temp.path(), "demo", &mut explicit).unwrap());
+            assert_eq!(explicit, received);
+            // A named Attempt is never replaced: the exact read refuses a wrong one.
+            let mut wrong = checkpoints::Reference {
+                attempt_id: "attempt-009".into(),
+                ..received.clone()
+            };
+            assert!(resolve(temp.path(), "demo", &mut wrong).unwrap());
+            assert_eq!(wrong.attempt_id, "attempt-009");
+        }
+        let unknown = format!("checkpoint.{}", "f".repeat(64));
+        for (project, run) in [("demo", "trial"), ("demo", "other"), ("else", "trial")] {
+            let mut reference = checkpoints::Reference {
+                run_id: run.into(),
+                attempt_id: String::new(),
+                checkpoint_id: unknown.clone(),
+            };
+            assert!(!resolve(temp.path(), project, &mut reference).unwrap());
+            assert!(reference.unresolved());
+        }
+        let mut restart: ml_exp_core::first_submission::native::retry::Request =
+            serde_json::from_value(json!({"restart_from":{"run_id":"trial"}})).unwrap();
+        assert!(resolve_retry(temp.path(), "demo", "attempt-002", &mut restart).unwrap());
+        assert_eq!(restart.restart_from.unwrap().attempt_id, "attempt-002");
+        let empty = tempfile::tempdir().unwrap();
+        fs::set_permissions(empty.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let mut reference = checkpoints::Reference {
+            run_id: "trial".into(),
+            attempt_id: String::new(),
+            checkpoint_id: unknown,
+        };
+        assert!(!resolve(empty.path(), "demo", &mut reference).unwrap());
     }
 
     #[test]

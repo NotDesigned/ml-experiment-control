@@ -13,7 +13,7 @@ impl Service {
         let _admission = crate::administration::authorship_guard(&self.settings.registry_root)
             .map_err(why!(cloud::Error::evidence()))?;
         request
-            .validate(action)
+            .validate_received(action)
             .map_err(why!(cloud::Error::configuration()))?;
         if !self.creation {
             return Err(cloud::Error {
@@ -25,12 +25,34 @@ impl Service {
         let _lock = self.lock("retry.retry")?;
         let parent = self.load(action)?;
         let binding = &parent.execution.binding;
+        // A left-out Attempt is filled in first, so what is hashed and frozen is the
+        // same request that names it.
+        let mut request = request;
+        if !crate::checkpoints::resolve_retry(
+            &self.settings.registry_root,
+            &binding.project,
+            &binding.attempt_id,
+            &mut request,
+        )
+        .map_err(why!(cloud::Error::evidence()))?
+        {
+            return Err(missing());
+        }
+        request
+            .validate(action)
+            .map_err(why!(cloud::Error::configuration()))?;
         if request
             .parent()
             .map_err(why!(cloud::Error::configuration()))?
             != (binding.run_id.as_str(), binding.attempt_id.as_str())
         {
-            return Err(cloud::Error::evidence());
+            // Most often a checkpoint of an earlier Attempt: a retry continues the
+            // retried Attempt, from one of its own checkpoints.
+            return Err(cloud::Error {
+                code: "RETRY_SOURCE_NOT_THIS_ATTEMPT".into(),
+                http_status: Some(409),
+                uncertain: false,
+            });
         }
         let project = &binding.project;
         let run = &binding.run_id;

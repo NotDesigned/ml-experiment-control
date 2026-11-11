@@ -11,6 +11,8 @@ pub const CONTRACT: &str = "native-attempt-retry.v1";
 #[serde(deny_unknown_fields)]
 pub struct StartFrom {
     pub run_id: String,
+    /// Left out by a request, it is the retried Attempt; the server fills it in.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub attempt_id: String,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -43,6 +45,37 @@ impl Request {
             _ => return Err(Error("exactly one retry source is required")),
         }
         Ok(())
+    }
+    /// Whether the request leaves an Attempt for the server to fill in.
+    pub fn unresolved(&self) -> bool {
+        self.resume_from
+            .as_ref()
+            .is_some_and(checkpoints::Reference::unresolved)
+            || self
+                .restart_from
+                .as_ref()
+                .is_some_and(|start| start.attempt_id.is_empty())
+    }
+    /// Validate a request as received, whose Attempt may be left to the server.
+    /// Nothing is planned, hashed or frozen until [`Request::validate`] passes.
+    pub fn validate_received(&self, action: &str) -> Result<()> {
+        let mut filled = self.clone();
+        if let Some(reference) = filled.resume_from.as_mut() {
+            reference
+                .validate_received()
+                .map_err(|_| Error("retry checkpoint"))?;
+            if reference.unresolved() {
+                reference.attempt_id = "attempt-001".into();
+            }
+        }
+        if let Some(start) = filled
+            .restart_from
+            .as_mut()
+            .filter(|start| start.attempt_id.is_empty())
+        {
+            start.attempt_id = "attempt-001".into();
+        }
+        filled.validate(action)
     }
     pub fn parent(&self) -> Result<(&str, &str)> {
         match (&self.resume_from, &self.restart_from) {
@@ -235,4 +268,48 @@ pub fn plan(run: &Value, request: Request, authority: Authority<'_>, now: &str) 
     attempt["native_checkpoint"] = checkpoint.clone();
     attempt["native_retry"] = json!(receipt);
     Ok(attempt)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    const ACTION: &str = "action-0123456789abcdef";
+    fn checkpoint() -> String {
+        format!("checkpoint.{}", "e".repeat(64))
+    }
+    #[test]
+    fn a_request_may_leave_its_attempt_to_the_server_but_not_be_hashed_so() {
+        for body in [
+            json!({"resume_from":{"run_id":"trial","checkpoint_id":checkpoint()}}),
+            json!({"restart_from":{"run_id":"trial"}}),
+        ] {
+            let request: Request = serde_json::from_value(body.clone()).unwrap();
+            assert!(request.unresolved());
+            request.validate_received(ACTION).unwrap();
+            assert!(request.validate(ACTION).is_err());
+            assert!(request.identity(ACTION).is_err());
+        }
+        let explicit: Request = serde_json::from_value(
+            json!({"resume_from":{"run_id":"trial","attempt_id":"attempt-001","checkpoint_id":checkpoint()}}),
+        )
+        .unwrap();
+        assert!(!explicit.unresolved());
+        explicit.validate_received(ACTION).unwrap();
+        let mut filled: Request = serde_json::from_value(
+            json!({"resume_from":{"run_id":"trial","checkpoint_id":checkpoint()}}),
+        )
+        .unwrap();
+        filled.resume_from.as_mut().unwrap().attempt_id = "attempt-001".into();
+        // Filled in, it is the same request and identity as the explicit one.
+        assert_eq!(filled, explicit);
+        assert_eq!(
+            filled.identity(ACTION).unwrap(),
+            explicit.identity(ACTION).unwrap()
+        );
+        let malformed: Request = serde_json::from_value(
+            json!({"resume_from":{"run_id":"trial","attempt_id":"attempt-1","checkpoint_id":checkpoint()}}),
+        )
+        .unwrap();
+        assert!(malformed.validate_received(ACTION).is_err());
+    }
 }

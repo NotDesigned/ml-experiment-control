@@ -406,7 +406,7 @@ fn a_reads_only_daemon_refuses_checkpoint_reads_before_connecting() {
     let plan = submissions::plan(Command::Checkpoints {
         project: "demo",
         run: "train",
-        attempt: "attempt-001",
+        attempt: Some("attempt-001"),
         checkpoint: None,
     })
     .unwrap();
@@ -558,7 +558,7 @@ fn checkpoint_queries_and_registration_replies_preserve_exact_source_identity() 
     let list = submissions::plan(Command::Checkpoints {
         project: "demo",
         run: "train",
-        attempt: "attempt-001",
+        attempt: Some("attempt-001"),
         checkpoint: None,
     })
     .unwrap();
@@ -569,7 +569,7 @@ fn checkpoint_queries_and_registration_replies_preserve_exact_source_identity() 
     let exact = submissions::plan(Command::Checkpoints {
         project: "demo",
         run: "train",
-        attempt: "attempt-001",
+        attempt: Some("attempt-001"),
         checkpoint: Some(id),
     })
     .unwrap();
@@ -587,11 +587,143 @@ fn checkpoint_queries_and_registration_replies_preserve_exact_source_identity() 
         submissions::plan(Command::Checkpoints {
             project: "demo",
             run: "../foreign",
-            attempt: "attempt-001",
+            attempt: Some("attempt-001"),
             checkpoint: None
         })
         .is_err()
     );
+}
+
+#[test]
+fn checkpoints_named_by_the_run_alone_take_the_attempt_the_answer_names() {
+    use ml_exp_core::checkpoints::{self, Context};
+    let context = Context {
+        project: "demo".into(),
+        run_id: "train".into(),
+        attempt_id: "attempt-002".into(),
+        source_id: format!("source.{}", "1".repeat(64)),
+        image_id: format!("sha256:{}", "2".repeat(64)),
+        storage_scope: "shared".into(),
+        state_root: "/shared/demo/train/outputs".into(),
+    };
+    let doc=checkpoints::register(&checkpoints::document(&context,&json!({"step":4,"files":[{"path":"checkpoints/step-4/state.bin","bytes":7,"sha256":"3".repeat(64)}]})).unwrap(),"2026-10-29T00:00:00Z").unwrap();
+    let id = doc["checkpoint_id"].as_str().unwrap();
+    let list = submissions::plan(Command::Checkpoints {
+        project: "demo",
+        run: "train",
+        attempt: None,
+        checkpoint: None,
+    })
+    .unwrap();
+    let value =
+        json!({"project":"demo","run_id":"train","attempt_id":"attempt-002","checkpoints":[doc]});
+    assert_eq!(submissions::response(&list, value.clone()).unwrap(), value);
+    // Rows of another Attempt than the one the answer names are refused.
+    let mut other = value.clone();
+    other["attempt_id"] = json!("attempt-001");
+    assert!(submissions::response(&list, other).is_err());
+    let mut unnamed = value;
+    unnamed["attempt_id"] = Value::Null;
+    assert!(submissions::response(&list, unnamed).is_err());
+    let exact = submissions::plan(Command::Checkpoints {
+        project: "demo",
+        run: "train",
+        attempt: None,
+        checkpoint: Some(id),
+    })
+    .unwrap();
+    assert_eq!(submissions::response(&exact, doc.clone()).unwrap(), doc);
+    // An older server cannot choose, so nothing is sent to it.
+    let client = Client::new("http://127.0.0.1:1", "synthetic-token".into()).unwrap();
+    let mut older = health();
+    older["capabilities"] = json!(["native-checkpoints.v1"]);
+    assert!(matches!(
+        submissions::execute(&client, &list, &older),
+        Err(Error::Observation(message)) if message.contains("--attempt")
+    ));
+}
+#[test]
+fn a_retry_without_its_attempt_is_checked_against_the_attempt_the_server_froze() {
+    use ml_exp_core::first_submission::native::retry::Request as Retry;
+    let checkpoint = format!("checkpoint.{}", "a".repeat(64));
+    let sent: Retry = serde_json::from_value(json!({
+        "resume_from":{"run_id":"train","checkpoint_id":checkpoint},"max_gpu_hours":1.0
+    }))
+    .unwrap();
+    let explicit: Retry = serde_json::from_value(json!({
+        "resume_from":{"run_id":"train","attempt_id":"attempt-001","checkpoint_id":checkpoint},"max_gpu_hours":1.0
+    }))
+    .unwrap();
+    let plan = submissions::plan(Command::Retry {
+        submission: ID,
+        request: &sent,
+    })
+    .unwrap();
+    let value = json!({"parent_submission_id":ID,"project":"demo","run_id":"train",
+        "attempt_id":"attempt-002","request_sha256":explicit.identity(ID).unwrap(),
+        "resume_from":explicit.resume_from,"max_gpu_hours":1.,"retry_state":"CREATED",
+        "scheduler_mutation_performed":false,"next_action":"PREPARE_NEW_ACTION","reused":false,
+        "reserved_gpu_seconds":0,"run_sha256":format!("sha256:{}","b".repeat(64)),
+        "attempt_sha256":format!("sha256:{}","c".repeat(64))});
+    assert!(submissions::response(&plan, value.clone()).is_ok());
+    for (field, bad) in [
+        (
+            "checkpoint_id",
+            json!(format!("checkpoint.{}", "f".repeat(64))),
+        ),
+        ("run_id", json!("other")),
+        ("attempt_id", json!("attempt-1")),
+        ("attempt_id", Value::Null),
+    ] {
+        let mut changed = value.clone();
+        changed["resume_from"][field] = bad;
+        assert!(submissions::response(&plan, changed).is_err(), "{field}");
+    }
+    // Frozen with another Attempt, the identity and the next Attempt no longer agree.
+    let mut later = value;
+    later["resume_from"]["attempt_id"] = json!("attempt-002");
+    assert!(submissions::response(&plan, later).is_err());
+    let restart: Retry =
+        serde_json::from_value(json!({"restart_from":{"run_id":"train"}})).unwrap();
+    let plan = submissions::plan(Command::Retry {
+        submission: ID,
+        request: &restart,
+    })
+    .unwrap();
+    let client = Client::new("http://127.0.0.1:1", "synthetic-token".into()).unwrap();
+    let mut older = health();
+    older["capabilities"] = json!(["native-attempt-retry.v1"]);
+    assert!(matches!(
+        submissions::execute(&client, &plan, &older),
+        Err(Error::Observation(message)) if message.contains("--attempt")
+    ));
+}
+#[test]
+fn a_run_created_from_a_checkpoint_named_by_run_alone_checks_what_was_frozen() {
+    let checkpoint = format!("checkpoint.{}", "a".repeat(64));
+    let mut sent = creation_request();
+    sent.resume_from = Some(ml_exp_core::checkpoints::Reference {
+        run_id: "earlier".into(),
+        attempt_id: String::new(),
+        checkpoint_id: checkpoint.clone(),
+    });
+    let mut explicit = sent.clone();
+    explicit.resume_from.as_mut().unwrap().attempt_id = "attempt-001".into();
+    let plan = submissions::plan(Command::Create {
+        project: "demo",
+        request: &sent,
+    })
+    .unwrap();
+    let mut receipt = creation_receipt();
+    receipt["request_sha256"] = json!(explicit.identity("demo").unwrap());
+    receipt["resume_from"] = json!(explicit.resume_from);
+    assert!(submissions::response(&plan, receipt.clone()).is_ok());
+    let mut missing = receipt.clone();
+    missing.as_object_mut().unwrap().remove("resume_from");
+    assert!(submissions::response(&plan, missing).is_err());
+    let mut other = receipt;
+    other["resume_from"]["attempt_id"] = json!("attempt-002");
+    assert!(submissions::response(&plan, other).is_err());
 }
 
 #[test]

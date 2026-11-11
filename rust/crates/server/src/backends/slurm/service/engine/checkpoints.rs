@@ -43,6 +43,36 @@ impl Service {
             ),
         }
     }
+    /// The Run's checkpoints: those of its current Attempt, or the one checkpoint `id`
+    /// of whichever Attempt registered it. The answer names that Attempt.
+    pub fn run_checkpoints(&self, project: &str, run: &str, id: Option<&str>) -> Result<Value> {
+        let attempt = match id {
+            None => {
+                self.saved(project, run)?
+                    .ok_or(Error::Missing)?
+                    .binding
+                    .attempt_id
+            }
+            Some(id) => {
+                let mut reference = checkpoints::Reference {
+                    run_id: run.into(),
+                    attempt_id: String::new(),
+                    checkpoint_id: id.into(),
+                };
+                if !crate::checkpoints::resolve(
+                    &self.settings.registry_root,
+                    project,
+                    &mut reference,
+                )
+                .map_err(why!(Error::CheckpointConflict))?
+                {
+                    return Err(Error::CheckpointMissing);
+                }
+                reference.attempt_id
+            }
+        };
+        self.checkpoints(project, run, &attempt, id)
+    }
     pub fn refresh_checkpoint(
         &self,
         action: &str,
