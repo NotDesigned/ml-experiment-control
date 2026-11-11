@@ -173,7 +173,19 @@ async fn exchange(
         Ok(m) => Value::Object(m),
         Err(_) => return http_effect::failure(invalid()),
     };
-    if operation == "ready" {
+    if operation.starts_with("oss-") {
+        http_effect::execute_timeout(
+            state,
+            OnTimeout::Effect,
+            std::time::Duration::from_secs(120),
+            move |api, _| {
+                api.cloud_only()?
+                    .oss_import_exchange(&project, &executor, &asset, &token, &operation, body)
+                    .map_err(Into::into)
+            },
+        )
+        .await
+    } else if operation == "ready" {
         let receipt = match serde_json::from_value(body) {
             Ok(r) => r,
             Err(_) => return http_effect::failure(invalid()),

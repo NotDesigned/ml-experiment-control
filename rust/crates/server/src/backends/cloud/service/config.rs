@@ -22,6 +22,9 @@ pub struct Definition {
     #[serde(default)]
     pub imports: Vec<ml_exp_core::datasets::import::Config>,
     pub collector: Option<Profile>,
+    /// Immutable Python 3 image for the independent, zero-GPU OSS verifier.
+    #[serde(default)]
+    pub oss_import_image: Option<String>,
     /// Limits of a new CPU job on `collector`, for result sync and storage maintenance.
     #[serde(default)]
     pub result_job: domain::exchange::ResultJobLimits,

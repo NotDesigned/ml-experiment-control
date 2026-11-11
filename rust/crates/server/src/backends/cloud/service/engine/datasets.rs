@@ -264,6 +264,11 @@ impl Service {
         executor: &str,
         asset: &str,
     ) -> cloud::Result<Value> {
+        if let Some(view) = self.oss_import_view(project, executor, asset)? {
+            if view["archive_verified"] != true {
+                return Ok(view);
+            }
+        }
         Ok(Self::data_view(
             self.data_saved(project, executor, asset)?
                 .ok_or_else(missing)?,

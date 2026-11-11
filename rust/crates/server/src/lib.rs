@@ -240,9 +240,11 @@ async fn health(State(state): State<Arc<AppState>>) -> Response {
                 enabled.extend([
                     "native-datasets.v1",
                     "native-object-datasets.v1",
-                    "native-oss-dataset-import.v1",
                     "native-dataset-direct-upload.v1",
                 ]);
+                if cloud.has_oss_import() {
+                    enabled.push("native-oss-dataset-import.v2");
+                }
             }
             if cloud.has_exchange() {
                 enabled.extend([

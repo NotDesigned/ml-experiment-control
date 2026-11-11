@@ -47,6 +47,8 @@ fn safe_component(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
         && !matches!(s, "." | "..")
 }
+mod oss_import;
+pub use oss_import::ObjectIdentity;
 pub fn parts(archive: &ArchiveReceipt) -> io::Result<u64> {
     let n = archive.bytes.div_ceil(PART_BYTES);
     if n == 0 || n > MAX_PARTS {
