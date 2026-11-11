@@ -86,12 +86,9 @@ fn provider_read<T: cloud::adapter::Transport>(
     };
     let handle = serde_json::from_value(handle).map_err(why!(cloud::Error::evidence()))?;
     let cancelled = AtomicBool::new(false);
-    match adapter.profile {
-        cloud::adapter::Profile::Pai(_) => {
-            adapter.pai_provider_diagnostics(job, &handle, lines, &cancelled)
-        }
-    }
-    .map(Some)
+    adapter
+        .pai_provider_diagnostics(job, &handle, lines, &cancelled)
+        .map(Some)
 }
 fn job_view(read: Option<Value>) -> Value {
     read.unwrap_or_else(|| json!({"diagnostic":"NO_PROVIDER_JOB_RECORDED"}))
@@ -217,8 +214,7 @@ impl Service {
             if !execute {
                 return Err(missing());
             }
-            let cloud::adapter::Profile::Pai(profile) = &collector.profile;
-            if profile.storage.is_none() {
+            if collector.profile.pai().storage.is_none() {
                 return Err(unavailable("READONLY_DIAGNOSTIC_STORAGE_REQUIRED"));
             }
             let original = self.sync_outbox.reconcile(

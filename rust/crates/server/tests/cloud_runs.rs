@@ -1314,7 +1314,6 @@ fn check_running_attempt_after_project_edit(
     )
     .unwrap();
     let outbox = Outbox::open(&registry.join("cloud-submissions/effects")).unwrap();
-    let slot = Outbox::slot(job).unwrap();
     let unguarded = || -> ml_exp_server::backends::cloud::Result<()> { Ok(()) };
     outbox
         .prepare(&provider_profile, job, execution.allocation, &unguarded)
@@ -1324,7 +1323,6 @@ fn check_running_attempt_after_project_edit(
             &provider,
             job,
             execution.allocation,
-            &format!("SUBMIT {slot}"),
             &unguarded,
             &AtomicBool::new(false),
         )
@@ -1356,7 +1354,6 @@ fn check_running_attempt_after_project_edit(
             &provider,
             job,
             execution.allocation,
-            &format!("STOP {slot}"),
             &unguarded,
             &AtomicBool::new(false),
         )
