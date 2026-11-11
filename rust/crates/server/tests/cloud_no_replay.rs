@@ -3335,7 +3335,8 @@ impl DirectUpload {
         serde_json::from_slice(&fs::read(self.slot()).unwrap()).unwrap()
     }
     fn save(&self, value: &Value) {
-        private(&self.slot(), value);
+        // Replaced, as the service replaces a slot; mode 0600 as it keeps one.
+        ml_exp_io::write_atomic(&self.slot(), &serde_json::to_vec(value).unwrap(), false).unwrap();
     }
     fn saved_crcs(&self) -> Value {
         self.saved()["part_crc64"].clone()
