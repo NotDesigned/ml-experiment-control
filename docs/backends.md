@@ -40,6 +40,8 @@ The existing adapters declare:
 | Runtime | OCI → Apptainer SIF | OCI |
 | Allocation | Flexible, bounded by configured capacity | Flexible within configured quota/capacity; single node, 1–8 GPUs |
 | Uploaded input | Parts over SSH to shared storage | Approved OSS asset → zero-GPU CPU preparation or inside-job CPFS cache |
+| Code apart from the image | With `delivery.root`: once per source, over SSH to shared storage | Per Attempt, fetched by the job from the API |
+| Worker a Run froze | With `delivery.root`: once per release, over SSH to shared storage | Fetched by the job from the API's worker store |
 | Script download | Gateway before allocation when `script_preparation` is on | Inside allocated job |
 | Queue/exit/preemption reasons | Supported | Queue blockers when available; exit/preemption not guaranteed |
 | Walltime | Scheduler and worker | Scheduler and worker; 24-hour cap |
@@ -180,7 +182,10 @@ if it disappears. Upload data to a configured backend.
 
 Slurm compute nodes need no route to the API or the Internet, so there is no relay to
 configure. The worker writes metrics, checkpoints and results to shared storage, and
-the server reads them over SSH through the helper on the gateway.
+the server reads them over SSH through the helper on the gateway. The other way, the
+server places the worker a Run froze and its delivered code on shared storage before
+submitting, named by content and proven there; see
+[delivered worker and code](slurm.md#delivered-worker-and-code).
 
 Set `script_preparation` on an executor to run download scripts in the same SIF on the
 SSH gateway, with no GPU allocation, during submission staging. An executor without it

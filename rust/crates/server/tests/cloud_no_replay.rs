@@ -443,6 +443,13 @@ fn renewal(action: &str) -> ml_exp_core::renewal::Request {
         confirmation: format!("RENEW {action}"),
     }
 }
+/// What the preparation route tells the cloud service about the Slurm executors.
+fn external(slurm: &slurm_service::Service) -> ml_exp_server::cloud_runs::ExternalExecutors {
+    ml_exp_server::cloud_runs::ExternalExecutors {
+        executors: slurm.executors(),
+        code_delivery: slurm.code_executors(),
+    }
+}
 fn expired_gate(transition_id: &str) -> slurm_service::Context<'_> {
     slurm_service::Context {
         now: T_GATE_EXPIRED,
@@ -2917,14 +2924,14 @@ fn a_slurm_preparation_that_lost_its_finish_reaches_the_same_action() {
     let id = request.id("demo").unwrap();
     let confirmation = format!("PREPARE {id}");
     side.cloud
-        .experiment_prepare("demo", request, Some(&side.slurm.executors()))
+        .experiment_prepare("demo", request, Some(&external(&side.slurm)))
         .unwrap();
     let advance = || {
         side.cloud.experiment_continue(
             "demo",
             &id,
             &confirmation,
-            Some(&side.slurm.executors()),
+            Some(&external(&side.slurm)),
             open_gate(&f.transition()),
         )
     };
@@ -3014,7 +3021,7 @@ fn a_preparation_for_an_executor_nobody_runs_is_refused_before_any_effect() {
 
     // Saved while Slurm was configured, then continued without it.
     side.cloud
-        .experiment_prepare("demo", request, Some(&side.slurm.executors()))
+        .experiment_prepare("demo", request, Some(&external(&side.slurm)))
         .unwrap();
     assert!(
         side.cloud
@@ -3037,7 +3044,7 @@ fn a_preparation_for_an_executor_nobody_runs_is_refused_before_any_effect() {
         .experiment_prepare(
             "demo",
             preparation_request(scripted),
-            Some(&side.slurm.executors()),
+            Some(&external(&side.slurm)),
         )
         .unwrap_err();
     assert_eq!(refused.code, "SCRIPT_PREPARATION_NOT_CONFIGURED");

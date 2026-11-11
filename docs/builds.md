@@ -25,8 +25,9 @@ Dockerfile above installs what the code needs and not the code itself.
 
 ### Code delivered to the job
 
-On a PAI executor, `ml-exp submit` reads the `COPY` and `ADD` sources of the
-Dockerfile, and uploads those files, the Dockerfile and its `.dockerignore` variants as
+On an executor that lists `capabilities.code_delivery` (PAI, and Slurm with a
+[delivery root](slurm.md#delivered-worker-and-code)), `ml-exp submit` reads the `COPY` and
+`ADD` sources of the Dockerfile, and uploads those files, the Dockerfile and its `.dockerignore` variants as
 the environment. Docker can only see what these instructions name, so a file the
 Dockerfile uses cannot be missed. The image's identity depends only on those files, so
 changing other code gives a new Run of the same Runtime, with no rebuild and no new
@@ -36,15 +37,18 @@ The whole directory is uploaded as well, as the Run's code, frozen with the Run.
 the Dockerfile and the lock file too, so editing one of those changes both the Runtime and
 the code source; only the reverse is free:
 
-- The worker downloads it before training, into `ATTEMPT_ROOT/code`, and checks every
-  file against the source's identity. A file that differs is named in the job's error, and
+- On PAI the worker downloads it before training, into `ATTEMPT_ROOT/code`, and checks
+  every file against the source's identity. On Slurm the server places it once on the
+  cluster's shared storage, in `ROOT/code/SOURCE_ID/code`, for every Run and Attempt of
+  that source; each job proves every file again before it starts. A file that differs is named in the job's error, and
   training does not start. A repeat of the same Attempt reuses a tree it has proven, or
   refuses; it never overwrites one.
 - That directory is the working directory and `SOURCE_DIR`. `/ml-expd/source` is not the
   code path in this case: it holds only the environment files.
 - The directory is read-only and `PYTHONDONTWRITEBYTECODE=1` is set. Write to `OUTPUT_DIR`
   and `STATE_DIR`. `--env` cannot set these two names for such a Run.
-- A retry or a checkpoint resume keeps the original code, in a new directory of its own.
+- A retry or a checkpoint resume keeps the original code: on PAI in a new directory of
+  its own, on Slurm in the same read-only shared copy.
 - The code that goes with a job is at most 64 MiB of files and 20,000 entries. A larger
   directory is not refused: it stays in the image and any change builds it again, and the
   question says so. Move large files to data with [`ml-exp data upload`](data.md) to avoid
@@ -57,7 +61,7 @@ delivered separately, when the Dockerfile uses any of these, because what it rea
 then be known for certain: a source of `.`, a glob, a variable, a path outside the
 directory, `ADD` from a URL, `RUN --mount`, a heredoc or `ONBUILD`. The same holds for a
 source that is not among the uploaded files, for a Run with `data_preparation`, whose job
-may start before any Attempt has code, and on a Slurm executor. `COPY --from` is another
+may start before any Attempt has code, and on a Slurm executor without a delivery root. `COPY --from` is another
 stage and does not count. The question before submitting says which applies, and why.
 
 A base image with its own `ONBUILD COPY` cannot be seen from here. It would see only the
@@ -116,10 +120,14 @@ once that worker is not the current one. The same recipe gets a new identity, so
 environment builds one more time** after this release, and then no more for an upgrade. A
 preparation not yet built moves to the new identity; one built stays on the old.
 
-Slurm keeps today's identity and builds per worker, since its jobs have no exchange to fetch
-from and a SIF is materialized per Runtime. To follow later, a Slurm job would need a route to
-the worker, such as the gateway placing it on shared storage, and materialization keyed
-on the image rather than the worker.
+On Slurm with a [delivery root](slurm.md#delivered-worker-and-code), a new Run also freezes the
+server's worker as `native_slurm_delivery.worker_sha256`, and the server places that file on
+shared storage before submitting, so the job runs it and not the image's. The deploy tool's
+`ROOT/workers/` is where it comes from, so a release needs nothing uploaded by hand to the
+gateway. A Slurm Runtime's identity still names the worker it was built with, because a SIF is
+materialized per Runtime: a server upgrade builds each Slurm environment once more, and a code
+change alone builds nothing. Keying materialization on the image rather than the worker would
+remove that rebuild too.
 
 See [platform checks](platform-checks.md) for the distinction between user
 requirements, implementation limits and additional platform policies under review.
@@ -139,8 +147,8 @@ checks no minimum version.
 - A `data_preparation` script, unless its `interpreter` names something else.
 
 Managed ENTRYPOINT/CMD replace client startup commands; configure scientific
-argv with Runtime `entrypoint` and Run `arguments`. On Slurm, code is copied into the
-image, never overlaid by a second checkout.
+argv with Runtime `entrypoint` and Run `arguments`. On Slurm, code is either in the image or,
+with a delivery root, the delivered shared copy; it is never overlaid by a second checkout.
 
 ## Publication and reuse
 
