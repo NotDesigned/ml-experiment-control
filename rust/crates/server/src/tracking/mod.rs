@@ -6,7 +6,6 @@ mod transport;
 use ml_exp_core::tracking::{RoutingSettings, WandbOptions, WandbSettings};
 pub use publisher::Publisher;
 pub use publisher::Source;
-pub use publisher::repair;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -18,15 +17,15 @@ type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     #[error("invalid private W&B publisher configuration")]
     Configuration,
-    #[error("W&B SDK communication unavailable; durable reservations retained")]
+    #[error("W&B SDK communication unavailable; rows are resent from the cursor")]
     Transport,
     #[error("W&B SDK is not installed in the configured interpreter")]
     SdkMissing,
-    #[error("W&B SDK request failed: {0}; durable publication state retained")]
+    #[error("W&B SDK request failed: {0}; rows are resent from the cursor")]
     SdkRequest(&'static str),
     #[error("W&B publication blocked: {0}; journal and cursor retained")]
     Publication(&'static str),
-    #[error("W&B publication identity or remote proof is invalid")]
+    #[error("W&B publication identity or state is invalid")]
     Identity,
     #[error("W&B journal or private publication store unavailable")]
     Storage,

@@ -2,10 +2,7 @@
 //! publishers. All normal reads and writes require an exact Run guard.
 //! No HTTP, provider, scheduler or scientific payload file access.
 mod store;
-pub use store::{
-    DerivedBatch, EventRow, ImportSummary, RecordGuard, RemoteHistoryEvidence, RemoteObservation,
-    Store, WandbRebuild,
-};
+pub use store::{DerivedBatch, EventRow, ImportSummary, RecordGuard, Store, WandbRebuild};
 
 pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, thiserror::Error)]
@@ -34,7 +31,7 @@ pub enum Error {
     Unbound,
     #[error("record scope does not exist or belongs to another Run")]
     Scope,
-    #[error("remote confirmation does not prove the frozen publication identity and sequence")]
+    #[error("a publication cursor advance does not match the frozen identity or journal")]
     Confirmation,
     #[error("derived metrics require an Attempt whose Run has ended")]
     NotEnded,

@@ -4,7 +4,6 @@ Private bounded frames use stdin/stdout; credentials never enter argv/logs.
 No imports from the Python server or user experiment are needed.
 """
 import contextlib
-import hashlib
 import json
 import struct
 import sys
@@ -59,7 +58,7 @@ def close(identity):
         directory.cleanup()
 
 
-def session(sdk, job):
+def session(sdk, api, job):
     identity = job["wandb_id"]
     if identity in sessions:
         sessions[identity] = sessions.pop(identity)
@@ -68,9 +67,17 @@ def session(sdk, job):
         # Finishing flushes, so the least recently used Run only resumes later.
         with contextlib.suppress(Exception):
             close(next(iter(sessions)))
-    directory = tempfile.TemporaryDirectory(prefix="ml-exp-wandb-")
     route = job["route"]
     scope = job["scope"]
+    if job["resume"] == "must":
+        # One read per opened session: a Run this scope created before and a
+        # person deleted is never recreated under the same name.
+        remote = request('REMOTE_READ', lambda: api.run(
+            f'{route["entity"]}/{route["project"]}/{identity}'))
+        if (remote.id, remote.entity, remote.project) != (
+                identity, route["entity"], route["project"]):
+            raise ValueError("remote identity differs")
+    directory = tempfile.TemporaryDirectory(prefix="ml-exp-wandb-")
     try:
         handle = request('INIT', lambda: sdk.init(
             entity=route["entity"], project=route["project"], id=identity,
@@ -110,98 +117,36 @@ def dispatch(job):
                   overrides={"base_url": "https://api.wandb.ai"}, timeout=15)
     if operation == "default_entity":
         return {"entity": request('DEFAULT_ENTITY', lambda: api.default_entity)}
-    if operation == "observe":
-        route, identity = job["route"], job["wandb_id"]
-        def observe_remote():
-            return request('REMOTE_READ', lambda: api.run(f'{route["entity"]}/{route["project"]}/{identity}'))
-        try:
-            remote = observe_remote()
-        except RequestFailed as exc:
-            if exc.code != 'WANDB_REMOTE_RUN_MISSING' or not job['open_session'] or job['resume'] != 'allow':
-                raise
-            # Atomic create-if-absent for a new unreserved scope. Existing or
-            # uncertain scopes are read first and never recreated implicitly.
-            session(sdk, {**job, 'resume': 'never'})
-            remote = observe_remote()
-        if (remote.id, remote.entity, remote.project) != (
-                identity, route["entity"], route["project"]):
-            raise ValueError("remote identity differs")
-        def history_rows():
-            history, maximum = {}, 0
-            first = max(1, job["confirmed"])
-            bound = max(0, job["through"] - first + 1)
-            # SDK pages may repeat the live tail. Collapse only an identical
-            # complete physical row; distinct rows remain distinct evidence.
-            # A digest of each row is enough for that, so a window costs little.
-            for row in remote.scan_history(
-                    min_step=max(0, job["confirmed"] - 1),
-                    page_size=1000, use_cache=False):
-                if "ml_expd/sequence" not in row:
-                    continue
-                sequence, physical = row["ml_expd/sequence"], row["_step"]
-                if type(sequence) is not int or type(physical) is not int:
-                    raise ValueError("history sequence or physical step")
-                maximum = max(maximum, sequence)
-                if sequence < first or sequence > job["through"]:
-                    continue
-                digest = hashlib.sha256(json.dumps(row, sort_keys=True).encode()).digest()
-                if physical in history:
-                    if history[physical][0] != digest:
-                        raise ValueError("conflicting physical history row")
-                    continue
-                if len(history) > bound:
-                    raise ValueError("history bound")
-                history[physical] = (digest, sequence, row["ml_expd/event_id"])
-            # A repair that crossed a late delivery shows one record twice. It stays
-            # counted and does not stop the Run: W&B cannot remove a row, and nothing
-            # is lost. Two different events at one sequence is a real conflict.
-            records = {}
-            for _, sequence, event_id in history.values():
-                if records.setdefault(sequence, event_id) != event_id:
-                    raise ValueError("distinct events repeat a sequence")
-            return [{"sequence": sequence, "event_id": records[sequence]}
-                    for sequence in sorted(records)], maximum, len(history) - len(records)
-        history, maximum, duplicates = request('HISTORY_READ', history_rows)
-        summary_keys = list(remote.summary.keys())
-        if len(summary_keys) > 8192:
-            raise ValueError("summary bound")
-        return {"wandb_id": identity, "route": route, "state": remote.state,
-                "config": remote.config.get("ml_expd"),
-                "summary_keys": summary_keys,
-                "physical_next_step": max(0, (remote.lastHistoryStep if remote.lastHistoryStep is not None else -1) + 1), "evidence": {
-                    "history": history,
-                    "duplicate_rows": duplicates,
-                    "last_history_step": maximum - 1,
-                    "display_version": remote.summary.get("ml_expd/display_version"),
-                    "display_through": remote.summary.get("ml_expd/display_through")}}
     if operation == "apply":
-        handle = session(sdk, job)
-        step = max(job.get("physical_next_step", 0), handle.step)
+        handle = session(sdk, api, job)
         for definition in job["definitions"]:
             handle.define_metric(definition["name"], **definition["options"])
-        for effect in job["effects"]:
-            if effect["operation"] == "history":
-                request('WRITE', lambda: handle.log(effect["record"], step=step,
-                           commit=True))
-                step += 1
-            elif effect["operation"] == "display":
-                for key in effect["patch"]["delete"]:
-                    if key in handle.summary.keys():
-                        del handle.summary[key]
-                for key, value in effect["patch"]["set"].items():
-                    handle.summary[key] = value
-            elif effect["operation"] == "finish":
-                # Forget it first: a failed finish must not leave a dead handle
-                # that every later apply for this Run would be sent to.
-                _, directory = sessions.pop(job["wandb_id"])
-                try:
-                    handle.finish(exit_code=effect["exit_code"])
-                finally:
-                    directory.cleanup()
-            else:
-                raise ValueError("unknown SDK operation")
-        # This is only a transport receipt, never a remote history ACK.
-        return {"applied": True}
+        if job.get("display") is not None:
+            patch = job["display"]
+            for key in patch["delete"]:
+                if key in handle.summary.keys():
+                    del handle.summary[key]
+            for key, value in patch["set"].items():
+                handle.summary[key] = value
+        step = start = handle.step
+        for record in job["history"]:
+            request('WRITE', lambda: handle.log(record, step=step, commit=True))
+            step += 1
+        # The SDK's own acknowledgement: wandb-core has taken every row above.
+        # It is not a read of W&B, which may still miss or repeat a row.
+        if job["history"] and handle.step != step:
+            raise RequestFailed('WANDB_WRITE_FAILED')
+        return {"applied": True, "rows": step - start}
+    if operation == "finish":
+        handle = session(sdk, api, job)
+        # Forget it first: a failed finish must not leave a dead handle that
+        # every later request for this Run would be sent to.
+        _, directory = sessions.pop(job["wandb_id"])
+        try:
+            request('WRITE', lambda: handle.finish(exit_code=job["exit_code"]))
+        finally:
+            directory.cleanup()
+        return {"finished": True}
     raise ValueError("unknown SDK request")
 
 
@@ -219,7 +164,7 @@ def main():
         try:
             job = json.loads(raw)
             with contextlib.redirect_stdout(sys.stderr):
-                stage = 'WRITE' if job.get('operation') == 'apply' else 'REMOTE_READ'
+                stage = 'WRITE' if job.get('operation') in ('apply', 'finish') else 'REMOTE_READ'
                 result = request(stage, lambda: dispatch(job))
         except ImportError:
             result = {"error": "WANDB_SDK_NOT_INSTALLED"}

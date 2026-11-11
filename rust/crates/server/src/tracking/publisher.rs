@@ -1,81 +1,44 @@
+//! W&B as a best-effort mirror of the journal. Each Attempt's rows are sent to
+//! its one W&B Run in order, the cursor advances when the SDK accepted them,
+//! and a failed send is retried from the cursor. W&B is never read back: the
+//! journal, result archives and MLflow are the authoritative record.
 use super::{Error, Result, Runtime, transport::Sdk};
 use crate::background::Worker;
-use crate::records::{EventRow, RecordGuard, RemoteHistoryEvidence, RemoteObservation, Store};
+use crate::records::{RecordGuard, Store};
 use ml_exp_core::{
     records::{RunKind, Scope},
     tracking::{
         self,
-        publication::{
-            self, HistoryEvent, PublicationAction, PublicationState, PublicationStatus,
-            RemoteEvidence,
-        },
+        publication::{self, Progress, PublicationState, Step},
     },
 };
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    thread,
-    time::{Duration, Instant},
+    time::Instant,
 };
-mod repair;
 mod session;
-pub use repair::repair;
 use session::{Next, Session};
 
-/// Seconds before the next look at a scope waiting for remote history. W&B is
-/// read at most this often per scope, so it also bounds the cost of waiting.
-const POLL_SECONDS: u64 = 5;
 /// An idle scope costs two local reads and no cloud request.
 const IDLE_SECONDS: u64 = 2;
 
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct HistoryRepair {
-    events: BTreeMap<i64, String>,
-    attempted: bool,
-    remote_confirmed: bool,
-    // States saved before automatic recovery have none of these.
-    // One is what `attempted` already says, so an older server can still load it.
-    #[serde(default, skip_serializing_if = "at_most_one")]
-    attempts: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    source: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    at: Option<String>,
-}
-
-/// What remains of a confirmed repair once a later one replaces its record.
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RepairAudit {
-    first: i64,
-    last: i64,
-    count: usize,
-    attempts: u32,
-    source: Option<String>,
-    at: Option<String>,
-}
-
+/// Unknown fields are ignored, so the reservations, repair records and
+/// duplicate counts an earlier release saved still load; they are dropped on
+/// the next save.
 #[derive(Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Saved {
+    #[serde(default)]
     state: PublicationState,
-    finish_requested: bool,
+    #[serde(default)]
     remote_finished: bool,
+    #[serde(default)]
     ever_opened: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    history_repair: Option<HistoryRepair>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    repairs: Vec<RepairAudit>,
-    /// The most rows W&B has shown repeating a record: a repair crossed a late delivery.
-    /// Nothing was lost, and a W&B row cannot be removed, so this only reports it.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    duplicate_rows: u64,
     /// W&B no longer has a Run this scope had opened: a person deleted it. It is
     /// never recreated, so the scope stops here and shows why.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -85,12 +48,6 @@ struct Saved {
     /// excluded names to the new id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     wandb_rebuild: Option<String>,
-}
-fn at_most_one(value: &u32) -> bool {
-    *value <= 1
-}
-fn is_zero(value: &u64) -> bool {
-    *value == 0
 }
 pub struct Publisher {
     _worker: Worker,
@@ -215,7 +172,7 @@ impl Publisher {
                     publish_scope(&*service, &store, &runtime, &mut session, &scope, flag);
                 let now = start.elapsed().as_secs();
                 schedule = match &outcome {
-                    Ok(Next::Poll) => schedule.due_at(&scope, now.saturating_add(POLL_SECONDS)),
+                    Ok(Next::More) => schedule.due_at(&scope, now),
                     Ok(Next::Idle) => schedule.due_at(&scope, now.saturating_add(IDLE_SECONDS)),
                     Err(_) => schedule.outcome(&scope, now, &policy, false, false),
                 };
@@ -260,13 +217,10 @@ fn candidate_scopes(store: &Store) -> Result<BTreeSet<String>> {
 }
 fn record_failure(store: &Store, scope: &str, session: &mut Session, error: &Error) {
     // A complete per-Run error frame leaves the pipe usable. A broken pipe does
-    // not, and losing the SDK strands the other Runs' buffered rows: those stay
-    // reserved, and only automatic recovery may append them, once proven absent.
+    // not: the child is dropped, and every scope resends from its cursor.
     if matches!(error, Error::Transport | Error::SdkMissing) {
         session.lost();
     }
-    // Rows may have arrived unseen during a failed read, so the next scan starts over.
-    session.forget_watch(scope);
     let _ = failure(store, scope, error);
 }
 fn failure(store: &Store, scope: &str, error: &Error) -> Result<()> {
@@ -277,7 +231,7 @@ fn failure(store: &Store, scope: &str, error: &Error) -> Result<()> {
     let (at, _) = crate::projects::transition_context().map_err(why!(Error::Storage))?;
     let code = match error {
         Error::SdkMissing => "WANDB_SDK_NOT_INSTALLED",
-        Error::Identity => "PUBLICATION_RECONCILE_REQUIRED",
+        Error::Identity => "PUBLICATION_STATE_INVALID",
         Error::SdkRequest(code) => code,
         Error::Publication(code) => code,
         _ => "PUBLISHER_UNAVAILABLE",
@@ -317,10 +271,19 @@ fn publish_bound(
 ) -> Result<Next> {
     publish_ended(store, runtime, session, scope, None, cancelled)
 }
+/// One scope and what this visit knows about it.
+struct Visit<'a, 'g> {
+    store: &'a Store,
+    guard: &'a RecordGuard<'g>,
+    scope: &'a str,
+    wandb_id: &'a str,
+    at: &'a str,
+    total: i64,
+}
 /// `ended` is the provider's proven terminal state of the scope's Attempt. A job the
 /// provider stopped (preempted, killed, timed out) never writes METRICS_DRAINED, yet
 /// its worker can no longer write either, so its W&B Run is finished as failed once
-/// every journal row is confirmed. No lifecycle event is invented for it.
+/// every journal row is sent. No lifecycle event is invented for it.
 fn publish_ended(
     store: &Store,
     runtime: &Runtime,
@@ -344,9 +307,10 @@ fn publish_ended(
         .scope_status(&guard, scope)
         .map_err(why!(Error::Storage))?
         .ok_or(Error::Identity)?;
-    let confirmed = status["confirmed"].as_i64().ok_or(Error::Identity)?;
+    let mut confirmed = status["confirmed"].as_i64().ok_or(Error::Identity)?;
+    let wandb_id = status["wandb_id"].as_str().ok_or(Error::Identity)?;
     // What this thread remembers is about one W&B Run: a rebuild starts afresh.
-    session.rebind(scope, status["wandb_id"].as_str().ok_or(Error::Identity)?);
+    session.rebind(scope, wandb_id);
     let total = store.total(&guard, scope).map_err(why!(Error::Storage))?;
     // An ended Attempt is looked at until it is finished, though its journal is still.
     if ended.is_none() && session.is_idle(scope, total) {
@@ -365,7 +329,7 @@ fn publish_ended(
     }
     if saved.remote_finished {
         // A finished W&B Run is resumed only for derived rows added after the Run
-        // ended. It is then published, proven and finished again like any other.
+        // ended. They are then sent and the Run finished again like any other.
         if !store
             .derived_after(&guard, scope, confirmed)
             .map_err(why!(Error::Storage))?
@@ -373,42 +337,35 @@ fn publish_ended(
             return Ok(Next::Idle);
         }
         saved.remote_finished = false;
-        saved.finish_requested = false;
         saved.state.finished = false;
     }
-    if saved.state.confirmed > confirmed {
-        return Err(Error::Identity);
+    let (at, _) = crate::projects::transition_context().map_err(why!(Error::Storage))?;
+    let visit = Visit {
+        store,
+        guard: &guard,
+        scope,
+        wandb_id,
+        at: &at,
+        total,
+    };
+    // An earlier release waited to see reserved rows in W&B history. They were
+    // handed to the SDK, so they count as sent once and are not sent again.
+    if !saved.state.sent.is_empty() {
+        saved.ever_opened = true;
+        confirmed = carry_legacy(&visit, &saved.state, confirmed)?;
+        saved.state.sent.clear();
+        let phase = if confirmed >= total {
+            "SYNCED"
+        } else {
+            "PENDING"
+        };
+        save(&visit, &saved, phase, None)?;
     }
-    let display_version = tracking::DISPLAY_VERSION;
-    saved.state.confirmed = confirmed;
-    saved.state.sent.retain(|sequence, _| *sequence > confirmed);
-    let highest = saved
-        .state
-        .sent
-        .keys()
-        .next_back()
-        .map_or(confirmed, |s| *s);
-    let mut events = store
-        .events_bounded(
-            &guard,
-            scope,
-            confirmed,
-            session.share(scope).max(highest - confirmed),
-            session::WINDOW_BYTES,
-        )
-        .map_err(why!(Error::Storage))?;
-    // `sent` is saved as one bounded document, so event IDs bound a window too.
-    let mut reserved = 0;
-    if let Some(cut) = events.iter().position(|event| {
-        reserved += event.event_id.len() + 24;
-        reserved > session::RESERVATION_BYTES && event.seq > highest
-    }) {
-        events.truncate(cut);
-    }
-    let through = events.last().map_or(confirmed, |e| e.seq);
+    let display_current = status["display_version"] == tracking::DISPLAY_VERSION
+        && status["display_confirmed"] == confirmed;
     // Only the journal's end can be terminal, and this query walks back through
     // every record since the last lifecycle event.
-    let lifecycle = if through == total {
+    let lifecycle = if confirmed == total {
         store
             .latest_lifecycle(&guard, scope)
             .map_err(why!(Error::Storage))?
@@ -420,198 +377,168 @@ fn publish_ended(
             lifecycle["state"].as_str(),
             Some("SUCCEEDED" | "FAILED" | "CANCELLED" | "TIMEOUT")
         );
-    let terminal = (drained || ended.is_some()) && through == total;
-    let mut job = json!({"operation":"observe","api_key":runtime.key,"route":binding["route"],"wandb_id":status["wandb_id"],"scope":status,"config":binding["config"],"confirmed":confirmed,"through":through,
-        "open_session":!saved.finish_requested,"resume":if saved.ever_opened||confirmed>0||!saved.state.sent.is_empty(){"must"}else{"allow"}});
-    let remote = match session.open(runtime)?.call(&job, cancelled) {
-        // A Run this scope opened before is gone. Recreating it would publish a
-        // partial copy under the same name, so the scope stops and says why.
-        Err(Error::SdkRequest(code @ "WANDB_REMOTE_RUN_MISSING")) if job["resume"] == "must" => {
-            saved.remote_missing = true;
-            let (at, _) = crate::projects::transition_context().map_err(why!(Error::Storage))?;
-            save(
-                store,
-                &guard,
-                scope,
-                &saved,
-                "REMOTE_RUN_MISSING",
-                Some(code),
-                &at,
-            )?;
-            session.forget_watch(scope);
+    let step = publication::next(&Progress {
+        cursor: confirmed,
+        total,
+        display_current,
+        terminal: drained || ended.is_some(),
+        finished: saved.remote_finished,
+    });
+    let job = json!({"api_key":runtime.key,"route":binding["route"],"wandb_id":wandb_id,
+        "scope":status,"config":binding["config"],
+        "resume":if saved.ever_opened || confirmed > 0 {"must"} else {"allow"}});
+    let sent = match step {
+        Step::Idle => {
+            // A status an earlier release left, such as ACK_PENDING, moves on.
+            if status["status"] != "SYNCED" {
+                save(&visit, &saved, "SYNCED", None)?;
+            }
             session.mark_idle(scope, total);
             return Ok(Next::Idle);
         }
-        result => result?,
-    };
-    if remote["wandb_id"] != status["wandb_id"] || remote["route"] != binding["route"] {
-        return Err(Error::Publication("REMOTE_RUN_IDENTITY_MISMATCH"));
-    }
-    let evidence: RemoteEvidence = serde_json::from_value(remote["evidence"].clone())
-        .map_err(why!(Error::Publication("REMOTE_HISTORY_EVIDENCE_INVALID")))?;
-    let local: Vec<_> = events
-        .iter()
-        .map(|event| HistoryEvent {
-            sequence: event.seq,
-            event_id: event.event_id.clone(),
-        })
-        .collect();
-    let expected = store
-        .event_id(&guard, scope, confirmed)
-        .map_err(why!(Error::Storage))?;
-    let plan = publication::plan(
-        &saved.state,
-        &evidence,
-        &local,
-        expected.as_deref(),
-        terminal,
-        display_version,
-    )
-    .map_err(why!(Error::Publication("PUBLICATION_PLAN_INVALID")))?;
-    match &plan.status {
-        // A hole among our own reservations is what recovery looks at below.
-        PublicationStatus::ReconcileRequired { .. } if saved.state.sent.is_empty() => {
-            return Err(Error::Publication("REMOTE_HISTORY_RECONCILE_REQUIRED"));
+        Step::Send | Step::Display => send(
+            &visit, runtime, session, &mut saved, job, confirmed, cancelled,
+        ),
+        Step::Finish => {
+            let exit_code = i32::from(!(drained && lifecycle["state"] == "SUCCEEDED"));
+            finish(
+                &visit, runtime, session, &mut saved, job, exit_code, cancelled,
+            )
         }
-        PublicationStatus::IdentityConflict { .. } => {
-            return Err(Error::Publication("REMOTE_EVENT_IDENTITY_CONFLICT"));
-        }
-        _ => {}
-    }
-    let (at, _) = crate::projects::transition_context().map_err(why!(Error::Storage))?;
-    let display_ack = evidence.display_version == Some(display_version)
-        && evidence.display_through == Some(plan.state.confirmed)
-        && plan.state.confirmed == through;
-    let proof = RemoteHistoryEvidence {
-        route: binding["route"].clone(),
-        wandb_id: status["wandb_id"].as_str().ok_or(Error::Identity)?.into(),
-        through: plan.state.confirmed,
-        observed: evidence
-            .history
-            .iter()
-            .filter(|item| {
-                item.sequence >= confirmed.max(1) && item.sequence <= plan.state.confirmed
-            })
-            .map(|item| RemoteObservation {
-                sequence: item.sequence,
-                event_id: item.event_id.clone(),
-            })
-            .collect(),
-        display_version: display_ack.then_some(display_version),
-        display_through: display_ack.then_some(plan.state.confirmed),
     };
-    if plan.state.confirmed > confirmed || display_ack {
-        store
-            .confirm_publication(&guard, scope, &proof, None, &at)
-            .map_err(why!(Error::Publication("PUBLICATION_ACK_EVIDENCE_INVALID")))?;
-    }
-    saved.ever_opened = true;
-    saved.state = plan.state;
-    saved.duplicate_rows = saved
-        .duplicate_rows
-        .max(remote["evidence"]["duplicate_rows"].as_u64().unwrap_or(0));
-    if let Some(repair) = saved.history_repair.as_mut() {
-        if repair.attempted
-            && repair
-                .events
-                .keys()
-                .all(|seq| *seq <= saved.state.confirmed)
-        {
-            repair.remote_confirmed = true;
-        }
-    }
-    session.note_backlog(scope, total > saved.state.confirmed);
-    let finish = plan
-        .actions
-        .iter()
-        .any(|action| matches!(action, PublicationAction::Finish { .. }));
-    let exit_code = if drained && lifecycle["state"] == "SUCCEEDED" {
-        0
-    } else {
-        1
-    };
-    if saved.finish_requested
-        && terminal
-        && finish
-        && remote["state"] == if exit_code == 0 { "finished" } else { "failed" }
-    {
-        saved.remote_finished = true;
-        saved.state.finished = true;
-        save(store, &guard, scope, &saved, "FINISHED", None, &at)?;
-        return Ok(Next::Idle);
-    }
-    saved.state.finished = false;
-    saved.finish_requested |= finish;
-    // Reserve all selected sends durably BEFORE any SDK call. A crash between
-    // reservation and transport remains uncertain; it never permits a resend.
-    let (phase, error) = match plan.status {
-        PublicationStatus::Synced { .. } => ("SYNCED", None),
-        PublicationStatus::DisplayAckPending { .. } => {
-            ("DISPLAY_ACK_PENDING", Some("REMOTE_DISPLAY_ACK_PENDING"))
-        }
-        PublicationStatus::Finished { .. } => {
-            ("FINISH_ACK_PENDING", Some("REMOTE_FINISH_ACK_PENDING"))
-        }
-        _ => ("ACK_PENDING", Some("REMOTE_ACK_PENDING")),
-    };
-    let visit = repair::Visit {
-        store,
-        guard: &guard,
-        scope,
-        events: &events,
-        at: &at,
-        through,
-        cancelled,
-    };
-    if plan.actions.is_empty() && !saved.state.sent.is_empty() {
-        return repair::await_reservations(
-            &visit,
-            session,
-            &mut saved,
-            &remote,
-            &job,
-            (phase, error),
-        );
-    }
-    session.forget_watch(scope);
-    if plan.actions.is_empty() {
-        save(store, &guard, scope, &saved, phase, error, &at)?;
-        if phase == "SYNCED" && through == total {
+    match sent {
+        // A Run this scope opened before is gone. Recreating it would publish a
+        // partial copy under the same name, so the scope stops and says why.
+        Err(Error::SdkRequest(code @ "WANDB_REMOTE_RUN_MISSING")) => {
+            saved.remote_missing = true;
+            save(&visit, &saved, "REMOTE_RUN_MISSING", Some(code))?;
             session.mark_idle(scope, total);
+            Ok(Next::Idle)
         }
-        return Ok(Next::Idle);
+        result => result,
     }
-    let display = session
-        .display(store, &guard, scope, through)
+}
+/// Advance the cursor through the rows an earlier release reserved.
+fn carry_legacy(visit: &Visit<'_, '_>, state: &PublicationState, confirmed: i64) -> Result<i64> {
+    let highest = state.sent.keys().next_back().copied().unwrap_or(confirmed);
+    if highest <= confirmed {
+        return Ok(confirmed);
+    }
+    let rows = visit
+        .store
+        .events(visit.guard, visit.scope, confirmed, highest - confirmed)
         .map_err(why!(Error::Storage))?;
-    let keys: Vec<String> =
-        serde_json::from_value(remote["summary_keys"].clone()).map_err(why!(Error::Identity))?;
-    let mut effects = Vec::new();
-    for action in plan.actions {
-        effects.push(match action {
-            PublicationAction::EmitHistory{sequence,event_id}=>{
-                let event=events.iter().find(|event|event.seq==sequence&&event.event_id==event_id).ok_or(Error::Identity)?;
-                json!({"operation":"history","sequence":sequence,"record":tracking::history_record(&event.document(),&display).map_err(history_error)?})
-            },
-            PublicationAction::PublishDisplay{..}=>json!({"operation":"display","patch":tracking::summary_patch(&display,&keys,"worker JSONL; accepted observations").map_err(why!(Error::Identity))?}),
-            PublicationAction::Finish{..}=>json!({"operation":"finish","exit_code":exit_code}),
-        });
+    let ids: Vec<_> = rows
+        .iter()
+        .map(|row| (row.seq, row.event_id.as_str()))
+        .collect();
+    let through = publication::legacy_cursor(state, confirmed, &ids);
+    if through > confirmed {
+        advance(visit, through, false)?;
     }
+    Ok(through)
+}
+/// Send the rows after `confirmed`, with the summary for their end, and move the
+/// cursor as each request is accepted. With no rows left it sends the summary.
+fn send(
+    visit: &Visit<'_, '_>,
+    runtime: &Runtime,
+    session: &mut Session,
+    saved: &mut Saved,
+    mut job: Value,
+    confirmed: i64,
+    cancelled: &AtomicBool,
+) -> Result<Next> {
+    let &Visit {
+        store,
+        guard,
+        scope,
+        total,
+        ..
+    } = visit;
+    let events = store
+        .events_bounded(
+            guard,
+            scope,
+            confirmed,
+            session.batch,
+            session::WINDOW_BYTES,
+        )
+        .map_err(why!(Error::Storage))?;
+    let through = events.last().map_or(confirmed, |e| e.seq);
+    let display = session
+        .display(store, guard, scope, through)
+        .map_err(why!(Error::Storage))?;
+    let history = events
+        .iter()
+        .map(|event| tracking::history_record(&event.document(), &display).map_err(history_error))
+        .collect::<Result<Vec<_>>>()?;
+    let patch = tracking::summary_patch(
+        &display,
+        &summary_names(&display),
+        "worker JSONL; accepted observations",
+    )
+    .map_err(why!(Error::Identity))?;
     job["operation"] = json!("apply");
-    job["physical_next_step"] = remote["physical_next_step"].clone();
-    job["resume"] = json!("must");
     job["definitions"] = json!(tracking::definition_specs(&display).map_err(why!(
         Error::Publication("JOURNAL_METRIC_DEFINITIONS_INVALID")
     ))?);
-    // Reject an oversized/invalid effect before reserving any new sequence.
-    // Transport loss after the durable reservation still requires remote ACK.
-    let frames = Sdk::frames(&job, effects)?;
-    if cancelled.load(Ordering::Relaxed) {
+    let frames = Sdk::frames(&job, history, json!(patch))?;
+    let mut cursor = confirmed;
+    for mut frame in frames {
+        if cancelled.load(Ordering::Relaxed) {
+            return Err(Error::Transport);
+        }
+        let rows = frame["history"].as_array().map_or(0, Vec::len);
+        if saved.ever_opened {
+            frame["resume"] = json!("must");
+        }
+        let applied = session.call(runtime, &frame, cancelled)?;
+        if applied["applied"] != true || applied["rows"] != rows {
+            return Err(Error::Transport);
+        }
+        cursor += i64::try_from(rows).map_err(why!(Error::Identity))?;
+        advance(visit, cursor, !frame["display"].is_null())?;
+        if !saved.ever_opened {
+            saved.ever_opened = true;
+            let phase = if cursor >= total { "SYNCED" } else { "PENDING" };
+            save(visit, saved, phase, None)?;
+        }
+    }
+    Ok(Next::More)
+}
+/// Finish the W&B Run: `finished` for a Run that succeeded, `failed` otherwise.
+fn finish(
+    visit: &Visit<'_, '_>,
+    runtime: &Runtime,
+    session: &mut Session,
+    saved: &mut Saved,
+    mut job: Value,
+    exit_code: i32,
+    cancelled: &AtomicBool,
+) -> Result<Next> {
+    job["operation"] = json!("finish");
+    job["exit_code"] = json!(exit_code);
+    let finished = session.call(runtime, &job, cancelled)?;
+    if finished["finished"] != true {
         return Err(Error::Transport);
     }
-    save(store, &guard, scope, &saved, phase, error, &at)?;
-    session.send(scope, &job, frames, cancelled)?;
-    Ok(Next::Poll)
+    saved.ever_opened = true;
+    saved.remote_finished = true;
+    saved.state.finished = true;
+    save(visit, saved, "FINISHED", None)?;
+    Ok(Next::Idle)
+}
+/// Every name this journal summarizes. The SDK deletes only those it holds, so
+/// a name with no valid value loses its stale summary and other keys stay.
+fn summary_names(display: &Value) -> Vec<String> {
+    let names: BTreeSet<_> = display["series"]
+        .as_object()
+        .into_iter()
+        .flat_map(|series| series.values())
+        .filter_map(|row| row["result"].as_str().map(String::from))
+        .collect();
+    names.into_iter().collect()
 }
 fn history_error(error: tracking::Error) -> Error {
     match error {
@@ -619,23 +546,29 @@ fn history_error(error: tracking::Error) -> Error {
         _ => Error::Publication("JOURNAL_HISTORY_PROJECTION_INVALID"),
     }
 }
-fn save(
-    store: &Store,
-    guard: &RecordGuard<'_>,
-    scope: &str,
-    saved: &Saved,
-    status: &str,
-    error: Option<&str>,
-    at: &str,
-) -> Result<()> {
-    store
+fn advance(visit: &Visit<'_, '_>, through: i64, display: bool) -> Result<()> {
+    visit
+        .store
+        .advance_publication(
+            visit.guard,
+            visit.scope,
+            visit.wandb_id,
+            through,
+            display,
+            visit.at,
+        )
+        .map_err(why!(Error::Storage))
+}
+fn save(visit: &Visit<'_, '_>, saved: &Saved, status: &str, error: Option<&str>) -> Result<()> {
+    visit
+        .store
         .save_publication_state(
-            guard,
-            scope,
+            visit.guard,
+            visit.scope,
             &serde_json::to_value(saved).map_err(why!(Error::Identity))?,
             status,
             error,
-            at,
+            visit.at,
         )
         .map_err(why!(Error::Storage))
 }
