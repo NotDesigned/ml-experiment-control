@@ -149,6 +149,12 @@ impl Helper {
             // Hashed in full when published; see `managed::run`.
             ml_exp_io::datasets::verify_file_sizes(&root, &dataset.receipt.definition)?;
         }
+        if let Some(source) = &package.config.code_source_id {
+            // The server delivered it before this request. Names and sizes here; the
+            // job hashes every file before it starts.
+            crate::cloud_code::require_shared(&package.config.workdir, source, false)
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+        }
         let directories = self.shared_directories(&plan, true)?;
         let sealed = Sealed { plan };
         let attempt = &directories[3];

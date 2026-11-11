@@ -348,10 +348,62 @@ fn an_attempt_reads_only_its_own_frozen_code_and_the_run_can_say_what_it_was_mad
         .experiment_prepare(
             "demo",
             on_slurm,
-            Some(&BTreeMap::from([("slurm-test".to_owned(), true)])),
+            Some(&ml_exp_server::cloud_runs::ExternalExecutors {
+                executors: BTreeMap::from([("slurm-test".to_owned(), true)]),
+                code_delivery: Default::default(),
+            }),
         )
         .unwrap_err();
     assert_eq!(refused.code, "CODE_DELIVERY_UNSUPPORTED");
+    // A Slurm executor that delivers code takes it, under the same limit as PAI.
+    let delivering = ml_exp_server::cloud_runs::ExternalExecutors {
+        executors: BTreeMap::from([("slurm-test".to_owned(), true)]),
+        code_delivery: ["slurm-test".to_owned()].into(),
+    };
+    let on_slurm = |request_id: &str, run: &str, code: &str, runtime: Value| {
+        let mut value = json!({
+            "request_id":request_id.repeat(32),"run":{"run_id":run,
+            "runtime_id":format!("runtime.{}","1".repeat(64)),"executor":"slurm-test",
+            "command":["train"],"resources":{"gpus":1,"cpus":8,"memory_gb":64},
+            "walltime_seconds":300,"seed":42,"code_source_id":code},
+            "approval":{"max_gpu_hours":1.0}});
+        if !runtime.is_null() {
+            value["run"].as_object_mut().unwrap().remove("runtime_id");
+            value["runtime"] = runtime;
+        }
+        serde_json::from_value::<ml_exp_core::preparation::Request>(value).unwrap()
+    };
+    let accepted = service
+        .experiment_prepare(
+            "demo",
+            on_slurm("7", "code-on-slurm", &code_id, Value::Null),
+            Some(&delivering),
+        )
+        .unwrap();
+    assert_eq!(accepted["frozen"]["code_source_id"], code_id.as_str());
+    let refused = service
+        .experiment_prepare(
+            "demo",
+            on_slurm("8", "large-on-slurm", &large, Value::Null),
+            Some(&delivering),
+        )
+        .unwrap_err();
+    assert_eq!(refused.code, "CODE_SOURCE_TOO_LARGE");
+    // A change to the code alone names the same Runtime, so there is nothing to build
+    // and no SIF to convert: a Slurm Runtime is materialized once.
+    let recipe = json!({"source_id":environment,"executor":"slurm-test",
+        "base_image":format!("registry.example/base@sha256:{}", "4".repeat(64)),
+        "dockerfile":"Dockerfile"});
+    let other_code = world.publish(&[("train.py", &b"print('changed')\n"[..])]);
+    let worker = format!("sha256:{}", "9".repeat(64));
+    let first = on_slurm("5", "first", &code_id, recipe.clone())
+        .resolve("demo", &worker)
+        .unwrap();
+    let second = on_slurm("6", "second", &other_code, recipe)
+        .resolve("demo", &worker)
+        .unwrap();
+    assert_ne!(first.code_source_id, second.code_source_id);
+    assert_eq!(first.runtime_id, second.runtime_id);
 
     let temp = world.temp.path();
     let read_file = temp.join("reads.json");

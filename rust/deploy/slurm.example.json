@@ -24,6 +24,7 @@
     },
     "data_helper_config": "/shared/researcher/ml-exp/data-helper.json",
     "script_preparation": false,
+    "delivery": {"root": "/shared/researcher/ml-exp/delivered"},
     "runtimes": {}
   }],
   "polling": {"enabled": false, "interval_seconds": 10, "rpc_timeout_seconds": 5}

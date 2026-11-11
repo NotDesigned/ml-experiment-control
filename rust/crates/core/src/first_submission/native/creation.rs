@@ -9,8 +9,7 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
 /// A refusal the caller can act on, so it keeps its own words at the HTTP boundary.
-pub const CODE_DELIVERY_UNSUPPORTED: &str =
-    "code_source_id is not supported on a Slurm executor yet; keep the code in the image";
+pub const CODE_DELIVERY_UNSUPPORTED: &str = "code_source_id needs a Slurm executor that delivers code, with a delivery root and a worker store configured; keep the code in the image";
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Scheduling {
@@ -156,6 +155,14 @@ pub struct Authority<'a> {
     pub checkpoint: Option<&'a Value>,
     pub datasets: &'a [crate::datasets::Receipt],
     pub tracking_route: Option<&'a Value>,
+    /// Where this executor delivers, and the worker a new Run freezes. Absent, the
+    /// Run works from its image and its documents are what they always were.
+    pub delivery: Option<Delivery<'a>>,
+}
+#[derive(Clone, Copy)]
+pub struct Delivery<'a> {
+    pub settings: &'a slurm::delivery::Settings,
+    pub worker_sha256: &'a str,
 }
 pub fn plan(
     project: &str,
@@ -169,9 +176,24 @@ pub fn plan(
     if request.scheduling.is_some() {
         return Err(Error("cloud scheduling requires a cloud executor"));
     }
-    if request.code_source_id.is_some() {
-        return Err(Error(CODE_DELIVERY_UNSUPPORTED));
-    }
+    let delivery = match authority.delivery {
+        Some(offer) => {
+            offer
+                .settings
+                .validate(&profile.mount_root, &profile.run_root, &profile.data_root)
+                .map_err(|_| Error("delivery root"))?;
+            Some(
+                offer
+                    .settings
+                    .freeze(offer.worker_sha256, request.code_source_id.as_deref())
+                    .map_err(|_| Error("frozen delivery"))?,
+            )
+        }
+        None if request.code_source_id.is_some() => {
+            return Err(Error(CODE_DELIVERY_UNSUPPORTED));
+        }
+        None => None,
+    };
     OffsetDateTime::parse(now, &Rfc3339).map_err(|_| Error("creation time"))?;
     if request.executor != profile.target.backend_id || request.runtime_id != runtime.runtime_id {
         return Err(Error("Run runtime or executor"));
@@ -220,7 +242,11 @@ pub fn plan(
         resources: request.resources.clone(),
         execution: slurm::ExecutionConfig {
             source_mount: runtime.source_dir.clone(),
-            workdir: runtime.source_dir.clone(),
+            // Delivered code is worked on where it was delivered, not in the image.
+            workdir: delivery
+                .as_ref()
+                .and_then(slurm::delivery::Frozen::workdir)
+                .unwrap_or_else(|| runtime.source_dir.clone()),
             managed_io: true,
             env: request.env.clone(),
         },
@@ -237,6 +263,9 @@ pub fn plan(
     }
     if let Some(preparation) = &request.data_preparation {
         protocol["data_preparation"] = json!(preparation);
+    }
+    if let Some(code) = &request.code_source_id {
+        protocol["code_source_id"] = json!(code);
     }
     match (&request.resume_from, authority.checkpoint) {
         (Some(reference), Some(value)) => {
@@ -282,6 +311,12 @@ pub fn plan(
     }
     if let Some(route) = authority.tracking_route {
         run["tracking_route"] = route.clone();
+    }
+    if let Some(frozen) = &delivery {
+        run[slurm::delivery::KEY] = json!(frozen);
+        if let Some(code) = &frozen.code_source_id {
+            run["code_source_id"] = json!(code);
+        }
     }
     // Bind the full trusted runtime, including its materialization receipt.
     run["native_creation"]["runtime_sha256"] = json!(
@@ -521,6 +556,7 @@ mod tests {
                 checkpoint: None,
                 datasets: std::slice::from_ref(&receipt),
                 tracking_route: None,
+                delivery: None,
             },
             "2026-10-29T00:00:00Z",
         )
@@ -628,12 +664,186 @@ mod tests {
                 checkpoint: None,
                 datasets: &[],
                 tracking_route: None,
+                delivery: None,
             },
             "2026-10-29T00:00:00Z",
         )
         .err()
         .unwrap();
         assert_eq!(refused.0, CODE_DELIVERY_UNSUPPORTED);
+    }
+    #[test]
+    fn a_slurm_run_with_delivery_freezes_its_worker_and_works_in_its_delivered_code() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let target = slurm::helper::Target {
+            backend_id: "slurm-test".into(),
+            profile_sha256: digest.clone(),
+            storage_scope: digest.clone(),
+        };
+        let profile = Profile {
+            target,
+            ssh_alias: "cluster".into(),
+            partition: "gpu".into(),
+            account: "team".into(),
+            qos: "normal".into(),
+            gpu_type: "h200".into(),
+            mount_root: "/shared".into(),
+            run_root: "/shared/runs".into(),
+            data_root: "/shared/datasets".into(),
+            max_gpus: 8,
+            max_cpus: 64,
+            max_memory_gb: 512,
+            max_walltime_seconds: 86400,
+        };
+        let runtime = Runtime {
+            runtime_id: format!("runtime.{}", "1".repeat(64)),
+            source_id: format!("source.{}", "2".repeat(64)),
+            image_id: digest.clone(),
+            sif_path: "/shared/images/code.sif".into(),
+            sif_sha256: digest.clone(),
+            oci_image: format!("registry.example/team/code@{digest}"),
+            worker: slurm::managed::Runtime {
+                program: "/opt/ml-expd/worker".into(),
+                base_environment: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
+                runtime_environment: Vec::new(),
+            },
+            source_dir: "/workspace".into(),
+        };
+        let settings = slurm::delivery::Settings {
+            root: "/shared/ml-exp".into(),
+        };
+        let hex = "9".repeat(64);
+        let worker = format!("sha256:{hex}");
+        let code = format!("source.{}", "3".repeat(64));
+        let authority = |delivery| Authority {
+            project_sha256: &digest,
+            source_receipt_sha256: &digest,
+            backend_config_sha256: &digest,
+            checkpoint: None,
+            datasets: &[],
+            tracking_route: None,
+            delivery,
+        };
+        let offer = Delivery {
+            settings: &settings,
+            worker_sha256: &worker,
+        };
+        let mut value = request();
+        value["code_source_id"] = json!(code);
+        let with_code: Request = serde_json::from_value(value).unwrap();
+        let documents = plan(
+            "demo",
+            &with_code,
+            &profile,
+            &runtime,
+            authority(Some(offer)),
+            "2026-10-29T00:00:00Z",
+        )
+        .unwrap();
+        let workdir = format!("/shared/ml-exp/code/{code}/code");
+        assert_eq!(documents.run["execution"]["workdir"], workdir.as_str());
+        assert_eq!(documents.run["execution"]["source_mount"], "/workspace");
+        assert_eq!(documents.run["code_source_id"], code.as_str());
+        assert_eq!(
+            documents.run[slurm::delivery::KEY]["worker_sha256"],
+            worker.as_str()
+        );
+        assert_eq!(
+            documents.run["evaluation"]["protocol"]["code_source_id"],
+            code.as_str()
+        );
+        let binding = Binding {
+            project: "demo".into(),
+            run_id: "trial".into(),
+            attempt_id: "attempt-001".into(),
+            project_sha256: digest.clone(),
+            run_sha256: canonical::protocol_identity(&documents.run).unwrap(),
+            attempt_sha256: canonical::protocol_identity(&documents.attempt).unwrap(),
+            source_receipt_sha256: digest.clone(),
+            backend_config_sha256: digest.clone(),
+        };
+        let prepared = super::super::prepare(
+            &documents.run,
+            &documents.attempt,
+            binding,
+            &profile,
+            &runtime,
+            Approval {
+                max_gpu_hours: 1.0,
+                reason: String::new(),
+            },
+            // Unlike the fixture hashes, so the plan cannot appear to contain it.
+            &"0123456789abcdef".repeat(2),
+            "2026-10-29T00:00:00Z",
+            "2026-10-29T01:00:00Z",
+        )
+        .unwrap();
+        let path = format!("/shared/ml-exp/bin/workers/{hex}");
+        let (manifest, script) = prepared.request.prepared_content().unwrap();
+        // The job proves the worker it froze, then starts that one and not the image's.
+        assert!(script.contains(&format!("{hex} {path} | sha256sum --check --status")));
+        assert!(script.contains(&format!("{path} managed-launch")));
+        assert!(!script.contains("/opt/ml-expd/worker"));
+        let intent = prepared.request.intent();
+        assert_eq!(intent.staging.worker.program, path);
+        let staged = slurm::staging::admit(intent, manifest.as_bytes()).unwrap();
+        let package = staged.managed;
+        assert_eq!(
+            package.config.code_source_id.as_deref(),
+            Some(code.as_str())
+        );
+        assert_eq!(package.config.workdir.to_str(), Some(workdir.as_str()));
+        assert_eq!(package.manifest.workdir, workdir);
+        assert_eq!(package.manifest.environment["SOURCE_DIR"], workdir);
+        assert_eq!(package.manifest.environment["PYTHONDONTWRITEBYTECODE"], "1");
+
+        // Without code the worker is still frozen, and the image holds the code.
+        let plain: Request = serde_json::from_value(request()).unwrap();
+        let documents = plan(
+            "demo",
+            &plain,
+            &profile,
+            &runtime,
+            authority(Some(offer)),
+            "2026-10-29T00:00:00Z",
+        )
+        .unwrap();
+        assert_eq!(documents.run["execution"]["workdir"], "/workspace");
+        assert!(documents.run.get("code_source_id").is_none());
+        assert!(
+            documents.run[slurm::delivery::KEY]
+                .get("code_source_id")
+                .is_none()
+        );
+        // Without delivery, nothing new is written into the Run.
+        let documents = plan(
+            "demo",
+            &plain,
+            &profile,
+            &runtime,
+            authority(None),
+            "2026-10-29T00:00:00Z",
+        )
+        .unwrap();
+        assert!(documents.run.get(slurm::delivery::KEY).is_none());
+        // A root a job does not bind is refused before anything is written.
+        let outside = slurm::delivery::Settings {
+            root: "/elsewhere".into(),
+        };
+        let refused = plan(
+            "demo",
+            &with_code,
+            &profile,
+            &runtime,
+            authority(Some(Delivery {
+                settings: &outside,
+                worker_sha256: &worker,
+            })),
+            "2026-10-29T00:00:00Z",
+        )
+        .err()
+        .unwrap();
+        assert_eq!(refused.0, "delivery root");
     }
     #[test]
     fn optional_cloud_policy_is_identity_bound_and_omission_preserves_original_bytes() {

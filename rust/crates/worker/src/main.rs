@@ -5,6 +5,8 @@ mod cli;
 #[cfg(unix)]
 mod cloud_cli;
 #[cfg(unix)]
+mod code_cli;
+#[cfg(unix)]
 mod data_cli;
 #[cfg(unix)]
 mod data_copy_cli;
@@ -86,6 +88,10 @@ fn main() -> ExitCode {
             }
             Some("data-import") => {
                 return import_cli::main_from(std::iter::once(binary).chain(arguments));
+            }
+            // Code delivered to a Slurm cluster's shared storage, by the server.
+            Some("code-receive") => {
+                return code_cli::main_from(std::iter::once(binary).chain(arguments));
             }
             Some("data-helper") => {
                 return data_cli::main_from(std::iter::once(binary).chain(arguments));

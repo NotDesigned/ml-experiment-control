@@ -348,6 +348,7 @@ pub fn compile(input: Input<'_>) -> Result<Package> {
         checkpoint_restore: None,
         datasets: Vec::new(),
         data_preparation: None,
+        code_source_id: None,
     };
     let package = Package {
         root,

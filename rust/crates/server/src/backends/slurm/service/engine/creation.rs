@@ -99,7 +99,8 @@ impl Service {
             .runs
             .iter()
             .find(|run| run.reference.run_id == request.run_id);
-        let route = if let Some(existing) = existing {
+        // A repeat keeps what the Run froze, even after an upgrade changed the worker.
+        let (route, offer) = if let Some(existing) = existing {
             if existing.reference.root_index != 0
                 || existing.reference.relative_components != [request.run_id.clone()]
             {
@@ -108,16 +109,41 @@ impl Service {
             let published = root
                 .child(OsStr::new(&request.run_id), false)
                 .map_err(why!(Error::Authority))?;
-            read_json(&published, "manifest.json")?
-                .get("tracking_route")
-                .cloned()
+            let manifest = read_json(&published, "manifest.json")?;
+            let frozen = ml_exp_core::slurm::delivery::Frozen::from_document(&manifest)
+                .map_err(why!(Error::Authority))?;
+            (
+                manifest.get("tracking_route").cloned(),
+                frozen.map(|frozen| {
+                    (
+                        ml_exp_core::slurm::delivery::Settings { root: frozen.root },
+                        frozen.worker_sha256,
+                    )
+                }),
+            )
         } else {
-            Some(ml_exp_core::tracking::resolve(
-                request.wandb.as_ref(),
-                &self.tracking,
-                project,
-            ))
+            (
+                Some(ml_exp_core::tracking::resolve(
+                    request.wandb.as_ref(),
+                    &self.tracking,
+                    project,
+                )),
+                self.delivery_offer(backend),
+            )
         };
+        if let Some(code) = &request.code_source_id {
+            // Over 64 MiB or 20,000 entries, it stays in the image, as on a cloud executor.
+            self.sources.check_code(project, code).map_err(|error| {
+                if error.code == "CODE_SOURCE_TOO_LARGE" {
+                    Error::Admission(native::Error(
+                        "the code source is over 64 MiB or 20,000 entries; keep it in the image",
+                    ))
+                } else {
+                    crate::why::record(file!(), line!(), &error.code);
+                    Error::Authority
+                }
+            })?;
+        }
         let documents = creation::plan(
             project,
             &request,
@@ -138,6 +164,10 @@ impl Service {
                     })
                     .collect::<Result<Vec<_>>>()?,
                 tracking_route: route.as_ref(),
+                delivery: offer.as_ref().map(|(settings, worker)| creation::Delivery {
+                    settings,
+                    worker_sha256: worker,
+                }),
             },
             now,
         )?;

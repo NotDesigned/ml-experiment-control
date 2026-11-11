@@ -28,6 +28,10 @@ pub struct Definition {
     pub data_helper_config: Option<String>,
     #[serde(default)]
     pub script_preparation: bool,
+    /// Where the server places workers and code on shared storage. Without it, jobs
+    /// run the worker in their image and code stays in the image.
+    #[serde(default)]
+    pub delivery: Option<ml_exp_core::slurm::delivery::Settings>,
 }
 impl Settings {
     pub fn from_slice(bytes: &[u8]) -> Result<Self, Error> {
@@ -79,6 +83,7 @@ impl Settings {
                     runtimes: definition.runtimes,
                     data_helper_config: definition.data_helper_config,
                     script_preparation: definition.script_preparation,
+                    delivery: definition.delivery,
                 };
                 backend.validate()?;
                 Ok(backend)

@@ -603,6 +603,22 @@ impl crate::backends::slurm::service::RuntimeBuilder for Service {
         self.materialized_runtime(project, executor, id)
             .map_err(why!(crate::backends::slurm::service::Error::Authority))
     }
+    /// Only with a store of every release's worker, which a later Attempt may ask for.
+    fn current_worker(&self) -> Option<String> {
+        self.builds
+            .as_ref()
+            .filter(|settings| settings.worker_store.is_some())
+            .map(|settings| settings.worker_sha256.clone())
+    }
+    fn worker_file(
+        &self,
+        sha256: &str,
+    ) -> std::result::Result<(u64, std::fs::File), crate::backends::slurm::service::Error> {
+        let content = self.stored_worker(sha256).map_err(why!(
+            crate::backends::slurm::service::Error::WorkerUnavailable
+        ))?;
+        Ok((content.bytes, content.into_file()))
+    }
 }
 
 impl Service {

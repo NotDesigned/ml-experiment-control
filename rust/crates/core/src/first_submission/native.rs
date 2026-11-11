@@ -299,6 +299,19 @@ pub fn job(run: &Value, binding: &Binding) -> Result<slurm::JobSpec> {
         command: decode(&run["command"])?,
     })
 }
+/// The worker a job runs: the one its Run froze on shared storage, else the image's own.
+fn frozen_worker(
+    attempt: &Value,
+    runtime: &Runtime,
+) -> Result<(Option<slurm::delivery::Frozen>, slurm::managed::Runtime)> {
+    let delivery =
+        slurm::delivery::Frozen::from_document(attempt).map_err(|_| Error("frozen delivery"))?;
+    let mut worker = runtime.worker.clone();
+    if let Some(frozen) = &delivery {
+        worker.program = frozen.worker_path();
+    }
+    Ok((delivery, worker))
+}
 fn comparable(value: &Value) -> Result<Value> {
     let mut value = value.as_object().cloned().ok_or(Error("manifest"))?;
     for key in ["attempt_id", "created_at", "attempt_created_at"] {
@@ -391,6 +404,19 @@ pub fn definition(
         &spec.storage.project_data_root,
     )
     .map_err(|_| Error("dataset bindings"))?;
+    let (delivery, worker) = frozen_worker(attempt, runtime)?;
+    if slurm::delivery::Frozen::from_document(run).map_err(|_| Error("frozen delivery"))?
+        != delivery
+        || delivery
+            .as_ref()
+            .is_some_and(|frozen| !slurm::path_within(&frozen.root, &profile.mount_root))
+        || run.get("code_source_id").and_then(Value::as_str)
+            != delivery
+                .as_ref()
+                .and_then(|frozen| frozen.code_source_id.as_deref())
+    {
+        return Err(Error("frozen delivery"));
+    }
     slurm::managed::plan_with_inputs(
         &Scope {
             project: binding.project.clone(),
@@ -398,7 +424,7 @@ pub fn definition(
             attempt_id: binding.attempt_id.clone(),
         },
         &spec,
-        &runtime.worker,
+        &worker,
         attempt.get("native_checkpoint"),
         &datasets,
     )
@@ -449,7 +475,11 @@ pub fn definition(
         || !helper::valid_digest(&runtime.sif_sha256)
         || spec.backend.oci_image.as_deref() != Some(&runtime.oci_image)
         || !slurm::absolute_path(&runtime.source_dir)
-        || spec.execution.workdir != runtime.source_dir
+        || spec.execution.workdir
+            != delivery
+                .as_ref()
+                .and_then(slurm::delivery::Frozen::workdir)
+                .unwrap_or_else(|| runtime.source_dir.clone())
         || field(&run["container"], "runtime_id")? != runtime.runtime_id
         || !runtime
             .runtime_id
@@ -500,12 +530,12 @@ pub fn prepare(
         run_id: binding.run_id.clone(),
         attempt_id: binding.attempt_id.clone(),
     };
-    let package =
-        slurm::managed::plan_for_document(&scope, &spec, &runtime.worker, attempt, &datasets)
-            .map_err(|_| Error("managed launch"))?;
+    let (delivery, worker) = frozen_worker(attempt, runtime)?;
+    let package = slurm::managed::plan_for_document(&scope, &spec, &worker, attempt, &datasets)
+        .map_err(|_| Error("managed launch"))?;
     let mut launch_spec = spec.clone();
-    launch_spec.command = slurm::managed::command(&package, &runtime.worker)
-        .map_err(|_| Error("managed launch command"))?;
+    launch_spec.command =
+        slurm::managed::command(&package, &worker).map_err(|_| Error("managed launch command"))?;
     let script = slurm::render_job_with_datasets(&launch_spec, Some(token), &datasets)
         .map_err(|_| Error("script"))?;
     let attempt_path = format!(
@@ -520,13 +550,22 @@ pub fn prepare(
         slurm::shell_quote(&runtime.sif_sha256[7..]).map_err(|_| Error("SIF hash"))?,
         slurm::shell_quote(&runtime.sif_path).map_err(|_| Error("SIF path"))?
     );
+    // The worker a Run froze is the file of that hash, or the job stops before it starts.
+    let verify = match &delivery {
+        Some(frozen) => format!(
+            "{verify}if ! printf '%s  %s\\n' {} {} | sha256sum --check --status; then\n  printf '%s\\n' 'ML_EXPD_WORKER=FAILED code=WORKER_VERIFICATION_FAILED' >&2\n  exit 78\nfi\nprintf '%s\\n' ML_EXPD_WORKER=VERIFIED\n",
+            slurm::shell_quote(&frozen.worker_sha256[7..]).map_err(|_| Error("worker hash"))?,
+            slurm::shell_quote(&frozen.worker_path()).map_err(|_| Error("worker path"))?
+        ),
+        None => verify,
+    };
     let script = script.replacen("set -euo pipefail\n", &verify, 1);
     let request = Request::prepare(
         FrozenIntent {
             target: profile.target.clone(),
             staging: slurm::staging::Requirement {
                 runs_root: profile.run_root.clone(),
-                worker: runtime.worker.clone(),
+                worker,
             },
             scope,
             submission_token: token.into(),

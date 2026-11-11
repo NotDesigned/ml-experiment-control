@@ -93,8 +93,11 @@ fn config(root: &Path, mode: &str) -> SshConfig {
     // The test harness's own stdout is redirected: only the framed response
     // file becomes fake SSH stdout. The child is native Rust, not a Python
     // bridge, and never reaches a network or an actual scheduler.
+    // A delivery command after the alias is run here, as the gateway's login shell runs
+    // it: OpenSSH joins the remote words with spaces. Helper calls go to the child.
     let program = format!(
-        "#!/bin/sh\nset -eu\nprintf 'call\\n' >> {calls}\nprintf '%s\\0' \"$@\" > {argv}\nexport {CHILD_ROOT}={root}\n{executable} --exact backends::slurm::tests::fake_ssh_child --nocapture > {harness} 2>&1\ncat {response}\ncat {diagnostic} >&2\nexit \"$(cat {exit})\"\n",
+        "#!/bin/sh\nset -eu\nremote=''\nseen=0\nfor word in \"$@\"; do\n  case $seen in\n    0) if [ \"$word\" = -- ]; then seen=1; fi ;;\n    1) seen=2 ;;\n    *) remote=\"$remote $word\" ;;\n  esac\ndone\ncase \"$remote\" in\n  ' sh -c '*|*' code-receive '*) printf '%s\\n' \"$remote\" >> {deliveries}; exec sh -c \"$remote\" ;;\nesac\nprintf 'call\\n' >> {calls}\nprintf '%s\\0' \"$@\" > {argv}\nexport {CHILD_ROOT}={root}\n{executable} --exact backends::slurm::tests::fake_ssh_child --nocapture > {harness} 2>&1\ncat {response}\ncat {diagnostic} >&2\nexit \"$(cat {exit})\"\n",
+        deliveries = quote(&root.join("deliveries")),
         calls = quote(&root.join("calls")),
         argv = quote(&root.join("argv")),
         root = quote(root),

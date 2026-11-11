@@ -42,7 +42,7 @@ pub(crate) fn extend(document: &mut Value) {
     let mut run=document["paths"]["/api/projects/{project}/runs"]["post"]["requestBody"]["content"]["application/json"]["schema"].clone();
     run["properties"]["scheduling"] = scheduling;
     run["properties"]["env"] = json!({"type":"object","additionalProperties":{"type":"string"},"description":"Frozen per-Run environment. Platform directory, identity and ML_EXPD_ variables are reserved. Store credentials separately."});
-    run["properties"]["code_source_id"] = json!({"type":"string","description":"Optional, on a cloud executor. Code delivered to each Attempt and used as its working directory, instead of the code in the image. At most 64 MiB; not with data_preparation."});
+    run["properties"]["code_source_id"] = json!({"type":"string","description":"Optional, on an executor whose capabilities list code_delivery: PAI, or Slurm with a delivery root. Code delivered to each Attempt, or once to a Slurm cluster's shared storage, and used as its working directory, instead of the code in the image. At most 64 MiB; not with data_preparation."});
     run["properties"]["resume_from"] = object(
         &["run_id", "checkpoint_id"],
         json!({"run_id":{"type":"string"},"attempt_id":{"type":"string","description":"Optional: the server fills in the Attempt that registered checkpoint_id, and the Run freezes it. Given, it must be that Attempt."},"checkpoint_id":{"type":"string"}}),

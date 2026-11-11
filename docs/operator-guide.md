@@ -169,15 +169,20 @@ files and worker hash and restarts them. On success it writes `ROOT/DEPLOYED.jso
 with the version, source commit and hashes; read that file to learn what is running.
 
 The tool replaces programs only. It does not touch registries, Runs, Attempts,
-provider jobs or remote Slurm helpers, and rollback restores no database. New builds
+provider jobs or remote Slurm helpers, and rollback restores no database. A Slurm
+backend with a [delivery root](slurm.md#delivered-worker-and-code) needs no helper
+uploaded by hand: at its next submission or dataset upload the server places the new
+worker under `delivery.root/bin/workers/` by its hash and makes `ssh.helper_path` that
+worker. Without a delivery root, copy the bundle's `ml-exp-worker-rs` to `ssh.helper_path`
+on the gateway yourself, as before. New builds
 embed the new worker. On Slurm they get new Runtime identities. On PAI they
 do not, so an environment is not rebuilt, and each new Run freezes the new worker and
 downloads it when it starts ([details](builds.md#the-worker-and-upgrades)); the first release
 with this still builds each environment once more. Existing Runtimes and images keep their
 frozen worker. One deployment runs at a time (`ROOT/.deploy.lock`).
 
-Never delete `ROOT/workers/`: a queued job or a retry fetches the worker its Run froze from
-there, and without it fails before training with `WORKER_BINARY_UNAVAILABLE`. It grows by one
+Never delete `ROOT/workers/`, nor a Slurm `delivery.root/bin/workers/` or `delivery.root/code/`:
+a queued job or a retry fetches the worker its Run froze from there, and without it fails before training with `WORKER_BINARY_UNAVAILABLE`. It grows by one
 worker, about 8 MiB, per release, and a damaged file is replaced at the next deployment of that
 worker. An earlier server does not read a Runtime built on the new identity, or a preparation
 frozen with it, so `--rollback` past this release refuses while any exist, and names the files

@@ -154,6 +154,7 @@ pub fn plan_with_inputs(
             .transpose()?,
         datasets: datasets.to_vec(),
         data_preparation: None,
+        code_source_id: None,
     };
     managed::execution_environment(&config, &manifest).map_err(|_| helper::Error::Metadata)?;
     Ok(Package { config, manifest })
@@ -194,6 +195,29 @@ pub fn plan_for_document(
             require_cached: true,
         };
         managed::attach_preparation(&mut package.config, &mut package.manifest, plan)
+            .map_err(|_| helper::Error::Metadata)?;
+    }
+    // Code delivered to shared storage: its sealed tree is the working directory, and
+    // the worker proves it before starting. A Run that froze none is what it always was.
+    if let Some((workdir, code)) = super::delivery::Frozen::from_document(document)
+        .map_err(|_| helper::Error::Metadata)?
+        .and_then(|frozen| frozen.workdir().zip(frozen.code_source_id))
+    {
+        if spec.execution.workdir != workdir || package.config.data_preparation.is_some() {
+            return Err(helper::Error::Metadata);
+        }
+        package.config.code_source_id = Some(code);
+        package.manifest.environment.extend([
+            ("SOURCE_DIR".to_owned(), workdir),
+            ("PYTHONDONTWRITEBYTECODE".to_owned(), "1".to_owned()),
+        ]);
+        package
+            .config
+            .local_binding
+            .as_mut()
+            .ok_or(helper::Error::Metadata)?
+            .sha256 = helper::sha256_bytes(&package.manifest_bytes()?)[7..].into();
+        managed::execution_environment(&package.config, &package.manifest)
             .map_err(|_| helper::Error::Metadata)?;
     }
     Ok(package)

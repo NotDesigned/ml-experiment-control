@@ -120,7 +120,7 @@ fn split(path: &str) -> (&str, &str) {
     path.rsplit_once('/').unwrap_or(("", path))
 }
 fn receive(
-    response: &mut reqwest::blocking::Response,
+    response: &mut impl Read,
     file: &CodeFile,
     parent: &Directory,
 ) -> std::result::Result<(), Failure> {
@@ -165,14 +165,6 @@ fn fill(
     tree: &Directory,
     manifest: &CodeManifest,
 ) -> std::result::Result<(), Failure> {
-    let mut opened = BTreeMap::from([(String::new(), tree.clone())]);
-    // Sorted, so a parent comes before everything inside it.
-    for path in &manifest.directories {
-        let (parent, name) = split(path);
-        let parent = opened.get(parent).ok_or(Failure::Final(Error::Binding))?;
-        let child = parent.create_new_child(OsStr::new(name)).map_err(storage)?;
-        opened.insert(path.clone(), child);
-    }
     let mut response = get(client, url, token)?;
     if response
         .content_length()
@@ -182,11 +174,27 @@ fn fill(
             "the code content is not the size of its listing".into(),
         ));
     }
+    fill_from(&mut response, tree, manifest)
+}
+/// The files of the listing, one after another in its order, and nothing after them.
+fn fill_from(
+    response: &mut impl Read,
+    tree: &Directory,
+    manifest: &CodeManifest,
+) -> std::result::Result<(), Failure> {
+    let mut opened = BTreeMap::from([(String::new(), tree.clone())]);
+    // Sorted, so a parent comes before everything inside it.
+    for path in &manifest.directories {
+        let (parent, name) = split(path);
+        let parent = opened.get(parent).ok_or(Failure::Final(Error::Binding))?;
+        let child = parent.create_new_child(OsStr::new(name)).map_err(storage)?;
+        opened.insert(path.clone(), child);
+    }
     for file in &manifest.files {
         let parent = opened
             .get(split(&file.path).0)
             .ok_or(Failure::Final(Error::Binding))?;
-        receive(&mut response, file, parent)?;
+        receive(&mut *response, file, parent)?;
     }
     match response.read(&mut [0u8; 1]) {
         Ok(0) => {}
@@ -408,6 +416,10 @@ pub(crate) fn require_published(
     if workdir != attempt_root.join(CODE) {
         return Err(Error::Configuration);
     }
+    published_sizes(attempt).map(|_| ())
+}
+/// The listing's names and sizes against the tree beside it, and the source it names.
+fn published_sizes(attempt: &Directory) -> Result<String> {
     let bytes = attempt
         .read_regular(OsStr::new(MANIFEST), MANIFEST_BYTES)
         .map_err(|error| refused!("the code has no published listing: {error}; {NOT_STARTED}"))?;
@@ -440,6 +452,147 @@ pub(crate) fn require_published(
                 "code file {path}: its size differs from the frozen source; {NOT_STARTED}"
             ));
         }
+    }
+    Ok(source)
+}
+/// One code source on a Slurm cluster's shared storage: `PARENT/SOURCE` holds the sealed
+/// tree `code` and, once that is proven, its listing. The gateway writes it once for any
+/// number of Runs and Attempts, and every job proves it again before starting.
+fn shared_directory(parent: &Path, source: &str, create: bool) -> Result<Option<Directory>> {
+    sources::validate_source_id(source).map_err(|_| Error::Configuration)?;
+    let parent = match Directory::open(parent, create) {
+        Ok(directory) => directory,
+        Err(error) if !create && error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(None);
+        }
+        Err(error) => {
+            return Err(refused!(
+                "the shared code directory cannot be opened: {error}; {NOT_STARTED}"
+            ));
+        }
+    };
+    let name = OsStr::new(source);
+    if !create
+        && !parent
+            .entry_exists(name)
+            .map_err(crate::managed::storage_failure!())?
+    {
+        return Ok(None);
+    }
+    parent
+        .child(name, create)
+        .map(Some)
+        .map_err(crate::managed::storage_failure!())
+}
+/// Every file against the listing and the tree against the source, as for an Attempt.
+fn verify_listed(directory: &Directory, source: &str) -> Result<CodeManifest> {
+    let bytes = directory
+        .read_regular(OsStr::new(MANIFEST), MANIFEST_BYTES)
+        .map_err(|error| refused!("the code {source} has no listing: {error}; {NOT_STARTED}"))?;
+    let manifest = parse(&bytes, source)?;
+    let tree = directory
+        .child(OsStr::new(CODE), false)
+        .map_err(|error| refused!("the code of {source} is gone: {error}; {NOT_STARTED}"))?;
+    verify(&tree, &manifest, source)?;
+    Ok(manifest)
+}
+/// Whether the source is on shared storage and proven. A tree without a listing was
+/// never finished, and counts as absent: receiving it again starts over.
+pub fn check_shared(parent: &Path, source: &str) -> Result<bool> {
+    let Some(directory) = shared_directory(parent, source, false)? else {
+        return Ok(false);
+    };
+    if !directory
+        .entry_exists(OsStr::new(MANIFEST))
+        .map_err(crate::managed::storage_failure!())?
+    {
+        return Ok(false);
+    }
+    verify_listed(&directory, source).map(|_| true)
+}
+/// Receive one code source: a four-byte big-endian length, its listing, then the content
+/// of its files in the listing's order. True when it was there and proven already. A
+/// proven tree is never written again; one that differs is refused, and stays for an
+/// operator to look at.
+pub fn receive_shared(parent: &Path, source: &str, input: &mut impl Read) -> Result<bool> {
+    let directory = shared_directory(parent, source, true)?.ok_or(Error::Configuration)?;
+    let name = OsStr::new(MANIFEST);
+    let code = OsStr::new(CODE);
+    if directory
+        .entry_exists(name)
+        .map_err(crate::managed::storage_failure!())?
+    {
+        verify_listed(&directory, source)?;
+        // Read to the end, so that the sender's write completes.
+        std::io::copy(input, &mut std::io::sink()).map_err(crate::managed::storage_failure!())?;
+        return Ok(true);
+    }
+    if directory
+        .entry_exists(code)
+        .map_err(crate::managed::storage_failure!())?
+    {
+        // Unproven, so no job has used it: an earlier receipt stopped part of the way.
+        let unfinished = directory
+            .child(code, false)
+            .map_err(crate::managed::storage_failure!())?;
+        ml_exp_io::datasets::remove_staging(&directory, &unfinished)
+            .map_err(crate::managed::storage_failure!())?;
+    }
+    let mut header = [0u8; 4];
+    input
+        .read_exact(&mut header)
+        .map_err(|error| refused!("the code listing did not arrive: {error}; {NOT_STARTED}"))?;
+    let size = u64::from(u32::from_be_bytes(header));
+    if size == 0 || size > MANIFEST_BYTES {
+        return Err(refused!("the code listing is too large; {NOT_STARTED}"));
+    }
+    let mut bytes = vec![0; size as usize];
+    input
+        .read_exact(&mut bytes)
+        .map_err(|error| refused!("the code listing did not arrive: {error}; {NOT_STARTED}"))?;
+    let manifest = parse(&bytes, source)?;
+    let tree = directory
+        .create_new_child(code)
+        .map_err(crate::managed::storage_failure!())?;
+    if let Err(failure) = fill_from(input, &tree, &manifest) {
+        ml_exp_io::datasets::remove_staging(&directory, &tree)
+            .map_err(crate::managed::storage_failure!())?;
+        return Err(match failure {
+            Failure::Final(error) => error,
+            Failure::Again(why) => refused!("the code content: {why}; {NOT_STARTED}"),
+        });
+    }
+    verify(&tree, &manifest, source)?;
+    directory
+        .publish_new(name, &bytes)
+        .map_err(crate::managed::storage_failure!())?;
+    Ok(false)
+}
+/// The delivered code a Slurm job works in, `PARENT/SOURCE/code`. With `content`, every
+/// file is hashed, as a job does before it starts; without, names and sizes only, as the
+/// gateway checks before it asks the scheduler for anything.
+pub fn require_shared(workdir: &Path, source: &str, content: bool) -> Result<()> {
+    let directory = workdir
+        .parent()
+        .filter(|parent| {
+            workdir.file_name() == Some(OsStr::new(CODE))
+                && parent.file_name() == Some(OsStr::new(source))
+        })
+        .ok_or(Error::Configuration)?;
+    let directory = Directory::open(directory, false).map_err(|error| {
+        refused!("the delivered code {source} is not on shared storage: {error}; {NOT_STARTED}")
+    })?;
+    if content {
+        let manifest = verify_listed(&directory, source)?;
+        eprintln!(
+            "ML_EXPD_CODE=VERIFIED files={} bytes={}",
+            manifest.files.len(),
+            manifest.total_bytes()
+        );
+    } else if published_sizes(&directory)? != source {
+        return Err(refused!(
+            "the delivered code is not {source}; {NOT_STARTED}"
+        ));
     }
     Ok(())
 }
@@ -566,6 +719,90 @@ mod tests {
     }
     fn message(error: Error) -> String {
         error.to_string()
+    }
+    /// What the server sends the gateway for one source.
+    fn frame(manifest: &CodeManifest, content: &[u8]) -> Vec<u8> {
+        let listing = serde_json::to_vec(manifest).unwrap();
+        let mut frame = (listing.len() as u32).to_be_bytes().to_vec();
+        frame.extend_from_slice(&listing);
+        frame.extend_from_slice(content);
+        frame
+    }
+    #[test]
+    fn shared_code_is_received_once_proven_and_reused_by_every_job() {
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("delivered/code");
+        let (manifest, content) = train();
+        let source = manifest.source_id.clone();
+        assert!(!check_shared(&parent, &source).unwrap());
+        let reused =
+            receive_shared(&parent, &source, &mut &frame(&manifest, &content)[..]).unwrap();
+        assert!(!reused);
+        assert!(check_shared(&parent, &source).unwrap());
+        let workdir = parent.join(&source).join(CODE);
+        assert_eq!(
+            fs::read(workdir.join("train.py")).unwrap(),
+            b"print('one')\n"
+        );
+        let mode = |path: &str| {
+            fs::metadata(workdir.join(path))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777
+        };
+        assert_eq!(mode("train.py"), 0o400);
+        assert_eq!(mode("."), 0o500);
+        require_shared(&workdir, &source, true).unwrap();
+        require_shared(&workdir, &source, false).unwrap();
+        // A second receipt proves the copy and writes nothing, whatever it is sent.
+        assert!(receive_shared(&parent, &source, &mut &b"anything"[..]).unwrap());
+        // A working directory that is not this source's tree is no delivered code.
+        assert!(require_shared(&parent.join(&source), &source, true).is_err());
+        let (other, _) = source_of_one();
+        assert!(require_shared(&workdir, &other.source_id, true).is_err());
+    }
+    fn source_of_one() -> (CodeManifest, Vec<u8>) {
+        source(&[("one.py", &b"1\n"[..], false)])
+    }
+    #[test]
+    fn a_tampered_shared_file_is_named_and_refused_and_never_overwritten() {
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("code");
+        let (manifest, content) = train();
+        let source = manifest.source_id.clone();
+        // Changed on the way: nothing is proven, and the next receipt starts over.
+        let mut tampered = content.clone();
+        tampered["#!/bin/sh\n".len()] ^= 1;
+        let refused = message(
+            receive_shared(&parent, &source, &mut &frame(&manifest, &tampered)[..]).unwrap_err(),
+        );
+        assert!(refused.contains("code file src/model/net.py"), "{refused}");
+        assert!(!check_shared(&parent, &source).unwrap());
+        receive_shared(&parent, &source, &mut &frame(&manifest, &content)[..]).unwrap();
+        // Changed after it was proven, keeping its size: every check that hashes refuses
+        // it by name, and receiving it again does not repair it.
+        let workdir = parent.join(&source).join(CODE);
+        let file = workdir.join("train.py");
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::write(&file, b"print('two')\n").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o400)).unwrap();
+        let refused = message(check_shared(&parent, &source).unwrap_err());
+        assert!(refused.contains("code file train.py"), "{refused}");
+        let refused = message(require_shared(&workdir, &source, true).unwrap_err());
+        assert!(refused.contains("code file train.py"), "{refused}");
+        assert!(refused.contains("training was not started"), "{refused}");
+        require_shared(&workdir, &source, false).unwrap();
+        assert!(receive_shared(&parent, &source, &mut &frame(&manifest, &content)[..]).is_err());
+        assert_eq!(fs::read(&file).unwrap(), b"print('two')\n");
+        // A short or a long content is refused as well.
+        let other = temp.path().join("other");
+        let short = frame(&manifest, &content[..content.len() - 1]);
+        assert!(receive_shared(&other, &source, &mut &short[..]).is_err());
+        let mut long = frame(&manifest, &content);
+        long.push(b'x');
+        assert!(receive_shared(&other, &source, &mut &long[..]).is_err());
+        assert!(!check_shared(&other, &source).unwrap());
     }
     #[test]
     fn a_delivered_tree_is_exact_sealed_and_reused_without_asking_again() {

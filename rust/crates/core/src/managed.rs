@@ -38,6 +38,10 @@ pub struct Config {
     pub datasets: Vec<crate::datasets::Mount>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_preparation: Option<crate::data_preparation::Plan>,
+    /// Code a Slurm job reads from shared storage. The working directory is that
+    /// source's sealed tree, which the worker proves file by file before starting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_source_id: Option<String>,
 }
 pub fn absolute(path: &Path) -> bool {
     path.is_absolute()
@@ -133,6 +137,23 @@ impl Config {
         }
         if let Some(value) = &self.checkpoint_restore {
             crate::checkpoints::restore_plan(value, None).map_err(|_| Error)?;
+        }
+        if let Some(code) = &self.code_source_id {
+            // The tree sits in a directory named by its source, and a preparation
+            // script may run before it is there.
+            crate::sources::validate_source_id(code).map_err(|_| Error)?;
+            if self.workdir.file_name().and_then(|name| name.to_str())
+                != Some(crate::slurm::delivery::CODE)
+                || self
+                    .workdir
+                    .parent()
+                    .and_then(Path::file_name)
+                    .and_then(|name| name.to_str())
+                    != Some(code.as_str())
+                || self.data_preparation.is_some()
+            {
+                return Err(Error);
+            }
         }
         if !absolute(&self.manifest_path)
             || !absolute(&self.attempt_root)

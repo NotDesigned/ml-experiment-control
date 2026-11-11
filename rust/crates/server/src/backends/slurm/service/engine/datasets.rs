@@ -130,6 +130,11 @@ impl Service {
         request
             .validate()
             .map_err(why!(Error::DatasetUnavailable))?;
+        if matches!(request.command, Command::Begin { .. }) {
+            // The data helper is this server's own worker, made current before an upload.
+            self.refresh_helper(backend, cancelled)
+                .map_err(why!(Error::DatasetUnavailable))?;
+        }
         let mut frame =
             datasets::encode_request(&request).map_err(why!(Error::DatasetUnavailable))?;
         match &request.command {
