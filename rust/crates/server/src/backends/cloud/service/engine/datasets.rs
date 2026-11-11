@@ -25,39 +25,16 @@ pub(super) struct Saved {
     pub(super) discards: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) import_source: Option<datasets::oss::Import>,
+    /// The CRC-64/XZ of each recorded part as its uploader computed it, which the object
+    /// store's own CRC of the stored object must equal. An asset verified before these
+    /// were kept has none, and stays verified.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(super) part_crc64: BTreeMap<u64, u64>,
 }
 /// How many wrong parts one call removes.
 const MAX_DISCARDED_PARTS: usize = 64;
 fn is_zero(value: &u64) -> bool {
     *value == 0
-}
-/// Assets whose archive one request is reading now. That read can outlast its request,
-/// and it holds request slots, so a repeat is told to wait rather than read it again.
-#[derive(Default)]
-pub(super) struct Verifying(Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>);
-struct Verification {
-    names: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
-    name: String,
-}
-impl Verifying {
-    fn begin(&self, name: &str) -> cloud::Result<Verification> {
-        let mut names = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
-        if !names.insert(name.to_owned()) {
-            return Err(refused("DATASET_VERIFYING"));
-        }
-        Ok(Verification {
-            names: self.0.clone(),
-            name: name.to_owned(),
-        })
-    }
-}
-impl Drop for Verification {
-    fn drop(&mut self) {
-        self.names
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .remove(&self.name);
-    }
 }
 fn refused(code: &str) -> cloud::Error {
     cloud::Error {
@@ -158,6 +135,13 @@ impl Service {
                         .definition
                         .part_count()
                         .map_err(why!(cloud::Error::evidence()))?
+        {
+            return Err(cloud::Error::evidence());
+        }
+        if saved
+            .part_crc64
+            .keys()
+            .any(|part| !saved.state.parts.contains_key(part))
         {
             return Err(cloud::Error::evidence());
         }
@@ -286,11 +270,28 @@ impl Service {
             .data_saved(project, executor, asset)?
             .filter(|s| s.archive_verified)
             .ok_or_else(missing)?;
-        self.objects
+        self.data_read_ticket(project, executor, &saved, part)
+    }
+    /// A GET of one part of a verified asset, with the part's CRC-64 when it is known, so
+    /// that a reader can check each part as it arrives. Every reader still checks the
+    /// archive and member hashes before it uses any byte.
+    fn data_read_ticket(
+        &self,
+        project: &str,
+        executor: &str,
+        saved: &Saved,
+        part: u64,
+    ) -> cloud::Result<Value> {
+        let mut ticket = self
+            .objects
             .as_ref()
             .ok_or_else(cloud::Error::configuration)?
             .data_ticket(project, executor, &saved.state.definition, part)
-            .map_err(io)
+            .map_err(io)?;
+        if let Some(crc) = saved.part_crc64.get(&part) {
+            ticket["crc64"] = json!(crc);
+        }
+        Ok(ticket)
     }
     pub fn dataset_transfer(
         &self,
@@ -350,6 +351,7 @@ impl Service {
                     diagnostic: None,
                     discards: 0,
                     import_source: None,
+                    part_crc64: BTreeMap::new(),
                 });
             }
         }
@@ -391,7 +393,7 @@ impl Service {
                         payload,
                     )
                 };
-                match put() {
+                let crc = match put() {
                     // A direct PUT that was never recorded left other bytes, and nothing
                     // can overwrite them. Without this, --via-server could not recover.
                     Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
@@ -402,10 +404,10 @@ impl Service {
                             &[number],
                             saved.discards,
                         )?;
-                        put().map_err(io)?;
+                        put().map_err(io)?
                     }
                     other => other.map_err(io)?,
-                }
+                };
                 let _lock = self.lock("datasets.dataset_transfer#2")?;
                 saved = self
                     .data_saved(project, executor, &asset)?
@@ -414,6 +416,7 @@ impl Service {
                     .state
                     .record_part(number, record)
                     .map_err(why!(cloud::Error::evidence()))?;
+                record_crc(&mut saved, number, crc)?;
                 self.slots
                     .replace_regular(OsStr::new(&name), &encode(&saved)?)
                     .map_err(io)?;
@@ -431,16 +434,23 @@ impl Service {
                     return Err(cloud::Error::evidence());
                 }
                 if !saved.archive_verified {
-                    let _verification = self.verifying.begin(&name)?;
+                    // One HEAD per part, with the lock released: no byte is read. The
+                    // uploader's archive SHA256 is the asset's identity and its member
+                    // list is the definition; the object store's CRC-64 of each stored
+                    // part must be the one the uploader computed from the bytes it sent.
                     drop(lock);
-                    let objects = self
+                    let wrong = self
                         .objects
                         .as_ref()
-                        .ok_or_else(cloud::Error::configuration)?;
-                    if objects
-                        .verify_data(project, executor, &saved.state)
-                        .map_err(io)?
-                    {
+                        .ok_or_else(cloud::Error::configuration)?
+                        .wrong_data_parts(
+                            project,
+                            executor,
+                            &saved.state.definition,
+                            &saved.part_crc64,
+                        )
+                        .map_err(io)?;
+                    if wrong.is_empty() {
                         return self.dataset_archive_verified(
                             project,
                             executor,
@@ -450,13 +460,8 @@ impl Service {
                         );
                     }
                     // Nothing is accepted. Each wrong part is removed so that the repeat
-                    // can send it again, since a PUT can never replace it.
-                    let wrong = objects
-                        .wrong_data_parts(project, executor, &saved.state)
-                        .map_err(io)?;
-                    if wrong.is_empty() {
-                        return Err(refused("DATASET_ARCHIVE_REFUSED"));
-                    }
+                    // can send it again, since a PUT can never replace it. A part recorded
+                    // before CRCs were kept has none and is sent again the same way.
                     self.dataset_discard_parts(project, executor, &asset, &wrong, saved.discards)?;
                     return Err(refused("DATASET_PART_REJECTED"));
                 }
@@ -473,7 +478,8 @@ impl Service {
         Ok(Self::data_view(saved))
     }
     /// A signed PUT of one part, after the same checks a part through this server has.
-    /// The record comes from `dataset_part_uploaded`, and `complete` proves the bytes.
+    /// The record comes from `dataset_part_uploaded`, and `complete` checks the bytes by
+    /// the object store's CRC-64.
     pub fn dataset_upload_ticket(
         &self,
         project: &str,
@@ -513,10 +519,11 @@ impl Service {
             .map_err(why!(cloud::Error::evidence()))?;
         Ok(record)
     }
-    /// A direct PUT finished. A HEAD shows the object exists at the exact size, without
-    /// reading it back on this small host; the lock is not held for it. The record is
-    /// what the client claims until `complete` reads every byte. A resume skips it, and
-    /// nothing else can use it: every reader of the parts needs `archive_verified`.
+    /// A direct PUT finished. A HEAD shows the object exists at the exact size with the
+    /// CRC-64 the client computed from the bytes it sent, without reading it back on this
+    /// small host; the lock is not held for it. A resume skips the record, and nothing
+    /// else can use it: every reader of the parts needs `archive_verified`, which
+    /// `complete` sets after a second HEAD of every part.
     pub fn dataset_part_uploaded(
         &self,
         project: &str,
@@ -524,23 +531,27 @@ impl Service {
         asset: &str,
         part: u64,
         sha256: &str,
+        crc64: u64,
     ) -> cloud::Result<Value> {
         let saved = self
             .data_saved(project, executor, asset)?
             .ok_or_else(missing)?;
         let record = self.part_record(&saved.state, part, sha256)?;
+        if saved.part_crc64.get(&part).is_some_and(|c| *c != crc64) {
+            return Err(cloud::Error::evidence());
+        }
         if saved.archive_verified || saved.state.parts.contains_key(&part) {
             return Ok(Self::data_view(saved));
         }
-        let size = self
+        let head = self
             .objects
             .as_ref()
             .ok_or_else(cloud::Error::configuration)?
-            .data_part_size(project, executor, &saved.state.definition, part)
+            .data_part_head(project, executor, &saved.state.definition, part)
             .map_err(io)?;
-        match size {
+        match head {
             None => return Err(refused("DATASET_PART_NOT_STORED")),
-            Some(size) if size != record.bytes => {
+            Some(found) if found != (record.bytes, crc64) => {
                 self.dataset_discard_parts(project, executor, asset, &[part], saved.discards)?;
                 return Err(refused("DATASET_PART_REJECTED"));
             }
@@ -554,6 +565,7 @@ impl Service {
             .state
             .record_part(part, record)
             .map_err(why!(cloud::Error::evidence()))?;
+        record_crc(&mut saved, part, crc64)?;
         self.slots
             .replace_regular(
                 OsStr::new(&Self::data_name(project, executor, asset)?),
@@ -612,6 +624,7 @@ impl Service {
             .ok_or_else(missing)?;
         for part in removing {
             current.state.parts.remove(part);
+            current.part_crc64.remove(part);
         }
         self.slots
             .replace_regular(OsStr::new(&name), &encode(&current)?)
@@ -678,35 +691,18 @@ impl Service {
             .find(|m| m.receipt.asset_id == asset)
             .map(|m| &m.receipt.definition)
             .ok_or_else(cloud::Error::evidence)?;
-        if self
-            .uploaded_data(project, &prepared.execution.backend_id, asset)?
-            .as_ref()
-            != Some(definition)
-        {
-            return Err(cloud::Error::evidence());
-        }
-        self.objects
-            .as_ref()
-            .ok_or_else(cloud::Error::configuration)?
-            .data_ticket(project, &prepared.execution.backend_id, definition, part)
-            .map_err(io)
+        let saved = self
+            .data_saved(project, &prepared.execution.backend_id, asset)?
+            .filter(|s| s.archive_verified && s.state.definition == *definition)
+            .ok_or_else(cloud::Error::evidence)?;
+        self.data_read_ticket(project, &prepared.execution.backend_id, &saved, part)
     }
 }
-
-#[cfg(test)]
-mod verifying_tests {
-    use super::*;
-
-    #[test]
-    fn a_second_read_of_one_archive_waits_and_others_do_not() {
-        let verifying = Verifying::default();
-        let first = verifying.begin("a").unwrap();
-        assert_eq!(
-            verifying.begin("a").err().unwrap().code,
-            "DATASET_VERIFYING"
-        );
-        drop(verifying.begin("b").unwrap());
-        drop(first);
-        verifying.begin("a").unwrap();
+/// Keep the uploader's CRC-64 of a recorded part. One part has one set of bytes, so a
+/// second, different CRC for it is a contradiction, never a replacement.
+fn record_crc(saved: &mut Saved, part: u64, crc64: u64) -> cloud::Result<()> {
+    if *saved.part_crc64.entry(part).or_insert(crc64) != crc64 {
+        return Err(cloud::Error::evidence());
     }
+    Ok(())
 }

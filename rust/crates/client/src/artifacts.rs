@@ -196,11 +196,16 @@ pub fn download(
                 {
                     return Err(Error::Response);
                 }
-                client.download_object(
+                let crc64 = client.download_object(
                     ticket["url"].as_str().ok_or(Error::Response)?,
                     bytes,
                     temporary.as_file_mut(),
                 )?;
+                if !crate::transport::crc64_matches(&ticket, crc64) {
+                    return Err(Error::Observation(
+                        "a downloaded part differs from what the worker uploaded (CRC-64); no ACK was sent",
+                    ));
+                }
             }
         } else {
             client.download_artifact(&plan, temporary.as_file_mut())?;

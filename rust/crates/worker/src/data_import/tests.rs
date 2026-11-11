@@ -87,3 +87,10 @@ fn image_dataset_resumes_durable_parts_verifies_tree_and_reuses_ready_without_or
     };
     assert!(invalid.validate().is_ok());
 }
+#[test]
+fn a_part_that_differs_from_its_tickets_crc_is_refused() {
+    let crc = ml_exp_core::checkpoints::archive::crc64(b"part");
+    assert!(crc_holds(&serde_json::json!({"crc64": crc}), b"part"));
+    assert!(!crc_holds(&serde_json::json!({"crc64": crc}), b"pArt"));
+    assert!(crc_holds(&serde_json::json!({}), b"pArt"));
+}
