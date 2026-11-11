@@ -39,7 +39,7 @@ impl Fixture {
             .bind(
                 &guard,
                 route,
-                &json!({"ml_expd":{"run_id":run,"source_id":"src-1","seed":42,
+                &json!({"ml_expd":{"run_id":run,"source_id":"src-1","code_source_id":"code-1","runtime_id":"rt-1","seed":42,
                     "parameters":{"lr":0.001,"opt":{"beta1":0.9,"name":"adamw"},"bad@key":1}}}),
             )
             .unwrap();
@@ -200,6 +200,8 @@ fn a_finished_attempt_is_published_once_and_reads_back_exactly() {
         ("ml_expd.attempt", "attempt-001"),
         ("ml_expd.scope", "demo/train/attempt-001"),
         ("ml_expd.source_id", "src-1"),
+        ("ml_expd.code_source_id", "code-1"),
+        ("ml_expd.runtime_id", "rt-1"),
     ] {
         assert_eq!(run.tags[key], value, "{key}");
     }

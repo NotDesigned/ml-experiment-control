@@ -555,7 +555,15 @@ pub(crate) fn publish_ended(
                         ("ml_expd.attempt".to_owned(), attempt.clone()),
                         ("ml_expd.scope".to_owned(), tag),
                     ];
-                    for key in ["source_id", "image_id", "backend"] {
+                    // With code mounting, `source_id` names the environment build;
+                    // `code_source_id` names the code the job ran.
+                    for key in [
+                        "source_id",
+                        "code_source_id",
+                        "runtime_id",
+                        "image_id",
+                        "backend",
+                    ] {
                         if let Some(value) = binding["config"]["ml_expd"][key].as_str() {
                             tags.push((format!("ml_expd.{key}"), value.to_owned()));
                         }
