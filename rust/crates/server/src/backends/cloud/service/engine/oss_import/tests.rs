@@ -209,7 +209,7 @@ fn a_bound_report_publishes_once_without_reading_any_object_body() {
         fixture.open().dataset_state("demo", "pai", &asset).unwrap()["archive_verified"],
         true
     );
-    // The pre-upgrade response shape remains reusable, and no provider is contacted.
+    // Existing verified bytes are reused, and no provider is contacted.
     let before = fixture.provider.actions.lock().unwrap().len();
     assert_eq!(
         fixture
@@ -222,7 +222,7 @@ fn a_bound_report_publishes_once_without_reading_any_object_body() {
     assert!(fixture.temp.path().exists());
 }
 #[test]
-fn a_changed_source_or_wrong_region_is_refused_before_any_new_effect() {
+fn a_changed_source_is_refused_before_any_new_effect() {
     let fixture = Fixture::new();
     let service = fixture.open();
     let source = fixture.source();

@@ -160,7 +160,16 @@ impl Service {
             {
                 return Err(conflict());
             }
-            return Ok(Self::data_view(saved));
+            let total = saved
+                .state
+                .definition
+                .part_count()
+                .map_err(why!(cloud::Error::evidence()))?;
+            return Ok(
+                json!({"contract":"oss-import.v2","project":project,"executor":executor,"asset_id":asset,
+                "import_source":source,"status":"ARCHIVED","copied_parts":total,"total_parts":total,
+                "archive_verified":true,"error":null,"reused":true}),
+            );
         }
         if !self.enabled {
             return Err(cloud::Error::configuration());

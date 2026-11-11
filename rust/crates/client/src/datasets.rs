@@ -241,12 +241,12 @@ pub fn import_oss(
     validate(project, executor, None)?;
     source.validate().map_err(|_| Error::Path)?;
     capability(health)?;
-    if !health["capabilities"].as_array().is_some_and(|a| {
-        a.iter()
-            .any(|v| v == "native-oss-dataset-import.v1" || v == "native-oss-dataset-import.v2")
-    }) {
+    if !health["capabilities"]
+        .as_array()
+        .is_some_and(|a| a.iter().any(|v| v == "native-oss-dataset-import.v2"))
+    {
         return Err(Error::Observation(
-            "server has not enabled OSS dataset import",
+            "in-region OSS import requires the upgraded client and server (native-oss-dataset-import.v2)",
         ));
     }
     let asset = source.asset_id();
@@ -256,24 +256,13 @@ pub fn import_oss(
             format!("/api/projects/{project}/datasets/{executor}/import-oss"),
             reqwest::Method::POST,
             serde_json::to_vec(&source).map_err(|_| Error::Response)?,
-            !health["capabilities"]
-                .as_array()
-                .is_some_and(|a| a.iter().any(|v| v == "native-oss-dataset-import.v2")),
+            false,
         )?;
-        if value["contract"] == "oss-import.v2" {
-            import_progress(&value, project, executor, &asset)?;
-            if value["import_source"]
-                != serde_json::to_value(&source).map_err(|_| Error::Response)?
-            {
-                return Err(Error::Response);
-            }
-            return Ok(value);
+        if value["contract"] != "oss-import.v2" {
+            return Err(Error::Response);
         }
-        let saved = state(value.clone(), project, executor, &asset)?;
-        source
-            .matches(&saved.definition)
-            .map_err(|_| Error::Response)?;
-        if value["archive_verified"] != true {
+        import_progress(&value, project, executor, &asset)?;
+        if value["import_source"] != serde_json::to_value(&source).map_err(|_| Error::Response)? {
             return Err(Error::Response);
         }
         Ok(value)

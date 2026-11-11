@@ -295,3 +295,166 @@ impl Store {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        io::{BufRead, BufReader, Write},
+        net::TcpListener,
+    };
+    #[test]
+    fn range_copy_signs_control_requests_and_never_downloads_an_object() {
+        let temp = tempfile::tempdir().unwrap();
+        let credentials = temp.path().join("credentials");
+        ml_exp_io::write_atomic(
+            &credentials,
+            br#"{"access_key_id":"id","access_key_secret":"secret"}"#,
+            true,
+        )
+        .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            for expected in ["HEAD", "POST", "PUT", "POST", "HEAD", "HEAD"] {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = BufReader::new(socket.try_clone().unwrap());
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let words: Vec<_> = line.split_whitespace().collect();
+                assert_eq!(words[0], expected);
+                let url = url::Url::parse(&format!("http://localhost{}", words[1])).unwrap();
+                let query: BTreeMap<String, String> = url
+                    .query_pairs()
+                    .map(|(k, v)| (k.into_owned(), v.into_owned()))
+                    .collect();
+                let mut headers = BTreeMap::new();
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    let (key, value) = line.split_once(':').unwrap();
+                    headers.insert(key.to_lowercase(), value.trim().to_owned());
+                }
+                let size = headers
+                    .get("content-length")
+                    .map(|v| v.parse().unwrap())
+                    .unwrap_or(0);
+                let mut body = vec![0; size];
+                reader.read_exact(&mut body).unwrap();
+                let resource_query = query
+                    .iter()
+                    .filter(|(k, _)| matches!(k.as_str(), "uploads" | "uploadId" | "partNumber"))
+                    .map(|(k, v)| {
+                        if v.is_empty() {
+                            k.clone()
+                        } else {
+                            format!("{k}={v}")
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("&");
+                let mut signed = String::new();
+                for (k, v) in &headers {
+                    if k.starts_with("x-oss-") {
+                        use std::fmt::Write;
+                        writeln!(signed, "{k}:{v}").unwrap();
+                    }
+                }
+                let canonical = format!(
+                    "{expected}\n\n\n{}\n{signed}/bucket{}{}",
+                    query["Expires"],
+                    url.path(),
+                    if resource_query.is_empty() {
+                        String::new()
+                    } else {
+                        format!("?{resource_query}")
+                    }
+                );
+                let mut mac = Hmac::<Sha1>::new_from_slice(b"secret").unwrap();
+                mac.update(canonical.as_bytes());
+                assert_eq!(
+                    query["Signature"],
+                    STANDARD.encode(mac.finalize().into_bytes())
+                );
+                let (reply, length, etag) = if expected == "HEAD" {
+                    let source = url.path().ends_with("train.tar");
+                    (
+                        String::new(),
+                        if source { PART_BYTES + 1024 } else { 1024 },
+                        if source { "source" } else { "destination" },
+                    )
+                } else if query.contains_key("uploads") {
+                    assert!(body.is_empty());
+                    ("<InitiateMultipartUploadResult><UploadId>uploadABC</UploadId></InitiateMultipartUploadResult>".into(),0,"")
+                } else if expected == "PUT" {
+                    assert!(body.is_empty());
+                    assert_eq!(
+                        headers["x-oss-copy-source-range"],
+                        format!("bytes={PART_BYTES}-{}", PART_BYTES + 1023)
+                    );
+                    assert_eq!(headers["x-oss-copy-source-if-match"], "\"source\"");
+                    (
+                        "<CopyPartResult><ETag>\"AB12\"</ETag></CopyPartResult>".into(),
+                        0,
+                        "",
+                    )
+                } else {
+                    assert_eq!(headers["x-oss-forbid-overwrite"], "true");
+                    assert!(body.len() < 512);
+                    ("<CompleteMultipartUploadResult/>".into(), 0, "")
+                };
+                let size = if expected == "HEAD" {
+                    length
+                } else {
+                    reply.len() as u64
+                };
+                // Deliberately no CRC64 header: copied objects need not have one.
+                write!(socket,"HTTP/1.1 200 OK\r\nContent-Length: {size}\r\nETag: \"{etag}\"\r\nConnection: close\r\n\r\n{reply}").unwrap();
+            }
+        });
+        let mut store = Store::open(Settings {
+            endpoint: "oss-us-southeast-1.aliyuncs.com".into(),
+            bucket: "bucket".into(),
+            prefix: "users/alice/ml-expd/".into(),
+            credentials_file: credentials,
+        })
+        .unwrap();
+        store.redirect_for_tests(origin);
+        assert!(store.import_region("us-southeast-1"));
+        assert!(!store.import_region("cn-hangzhou"));
+        let source = Import {
+            object_key: "users/alice/datasets/train.tar".into(),
+            sha256: "a".repeat(64),
+            archive_bytes: PART_BYTES + 1024,
+        };
+        let identity = store.import_source_identity(&source).unwrap();
+        let id = store.begin_import_part("demo", "pai", &source, 1).unwrap();
+        let copied = store
+            .finish_import_part("demo", "pai", &source, 1, &identity.etag, &id)
+            .unwrap();
+        assert_eq!(copied.bytes, 1024);
+        assert_eq!(
+            store
+                .import_part_identity("demo", "pai", &source, 1)
+                .unwrap(),
+            Some(copied.clone())
+        );
+        let ticket = store
+            .import_read_ticket("demo", "pai", &source, 1, &copied)
+            .unwrap();
+        assert_eq!(
+            url::Url::parse(ticket["url"].as_str().unwrap())
+                .unwrap()
+                .host_str(),
+            Some("bucket.oss-us-southeast-1-internal.aliyuncs.com")
+        );
+        assert_eq!(ticket["headers"]["If-Match"], copied.etag);
+        server.join().unwrap();
+    }
+}

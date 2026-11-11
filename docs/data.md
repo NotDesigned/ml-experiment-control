@@ -281,8 +281,8 @@ Operators configure `oss_import_image` on the selected backend: an immutable
 object storage and exchange must also be configured; the collector and OSS must
 be in the same region. The job mounts CPFS read-only and runs only the frozen
 server-authored verifier script. The API advertises
-`native-oss-dataset-import.v2`; older clients refuse the missing v1 capability
-rather than misinterpreting queued progress. Upgrade the client with the server.
+`native-oss-dataset-import.v2`. Upgrade the client to 0.11.0 or later; the new
+client requires this protocol and has no fallback to synchronous import.
 Verified archives imported before this upgrade remain reusable without a job.
 
 Downloads obtain object-part tickets, verify the archive and every file, and publish
