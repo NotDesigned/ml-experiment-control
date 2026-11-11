@@ -342,11 +342,12 @@ An explicit restart from the beginning is available after the exact parent job
 is terminal, on Slurm or PAI:
 
 ```sh
-ml-exp run retry ACTION --run RUN --attempt attempt-001 --from-start
+ml-exp run retry ACTION --run RUN --from-start
 ```
 
-Use `--checkpoint CHECKPOINT_ID` instead to restore saved state. A retry creates
-new Attempt metadata; it does not automatically submit training. Repeating the
+Use `--checkpoint CHECKPOINT_ID` instead to restore saved state. A retry continues
+the same Run as a new [Attempt](../docs/recovery.md#cancel-or-retry-an-exact-attempt);
+it does not automatically submit training. Repeating the
 same request reuses that Attempt. Unknown provider submissions must be
 reconciled before a retry; no special startup failure code is required.
 

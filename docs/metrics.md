@@ -51,10 +51,10 @@ one append-only JSONL file. Do not replace it during final export. Write and flu
 complete lines. The image needs no client package, API token, W&B SDK/key or direct
 W&B connection.
 
-Query an exact Attempt, repeating `--name` to select more metrics:
+Query a Run, repeating `--name` to select more metrics:
 
 ```bash
-ml-exp run metrics --project my-study --run trial-001 --attempt attempt-001 \
+ml-exp run metrics --project my-study --run trial-001 \
   --name train_loss --name validation_loss --max-points 2000
 ```
 
@@ -190,7 +190,7 @@ checkpoints, can be added to one of its Attempts. They are kept apart from what
 training reported, and the W&B publisher adds them to the Attempt's existing W&B Run.
 
 ```bash
-ml-exp run append-derived --project demo --run train --attempt attempt-001 \
+ml-exp run append-derived --project demo --run train \
   --metrics derived.jsonl --confirmation 'APPEND demo/train/attempt-001'
 ```
 

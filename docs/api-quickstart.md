@@ -208,8 +208,8 @@ ml-exp run logs --state trial.state.json --stream both --lines 80
 ml-exp run metrics --state trial.state.json --name loss --max-points 2000
 ```
 
-These reads use the original identities from state. Without state, pass `--project`,
-`--run` and `--attempt`. They do not contact the provider or submit work: the
+These reads use the original identities from state. Without state, pass `--project`
+and `--run`. They do not contact the provider or submit work: the
 optional background observer or an explicit `ml-exp run reconcile SUBMISSION_ID`
 refreshes the original job. HTTP 503 `CLOUD_RUN_BUSY` means repeat the same query.
 
@@ -221,7 +221,7 @@ refreshes the original job. HTTP 503 `CLOUD_RUN_BUSY` means repeat the same quer
 | Training `COMPLETED`, exit code 0 | Worker training completion evidence exists |
 | Collection `AVAILABLE`, `SHA256_VERIFIED` | Results can be downloaded |
 
-`--watch` observes the same Attempt for a bounded period. It never submits or
+`--watch` observes the same execution for a bounded period. It never submits or
 restarts a job. Logs may be delayed or unavailable; missing evidence remains
 unknown. See [recovery](recovery.md).
 
@@ -242,7 +242,7 @@ is lost, repeat the same command: it reconciles without downloading again.
 When results are not published yet, use `ml-exp run artifacts SUBMISSION_ID` and
 `ml-exp run collect SUBMISSION_ID`, or `run sync` for cloud Runs; see
 [recovery](recovery.md). A failed or uncertain collection needs diagnosis, not
-another training Attempt.
+another training run.
 
 ## Add data, checkpoints and scientific metrics
 
@@ -269,11 +269,11 @@ Cancel and retry are explicit:
 
 ```sh
 ml-exp run cancel SUBMISSION_ID --confirmation 'CONFIRMATION_RETURNED_BY_THE_API'
-ml-exp run retry SUBMISSION_ID --run trial-001 --attempt attempt-001 --from-start
+ml-exp run retry SUBMISSION_ID --run trial-001 --from-start
 ```
 
 Use `--checkpoint CHECKPOINT_ID` instead of `--from-start` to restore saved state.
-A retry creates new Attempt metadata and does not submit training or choose a
+A retry continues the same Run and does not submit training or choose a
 checkpoint for you. An expired gate needs `ml-exp run renew`. See
 [recovery](recovery.md#cancel-or-retry-an-exact-attempt) and
 [administrative deletion](resource-deletion.md).

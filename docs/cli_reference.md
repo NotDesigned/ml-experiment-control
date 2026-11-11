@@ -35,8 +35,9 @@ ml-exp run sync ACTION --request-id REQUEST --status
 ml-exp run sync ACTION --request-id REQUEST --retry-failed-job FAILED_CPU_JOB \
   --confirmation 'RETRY SYNC ACTION REQUEST FAILED_CPU_JOB'
 
-# Remove an ended PAI Attempt's state/ once its checkpoints are verified on OSS.
-ml-exp run purge-state --project study --run trial-001 --attempt attempt-001 \
+# Remove an ended PAI Run's state/ once its checkpoints are verified on OSS.
+# A wrong confirmation prints the exact one, which names the execution.
+ml-exp run purge-state --project study --run trial-001 \
   --confirmation 'PURGE study/trial-001/attempt-001'
 
 # Prepare PAI CPFS data with an existing READY Runtime and zero GPUs.

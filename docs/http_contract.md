@@ -128,7 +128,13 @@ runs before filtering or sampling. Unknown query parameters are refused. See
 `reason`, recorded with the execution. Observation uses `GET /api/submissions/ID`; explicit
 `/api/submissions/ID/reconcile` never resubmits the operation. Retry creates a new
 Attempt in the same frozen Run from an explicit checkpoint or `--from-start`; it does
-not select a checkpoint or submit. See [recovery](recovery.md).
+not select a checkpoint or submit. In `resume_from` (retry or Run creation) and
+`restart_from`, `attempt_id` may be left out when the server lists the
+`run-centric-attempts.v1` capability: it takes the Attempt that registered
+`checkpoint_id`, or for a restart the retried Attempt, and freezes the complete
+reference, so the Run, Attempt and `request_sha256` are those of the request that
+names it. A named `attempt_id` must match. The creation receipt then also returns the
+frozen `resume_from`. See [recovery](recovery.md).
 
 The native API has no SSE stream. Poll the HTTP resources.
 
@@ -213,6 +219,7 @@ changing source, parameters or restore reference requires a new Run.
 | `GET /api/runs/P/R` / `/attempts` | Run evidence and exact executions |
 | `GET /api/attempts/P/R::A/logs` | Stored bounded stdout/stderr |
 | `GET /api/attempts/P/R::A/metrics?name=loss` | Compact normalized [metrics](metrics.md); repeat `name` |
+| `GET /api/runs/P/R/checkpoints` / `/checkpoints/CHECKPOINT_ID` | As below, for the Run's current Attempt, or the Attempt that registered `CHECKPOINT_ID`; `attempt_id` names it |
 | `GET /api/runs/P/R/attempts/A/checkpoints` / `/checkpoints/CHECKPOINT_ID` | Registered checkpoint metadata; the list adds verified OSS copies as `archives` and the `state_purge` record |
 | `POST /api/runs/P/R/attempts/A/purge-state` | Remove an ended PAI Attempt's `state/` under the [purge conditions](recovery.md#checkpoint-copies-and-the-state-purge) |
 | `POST /api/submissions/S/checkpoint` | Verify and register a complete backend checkpoint |

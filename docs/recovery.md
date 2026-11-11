@@ -144,23 +144,40 @@ to clear is READY with a damaged or missing tree.
 
 ## Cancel or retry an exact Attempt
 
-Use the original native Submission (`ACTION`) and exact source Attempt:
+Every execution of a Run is an **Attempt**: the first is `attempt-001`, and each
+retry adds the next one (`attempt-002`, ...). The platform keeps them apart: each has
+its own scheduler job, `RUN/attempt-NNN/` storage, checkpoints, results, W&B/MLflow
+run and purge. Retries are rare, so commands act on the Run and its **current**
+Attempt by default, and human output names an Attempt only once a Run has more than
+one. `--attempt attempt-NNN` reads or acts on an earlier one, and `--json` always
+carries `attempt_id`. A confirmation that removes or changes recorded data, such as
+`PURGE P/R/attempt-001`, still names the Attempt; a wrong one prints the exact
+string.
+
+```bash
+ml-exp cancel --run RUN
+# Continue the Run from a checkpoint it registered; without --checkpoint, from its start.
+ml-exp retry --run RUN --checkpoint checkpoint.ACTUAL_HASH
+```
+
+The same steps one at a time, with the original native Submission (`ACTION`):
 
 ```bash
 ml-exp run cancel ACTION --confirmation 'CANCEL ACTION'
-
-# Append attempt-002 from a registered checkpoint produced by attempt-001.
-ml-exp run retry ACTION --run RUN --attempt attempt-001 \
-  --checkpoint checkpoint.ACTUAL_HASH --max-gpu-hours 0.5 \
-  --reason 'Resume this checkpoint'
+ml-exp run retry ACTION --run RUN --checkpoint checkpoint.ACTUAL_HASH \
+  --max-gpu-hours 0.5 --reason 'Resume this checkpoint'
 ```
 
 Retry checks that the exact parent job is terminal, including SUCCEEDED, and
-creates the next Attempt's metadata. It does not submit training. `--attempt`
-is the source Attempt, not the new one. The selected checkpoint must belong to
-that Run/Attempt and the same project, source, image and backend storage scope.
-The new Attempt uses this explicit checkpoint; it need not reuse the original
-Run's initial `resume_from`. No latest-checkpoint selection is performed.
+creates the next Attempt's metadata. It does not submit training. The checkpoint
+must be one the retried Attempt registered, in the same project, source, image and
+backend storage scope. Its Attempt need not be given: the server finds it in the
+checkpoint registry and freezes the complete reference, the same one, with the same
+request identity, as when `--attempt` names it. A named `--attempt` (the source
+Attempt, not the new one) must match, and a checkpoint of another Attempt is refused
+with `RETRY_SOURCE_NOT_THIS_ATTEMPT`. The new Attempt uses this explicit checkpoint;
+it need not reuse the original Run's initial `resume_from`. No latest-checkpoint
+selection is performed.
 
 To restart without a checkpoint, replace `--checkpoint ...` with `--from-start`.
 The Run's other scientific configuration remains fixed. Changed source, image,
@@ -352,9 +369,12 @@ the explicit command up to 10.
 To purge now, without the delay:
 
 ```bash
-ml-exp run purge-state --project my-study --run training --attempt attempt-001 \
+ml-exp run purge-state --project my-study --run training \
   --confirmation 'PURGE my-study/training/attempt-001'
 ```
+
+Without `--attempt` it purges the Run's current Attempt; a wrong confirmation prints
+the exact one.
 
 It answers `BLOCKED` with `blocked_by` and changes nothing while a condition fails,
 `PURGING` once the job is asked for, and `PURGED` with the receipt. Repeat it to observe.
