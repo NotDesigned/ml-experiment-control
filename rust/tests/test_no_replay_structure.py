@@ -7,6 +7,20 @@ ordering. Behaviour tests remain the proof: `server/tests/cloud_no_replay.rs`,
 `server/tests/cloud_runs.rs`, `backends/slurm/tests/submission_tests.rs` and
 `backends/cloud/outbox/tests.rs`.
 
+Pinned are only the files where a job is actually asked for and where the record
+that forbids asking twice is kept, one pair per backend:
+
+- `backends/cloud/outbox.rs` writes the durable `started` mark before a create and
+  never creates again once it is set; `backends/cloud/adapter.rs` is the one place
+  that sends CreateJob, and holds `find`, which may recover a handle but never
+  permits a create. Its read-only diagnostics live in `adapter/diagnostics.rs`.
+- `backends/slurm/action.rs` holds the one `Request::submit(`; the helper's
+  `worker/src/slurm/ledger.rs` keeps the durable intent and runs sbatch once.
+
+Everything else (Action stores, request compilation, cancellation records, the
+tests themselves) is covered by the behaviour tests above, and by the scans below,
+which find any new path to a create wherever it appears.
+
 A pin changes only when the owner has approved that file's change. To print the
 current digests, run this file with --print-pins.
 """
@@ -23,38 +37,19 @@ CRATES = Path("rust/crates")
 SERVER = CRATES / "server/src"
 
 PINS = {
-    "rust/crates/server/src/backends/cloud/outbox.rs": "644249c14405310d41270914026e07dc1ab44f6b31dbe42f88065fc5a057c211",
-    "rust/crates/server/src/backends/cloud/outbox/tests.rs": "6d16b03af9f08f17b9f04454d2c0a9f45f7e43376c5ee82ad65805cd2e52683c",
-    "rust/crates/server/src/backends/cloud/action.rs": "a09c4a78734245d578dbbbaa75c62a86e0ee2a49f81737c100e4cc5e2d7123dc",
+    "rust/crates/server/src/backends/cloud/outbox.rs": "98e5e6b2e3818085c2d3d78dc32856be8a90f48d1ae0da27c48d00fce6b34bc7",
+    "rust/crates/server/src/backends/cloud/adapter.rs": "92bf028ab2b9441c2e760629cb3df0281df26eff78cbf14b70128b21e344362a",
     "rust/crates/server/src/backends/slurm/action.rs": "15ad4038d8525dde13d1439c97faa1475bc371e078603f3c8eb1ab0444b609ba",
-    "rust/crates/server/src/backends/slurm/transport.rs": "1be44752888a9c93cbd7d4ac81643ab3c2977f7c345e61f8e36410ca60c9af5c",
-    "rust/crates/server/src/backends/slurm/tests/submission_tests.rs": "b25bdac57f1d062e36557c203372455239f35234e8aef4d36725044db1ce7f8f",
-    "rust/crates/server/src/backends/slurm/tests/action_tests.rs": "62b5a1b0d7e26b0c51f88e5c127b650e0b8635ba02e416c43716498fb859a089",
-    "rust/crates/server/src/operations/store.rs": "9c4fc237f0604e6bfad74b5137316c3a5d4ce16102f72a913753222b2622c710",
-    "rust/crates/server/tests/cloud_runs.rs": "87c32db0c4c0efb016c054e2a22103647059bef9cab49a58f708fdfb945d7131",
-    "rust/crates/core/src/operations.rs": "c4c0886556a0a303e1c22b604cb4af8ff5017c009e29da5d4603cb1870b1fde5",
-    "rust/crates/core/src/slurm/action.rs": "61d6fb7e14248434b39f5a73208412d232d9134c784512e114c12892b8de9548",
-    "rust/crates/core/src/cloud/action.rs": "5829a8a03252f9100341b46217e37e9f40f202630f251377d3777f6faba3d13f",
-    "rust/crates/core/src/cloud/exchange.rs": "6fb94d93efc28d95019297bdef532d82e7e116c32bf10c6dd1ca54d70df28a65",
     "rust/crates/worker/src/slurm/ledger.rs": "0ec0b45b7a7001c69fa29a13e8f8abbcc26c9db29b787c2650b09ba8b13afa75",
-    "rust/crates/worker/src/slurm/ledger/artifacts.rs": "bf3d78251276a34e3c764b5898f9952e800d60f136e6b4d6499c8a97426a6056",
-    "rust/crates/worker/src/slurm/ledger/checkpoints.rs": "f54f98d9a36bf7d47ad75e79202e69c7b56035af2ec62048b08b3a774a6e082c",
-    "rust/crates/worker/src/slurm/ledger/history.rs": "41f7b30c0b7e779e57eb55a29691f3c862b13352ad5cff7803dbfecfc9440655",
-    "rust/crates/worker/src/slurm/ledger/jobs.rs": "695018e2b31111048c48eac6581140aa6f8f14b8c98561bd6f4f4efa2a0909f0",
-    "rust/crates/worker/src/slurm/ledger/observation.rs": "19b00eb7ac7bbc8e5023e39a05a29f9f39beb0e32bfd6c1700916620c495ad04",
-    "rust/crates/worker/src/slurm/ledger/staging.rs": "6c66fbc176902c7a1a04eeed84fbff3969ce8fe9ec2d0856f3e969e48a9d440e",
 }
 
 # Every line in the server crate's production code that calls a method named
-# `create`, by file name and text. Most compile a provider request and send
-# nothing. A new site must be reviewed against the no-replay rules, then added.
+# `create`, by file name and text. Compiling a PAI request is `create_request`
+# and sends nothing, so it is not listed. A new site must be reviewed against the
+# no-replay rules, then added.
 KNOWN_CREATE_SITES = Counter(
     {
-        ("adapter.rs", "Profile::Pai(p) => self.call(p.create(job, allocation), cancelled)?,"): 1,
-        ("outbox.rs", "p.create(job, allocation)"): 1,
         ("outbox.rs", "match guard().and_then(|_| adapter.create(job, allocation, cancelled)) {"): 1,
-        ("actions.rs", "cloud::adapter::Profile::Pai(p) => p.create(&execution.job, execution.allocation),"): 1,
-        ("preparations.rs", "cloud::adapter::Profile::Pai(p) => p.create("): 1,
         # Debug sessions have their own durable claim, saved before this request.
         ("debug.rs", ".create(&saved.recipe)"): 1,
     }

@@ -531,7 +531,7 @@ fn dlc_resources_idle_permission_personal_mounts_and_frozen_ownership_are_explic
         pai::Allocation::AllowIdle,
         pai::Allocation::IdleOnly,
     ] {
-        let request = p.create(&job, allocation).unwrap();
+        let request = p.create_request(&job, allocation).unwrap();
         request.validate().unwrap();
         let body = request.body.unwrap();
         assert_eq!(body["JobMaxRunningTimeMinutes"], 1440);
@@ -553,6 +553,11 @@ fn dlc_resources_idle_permission_personal_mounts_and_frozen_ownership_are_explic
         assert_eq!(body["DataSources"][0]["MountPath"], "/mnt/workspace");
         assert_eq!(body["DataSources"][1]["MountAccess"], "RO");
     }
+    // Find asks for the exact name, not the default fuzzy match, and all of history.
+    let list = p.list(&job, 1).unwrap();
+    assert_eq!(list.query["DisplayName"], job.name().unwrap());
+    assert_eq!(list.query["DisplayNameSearchMode"], "term");
+    assert_eq!(list.query["StartTime"], "2020-01-01T00:00:00Z");
     let row = json!({"JobId":"dlc1","WorkspaceId":253,"ResourceId":p.quota_id,"DisplayName":job.name().unwrap(),"Settings":{"Tags":job.tags(&p.scope().unwrap()).unwrap()},"Status":"Queuing"});
     p.validate_job(&row, &job, Some("dlc1")).unwrap();
     let mut bad = row.clone();
@@ -560,10 +565,13 @@ fn dlc_resources_idle_permission_personal_mounts_and_frozen_ownership_are_explic
     assert!(p.validate_job(&bad, &job, Some("dlc1")).is_err());
     let mut bad = p.clone();
     bad.storage.as_mut().unwrap().role_arn = "acs:ram::12345:role/pai-data-someone-else".into();
-    assert!(bad.create(&job, pai::Allocation::Guaranteed).is_err());
+    assert!(
+        bad.create_request(&job, pai::Allocation::Guaranteed)
+            .is_err()
+    );
     let mut bad = job.clone();
     bad.max_time_seconds = 86401;
-    assert!(p.create(&bad, pai::Allocation::Guaranteed).is_err());
+    assert!(p.create_request(&bad, pai::Allocation::Guaranteed).is_err());
     let queue = json!({"TotalCount":1,"Workloads":[{"WorkloadId":"dlc1","WorkspaceId":"253","QuotaId":"quota1","WorkloadType":"dlc","Position":3,"Reason":"{\"CodeType\":\"ConfigRule\",\"Code\":\"roleMaximumResource\",\"Reason\":\"GPU: 8 limited by role\"}"}]});
     let detail = p.validate_queue(&queue, "dlc1").unwrap().unwrap();
     assert_eq!(detail.code.as_deref(), Some("roleMaximumResource"));
@@ -608,12 +616,12 @@ fn readonly_diagnostic_mounts_do_not_change_plain_job_serialization() {
     );
     let profile = pai();
     let regular = profile
-        .create(&diagnostic, pai::Allocation::Guaranteed)
+        .create_request(&diagnostic, pai::Allocation::Guaranteed)
         .unwrap()
         .body
         .unwrap();
     let protected = profile
-        .create(&readonly, pai::Allocation::Guaranteed)
+        .create_request(&readonly, pai::Allocation::Guaranteed)
         .unwrap()
         .body
         .unwrap();
@@ -634,7 +642,7 @@ fn readonly_diagnostic_mounts_do_not_change_plain_job_serialization() {
     no_storage.storage = None;
     assert!(
         no_storage
-            .create(&readonly, pai::Allocation::Guaranteed)
+            .create_request(&readonly, pai::Allocation::Guaranteed)
             .is_err()
     );
 }

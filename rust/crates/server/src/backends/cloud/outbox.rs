@@ -212,12 +212,10 @@ impl Outbox {
         let _lock = self.lock("outbox.prepare")?;
         profile.validate()?;
         job.validate().map_err(why!(Error::configuration()))?;
-        match profile {
-            Profile::Pai(p) => {
-                p.create(job, allocation)
-                    .map_err(why!(Error::configuration()))?;
-            }
-        }
+        profile
+            .pai()
+            .create_request(job, allocation)
+            .map_err(why!(Error::configuration()))?;
         let slot = Self::slot(job)?;
         let entry = if self
             .directory
@@ -302,7 +300,7 @@ impl Outbox {
             json!({"slot":slot,"project":entry.job.project,"run_id":entry.job.run_id,"attempt_id":entry.job.attempt_id,
             "phase":if entry.handle.is_some(){"OWNED"}else if entry.started{"RECONCILE_REQUIRED"}else{"PREPARED"},
             "handle":entry.handle,"observation":entry.observation,"diagnostic":entry.diagnostic,
-            "confirmation":format!("SUBMIT {slot}"),"cancellation_started":entry.cancellation_started,"termination_verified":entry.termination_verified,
+            "cancellation_started":entry.cancellation_started,"termination_verified":entry.termination_verified,
             "retry_safe":!entry.started}),
         )
     }
@@ -311,18 +309,13 @@ impl Outbox {
         adapter: &Adapter<T>,
         job: &Job,
         allocation: Allocation,
-        confirmation: &str,
         guard: &dyn Fn() -> Result<()>,
         cancelled: &AtomicBool,
     ) -> Result<Value> {
         guard()?;
         let lock = self.lock("outbox.execute")?;
-        let slot = Self::slot(job)?;
-        let mut entry = self.load(&slot)?;
+        let mut entry = self.load(&Self::slot(job)?)?;
         self.check(&entry, adapter, job, allocation)?;
-        if confirmation != format!("SUBMIT {slot}") {
-            return Err(Error::configuration());
-        }
         if entry.started {
             return self.view(&entry);
         }
@@ -418,7 +411,6 @@ impl Outbox {
         adapter: &Adapter<T>,
         job: &Job,
         allocation: Allocation,
-        confirmation: &str,
         guard: &dyn Fn() -> Result<()>,
         cancelled: &AtomicBool,
     ) -> Result<Value> {
@@ -426,9 +418,6 @@ impl Outbox {
         let lock = self.lock("outbox.stop")?;
         let mut entry = self.load(&Self::slot(job)?)?;
         self.check(&entry, adapter, job, allocation)?;
-        if confirmation != format!("STOP {}", Self::slot(job)?) {
-            return Err(Error::configuration());
-        }
         let handle = entry.handle.clone().ok_or_else(Error::evidence)?;
         if entry.cancellation_started {
             return self.view(&entry);

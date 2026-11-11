@@ -48,7 +48,7 @@ impl<T: Transport> Runner<'_, T> {
         self.actions
             .bind_cloud_request(command.action_id, request)
             .map_err(action_error)?;
-        let prepared = self.outbox.prepare(
+        self.outbox.prepare(
             &self.adapter.profile,
             &request.job,
             request.allocation,
@@ -74,9 +74,6 @@ impl<T: Transport> Runner<'_, T> {
                     self.adapter,
                     &request.job,
                     request.allocation,
-                    prepared["confirmation"]
-                        .as_str()
-                        .ok_or_else(Error::evidence)?,
                     guard,
                     cancelled,
                 )

@@ -46,14 +46,8 @@ impl Service {
         self.sync_outbox
             .prepare(&adapter.profile, job, allocation, check)?;
         if self.sync_outbox.status(job)?["retry_safe"] == true {
-            self.sync_outbox.execute(
-                adapter,
-                job,
-                allocation,
-                &format!("SUBMIT {}", Outbox::slot(job)?),
-                check,
-                cancelled,
-            )
+            self.sync_outbox
+                .execute(adapter, job, allocation, check, cancelled)
         } else {
             self.sync_outbox
                 .reconcile(adapter, job, allocation, check, cancelled)

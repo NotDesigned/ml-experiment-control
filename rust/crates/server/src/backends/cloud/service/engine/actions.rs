@@ -61,10 +61,11 @@ impl Service {
             }
             // Compile provider resource limits before publishing any Action.
             let adapter = self.execution_adapter(&execution)?;
-            match &adapter.profile {
-                cloud::adapter::Profile::Pai(p) => p.create(&execution.job, execution.allocation),
-            }
-            .map_err(why!(cloud::Error::configuration()))?;
+            adapter
+                .profile
+                .pai()
+                .create_request(&execution.job, execution.allocation)
+                .map_err(why!(cloud::Error::configuration()))?;
             let plan = action::prepare(&execution, &approval, now, expires)
                 .map_err(why!(cloud::Error::evidence()))?;
             let prepared = Prepared {
@@ -267,7 +268,6 @@ impl Service {
                 &self.execution_adapter(execution)?,
                 &execution.job,
                 execution.allocation,
-                &format!("STOP {}", Outbox::slot(&execution.job)?),
                 &check,
                 cancelled,
             )?;
