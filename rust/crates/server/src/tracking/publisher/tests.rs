@@ -1184,3 +1184,23 @@ fn wandb_and_mlflow_publish_one_journal_with_independent_cursors() {
     assert_eq!(fixture.status(&train)["status"], "FINISHED");
     assert_eq!(fixture.status(&train)["confirmed"], 4);
 }
+
+#[test]
+fn a_resumed_run_whose_sdk_step_trails_its_history_keeps_publishing() {
+    // After a resume the real SDK can report a `step` behind the Run's history.
+    // Rows logged below it are dropped, so publication stalled with
+    // WANDB_WRITE_FAILED on every retry.
+    let mut fixture = Fixture::new(json!({}));
+    let scope = fixture.scope("train");
+    fixture.append(&scope, 1..=10);
+    fixture.session.batch = 4;
+    assert_eq!(fixture.visit(&scope).unwrap(), Next::More);
+    assert_eq!(fixture.status(&scope)["confirmed"], 4);
+    fixture.edit_cloud(|data| data["resume_step_lag"] = json!(3));
+    fixture.restart();
+    fixture.succeed(&scope);
+    until_finished(&mut fixture, &scope);
+    assert_eq!(fixture.status(&scope)["status"], "FINISHED");
+    assert_eq!(fixture.cloud().get("dropped"), None, "no row is logged below the history");
+    fixture.assert_each_record_once(&scope, 10);
+}

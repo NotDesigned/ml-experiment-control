@@ -13,6 +13,10 @@ BOUND = 8 * 1024 * 1024
 # Each open W&B Run is a stream inside wandb-core on a small shared host.
 SESSION_LIMIT = 16
 sessions = {}
+# The next history step W&B holds for a resumed Run. After a resume the SDK's
+# own `step` can trail it; W&B then drops every row logged below it, so a
+# publisher starting there never advances.
+floors = {}
 
 
 class RequestFailed(Exception):
@@ -52,6 +56,7 @@ def exact(stream, length):
 def close(identity):
     """Flush and end one session. It is forgotten even if the SDK fails."""
     handle, directory = sessions.pop(identity)
+    floors.pop(identity, None)
     try:
         handle.finish(exit_code=0)
     finally:
@@ -69,6 +74,7 @@ def session(sdk, api, job):
             close(next(iter(sessions)))
     route = job["route"]
     scope = job["scope"]
+    floor = 0
     if job["resume"] == "must":
         # One read per opened session: a Run this scope created before and a
         # person deleted is never recreated under the same name.
@@ -77,6 +83,9 @@ def session(sdk, api, job):
         if (remote.id, remote.entity, remote.project) != (
                 identity, route["entity"], route["project"]):
             raise ValueError("remote identity differs")
+        last = getattr(remote, "lastHistoryStep", None)
+        if isinstance(last, int) and last >= 0:
+            floor = last + 1
     directory = tempfile.TemporaryDirectory(prefix="ml-exp-wandb-")
     try:
         handle = request('INIT', lambda: sdk.init(
@@ -97,6 +106,7 @@ def session(sdk, api, job):
         directory.cleanup()
         raise
     sessions[identity] = (handle, directory)
+    floors[identity] = floor
     return handle
 
 
@@ -128,7 +138,7 @@ def dispatch(job):
                     del handle.summary[key]
             for key, value in patch["set"].items():
                 handle.summary[key] = value
-        step = start = handle.step
+        step = start = max(handle.step, floors.get(job["wandb_id"], 0))
         for record in job["history"]:
             request('WRITE', lambda: handle.log(record, step=step, commit=True))
             step += 1
@@ -142,6 +152,7 @@ def dispatch(job):
         # Forget it first: a failed finish must not leave a dead handle that
         # every later request for this Run would be sent to.
         _, directory = sessions.pop(job["wandb_id"])
+        floors.pop(job["wandb_id"], None)
         try:
             request('WRITE', lambda: handle.finish(exit_code=job["exit_code"]))
         finally:
