@@ -368,3 +368,31 @@ fn native_client_detects_prefix_mutation_truncation_replacement_and_state_lock()
     );
     assert!(result.is_err());
 }
+
+#[test]
+fn exponent_number_text_in_parameters_keeps_the_local_journal_usable() {
+    // Python's json.dumps writes small floats as `2e-05`. The registry stores the
+    // binding canonically (`0.00002`), so comparing it with the manifest by
+    // number text refused every later read and packet of such a Run.
+    let f = Fixture::new();
+    fs::write(
+        &f.definition,
+        br#"{"run_id":"train","execution_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","evaluation":{"protocol_id":"fixture-v1"},"parameters":{"min_p0":2e-05,"lr":1e-07,"steps":80},"wandb":{"enabled":false}}"#,
+    )
+    .unwrap();
+    fs::set_permissions(&f.definition, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::write(
+        &f.metrics,
+        b"{\"name\":\"train/loss\",\"value\":0.5,\"unit\":\"nats/token\",\"step\":1}\n",
+    )
+    .unwrap();
+    let server = Server::start(&f, None, false);
+    let client = server.client();
+    let first = f.attach(&client, None).unwrap();
+    assert_eq!(first["cursor"]["records"], 1);
+    let status = f.api().local_status("demo", "train").unwrap();
+    assert_eq!(status["cursor"]["records"], 1);
+    // A second attach reads the same binding again and finishes the stream.
+    let done = f.attach(&client, Some(Finish::Succeeded)).unwrap();
+    assert_eq!(done["cursor"]["records"], 1);
+}

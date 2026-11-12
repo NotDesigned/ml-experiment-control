@@ -141,7 +141,18 @@ impl Api {
             crate::records::Store::read_only(&self.registry_root)
         };
         let guard = store.guard(project, run).map_err(record)?;
-        if store.binding(&guard).map_err(record)?.as_ref() != Some(&expected) {
+        // The registry stores the binding in canonical form, as `bind` compares it.
+        // Number text such as `2e-05` (Python's json.dumps) reads back as
+        // `0.00002`, so compare canonical encodings, not values.
+        let stored = store.binding(&guard).map_err(record)?;
+        let same = match &stored {
+            Some(stored) => {
+                ml_exp_core::records::encoded(stored).map_err(why!(invalid()))?
+                    == ml_exp_core::records::encoded(&expected).map_err(why!(invalid()))?
+            }
+            None => false,
+        };
+        if !same {
             return Err(invalid());
         }
         drop(guard);
