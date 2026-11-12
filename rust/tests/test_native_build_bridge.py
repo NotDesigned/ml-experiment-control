@@ -477,8 +477,12 @@ class NativeBridge(unittest.TestCase):
                 thread.start()
                 connection = UnixConnection(path, timeout=5)
                 try:
-                    # Refused on the path alone, so the body is never read.
-                    connection.request("POST", "/data-stage/create", body=b"{}")
+                    # Refused on the path alone, so the body is never read. Send
+                    # only the headers: a body written after the server answered
+                    # and closed raced it with BrokenPipeError.
+                    connection.putrequest("POST", "/data-stage/create")
+                    connection.putheader("Content-Length", "2")
+                    connection.endheaders()
                     self.assertEqual(connection.getresponse().status, 409)
                 finally:
                     connection.close()
