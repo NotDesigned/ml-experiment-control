@@ -14,6 +14,9 @@ use std::collections::BTreeSet;
 pub struct LiveMetrics<'a> {
     pub attempt_id: &'a str,
     pub records: &'a [Value],
+    /// False when `records` holds only the latest observation because the full
+    /// history exceeds the read budget; journal validation is then not run.
+    pub complete: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -417,7 +420,9 @@ fn layers(
             .filter(|value| value.is_object())
             .cloned()
             .unwrap_or_else(|| json!({}));
-        super::validate_journal_observations(live.records, &contract)?;
+        if live.complete {
+            super::validate_journal_observations(live.records, &contract)?;
+        }
     }
     let status_doc = scheduler(snapshot, attempt);
     let status = map(status_doc);
@@ -611,6 +616,7 @@ pub fn run_detail(
     {
         return Err(Error::Identity);
     }
+    let history_limited = live.as_ref().is_some_and(|live| !live.complete);
     let evidence = if let Some(attempt) = current {
         layers(snapshot, attempt, now_unix, live)?
     } else {
@@ -644,6 +650,10 @@ pub fn run_detail(
     clean["attempts"] = listing["attempts"].clone();
     clean["evidence"]["model"]["detail"] = value["evidence"]["model"]["detail"].clone();
     clean["failure_assessment"] = experiment_redact::redact_json(failure_assessment);
+    if history_limited {
+        clean["metric_history"] = json!({"complete_read":false,"validated":false,
+            "reason":"METRIC_HISTORY_LIMIT","latest_only":true});
+    }
     bounded(clean)
 }
 
