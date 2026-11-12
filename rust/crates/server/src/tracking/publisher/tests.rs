@@ -1201,6 +1201,10 @@ fn a_resumed_run_whose_sdk_step_trails_its_history_keeps_publishing() {
     fixture.succeed(&scope);
     until_finished(&mut fixture, &scope);
     assert_eq!(fixture.status(&scope)["status"], "FINISHED");
-    assert_eq!(fixture.cloud().get("dropped"), None, "no row is logged below the history");
+    assert_eq!(
+        fixture.cloud().get("dropped"),
+        None,
+        "no row is logged below the history"
+    );
     fixture.assert_each_record_once(&scope, 10);
 }
