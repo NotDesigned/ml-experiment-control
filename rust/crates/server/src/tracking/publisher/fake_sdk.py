@@ -3,7 +3,9 @@
 A logged row lands in the Run's history at once; a row logged below the Run's
 next step is dropped, as W&B drops it. `fail_logs` lists the log calls (by the
 total count of calls so far) that raise once, and `finish_failures` is how
-many finish calls raise.
+many finish calls raise. `resume_step_lag` makes a resumed handle report a
+`step` that many rows behind its history until its first accepted row, as the
+real SDK can after a resume; the public API's `lastHistoryStep` stays exact.
 """
 import json
 import os
@@ -49,9 +51,10 @@ class Summary:
 
 
 class Handle:
-    def __init__(self, identity):
+    def __init__(self, identity, lag=0):
         self.id = identity
         self.summary = Summary(identity)
+        self.lag = lag
 
     @property
     def entity(self):
@@ -62,8 +65,12 @@ class Handle:
         return read()["runs"][self.id]["project"]
 
     @property
+    def lastHistoryStep(self):
+        return max((row["_step"] for row in read()["runs"][self.id]["history"]), default=-1)
+
+    @property
     def step(self):
-        return max((row["_step"] for row in read()["runs"][self.id]["history"]), default=-1) + 1
+        return max(self.lastHistoryStep + 1 - self.lag, 0)
 
     def define_metric(self, name, **options):
         data = read()
@@ -79,10 +86,11 @@ class Handle:
             data["fail_logs"].remove(data["logs"])
             write(data)
             raise RuntimeError("log failed")
-        if step < self.step:
+        if step <= self.lastHistoryStep:
             data["dropped"] = data.get("dropped", 0) + 1
         else:
             run["history"].append({**record, "_step": step})
+            self.lag = 0
         write(data)
 
     def finish(self, exit_code):
@@ -135,4 +143,5 @@ def init(**kwargs):
         "history": [], "definitions": {}, "summary": {}})
     data["runs"][identity]["state"] = "running"
     write(data)
-    return Handle(identity)
+    lag = data.get("resume_step_lag", 0) if kwargs["resume"] == "must" else 0
+    return Handle(identity, lag)
