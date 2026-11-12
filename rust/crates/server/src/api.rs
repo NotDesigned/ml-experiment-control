@@ -549,6 +549,23 @@ impl Api {
         snapshot: &Snapshot,
         attempt: Option<&str>,
     ) -> Result<Vec<Value>, Error> {
+        self.journal_metrics(snapshot, attempt, false)
+    }
+    /// Only the latest metric observation, with the same identity checks as the
+    /// full history: for status views whose history exceeds the read budget.
+    fn latest_live_metric(
+        &self,
+        snapshot: &Snapshot,
+        attempt: Option<&str>,
+    ) -> Result<Vec<Value>, Error> {
+        self.journal_metrics(snapshot, attempt, true)
+    }
+    fn journal_metrics(
+        &self,
+        snapshot: &Snapshot,
+        attempt: Option<&str>,
+        latest_only: bool,
+    ) -> Result<Vec<Value>, Error> {
         let project = &snapshot.project;
         let run = &snapshot.run_id;
         let Some(attempt) = attempt else {
@@ -625,6 +642,25 @@ impl Api {
                 "JOURNAL_IDENTITY_MISMATCH",
                 "canonical journal does not match the frozen Run",
             ));
+        }
+        if latest_only {
+            let unavailable = || {
+                error(
+                    409,
+                    "JOURNAL_UNAVAILABLE",
+                    "canonical experiment journal is unavailable",
+                )
+            };
+            let scope = ml_exp_core::records::Scope::new(project, run, attempt)
+                .encoded()
+                .map_err(why!(unavailable()))?;
+            let latest = records
+                .latest_metric_observation(&guard, &scope)
+                .map_err(why!(unavailable()))?;
+            return Ok(latest
+                .map(|latest| latest["observation"].clone())
+                .into_iter()
+                .collect());
         }
         records
             .metric_records_bounded(&guard, attempt, 8 * 1024 * 1024, 100_000)
@@ -746,13 +782,22 @@ impl Api {
         let value = match query.view {
             View::Run => {
                 let attempt = snapshot.current_attempt_id.as_deref();
-                let records = self.live_metrics(&snapshot, attempt)?;
+                // Status needs only the latest point. A history beyond the read
+                // budget degrades to that point instead of failing the whole view.
+                let (records, complete) = match self.live_metrics(&snapshot, attempt) {
+                    Ok(records) => (records, true),
+                    Err(error) if error.code == "METRIC_HISTORY_LIMIT" => {
+                        (self.latest_live_metric(&snapshot, attempt)?, false)
+                    }
+                    Err(error) => return Err(error),
+                };
                 let value = read_model::run_detail(
                     &snapshot,
                     now_unix,
                     attempt.map(|attempt_id| LiveMetrics {
                         attempt_id,
                         records: &records,
+                        complete,
                     }),
                 )?;
                 self.native_view(value, kind, &query.project, &query.run, None, now_unix)?
@@ -779,6 +824,7 @@ impl Api {
                     Some(LiveMetrics {
                         attempt_id: &attempt,
                         records: &records,
+                        complete: true,
                     }),
                 )?
             }

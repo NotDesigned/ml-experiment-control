@@ -32,6 +32,7 @@ fn exact_current_and_live_receive_order_never_choose_the_largest_scientific_step
         Some(LiveMetrics {
             attempt_id: "attempt-001",
             records: &records,
+            complete: true,
         }),
     )
     .unwrap();
@@ -55,7 +56,8 @@ fn exact_current_and_live_receive_order_never_choose_the_largest_scientific_step
             0.0,
             Some(LiveMetrics {
                 attempt_id: "attempt-002",
-                records: &records
+                records: &records,
+                complete: true
             })
         ),
         Err(read_model::Error::Identity)
@@ -67,7 +69,8 @@ fn exact_current_and_live_receive_order_never_choose_the_largest_scientific_step
             &MetricQuery::default(),
             Some(LiveMetrics {
                 attempt_id: "attempt-002",
-                records: &records
+                records: &records,
+                complete: true
             })
         ),
         Err(read_model::Error::Identity)
@@ -375,7 +378,8 @@ fn journal_claimed_valid_observations_are_checked_before_all_read_projections() 
                 0.0,
                 Some(LiveMetrics {
                     attempt_id: "attempt-001",
-                    records: &rows
+                    records: &rows,
+                    complete: true
                 })
             )
             .is_err(),
@@ -485,6 +489,7 @@ fn bounded_tails_never_claim_complete_history_even_with_a_complete_live_journal(
         Some(LiveMetrics {
             attempt_id: "attempt-001",
             records: &records,
+            complete: true,
         }),
     )
     .unwrap();
@@ -612,4 +617,38 @@ fn preempted_scheduler_evidence_is_terminal_without_claiming_process_success() {
         read_model::attempt_collection(&snapshot, "attempt-001", 0.0).unwrap()["training"]["status"],
         "UNKNOWN"
     );
+}
+
+#[test]
+fn a_history_beyond_the_read_budget_still_shows_status_from_the_latest_point() {
+    // The API passes only the latest observation when the complete history
+    // exceeds its read budget, instead of failing status with 413.
+    let snapshot = snapshot();
+    let latest = live(&[metric("loss", json!(0.25), 1_809_000)]);
+    let limited = read_model::run_detail(
+        &snapshot,
+        2_000_000.0,
+        Some(LiveMetrics {
+            attempt_id: "attempt-001",
+            records: &latest,
+            complete: false,
+        }),
+    )
+    .unwrap();
+    assert_eq!(limited["evidence"]["model"]["detail"]["value"], 0.25);
+    assert_eq!(limited["evidence"]["model"]["detail"]["step"], 1_809_000);
+    assert_eq!(limited["evidence"]["scheduler"]["state"], "QUEUED");
+    assert_eq!(limited["metric_history"]["validated"], false);
+    assert_eq!(limited["metric_history"]["reason"], "METRIC_HISTORY_LIMIT");
+    let complete = read_model::run_detail(
+        &snapshot,
+        2_000_000.0,
+        Some(LiveMetrics {
+            attempt_id: "attempt-001",
+            records: &latest,
+            complete: true,
+        }),
+    )
+    .unwrap();
+    assert!(complete.get("metric_history").is_none());
 }
