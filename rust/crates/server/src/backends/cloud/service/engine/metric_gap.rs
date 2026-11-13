@@ -23,6 +23,8 @@ const PASS_SECONDS: u64 = 30;
 /// Input imported under one hold of the Run's record guard, so a deletion waits for
 /// one slice rather than the whole file.
 const SLICE_BYTES: u64 = 1024 * 1024;
+/// Journal rows written per transaction while filling.
+const EVENTS_PER_TRANSACTION: usize = 2000;
 
 /// What the fill of one Attempt did. Written once, when it has an answer; a transient
 /// failure writes nothing and the next pass tries again.
@@ -348,12 +350,18 @@ impl Service {
                     .map_err(why!(cloud::Error::evidence()))?;
                 return Ok(emission.counts);
             }
+            // Few transactions per slice: each costs several fsyncs, and the live
+            // exchange of every running job waits for the database meanwhile.
+            let mut events = Vec::new();
             for chunk in slice.chunks(JsonlImporter::INPUT_BOUND) {
                 let (next, emission) = value.feed(chunk).map_err(why!(cloud::Error::evidence()))?;
-                records
-                    .append_import(&guard, &scope, &emission)
-                    .map_err(why!(cloud::Error::evidence()))?;
+                events.extend(emission.events);
                 value = next;
+            }
+            for batch in events.chunks(EVENTS_PER_TRANSACTION) {
+                records
+                    .append(&guard, &scope, batch)
+                    .map_err(why!(cloud::Error::evidence()))?;
             }
         }
     }
