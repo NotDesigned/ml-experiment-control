@@ -520,7 +520,7 @@ pub(crate) fn publish_ended(
             .map_err(why!(Error::Storage))?;
         let drained = ml_exp_core::records::ended(&lifecycle);
         Ok((drained || ended.is_some()).then_some(
-            if drained && lifecycle["state"] == "SUCCEEDED" {
+            if ml_exp_core::records::succeeded(&lifecycle, ended) {
                 "FINISHED"
             } else {
                 "FAILED"

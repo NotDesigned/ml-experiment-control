@@ -254,6 +254,17 @@ pub fn derived_observations(
     Ok(observations)
 }
 
+/// Whether a finished Run succeeded, for W&B and MLflow. A terminal lifecycle state
+/// from the worker's sealed receipt wins over the provider's. Whether the metric
+/// stream drained is a separate question: an undrained stream does not make a
+/// successful job a failure.
+pub fn succeeded(lifecycle: &Value, provider: Option<&str>) -> bool {
+    match lifecycle["state"].as_str() {
+        Some(state @ ("SUCCEEDED" | "FAILED" | "CANCELLED" | "TIMEOUT")) => state == "SUCCEEDED",
+        _ => provider == Some("SUCCEEDED"),
+    }
+}
+
 /// The journal's own end of a Run: the lifecycle the W&B publisher finishes on.
 pub fn ended(lifecycle: &Value) -> bool {
     lifecycle["phase"] == "METRICS_DRAINED"
@@ -634,6 +645,20 @@ impl ActionKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn success_follows_the_job_not_whether_metrics_drained() {
+        let done = |phase: &str, state: &str| json!({"phase":phase,"state":state});
+        // A successful job whose stream did not drain (the 60 s drain ran out).
+        assert!(succeeded(&done("TRAINING_COMPLETED", "SUCCEEDED"), None));
+        assert!(succeeded(&done("METRICS_DRAINED", "SUCCEEDED"), Some("FAILED")));
+        assert!(!succeeded(&done("TRAINING_COMPLETED", "FAILED"), Some("SUCCEEDED")));
+        assert!(!succeeded(&done("METRICS_DRAINED", "TIMEOUT"), None));
+        // No terminal lifecycle yet: the provider's end decides.
+        assert!(succeeded(&done("TRAINING", "RUNNING"), Some("SUCCEEDED")));
+        assert!(!succeeded(&done("TRAINING", "RUNNING"), Some("FAILED")));
+        assert!(!succeeded(&json!({}), None));
+    }
 
     fn run(creation: Value) -> Map<String, Value> {
         json!({"native_creation":creation})
