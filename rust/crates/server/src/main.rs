@@ -384,6 +384,11 @@ async fn main() -> std::process::ExitCode {
         .as_ref()
         .and_then(|api| api.cloud())
         .and_then(|service| service.start_purger());
+    // The metric history a live stream left short, from each newly published archive.
+    let _metric_gap_fill = reads
+        .as_ref()
+        .and_then(|api| api.cloud())
+        .and_then(|service| service.start_metric_gap_fill());
     let publisher = match tracking.filter(|runtime| runtime.routing().enabled) {
         Some(runtime) => match ml_exp_server::tracking::Publisher::start(
             reads

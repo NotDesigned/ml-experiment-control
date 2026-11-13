@@ -3856,3 +3856,480 @@ fn a_submitted_purge_without_a_job_is_asked_once_and_a_failed_job_once_more() {
     // The same plan, so the worker resumes or returns its receipt.
     assert_eq!(jobs[0]["job"]["command"], jobs[1]["job"]["command"]);
 }
+
+/// One record as Python's `json.dumps` writes it, which is how training code writes
+/// `METRICS_PATH`.
+fn metric_line(text: &mut String, name: &str, value: f64, step: u64, dataset: &str) {
+    text.push_str(&format!("{{\"name\": \"{name}\", \"value\": {value}, "));
+    text.push_str(&format!("\"unit\": \"nats/token\", \"step\": {step}, "));
+    text.push_str(&format!("\"dataset_id\": \"{dataset}\"}}\n"));
+}
+/// A training loss each step and a validation loss every hundred: about ten pages.
+fn training_metrics() -> Vec<u8> {
+    let mut text = String::new();
+    for step in 1..=12_000u64 {
+        let noise = ((step * 7919) % 97) as f64 / 10_000.0;
+        let train = 2.0 + 8.0 / (step as f64 + 10.0) + noise;
+        metric_line(&mut text, "train_loss", train, step, "training-v1");
+        if step % 100 == 0 {
+            let validation = 2.1 + 8.0 / (step as f64 + 12.0);
+            metric_line(
+                &mut text,
+                "validation_loss",
+                validation,
+                step,
+                "validation-v1",
+            );
+        }
+    }
+    text.into_bytes()
+}
+const PAGE: usize = ml_exp_core::managed::history::PAGE_BYTES;
+/// A PAI Run whose worker streamed `metrics.jsonl` one page per tick and ran out of
+/// drain time, then published its result archive to the object store.
+struct MetricGap {
+    f: Fixture,
+    oss: Arc<FakeOss>,
+    origin: String,
+    service: Service,
+    action: String,
+    package: ml_exp_core::cloud::launch::Package,
+    metrics: Vec<u8>,
+}
+impl MetricGap {
+    fn new() -> Self {
+        let f = Fixture::new(Kind::Pai);
+        let oss = Arc::new(FakeOss::default());
+        let origin = oss.start();
+        let service = Self::open_with(&f, &origin);
+        let (action, execution) = f.ready(&service, "train");
+        f.execute(&service, &action).unwrap();
+        let package = execution.package().unwrap();
+        assert!(package.result_upload);
+        Self {
+            f,
+            oss,
+            origin,
+            service,
+            action,
+            package,
+            metrics: training_metrics(),
+        }
+    }
+    /// A service with the object store, as the daemon opens it, also after a restart.
+    fn open_with(f: &Fixture, origin: &str) -> Service {
+        let credentials = f.temp.path().join("oss-credentials");
+        // Written once; a restart reads the same file.
+        if !credentials.exists() {
+            private(
+                &credentials,
+                &json!({"access_key_id":"id","access_key_secret":"secret"}),
+            );
+        }
+        let mut config: Value = serde_json::from_slice(&f.config).unwrap();
+        config["artifacts"] = json!({"endpoint":"oss-cn-example.aliyuncs.com","bucket":"bucket",
+            "prefix":"users/alice/ml-expd/","credentials_file":credentials});
+        let mut service = Service::open_with_transport(
+            f.settings.clone(),
+            Settings::from_slice(&serde_json::to_vec(&config).unwrap()).unwrap(),
+            f.sources.clone(),
+            None,
+            Default::default(),
+            f.provider.clone(),
+        )
+        .unwrap();
+        service.redirect_objects_for_tests(origin.into());
+        service
+    }
+    fn restart(&mut self) {
+        self.service = Self::open_with(&self.f, &self.origin);
+    }
+    /// What an explicit fill of the Action answers.
+    fn fill(&self, now: &str) -> Value {
+        self.service.fill_metric_gap_for(&self.action, now).unwrap()
+    }
+    /// The worker's cursor after the first `at` bytes of `metrics.jsonl`.
+    fn cursor(&self, at: usize) -> Value {
+        let prefix = helper::sha256_bytes(&self.metrics[..at]);
+        json!({"inode":4242,"offset_bytes":at,"prefix_sha256":prefix})
+    }
+    /// One exchange packet: the page `[start, end)` of the file while it was `written`
+    /// bytes long, and its last 128 KiB as the worker's metrics window.
+    fn packet(
+        &self,
+        sequence: u64,
+        previous: Option<String>,
+        (start, end, written): (usize, usize, usize),
+        finished: bool,
+    ) -> ml_exp_core::cloud::exchange::Packet {
+        let sha = helper::sha256_bytes;
+        let package = &self.package;
+        let config_sha256 = sha(&serde_json::to_vec(&package.config).unwrap());
+        let binding = package.config.binding().unwrap();
+        let environment = (!package.config.runtime_environment.is_empty()).then(|| "a".repeat(64));
+        let receipt = if finished {
+            json!({"contract":ml_exp_core::managed::evidence::CONTRACT,
+                "identity":binding.identity,"manifest_sha256":binding.sha256,
+                "process":{"exit_code":0,"termination_signal":null,"timed_out":false,
+                    "cancelled":false,"error":null,"stdout_sha256":sha(b"step 12000\n"),
+                    "stderr_sha256":sha(b""),"stdout_dropped_bytes":0,"stderr_dropped_bytes":0},
+                "training":"COMPLETED","download_available":false,
+                "runtime_environment_sha256":environment})
+        } else {
+            Value::Null
+        };
+        let file = &self.metrics[..written];
+        let tail = written.saturating_sub(128 * 1024);
+        let window = json!({"text":String::from_utf8(file[tail..].to_vec()).unwrap(),
+            "offset_bytes":tail,"total_bytes":written,
+            "problem":if tail > 0 {json!("TRUNCATED")} else {Value::Null}});
+        let value = json!({"contract":ml_exp_core::cloud::exchange::CONTRACT,
+            "sequence":sequence,"previous_sha256":previous,
+            "package_sha256":sha(&serde_json::to_vec(package).unwrap()),
+            "evidence":{"contract":ml_exp_core::managed::remote::OBSERVATION_CONTRACT,
+                "config_sha256":config_sha256,"job_id":binding.sha256,
+                "worker":{"contract":ml_exp_core::managed::evidence::CONTRACT,
+                    "identity":binding.identity,"manifest_sha256":binding.sha256,
+                    "phase":if finished {"FINISHED"} else {"STARTED"},"safe_to_retry":false,
+                    "receipt":receipt,"runtime_environment_sha256":environment},
+                "stdout":{"text":"step 12000\n","offset_bytes":0,"total_bytes":11,"problem":null},
+                "stderr":{"text":"","offset_bytes":0,"total_bytes":0,"problem":null},
+                "metrics":window},
+            "history":{"contract":ml_exp_core::managed::history::CONTRACT,
+                "config_sha256":config_sha256,
+                "start":if start == 0 {Value::Null} else {self.cursor(start)},
+                "next":self.cursor(end),"bytes":file[start..end],"total_bytes":written,
+                "process_finished":finished},
+            "checkpoint":null});
+        serde_json::from_value(value).unwrap()
+    }
+    fn receive(&self, packet: &ml_exp_core::cloud::exchange::Packet) {
+        self.service
+            .receive(
+                "demo",
+                "train",
+                "attempt-001",
+                &self.package.channel.token,
+                packet,
+                T_RECONCILE,
+            )
+            .unwrap();
+    }
+    /// Two pages while training, then one after it finished: the drain budget ran out
+    /// with most of the file still unsent.
+    fn stream(&self) {
+        let total = self.metrics.len();
+        assert!(total > 8 * PAGE, "{total}");
+        let first = self.packet(1, None, (0, PAGE, PAGE + 9000), false);
+        self.receive(&first);
+        let second = self.packet(
+            2,
+            Some(first.sha256().unwrap()),
+            (PAGE, 2 * PAGE, 2 * PAGE + 500),
+            false,
+        );
+        self.receive(&second);
+        let last = self.packet(
+            3,
+            Some(second.sha256().unwrap()),
+            (2 * PAGE, 3 * PAGE, total),
+            true,
+        );
+        self.receive(&last);
+    }
+    /// Every page of the file. With `drained` the last one comes after training finished
+    /// and completes the stream; without it the cursor reaches the end while training
+    /// runs, and the finished packet that follows carries no page.
+    fn stream_whole(&self, drained: bool) {
+        let total = self.metrics.len();
+        let (mut start, mut sequence, mut previous) = (0, 1, None);
+        while start < total {
+            let end = (start + PAGE).min(total);
+            let finished = drained && end == total;
+            let packet = self.packet(sequence, previous, (start, end, total), finished);
+            self.receive(&packet);
+            previous = Some(packet.sha256().unwrap());
+            (start, sequence) = (end, sequence + 1);
+        }
+        if !drained {
+            let mut last = self.packet(sequence, previous, (total, total, total), true);
+            last.history = None;
+            self.receive(&last);
+        }
+    }
+    /// What the worker does after training: pack `OUTPUT_DIR`, send the archive's part
+    /// to the object store with its ticket, and complete. `archived` is the
+    /// `metrics.jsonl` that `OUTPUT_DIR` held by then.
+    fn publish(&self, archived: &[u8]) {
+        use ml_exp_core::{
+            artifacts::{ArchiveReceipt, publication::Bundle},
+            cloud::exchange::{ArtifactOperation, ArtifactRequest},
+        };
+        use std::io::{Read, Seek};
+        let outputs = tempfile::tempdir().unwrap();
+        let root = outputs.path();
+        fs::write(root.join("checkpoint.ready.json"), b"{\"step\": 12000}\n").unwrap();
+        // A name past the 100 bytes a tar header holds, before `metrics.jsonl`.
+        let long = "per_example_scores_validation_v1_".repeat(4);
+        let long = format!("eval/{long}.jsonl");
+        fs::create_dir_all(root.join("eval")).unwrap();
+        fs::write(root.join(&long), b"{\"id\": 1, \"nll\": 2.5}\n").unwrap();
+        fs::write(root.join("metrics.jsonl"), archived).unwrap();
+        fs::create_dir_all(root.join("model")).unwrap();
+        let weights: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+        fs::write(root.join("model/final.safetensors"), weights).unwrap();
+        let mut tar = tempfile::tempfile().unwrap();
+        let (sha256, bytes, files, skipped) = ml_exp_io::artifacts::pack(
+            &Directory::open(root, false).unwrap(),
+            &mut tar,
+            &Default::default(),
+        )
+        .unwrap();
+        let mut archive = Vec::new();
+        tar.rewind().unwrap();
+        tar.read_to_end(&mut archive).unwrap();
+        let package_sha256 = helper::sha256_bytes(&serde_json::to_vec(&self.package).unwrap());
+        let bundle = Bundle {
+            contract: ml_exp_core::artifacts::publication::CONTRACT.into(),
+            intent_sha256: package_sha256.clone(),
+            config_sha256: helper::sha256_bytes(&serde_json::to_vec(&self.package.config).unwrap()),
+            archive: ArchiveReceipt {
+                project: "demo".into(),
+                run_id: "train".into(),
+                attempt_id: "attempt-001".into(),
+                object_key: format!("demo/train/attempt-001/{sha256}.tar"),
+                sha256,
+                bytes,
+                files,
+            },
+            skipped,
+        };
+        let send = |operation| {
+            self.service.receive_artifacts(
+                "demo",
+                "train",
+                "attempt-001",
+                &self.package.channel.token,
+                ArtifactRequest {
+                    package_sha256: package_sha256.clone(),
+                    operation,
+                },
+                T_RECONCILE,
+            )
+        };
+        send(ArtifactOperation::Prepare {
+            bundle: Box::new(bundle),
+        })
+        .unwrap();
+        let ticket = send(ArtifactOperation::Ticket { part: 0 }).unwrap();
+        let status = reqwest::blocking::Client::new()
+            .put(ticket["url"].as_str().unwrap())
+            .header("x-oss-forbid-overwrite", "true")
+            .body(archive.clone())
+            .send()
+            .unwrap()
+            .status();
+        assert_eq!(status.as_u16(), 200);
+        let crc = ml_exp_core::checkpoints::archive::crc64(&archive);
+        let published = send(ArtifactOperation::Complete {
+            part_crc64: vec![crc],
+        })
+        .unwrap();
+        assert_eq!(published["published"], true);
+    }
+    fn journal(&self) -> Vec<Value> {
+        let registry = &self.f.settings.registry_root;
+        let (_, workspace) = read_config::workspace(registry).unwrap();
+        let store = ml_exp_server::records::Store::open(registry, &workspace).unwrap();
+        let guard = store.guard("demo", "train").unwrap();
+        let scope = store.scope(&guard, "attempt-001").unwrap();
+        store
+            .events(&guard, &scope, 0, 1_000_000)
+            .unwrap()
+            .into_iter()
+            .map(|row| row.payload)
+            .collect()
+    }
+    /// Each metric the journal holds, by name and step, and how often.
+    fn metric_counts(&self) -> BTreeMap<(String, u64), usize> {
+        let mut counts = BTreeMap::new();
+        for payload in self.journal() {
+            if payload["kind"] != "metrics" {
+                continue;
+            }
+            for observation in payload["observations"].as_array().unwrap() {
+                assert_eq!(observation["status"], "VALID", "{observation}");
+                let key = (
+                    observation["name"].as_str().unwrap().to_owned(),
+                    observation["step"].as_u64().unwrap(),
+                );
+                *counts.entry(key).or_insert(0) += 1;
+            }
+        }
+        counts
+    }
+    /// Every record the training wrote, by name and step.
+    fn written(&self) -> BTreeMap<(String, u64), usize> {
+        let mut counts = BTreeMap::new();
+        let text = String::from_utf8(self.metrics.clone()).unwrap();
+        for line in text.lines() {
+            let record: Value = serde_json::from_str(line).unwrap();
+            let key = (
+                record["name"].as_str().unwrap().to_owned(),
+                record["step"].as_u64().unwrap(),
+            );
+            *counts.entry(key).or_insert(0) += 1;
+        }
+        counts
+    }
+    fn drained(&self) -> Vec<Value> {
+        self.journal()
+            .into_iter()
+            .filter(|p| p["kind"] == "lifecycle" && p["data"]["phase"] == "METRICS_DRAINED")
+            .collect()
+    }
+    fn gap_slot(&self) -> std::path::PathBuf {
+        self.f
+            .settings
+            .registry_root
+            .join("cloud-submissions/slots")
+            .join(format!(
+                "{}.json.metric-gap.json",
+                native::attempt_slot("demo", "train", "attempt-001").unwrap()
+            ))
+    }
+}
+
+/// The live stream delivered three pages of a file ten pages long. Once the archive is
+/// published, the background pass imports the rest: every record is in the journal
+/// exactly once, and the journal says it was completed from the archive.
+#[test]
+fn a_published_archive_fills_the_metric_history_the_stream_left_short() {
+    let mut g = MetricGap::new();
+    g.stream();
+    let written = g.written();
+    let streamed = g.metric_counts();
+    assert!(streamed.len() < written.len() / 2, "{}", streamed.len());
+    assert!(streamed.values().all(|count| *count == 1));
+    assert!(g.drained().is_empty());
+    let mut done = std::collections::BTreeSet::new();
+    // Nothing is filled before the archive is published, and the pass keeps looking.
+    g.service.metric_gap_pass(T_RECONCILE, &mut done);
+    assert!(done.is_empty());
+    assert!(!g.gap_slot().exists());
+    assert_eq!(g.metric_counts(), streamed);
+    g.publish(&g.metrics);
+    let gets = g.oss.gets();
+    g.service.metric_gap_pass(T_RECONCILE, &mut done);
+    assert_eq!(done.len(), 1);
+    assert!(g.oss.gets() > gets, "the archived file was read");
+    assert_eq!(g.metric_counts(), written);
+    let drained = g.drained();
+    assert_eq!(drained.len(), 1);
+    assert_eq!(drained[0]["data"]["state"], "SUCCEEDED");
+    assert_eq!(drained[0]["data"]["delivery"], "result-archive");
+    let history = g.service.history(&g.action).unwrap();
+    assert_eq!(history["status"], "COMPLETE", "{history}");
+    assert_eq!(history["received_bytes"], g.metrics.len() as u64);
+    assert_eq!(history["records"], written.len() as u64);
+    assert_eq!(history["invalid_lines"], 0);
+    let fill = &history["metric_gap_fill"];
+    assert_eq!(fill["status"], "FILLED");
+    assert_eq!(fill["from_bytes"], 3 * PAGE as u64);
+    assert_eq!(fill["to_bytes"], g.metrics.len() as u64);
+    let tracking = g.service.tracking_status("demo", "train").unwrap();
+    assert_eq!(tracking["metric_gap_fill"]["status"], "FILLED");
+    // A later pass skips it, and after a restart the record is the answer.
+    let gets = g.oss.gets();
+    g.service.metric_gap_pass(T_RECONCILE, &mut done);
+    g.restart();
+    assert_eq!(g.fill(T_RECONCILE)["status"], "FILLED");
+    assert_eq!(g.oss.gets(), gets);
+    assert_eq!(g.metric_counts(), written);
+    assert_eq!(g.f.provider.creates(), 1);
+}
+
+/// A crash after the import, before its record was written: the repeat imports from
+/// the same cursor, adds nothing to the journal and writes the record once.
+#[test]
+fn a_repeated_metric_gap_fill_adds_nothing_and_leaves_one_record() {
+    let mut g = MetricGap::new();
+    g.stream();
+    g.publish(&g.metrics);
+    let first = g.fill(T_RECONCILE);
+    assert_eq!(first["status"], "FILLED");
+    let journal = g.journal();
+    let record = fs::read(g.gap_slot()).unwrap();
+    // As if the process stopped between the journal and the record.
+    fs::remove_file(g.gap_slot()).unwrap();
+    g.restart();
+    let again = g.fill(T_GATE_EXPIRED);
+    assert_eq!(again["status"], "FILLED");
+    assert_eq!(again["records"], first["records"]);
+    assert_eq!(g.journal(), journal, "nothing was added");
+    assert_eq!(g.metric_counts(), g.written());
+    assert_eq!(g.drained().len(), 1);
+    // Once written, the record is the answer: a further fill keeps it as it is.
+    let kept = fs::read(g.gap_slot()).unwrap();
+    assert_ne!(kept, record, "the repeat wrote its own time");
+    assert_eq!(g.fill(T_RECONCILE)["at"], T_GATE_EXPIRED);
+    assert_eq!(fs::read(g.gap_slot()).unwrap(), kept);
+    assert_eq!(g.f.provider.creates(), 1);
+}
+
+/// A stream that drained, or whose cursor already reached the end of the file, leaves
+/// nothing to fill: the archive is not read, the journal gains nothing, and no
+/// record is written, though the pass looks at the Attempt only once.
+#[test]
+fn a_stream_that_delivered_the_whole_file_reads_nothing_from_the_archive() {
+    for drained in [true, false] {
+        let g = MetricGap::new();
+        g.stream_whole(drained);
+        assert_eq!(g.metric_counts(), g.written());
+        g.publish(&g.metrics);
+        let journal = g.journal();
+        let gets = g.oss.gets();
+        let mut done = std::collections::BTreeSet::new();
+        g.service.metric_gap_pass(T_RECONCILE, &mut done);
+        assert_eq!(done.len(), 1, "drained: {drained}");
+        assert_eq!(g.oss.gets(), gets, "drained: {drained}");
+        assert_eq!(g.journal(), journal);
+        assert_eq!(g.drained().len(), usize::from(drained));
+        assert!(!g.gap_slot().exists());
+        assert_eq!(g.fill(T_RECONCILE)["status"], "NOT_NEEDED");
+        assert_eq!(g.oss.gets(), gets);
+        assert_eq!(g.f.provider.creates(), 1);
+    }
+}
+
+/// The archived file no longer starts with the bytes the stream delivered: a record in
+/// the first page was rewritten after it was sent. Nothing of the file is imported.
+#[test]
+fn an_archived_metrics_file_with_another_prefix_is_refused_and_imports_nothing() {
+    let g = MetricGap::new();
+    g.stream();
+    let journal = g.journal();
+    let mut rewritten = g.metrics.clone();
+    let at = rewritten
+        .windows(9)
+        .position(|w| w == b"\"step\": 5")
+        .unwrap();
+    assert!(at < PAGE);
+    rewritten[at + 8] = b'6';
+    g.publish(&rewritten);
+    let mut done = std::collections::BTreeSet::new();
+    g.service.metric_gap_pass(T_RECONCILE, &mut done);
+    assert_eq!(done.len(), 1, "a refusal is an answer");
+    let fill = g.fill(T_RECONCILE);
+    assert_eq!(fill["status"], "REFUSED");
+    assert_eq!(fill["diagnostic"], "METRICS_PREFIX_MISMATCH");
+    assert_eq!(g.journal(), journal);
+    assert!(g.drained().is_empty());
+    let history = g.service.history(&g.action).unwrap();
+    assert_eq!(history["status"], "PARTIAL");
+    assert_eq!(
+        history["metric_gap_fill"]["diagnostic"],
+        "METRICS_PREFIX_MISMATCH"
+    );
+    assert_eq!(g.f.provider.creates(), 1);
+}

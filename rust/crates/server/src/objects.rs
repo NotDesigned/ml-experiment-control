@@ -206,6 +206,35 @@ impl Store {
         ml_exp_io::artifacts::verify_stream(&mut reader, archive)?;
         Ok(())
     }
+    /// `length` bytes of a result archive from `offset`. Whole parts are read from the
+    /// one that holds `offset`, so at most one part's worth before it is fetched and
+    /// dropped; nothing is kept on disk. The caller checks what it reads.
+    pub fn read_archive_range<'a>(
+        &'a self,
+        archive: &'a ArchiveReceipt,
+        offset: u64,
+        length: u64,
+    ) -> io::Result<impl Read + 'a> {
+        if offset
+            .checked_add(length)
+            .is_none_or(|end| end > archive.bytes)
+        {
+            return Err(invalid());
+        }
+        let part = offset / PART_BYTES;
+        let mut reader = Reader {
+            store: self,
+            archive,
+            part,
+            current: None,
+            remaining: 0,
+        };
+        let skip = offset - part * PART_BYTES;
+        if io::copy(&mut (&mut reader).take(skip), &mut io::sink())? != skip {
+            return Err(invalid());
+        }
+        Ok(reader.take(length))
+    }
     /// Verify a result archive without moving its bytes: every part must exist with its
     /// exact size and the CRC-64/XZ the worker computed from the bytes it sent. Returns
     /// the parts that are missing or differ, so empty means all match. An error means the
@@ -902,6 +931,19 @@ mod tests {
         // The legacy read, for a worker that reports no CRC, reads the bytes.
         let _ = store.verify(&receipt);
         assert!(!no_get(&oss));
+        // One member's bytes, read from where it lies, and nothing past the archive.
+        let mut member = Vec::new();
+        store
+            .read_archive_range(&receipt, 512, 1024)
+            .unwrap()
+            .read_to_end(&mut member)
+            .unwrap();
+        assert_eq!(member, vec![7u8; 1024]);
+        assert!(
+            store
+                .read_archive_range(&receipt, 512, receipt.bytes)
+                .is_err()
+        );
     }
     #[test]
     fn a_checkpoint_copy_verifies_only_with_every_registered_byte() {

@@ -141,6 +141,7 @@ mod tests {
             format!("{digest}.attempt-002.json.exchange.json"),
             format!("{digest}.attempt-002.startup-failure.json"),
             format!("{digest}.json.artifacts.json"),
+            format!("{digest}.json.metric-gap.json"),
             format!("{digest}.startup-failure.json"),
             "prepared-action-0123456789abcdef.json".into(),
             format!("dataset-{digest}.json"),

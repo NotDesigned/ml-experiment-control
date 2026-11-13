@@ -489,6 +489,7 @@ mod data_copies;
 mod data_delivery;
 mod maintenance;
 mod materialization;
+mod metric_gap;
 mod preparations;
 pub use preparations::{Continue, ExternalExecutors};
 mod renewal;
