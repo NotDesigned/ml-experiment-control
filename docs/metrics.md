@@ -172,10 +172,50 @@ protocols or conflicting rewrites are `FAILED`. Identical observations deduplica
 
 Workers read complete newline-terminated records roughly every five seconds,
 in batches of at most 64. Retry preserves event IDs and cursor without stopping
-training. A final uploaded root `metrics.jsonl` or `train_metrics.jsonl` can fill
-delivery gaps; journal-write failure prevents archive publication until retry.
-Stdout-only observations may be sampled and cannot reconstruct a full
+training. Stdout-only observations may be sampled and cannot reconstruct a full
 curve; complete records are the live delivery path.
+
+### Cloud Runs: the rest of the file from the result archive
+
+A cloud worker sends `metrics.jsonl` to the server 128 KiB at a time, about every
+five seconds, and keeps sending for at most 60 seconds after training exits. A Run
+that wrote faster than that ends with only the start of its file in the journal.
+The whole file is in the result archive, and the server imports the rest from there:
+
+- Once the archive is published and verified, a background pass on the server,
+  every 30 seconds, reads the archived root `metrics.jsonl` from the object store
+  and continues from where the live stream stopped, with the same import state.
+  Before `run download` releases an archive, the server does the same first. The
+  worker sends nothing again and no job is started.
+- The archived file's bytes before that point must hash to what the stream
+  delivered. If they differ, for example because the file was rewritten, nothing
+  is imported and the fill is refused with `METRICS_PREFIX_MISMATCH`.
+- Records are validated against the frozen schema and deduplicated as live ones
+  are, so a record already delivered is not added again, and a repeat after a
+  restart adds nothing.
+- When it is done, the journal ends with `METRICS_DRAINED`, as when the stream
+  drains, with `"delivery": "result-archive"`, and `run history` reports
+  `COMPLETE`. `run history` and `run tracking` show the fill as `metric_gap_fill`.
+
+Runs that ended with a gap before this existed are filled by the first pass after
+the server starts, as long as their archive is still kept. `metric_gap_fill.status`
+is `FILLED` or `REFUSED`, and a refusal names its reason in `diagnostic`. Either is
+final; a failed object-store read records nothing and is tried again.
+
+| `diagnostic` | Meaning |
+| --- | --- |
+| `METRICS_PREFIX_MISMATCH` | The archived file does not start with what was streamed |
+| `METRICS_NOT_ARCHIVED` | The archive holds no root `metrics.jsonl` |
+| `METRICS_FILE_TOO_LARGE` | The archived file is over 256 MiB |
+| `METRICS_ARCHIVE_RELEASED` | The archive was released before the fill ran |
+| `METRICS_ARCHIVE_DIGEST_MISMATCH` | The archived bytes differ from the archive's receipt |
+| `METRICS_ARCHIVE_LAYOUT_UNRECOGNIZED` | The file is not where the archive's receipt places it |
+| `METRICS_IMPORTER_MISMATCH` | The Run's frozen metric schema no longer matches the stream's |
+
+Only a Run whose training succeeded uploads a result archive, so only such a Run is
+filled; `train_metrics.jsonl` is not used. If the W&B publisher already finished the
+Attempt's W&B Run, the filled records stay in the journal and are not added to that
+W&B Run; MLflow receives them.
 
 Accepted metrics survive result archive ACK/release. The canonical journal and
 independent publication cursors remain in `tracking/outbox.sqlite`;

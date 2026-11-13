@@ -113,6 +113,21 @@ pub(super) struct Saved {
     pub inputs: Vec<ml_exp_core::input_progress::Record>,
     pub checkpoint_error: Option<String>,
 }
+/// The journal's lifecycle state for what the worker's sealed receipt says.
+pub(super) fn training_state(worker: &ml_exp_core::managed::evidence::Observation) -> &'static str {
+    use ml_exp_core::managed::evidence::Training;
+    worker
+        .receipt
+        .as_ref()
+        .map(|r| match r.training {
+            Training::Completed => "SUCCEEDED",
+            Training::Cancelled => "CANCELLED",
+            Training::TimedOut => "TIMEOUT",
+            Training::Failed => "FAILED",
+            _ => "UNKNOWN",
+        })
+        .unwrap_or("RUNNING")
+}
 pub struct CodeGrant {
     project: String,
     source: String,
@@ -619,17 +634,7 @@ impl Service {
         } else {
             "TRAINING"
         };
-        let status = worker
-            .receipt
-            .as_ref()
-            .map(|r| match r.training {
-                ml_exp_core::managed::evidence::Training::Completed => "SUCCEEDED",
-                ml_exp_core::managed::evidence::Training::Cancelled => "CANCELLED",
-                ml_exp_core::managed::evidence::Training::TimedOut => "TIMEOUT",
-                ml_exp_core::managed::evidence::Training::Failed => "FAILED",
-                _ => "UNKNOWN",
-            })
-            .unwrap_or("RUNNING");
+        let status = training_state(worker);
         // No mutable receipt time inside an idempotent event. The accepted
         // server receive time lives separately in the observation envelope.
         let event = ml_exp_core::records::Event {
@@ -808,18 +813,30 @@ impl Service {
             }
         }
         Ok(
-            json!({"project":project,"run_id":run,"wandb":route,"scopes":scopes,"source":"local-canonical-journal","cloud_query_performed":false}),
+            json!({"project":project,"run_id":run,"wandb":route,"scopes":scopes,"source":"local-canonical-journal","cloud_query_performed":false,
+            "metric_gap_fill":self.gap_document(&prepared)?}),
         )
     }
     pub fn history(&self, action: &str) -> cloud::Result<Value> {
         let prepared = self.load(action)?;
         let saved = self.exchange_saved(&prepared)?;
-        Ok(
-            json!({"submission_id":action,"status":if saved.as_ref().is_some_and(|s|s.complete){"COMPLETE"}else{"PARTIAL"},
+        let gap = self.gap_saved(&prepared)?;
+        let mut view = json!({"submission_id":action,"status":if saved.as_ref().is_some_and(|s|s.complete){"COMPLETE"}else{"PARTIAL"},
             "received_bytes":saved.as_ref().and_then(|s|s.cursor.as_ref()).map_or(0,|c|c.offset_bytes),"records":saved.as_ref().map_or(0,|s|s.counts.records),
             "invalid_lines":saved.as_ref().map_or(0,|s|s.counts.invalid_lines),"scheduler_mutation_performed":false,"source":"native-shared-metric-history",
-            "transport":"native-cloud-exchange","received_at":saved.as_ref().map(|s|&s.observed_at),"diagnostic":if saved.is_none(){json!("AWAITING_WORKER_EXCHANGE")}else{Value::Null}}),
-        )
+            "transport":"native-cloud-exchange","received_at":saved.as_ref().map(|s|&s.observed_at),"diagnostic":if saved.is_none(){json!("AWAITING_WORKER_EXCHANGE")}else{Value::Null}});
+        // The rest of the file came from the result archive: the history is whole.
+        if let Some(gap) = &gap {
+            if gap.status == "FILLED" {
+                let (records, invalid) = (view["records"].as_u64(), view["invalid_lines"].as_u64());
+                view["status"] = json!("COMPLETE");
+                view["received_bytes"] = json!(gap.to_bytes);
+                view["records"] = json!(records.unwrap_or(0) + gap.records);
+                view["invalid_lines"] = json!(invalid.unwrap_or(0) + gap.invalid_lines);
+            }
+            view["metric_gap_fill"] = json!(gap);
+        }
+        Ok(view)
     }
     pub fn latest_registered_checkpoint(&self, action: &str) -> cloud::Result<Value> {
         let prepared = self.load(action)?;

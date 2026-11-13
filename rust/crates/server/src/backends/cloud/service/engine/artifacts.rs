@@ -380,6 +380,18 @@ impl Service {
         release: bool,
         now: &str,
     ) -> cloud::Result<Value> {
+        // A release removes the archive the journal's metric gap is filled from, so
+        // the fill has its answer first; it takes no lock while it reads the object
+        // store. When the store could not be read the archive is kept and the ACK can
+        // be repeated. Any other failure is the fill's own and never holds a release.
+        if release {
+            if let Err(error) = self.fill_metric_gap(&self.load(action)?, now) {
+                if error.code == "METRIC_GAP_FILL_UNAVAILABLE" {
+                    return Err(error);
+                }
+                eprintln!("metric gap fill before release of {action}: {}", error.code);
+            }
+        }
         let lock = self.lock("artifacts.acknowledge_artifacts")?;
         let prepared = self.load(action)?;
         let mut saved = self.artifact_saved(&prepared)?.ok_or_else(missing)?;

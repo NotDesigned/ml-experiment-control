@@ -251,14 +251,7 @@ fn pack_kind(
     for path in paths {
         let mut file = open(root, path, kind)?;
         let before = file.metadata()?;
-        let mut header = tar::Header::new_gnu();
-        header.set_entry_type(tar::EntryType::Regular);
-        header.set_mode(0o600);
-        header.set_uid(0);
-        header.set_gid(0);
-        header.set_mtime(0);
-        header.set_size(before.len());
-        header.set_cksum();
+        let mut header = member_header(before.len());
         let mut reader = HashReader {
             inner: &mut file,
             hash: Sha256::new(),
@@ -312,6 +305,56 @@ fn pack_kind(
         files,
         selected.1,
     ))
+}
+/// The header `pack` gives every member before its path is set.
+fn member_header(bytes: u64) -> tar::Header {
+    let mut header = tar::Header::new_gnu();
+    header.set_entry_type(tar::EntryType::Regular);
+    header.set_mode(0o600);
+    header.set_uid(0);
+    header.set_gid(0);
+    header.set_mtime(0);
+    header.set_size(bytes);
+    header.set_cksum();
+    header
+}
+/// The tar name of a result member, as `pack` writes it.
+fn result_name(path: &str) -> String {
+    format!("outputs/{path}")
+}
+fn padded(bytes: u64) -> Option<u64> {
+    bytes.div_ceil(512).checked_mul(512)
+}
+/// Where `pack` wrote the header of the result member `path`, from its receipt alone:
+/// members are written in receipt order, each as one 512-byte header and its bytes
+/// padded to 512, after a GNU long-name entry when the tar name is over 100 bytes.
+/// `None` when the receipt does not list `path`. A caller reads the header there and
+/// compares it with `result_member_header` before it trusts any byte after it.
+pub fn result_member_offset(files: &[FileReceipt], path: &str) -> Option<u64> {
+    let mut offset = 0u64;
+    for file in files {
+        if file.path == path {
+            return Some(offset);
+        }
+        let name = result_name(&file.path).len() as u64;
+        if name > 100 {
+            // The long-name entry: its own header, then the name and a NUL, padded.
+            offset = offset.checked_add(512)?.checked_add(padded(name + 1)?)?;
+        }
+        offset = offset.checked_add(512)?.checked_add(padded(file.bytes)?)?;
+    }
+    None
+}
+/// The exact header `pack` writes for a result member whose tar name fits its header.
+pub fn result_member_header(path: &str, bytes: u64) -> io::Result<[u8; 512]> {
+    let name = result_name(path);
+    if name.len() > 100 {
+        return Err(invalid());
+    }
+    let mut header = member_header(bytes);
+    header.set_path(&name)?;
+    header.set_cksum();
+    Ok(*header.as_bytes())
 }
 pub fn hash(reader: &mut impl Read) -> io::Result<(String, u64)> {
     let mut h = Sha256::new();
@@ -665,6 +708,50 @@ mod tests {
         file.seek(SeekFrom::Start(600)).unwrap();
         file.write_all(&[42]).unwrap();
         assert!(verify(&mut file, &receipt).is_err());
+    }
+    /// The receipt alone places every member `pack` wrote, including after names that
+    /// need a GNU long-name entry and at the exact 100-byte boundary of the header.
+    #[test]
+    fn a_member_is_found_from_its_receipt_where_pack_wrote_it() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = Directory::open(root.path(), false).unwrap();
+        let fits = "a".repeat(92);
+        let over = "b".repeat(93);
+        let deep = format!("c/{}/{}", "d".repeat(150), "e".repeat(200));
+        std::fs::write(root.path().join(&fits), [1u8; 700]).unwrap();
+        std::fs::write(root.path().join(&over), [2u8; 512]).unwrap();
+        std::fs::create_dir_all(root.path().join(&deep).parent().unwrap()).unwrap();
+        std::fs::write(root.path().join(&deep), b"deep").unwrap();
+        std::fs::write(root.path().join("empty.log"), []).unwrap();
+        let metrics = b"{\"step\":1,\"loss\":2.5}\n{\"step\":2,\"loss\":2.25}\n";
+        std::fs::write(root.path().join("metrics.jsonl"), metrics).unwrap();
+        let mut file = tempfile::tempfile().unwrap();
+        let (_, bytes, files, _) = pack(&directory, &mut file, &Policy::default()).unwrap();
+        let mut tar = Vec::new();
+        file.rewind().unwrap();
+        file.read_to_end(&mut tar).unwrap();
+        assert_eq!(tar.len() as u64, bytes);
+        for record in &files {
+            let mut offset = result_member_offset(&files, &record.path).unwrap() as usize;
+            let name = format!("outputs/{}", record.path);
+            if name.len() > 100 {
+                assert_eq!(tar[offset + 156], b'L', "{name}");
+                offset += 512 + (name.len() + 1).div_ceil(512) * 512;
+            } else {
+                assert_eq!(
+                    tar[offset..offset + 512],
+                    result_member_header(&record.path, record.bytes).unwrap()
+                );
+            }
+            let header = tar::Header::from_byte_slice(&tar[offset..offset + 512]);
+            assert_eq!(header.size().unwrap(), record.bytes, "{name}");
+            let content = &tar[offset + 512..offset + 512 + record.bytes as usize];
+            assert_eq!(format!("{:x}", Sha256::digest(content)), record.sha256);
+        }
+        let at = result_member_offset(&files, "metrics.jsonl").unwrap() as usize + 512;
+        assert_eq!(&tar[at..at + metrics.len()], metrics);
+        assert!(result_member_offset(&files, "absent.jsonl").is_none());
+        assert!(result_member_header(&over, 512).is_err());
     }
     #[test]
     fn a_checkpoints_directory_in_outputs_is_an_ordinary_result() {
