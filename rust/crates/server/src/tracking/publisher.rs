@@ -405,7 +405,7 @@ fn publish_ended(
             &visit, runtime, session, &mut saved, job, confirmed, cancelled,
         ),
         Step::Finish => {
-            let exit_code = i32::from(!(drained && lifecycle["state"] == "SUCCEEDED"));
+            let exit_code = i32::from(!ml_exp_core::records::succeeded(&lifecycle, ended));
             finish(
                 &visit, runtime, session, &mut saved, job, exit_code, cancelled,
             )
