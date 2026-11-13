@@ -593,26 +593,33 @@ impl Service {
         };
         if let Some(page) = &packet.history {
             let mut value = importer.take().ok_or_else(cloud::Error::evidence)?;
+            // One transaction for the whole page. Each journal transaction costs
+            // several fsyncs in rollback-journal mode, and this runs under the cloud
+            // lock: a transaction per 4 KiB chunk held it for seconds per packet.
+            // Event IDs derive from content, so a crash before the cursor is saved
+            // only repeats rows the journal skips.
+            let mut events = Vec::new();
             for chunk in page.bytes.chunks(JsonlImporter::INPUT_BOUND) {
                 let (next, emission) = value.feed(chunk).map_err(why!(cloud::Error::evidence()))?;
-                records
-                    .append_import(&record_guard, &scope, &emission)
-                    .map_err(why!(cloud::Error::evidence()))?;
                 counts = emission.counts;
+                events.extend(emission.events);
                 value = next;
             }
             complete = page.complete();
             cursor = Some(page.next.clone());
             importer = if complete {
                 let emission = value.finish().map_err(why!(cloud::Error::evidence()))?;
-                records
-                    .append_import(&record_guard, &scope, &emission)
-                    .map_err(why!(cloud::Error::evidence()))?;
                 counts = emission.counts;
+                events.extend(emission.events);
                 None
             } else {
                 Some(value)
             };
+            if !events.is_empty() {
+                records
+                    .append(&record_guard, &scope, &events)
+                    .map_err(why!(cloud::Error::evidence()))?;
+            }
         }
         let worker = &packet.evidence.worker;
         let phase = if worker.phase == ml_exp_core::managed::evidence::Phase::Finished {
