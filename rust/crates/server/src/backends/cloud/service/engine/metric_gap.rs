@@ -135,6 +135,10 @@ impl Service {
         let Some(stream) = self.exchange_saved(prepared)? else {
             return Ok(Gap::Waiting);
         };
+        // A drained stream delivered the whole file: nothing is read from the archive.
+        if stream.complete {
+            return Ok(Gap::Absent);
+        }
         let Some(importer) = stream.importer.clone() else {
             return Ok(Gap::Absent);
         };
@@ -146,6 +150,14 @@ impl Service {
         };
         let archive = &state.bundle.archive;
         let from = stream.cursor.as_ref().map_or(0, |c| c.offset_bytes);
+        // The stream already reached the archived file's end: there is nothing to import.
+        if archive
+            .files
+            .iter()
+            .any(|f| f.path == METRICS && f.bytes == from)
+        {
+            return Ok(Gap::Absent);
+        }
         let record = |status: &str, diagnostic: Option<&str>| Filled {
             contract: CONTRACT.into(),
             status: status.into(),

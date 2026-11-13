@@ -4037,6 +4037,26 @@ impl MetricGap {
         );
         self.receive(&last);
     }
+    /// Every page of the file. With `drained` the last one comes after training finished
+    /// and completes the stream; without it the cursor reaches the end while training
+    /// runs, and the finished packet that follows carries no page.
+    fn stream_whole(&self, drained: bool) {
+        let total = self.metrics.len();
+        let (mut start, mut sequence, mut previous) = (0, 1, None);
+        while start < total {
+            let end = (start + PAGE).min(total);
+            let finished = drained && end == total;
+            let packet = self.packet(sequence, previous, (start, end, total), finished);
+            self.receive(&packet);
+            previous = Some(packet.sha256().unwrap());
+            (start, sequence) = (end, sequence + 1);
+        }
+        if !drained {
+            let mut last = self.packet(sequence, previous, (total, total, total), true);
+            last.history = None;
+            self.receive(&last);
+        }
+    }
     /// What the worker does after training: pack `OUTPUT_DIR`, send the archive's part
     /// to the object store with its ticket, and complete. `archived` is the
     /// `metrics.jsonl` that `OUTPUT_DIR` held by then.
@@ -4255,6 +4275,31 @@ fn a_repeated_metric_gap_fill_adds_nothing_and_leaves_one_record() {
     assert_eq!(g.fill(T_RECONCILE)["at"], T_GATE_EXPIRED);
     assert_eq!(fs::read(g.gap_slot()).unwrap(), kept);
     assert_eq!(g.f.provider.creates(), 1);
+}
+
+/// A stream that drained, or whose cursor already reached the end of the file, leaves
+/// nothing to fill: the archive is not read, the journal gains nothing, and no
+/// record is written, though the pass looks at the Attempt only once.
+#[test]
+fn a_stream_that_delivered_the_whole_file_reads_nothing_from_the_archive() {
+    for drained in [true, false] {
+        let g = MetricGap::new();
+        g.stream_whole(drained);
+        assert_eq!(g.metric_counts(), g.written());
+        g.publish(&g.metrics);
+        let journal = g.journal();
+        let gets = g.oss.gets();
+        let mut done = std::collections::BTreeSet::new();
+        g.service.metric_gap_pass(T_RECONCILE, &mut done);
+        assert_eq!(done.len(), 1, "drained: {drained}");
+        assert_eq!(g.oss.gets(), gets, "drained: {drained}");
+        assert_eq!(g.journal(), journal);
+        assert_eq!(g.drained().len(), usize::from(drained));
+        assert!(!g.gap_slot().exists());
+        assert_eq!(g.fill(T_RECONCILE)["status"], "NOT_NEEDED");
+        assert_eq!(g.oss.gets(), gets);
+        assert_eq!(g.f.provider.creates(), 1);
+    }
 }
 
 /// The archived file no longer starts with the bytes the stream delivered: a record in
