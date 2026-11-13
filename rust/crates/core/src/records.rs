@@ -651,8 +651,14 @@ mod tests {
         let done = |phase: &str, state: &str| json!({"phase":phase,"state":state});
         // A successful job whose stream did not drain (the 60 s drain ran out).
         assert!(succeeded(&done("TRAINING_COMPLETED", "SUCCEEDED"), None));
-        assert!(succeeded(&done("METRICS_DRAINED", "SUCCEEDED"), Some("FAILED")));
-        assert!(!succeeded(&done("TRAINING_COMPLETED", "FAILED"), Some("SUCCEEDED")));
+        assert!(succeeded(
+            &done("METRICS_DRAINED", "SUCCEEDED"),
+            Some("FAILED")
+        ));
+        assert!(!succeeded(
+            &done("TRAINING_COMPLETED", "FAILED"),
+            Some("SUCCEEDED")
+        ));
         assert!(!succeeded(&done("METRICS_DRAINED", "TIMEOUT"), None));
         // No terminal lifecycle yet: the provider's end decides.
         assert!(succeeded(&done("TRAINING", "RUNNING"), Some("SUCCEEDED")));
