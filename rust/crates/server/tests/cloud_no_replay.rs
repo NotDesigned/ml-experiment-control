@@ -3919,10 +3919,13 @@ impl MetricGap {
     /// A service with the object store, as the daemon opens it, also after a restart.
     fn open_with(f: &Fixture, origin: &str) -> Service {
         let credentials = f.temp.path().join("oss-credentials");
-        private(
-            &credentials,
-            &json!({"access_key_id":"id","access_key_secret":"secret"}),
-        );
+        // Written once; a restart reads the same file.
+        if !credentials.exists() {
+            private(
+                &credentials,
+                &json!({"access_key_id":"id","access_key_secret":"secret"}),
+            );
+        }
         let mut config: Value = serde_json::from_slice(&f.config).unwrap();
         config["artifacts"] = json!({"endpoint":"oss-cn-example.aliyuncs.com","bucket":"bucket",
             "prefix":"users/alice/ml-expd/","credentials_file":credentials});
