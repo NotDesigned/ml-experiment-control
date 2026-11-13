@@ -3873,7 +3873,13 @@ fn training_metrics() -> Vec<u8> {
         metric_line(&mut text, "train_loss", train, step, "training-v1");
         if step % 100 == 0 {
             let validation = 2.1 + 8.0 / (step as f64 + 12.0);
-            metric_line(&mut text, "validation_loss", validation, step, "validation-v1");
+            metric_line(
+                &mut text,
+                "validation_loss",
+                validation,
+                step,
+                "validation-v1",
+            );
         }
     }
     text.into_bytes()

@@ -263,8 +263,8 @@ impl Service {
         }
         // Anonymous, beside the registry rather than in a temporary filesystem that may
         // be memory: it disappears with the handle, including after a crash.
-        let mut spool = tempfile::tempfile_in(self.settings.registry_root.join(NAME))
-            .map_err(storage)?;
+        let mut spool =
+            tempfile::tempfile_in(self.settings.registry_root.join(NAME)).map_err(storage)?;
         let mut hash = Sha256::new();
         let mut before = from;
         let mut seen = if from == 0 {
