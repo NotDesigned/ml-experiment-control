@@ -110,9 +110,20 @@ impl Sdk {
             } else {
                 90
             });
+        // Which request and W&B Run failed, such as a frame deadline; never the
+        // key or the rows.
+        let context = |error: &dyn std::fmt::Debug| {
+            eprintln!(
+                "W&B SDK {} for {} failed: {error:?}",
+                request["operation"].as_str().unwrap_or("?"),
+                request["wandb_id"].as_str().unwrap_or("-")
+            );
+        };
         framing::write_frame(&self.input, &frame, BOUND, deadline, cancelled)
+            .inspect_err(|error| context(error))
             .map_err(why!(Error::Transport))?;
         self.response(deadline, cancelled)
+            .inspect_err(|error| context(error))
     }
     pub(super) fn shutdown(&mut self) -> Result<()> {
         let flag = AtomicBool::new(false);
