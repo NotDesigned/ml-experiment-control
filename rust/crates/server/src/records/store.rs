@@ -535,15 +535,28 @@ impl Store {
             let mut items = Vec::new();
             while let Some(row) = rows.next()? {
                 let size: i64 = row.get(0)?;
-                let size = usize::try_from(size).map_err(why!(Error::Invalid("metric history exceeds read budget")))?;
-                if bytes.checked_add(size).is_none_or(|size| size > maximum_bytes) {
+                let size = usize::try_from(size)
+                    .map_err(why!(Error::Invalid("metric history exceeds read budget")))?;
+                if bytes
+                    .checked_add(size)
+                    .is_none_or(|size| size > maximum_bytes)
+                {
                     return Err(Error::Invalid("metric history exceeds read budget"));
                 }
                 let raw = keyed.text(row.get(2)?, row.get(1)?)?;
-                bytes = bytes.checked_add(raw.len()).filter(|size| *size <= maximum_bytes).ok_or(Error::Invalid("metric history exceeds read budget"))?;
+                bytes = bytes
+                    .checked_add(raw.len())
+                    .filter(|size| *size <= maximum_bytes)
+                    .ok_or(Error::Invalid("metric history exceeds read budget"))?;
                 let value: Value = serde_json::from_str(&raw)?;
-                let observations = value["observations"].as_array().ok_or(Error::Invalid("metric observations array"))?;
-                if items.len().checked_add(observations.len()).is_none_or(|size| size > maximum_records) {
+                let observations = value["observations"]
+                    .as_array()
+                    .ok_or(Error::Invalid("metric observations array"))?;
+                if items
+                    .len()
+                    .checked_add(observations.len())
+                    .is_none_or(|size| size > maximum_records)
+                {
                     return Err(Error::Invalid("metric history exceeds read budget"));
                 }
                 items.extend(observations.iter().cloned());

@@ -18,8 +18,7 @@
 //! again, and a verified one is verified again before the swap completes.
 use std::{
     ffi::OsStr,
-    fs,
-    io,
+    fs, io,
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     time::Instant,
@@ -77,8 +76,7 @@ const PLAIN: [(&str, &str, &str); 7] = [
 ];
 const TABLE_EXISTS: &str =
     "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)";
-const OLD_EVENTS: &str =
-    "SELECT seq,event_id,payload,dedup FROM events WHERE scope=? ORDER BY seq";
+const OLD_EVENTS: &str = "SELECT seq,event_id,payload,dedup FROM events WHERE scope=? ORDER BY seq";
 const NEW_EVENTS: &str =
     "SELECT seq,event_id,form,payload,dedup FROM events WHERE scope_key=? ORDER BY seq";
 const OLD_IDS: &str = "SELECT event_id,digest FROM event_ids WHERE scope=? ORDER BY event_id";
@@ -535,7 +533,9 @@ impl Tally {
 }
 
 fn mismatch(table: &str, scope: &str) -> Error {
-    Error::Refused(format!("verification failed: {table} of scope {scope} differ"))
+    Error::Refused(format!(
+        "verification failed: {table} of scope {scope} differ"
+    ))
 }
 
 /// Compare the file at `path` with the old journal, as every reader sees both.

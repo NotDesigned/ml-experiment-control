@@ -322,7 +322,9 @@ fn downgrade(keyed: &Path, legacy: &Path) {
             .unwrap();
     }
     let path = keyed.to_str().unwrap();
-    target.execute("ATTACH DATABASE ? AS keyed", [path]).unwrap();
+    target
+        .execute("ATTACH DATABASE ? AS keyed", [path])
+        .unwrap();
     for table in PLAIN {
         let filter = match table {
             "meta" => " WHERE key<>'journal_layout'",
@@ -407,7 +409,8 @@ fn sorted(mut rows: Vec<Value>) -> Value {
 
 /// Every public read of every scope, as text.
 fn snapshot(store: &Store, scopes: &[String]) -> Vec<(String, String)> {
-    let runs = json!({"wandb":store.publication_runs().unwrap(),"mlflow":store.mlflow_runs().unwrap()});
+    let runs =
+        json!({"wandb":store.publication_runs().unwrap(),"mlflow":store.mlflow_runs().unwrap()});
     let mut reads = vec![("runs".to_owned(), text(&runs))];
     for scope in scopes {
         let parsed = Scope::parse(scope).unwrap();
@@ -416,7 +419,9 @@ fn snapshot(store: &Store, scopes: &[String]) -> Vec<(String, String)> {
         let total = store.total(&guard, scope).unwrap();
         let events = store.events(&guard, scope, 0, 10_000).unwrap();
         let events: Vec<Value> = events.iter().map(EventRow::document).collect();
-        let bounded = store.events_bounded(&guard, scope, 3, 10_000, 4096).unwrap();
+        let bounded = store
+            .events_bounded(&guard, scope, 3, 10_000, 4096)
+            .unwrap();
         let bounded: Vec<Value> = bounded.iter().map(EventRow::document).collect();
         let derived = store.derived_batches(&guard, scope).unwrap();
         let derived: Vec<Value> = derived.iter().map(DerivedBatch::document).collect();
