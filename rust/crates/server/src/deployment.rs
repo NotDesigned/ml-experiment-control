@@ -98,6 +98,10 @@ impl Settings {
         if crate::read_config::predates_restart(&reads.registry_root) {
             return Err(at(crate::read_config::PREDATES_RESTART));
         }
+        // Checked before a deploy stops the running service.
+        if crate::records::predates_compact_layout(&reads.registry_root) {
+            return Err(at(crate::records::PREDATES_COMPACT_LAYOUT));
+        }
         if !self.bind.ip().is_loopback() {
             return Err(at("loopback_bind"));
         }

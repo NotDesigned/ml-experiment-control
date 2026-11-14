@@ -5,7 +5,9 @@ use std::{net::SocketAddr, path::PathBuf};
 #[command(
     name = "ml-expd-rs",
     version,
-    about = "Native experiment API in an isolated registry with explicitly approved backend execution"
+    about = "Native experiment API in an isolated registry with explicitly approved backend execution",
+    subcommand_negates_reqs = true,
+    args_conflicts_with_subcommands = true
 )]
 struct Args {
     /// One private deployment file; initialization remains a separate command.
@@ -66,10 +68,30 @@ struct Args {
     /// Optional private official-cloud W&B credentials and SDK interpreter.
     #[arg(long, requires = "read_config")]
     tracking_config: Option<PathBuf>,
+    #[command(subcommand)]
+    command: Option<Command>,
 }
+
+#[derive(clap::Subcommand)]
+enum Command {
+    /// Offline, with the service stopped: rewrite tracking/outbox.sqlite in the
+    /// keyed, compact layout. The old file stays as outbox.sqlite.pre-compact-<UTC>.
+    MigrateJournal {
+        /// The registry_root of the read configuration.
+        #[arg(long)]
+        registry: PathBuf,
+        /// Build and verify the new file, then remove it without replacing the journal.
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     let mut args = Args::parse();
+    if let Some(Command::MigrateJournal { registry, dry_run }) = args.command.take() {
+        return migrate_journal(registry, dry_run);
+    }
     if !args.repair_tracking.is_empty() {
         println!(
             "--repair-tracking does nothing now: W&B is a best-effort mirror. The publisher \
@@ -140,6 +162,10 @@ async fn main() -> std::process::ExitCode {
             .is_ok_and(|reads| ml_exp_server::read_config::predates_restart(&reads.registry_root))
         {
             eprintln!("{}", ml_exp_server::read_config::PREDATES_RESTART);
+            return std::process::ExitCode::FAILURE;
+        }
+        if journal_predates_compact_layout(path) {
+            eprintln!("{}", ml_exp_server::records::PREDATES_COMPACT_LAYOUT);
             return std::process::ExitCode::FAILURE;
         }
     }
@@ -450,6 +476,43 @@ async fn main() -> std::process::ExitCode {
     if result.is_err() {
         eprintln!("server stopped with an I/O failure");
         return std::process::ExitCode::FAILURE;
+    }
+    std::process::ExitCode::SUCCESS
+}
+
+/// Whether the read configuration's journal must be migrated before a start.
+fn journal_predates_compact_layout(path: &std::path::Path) -> bool {
+    let Ok(reads) = ml_exp_server::read_config::load(path) else {
+        return false;
+    };
+    ml_exp_server::records::predates_compact_layout(&reads.registry_root)
+}
+
+fn migrate_journal(registry_root: PathBuf, dry_run: bool) -> std::process::ExitCode {
+    use ml_exp_server::records::migrate;
+    let options = migrate::Options {
+        registry_root,
+        dry_run,
+    };
+    let mut progress = |line: &str| println!("{line}");
+    let report = match migrate::run(&options, &mut progress) {
+        Ok(report) => report,
+        Err(error) => {
+            let mut cause: Option<&dyn std::error::Error> = Some(&error);
+            while let Some(error) = cause {
+                eprintln!("{error}");
+                cause = error.source();
+            }
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let (old, new, events) = (report.old_bytes, report.new_bytes, report.events);
+    let per_event = |bytes: u64| bytes.checked_div(events).unwrap_or(0);
+    let (old_each, new_each) = (per_event(old), per_event(new));
+    println!("old file: {old} bytes, {old_each} bytes per event");
+    println!("new file: {new} bytes, {new_each} bytes per event");
+    if let Some(backup) = &report.backup {
+        println!("swapped; the old file is {}", backup.display());
     }
     std::process::ExitCode::SUCCESS
 }

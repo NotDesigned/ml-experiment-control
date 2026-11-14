@@ -10,32 +10,19 @@ use crate::{
     storage::SqliteDatabase,
 };
 
-const SCHEMA: &str = r#"
-CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS runs (project TEXT, run TEXT, route TEXT NOT NULL, config TEXT NOT NULL, PRIMARY KEY(project,run));
-CREATE TABLE IF NOT EXISTS scopes (
- id TEXT PRIMARY KEY, project TEXT, run TEXT, attempt TEXT, wandb_id TEXT NOT NULL,
- confirmed INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'PENDING', error TEXT,
- last_attempt_at TEXT,last_confirmed_at TEXT,failures INTEGER NOT NULL DEFAULT 0,
- display_version INTEGER NOT NULL DEFAULT 0,display_confirmed INTEGER NOT NULL DEFAULT 0);
-CREATE TABLE IF NOT EXISTS events (scope TEXT,seq INTEGER,event_id TEXT,payload TEXT NOT NULL,dedup TEXT,
- PRIMARY KEY(scope,seq),UNIQUE(scope,event_id),UNIQUE(scope,dedup));
-CREATE TABLE IF NOT EXISTS event_ids (scope TEXT,event_id TEXT,digest TEXT NOT NULL,PRIMARY KEY(scope,event_id));
-CREATE TABLE IF NOT EXISTS native_publications (scope TEXT PRIMARY KEY,state TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS derived_events (scope TEXT,seq INTEGER,event_id TEXT,payload TEXT NOT NULL,batch TEXT NOT NULL,
- PRIMARY KEY(scope,seq),UNIQUE(scope,event_id));
-CREATE TABLE IF NOT EXISTS derived_batches (scope TEXT,sha256 TEXT,submitted_at TEXT NOT NULL,
- first INTEGER NOT NULL,last INTEGER NOT NULL,records INTEGER NOT NULL,PRIMARY KEY(scope,sha256));
-CREATE TABLE IF NOT EXISTS wandb_rebuilds (scope TEXT,ordinal INTEGER,sha256 TEXT NOT NULL,names TEXT NOT NULL,
- audit TEXT NOT NULL,old_wandb_id TEXT NOT NULL,new_wandb_id TEXT NOT NULL UNIQUE,requested_at TEXT NOT NULL,
- finished_at TEXT,previous_state TEXT,PRIMARY KEY(scope,ordinal),UNIQUE(scope,old_wandb_id,sha256));
-CREATE TABLE IF NOT EXISTS mlflow_publications (scope TEXT PRIMARY KEY,state TEXT NOT NULL);
-"#;
+use super::layout::{self, Layout, ScopeRow};
+
 /// Training-time records and post-hoc derived batches share one sequence, so the
 /// publisher proves both the same way; only publication reads them together.
-const PUBLISHED: &str = "(SELECT scope,seq,event_id,payload FROM events UNION ALL SELECT scope,seq,event_id,payload FROM derived_events)";
-const TRAINING_TOTAL: &str = "(SELECT COALESCE(MAX(seq),0) FROM events WHERE scope=SCOPE)";
-const PUBLISHED_TOTAL: &str = "MAX((SELECT COALESCE(MAX(seq),0) FROM events WHERE scope=SCOPE),(SELECT COALESCE(MAX(seq),0) FROM derived_events WHERE scope=SCOPE))";
+/// Derived rows are always stored as full text.
+const PUBLISHED: &str = "(SELECT scope_key,seq,event_id,form,payload FROM events UNION ALL SELECT scope_key,seq,event_id,NULL,payload FROM derived_events)";
+const TRAINING_TOTAL: &str = "(SELECT COALESCE(MAX(seq),0) FROM events WHERE scope_key=KEY)";
+const PUBLISHED_TOTAL: &str = "MAX((SELECT COALESCE(MAX(seq),0) FROM events WHERE scope_key=KEY),(SELECT COALESCE(MAX(seq),0) FROM derived_events WHERE scope_key=KEY))";
+/// The key of the scope `SCOPE`, inside a total.
+const KEY: &str = "(SELECT scope_key FROM scope_keys WHERE scope=SCOPE)";
+const METRIC_ROWS: &str = "SELECT form,payload FROM events WHERE scope_key=? AND json_extract(payload,'$.kind')='metrics' ORDER BY seq";
+const METRIC_SIZES: &str = "SELECT length(CAST(payload AS BLOB)),form,payload FROM events WHERE scope_key=? AND json_extract(payload,'$.kind')='metrics' ORDER BY seq";
+const LATEST_LIFECYCLE: &str = "SELECT form,payload FROM events WHERE scope_key=? AND json_extract(payload,'$.kind')='lifecycle' ORDER BY seq DESC LIMIT 1";
 
 pub struct Store {
     database: SqliteDatabase,
@@ -207,7 +194,14 @@ impl Store {
         } else {
             PUBLISHED_TOTAL
         };
-        total.replace("SCOPE", scope)
+        total.replace("KEY", KEY).replace("SCOPE", scope)
+    }
+    /// Rows of a scope for publication, as stored.
+    fn rows_sql(&self) -> String {
+        format!(
+            "SELECT seq,event_id,form,payload FROM {} WHERE scope_key=? AND seq>? ORDER BY seq LIMIT ?",
+            self.published()
+        )
     }
     pub fn bind(&self, guard: &RecordGuard<'_>, route: &Value, config: &Value) -> Result<()> {
         if self.read_only {
@@ -296,7 +290,7 @@ impl Store {
             return Err(Error::ReadOnly);
         }
         self.require_scope(guard, scope)?;
-        let events = events
+        let prepared = events
             .iter()
             .map(records::prepare_event)
             .collect::<records::Result<Vec<_>>>()?;
@@ -306,32 +300,37 @@ impl Store {
         if !bound {
             return Err(Error::Scope);
         }
+        let mut keyed = ScopeRow::claim(tx, scope)?;
         let mut seq: i64 =
             tx.query_row(&format!("SELECT {}", self.total_sql("?1")), [scope], |row| {
                 row.get(0)
             })?;
-        for event in events {
-            let old: Option<String> = tx
+        // Identity, idempotency and dedup are those of the full canonical
+        // payload, whatever form the row is stored in.
+        for (event, prepared) in events.iter().zip(prepared) {
+            let checksum = layout::digest_bytes(&prepared.checksum)?;
+            let old: Option<Vec<u8>> = tx
                 .query_row(
-                    "SELECT digest FROM event_ids WHERE scope=? AND event_id=?",
-                    params![scope, event.event_id],
+                    "SELECT digest FROM event_ids WHERE scope_key=? AND event_id=?",
+                    params![keyed.key, prepared.event_id],
                     |row| row.get(0),
                 )
                 .optional()?;
             if let Some(old) = old {
-                if old != event.checksum {
+                if old != checksum {
                     return Err(Error::EventConflict);
                 }
                 continue;
             }
             tx.execute(
                 "INSERT INTO event_ids VALUES (?,?,?)",
-                params![scope, event.event_id, event.checksum],
+                params![keyed.key, prepared.event_id, checksum],
             )?;
-            if let Some(dedup) = &event.dedup {
+            let dedup = prepared.dedup.as_deref().map(layout::digest_bytes).transpose()?;
+            if let Some(dedup) = &dedup {
                 let duplicate: bool = tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM events WHERE scope=? AND dedup=?)",
-                    params![scope, dedup],
+                    "SELECT EXISTS(SELECT 1 FROM events WHERE scope_key=? AND dedup=?)",
+                    params![keyed.key, dedup],
                     |row| row.get(0),
                 )?;
                 if duplicate {
@@ -341,9 +340,10 @@ impl Store {
             seq = seq
                 .checked_add(1)
                 .ok_or(Error::Invalid("record sequence overflow"))?;
+            let (form, body) = keyed.stored(tx, &event.payload, prepared.body)?;
             tx.execute(
-                "INSERT INTO events VALUES (?,?,?,?,?)",
-                params![scope, seq, event.event_id, event.body, event.dedup],
+                "INSERT INTO events VALUES (?,?,?,?,?,?)",
+                params![keyed.key, seq, prepared.event_id, form, body, dedup],
             )?;
         }
         tx.execute("UPDATE scopes SET status='PENDING' WHERE confirmed<? AND error IS NULL AND status NOT IN ('LOCAL_ONLY','PENDING') AND id=?",params![seq,scope])?;
@@ -395,38 +395,29 @@ impl Store {
         limit: i64,
     ) -> Result<Vec<EventRow>> {
         self.require_scope(guard, scope)?;
-        let rows = self.database.read_only(|connection| -> Result<_> {
-            let mut statement = connection.prepare(&format!(
-                "SELECT seq,event_id,payload FROM {} WHERE scope=? AND seq>? ORDER BY seq LIMIT ?",
-                self.published()
-            ))?;
-            let rows = statement
-                .query_map(params![scope, after, limit], |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                    ))
-                })?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
+        let sql = self.rows_sql();
+        let mut result = self.database.read_only(|connection| -> Result<_> {
+            let keyed = ScopeRow::find(connection, scope)?;
+            let mut statement = connection.prepare(&sql)?;
+            let mut query = statement.query(params![keyed.key, after, limit])?;
+            let mut rows = Vec::new();
+            while let Some(row) = query.next()? {
+                let payload = keyed.text(row.get(3)?, row.get(2)?)?;
+                rows.push(EventRow {
+                    seq: row.get(0)?,
+                    event_id: row.get(1)?,
+                    payload: serde_json::from_str(&payload)?,
+                });
+            }
             Ok(rows)
         })?;
-        let mut result = rows
-            .into_iter()
-            .map(|(seq, event_id, payload)| {
-                Ok(EventRow {
-                    seq,
-                    event_id,
-                    payload: serde_json::from_str(&payload)?,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
         self.as_published(scope, &mut result)?;
         self.require_scope(guard, scope)?;
         Ok(result)
     }
     /// Like `events`, but stops once `max_bytes` of payload are loaded, always
     /// returning at least one row so one large record cannot block a scope.
+    /// A compact row counts the bytes of the text it restores.
     pub fn events_bounded(
         &self,
         guard: &RecordGuard<'_>,
@@ -436,16 +427,15 @@ impl Store {
         max_bytes: usize,
     ) -> Result<Vec<EventRow>> {
         self.require_scope(guard, scope)?;
-        let rows = self.database.read_only(|connection| -> Result<_> {
-            let mut statement = connection.prepare(&format!(
-                "SELECT seq,event_id,payload FROM {} WHERE scope=? AND seq>? ORDER BY seq LIMIT ?",
-                self.published()
-            ))?;
-            let mut query = statement.query(params![scope, after, limit])?;
+        let sql = self.rows_sql();
+        let mut result = self.database.read_only(|connection| -> Result<_> {
+            let keyed = ScopeRow::find(connection, scope)?;
+            let mut statement = connection.prepare(&sql)?;
+            let mut query = statement.query(params![keyed.key, after, limit])?;
             let mut rows = Vec::new();
             let mut bytes = 0;
             while let Some(row) = query.next()? {
-                let payload: String = row.get(2)?;
+                let payload = keyed.text(row.get(3)?, row.get(2)?)?;
                 bytes += payload.len();
                 if bytes > max_bytes && !rows.is_empty() {
                     break;
@@ -458,10 +448,9 @@ impl Store {
             }
             Ok(rows)
         })?;
-        let mut rows = rows;
-        self.as_published(scope, &mut rows)?;
+        self.as_published(scope, &mut result)?;
         self.require_scope(guard, scope)?;
-        Ok(rows)
+        Ok(result)
     }
     pub fn total(&self, guard: &RecordGuard<'_>, scope: &str) -> Result<i64> {
         self.require_scope(guard, scope)?;
@@ -482,17 +471,17 @@ impl Store {
         sequence: i64,
     ) -> Result<Option<String>> {
         self.require_scope(guard, scope)?;
+        let sql = format!(
+            "SELECT event_id FROM {} WHERE scope_key=? AND seq=?",
+            self.published()
+        );
         let value = self.database.read_only(|connection| -> Result<_> {
-            Ok(connection
-                .query_row(
-                    &format!(
-                        "SELECT event_id FROM {} WHERE scope=? AND seq=?",
-                        self.published()
-                    ),
-                    params![scope, sequence],
-                    |row| row.get(0),
-                )
-                .optional()?)
+            let keyed = ScopeRow::find(connection, scope)?;
+            let mut statement = connection.prepare(&sql)?;
+            let value = statement
+                .query_row(params![keyed.key, sequence], |row| row.get(0))
+                .optional()?;
+            Ok(value)
         })?;
         self.require_scope(guard, scope)?;
         Ok(value)
@@ -501,11 +490,14 @@ impl Store {
         self.require_guard(guard)?;
         let scope = Scope::new(&guard.project, &guard.run, attempt).encoded()?;
         let rows = self.database.read_only(|connection| -> Result<_> {
-        let mut statement=connection.prepare("SELECT payload FROM events WHERE scope=? AND json_extract(payload,'$.kind')='metrics' ORDER BY seq")?;
-        let rows = statement
-            .query_map([scope], |row| row.get::<_, String>(0))?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(rows)
+            let keyed = ScopeRow::find(connection, &scope)?;
+            let mut statement = connection.prepare(METRIC_ROWS)?;
+            let mut query = statement.query([keyed.key])?;
+            let mut rows = Vec::new();
+            while let Some(row) = query.next()? {
+                rows.push(keyed.text(row.get(1)?, row.get(0)?)?);
+            }
+            Ok(rows)
         })?;
         let mut items = Vec::new();
         for row in rows {
@@ -524,7 +516,8 @@ impl Store {
 
     /// Read a complete history only if it fits explicit HTTP-boundary budgets.
     /// Hitting a limit is an error, never a silently incomplete science result.
-    /// SQL checks each encoded row length before allocating its payload string.
+    /// SQL checks each stored row length before allocating its payload string;
+    /// a compact row is never longer than the text it restores, which counts.
     pub fn metric_records_bounded(
         &self,
         guard: &RecordGuard<'_>,
@@ -535,18 +528,35 @@ impl Store {
         self.require_guard(guard)?;
         let scope = Scope::new(&guard.project, &guard.run, attempt).encoded()?;
         let result = self.database.read_only(|connection| -> Result<_> {
-            let mut statement = connection.prepare("SELECT length(CAST(payload AS BLOB)),payload FROM events WHERE scope=? AND json_extract(payload,'$.kind')='metrics' ORDER BY seq")?;
-            let mut rows = statement.query([scope])?;
+            let keyed = ScopeRow::find(connection, &scope)?;
+            let mut statement = connection.prepare(METRIC_SIZES)?;
+            let mut rows = statement.query([keyed.key])?;
             let mut bytes = 0usize;
             let mut items = Vec::new();
             while let Some(row) = rows.next()? {
                 let size: i64 = row.get(0)?;
-                let size = usize::try_from(size).map_err(why!(Error::Invalid("metric history exceeds read budget")))?;
-                bytes = bytes.checked_add(size).filter(|size| *size <= maximum_bytes).ok_or(Error::Invalid("metric history exceeds read budget"))?;
-                let raw: String = row.get(1)?;
+                let size = usize::try_from(size)
+                    .map_err(why!(Error::Invalid("metric history exceeds read budget")))?;
+                if bytes
+                    .checked_add(size)
+                    .is_none_or(|size| size > maximum_bytes)
+                {
+                    return Err(Error::Invalid("metric history exceeds read budget"));
+                }
+                let raw = keyed.text(row.get(2)?, row.get(1)?)?;
+                bytes = bytes
+                    .checked_add(raw.len())
+                    .filter(|size| *size <= maximum_bytes)
+                    .ok_or(Error::Invalid("metric history exceeds read budget"))?;
                 let value: Value = serde_json::from_str(&raw)?;
-                let observations = value["observations"].as_array().ok_or(Error::Invalid("metric observations array"))?;
-                if items.len().checked_add(observations.len()).is_none_or(|size| size > maximum_records) {
+                let observations = value["observations"]
+                    .as_array()
+                    .ok_or(Error::Invalid("metric observations array"))?;
+                if items
+                    .len()
+                    .checked_add(observations.len())
+                    .is_none_or(|size| size > maximum_records)
+                {
                     return Err(Error::Invalid("metric history exceeds read budget"));
                 }
                 items.extend(observations.iter().cloned());
@@ -558,7 +568,10 @@ impl Store {
     }
     pub fn latest_lifecycle(&self, guard: &RecordGuard<'_>, scope: &str) -> Result<Value> {
         self.require_scope(guard, scope)?;
-        let payload:Option<String>=self.database.read_only(|connection| -> Result<_> {Ok(connection.query_row("SELECT payload FROM events WHERE scope=? AND json_extract(payload,'$.kind')='lifecycle' ORDER BY seq DESC LIMIT 1",[scope],|row|row.get(0)).optional()?)})?;
+        let payload = self.database.read_only(|connection| -> Result<_> {
+            let payload = lifecycle_text(connection, scope)?;
+            Ok(payload)
+        })?;
         let result = match payload {
             Some(payload) => serde_json::from_str::<Value>(&payload)?
                 .get("data")
@@ -575,7 +588,7 @@ impl Store {
         scope: &str,
     ) -> Result<Option<Value>> {
         self.require_scope(guard, scope)?;
-        let row:Option<(i64,String,String)>=self.database.read_only(|connection| -> Result<_> {Ok(connection.query_row("SELECT seq,event_id,payload FROM events WHERE scope=? AND event_id GLOB 'worker.*' AND json_extract(payload,'$.kind')='lifecycle' AND json_extract(payload,'$.data.phase') IN ('PREPARING_DATA','DATA_FAILED','TRAINING','TRAINING_COMPLETED','UPLOADING_RESULTS','RESULTS_UPLOADED','RESULTS_UPLOAD_FAILED') ORDER BY seq DESC LIMIT 1",[scope],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?)})?;
+        let row:Option<(i64,String,String)>=self.database.read_only(|connection| -> Result<_> {let keyed=ScopeRow::find(connection,scope)?;let row:Option<(i64,String,Option<i64>,String)>=connection.query_row("SELECT seq,event_id,form,payload FROM events WHERE scope_key=? AND event_id GLOB 'worker.*' AND json_extract(payload,'$.kind')='lifecycle' AND json_extract(payload,'$.data.phase') IN ('PREPARING_DATA','DATA_FAILED','TRAINING','TRAINING_COMPLETED','UPLOADING_RESULTS','RESULTS_UPLOADED','RESULTS_UPLOAD_FAILED') ORDER BY seq DESC LIMIT 1",[keyed.key],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional()?;row.map(|(seq,event_id,form,payload)|Ok((seq,event_id,keyed.text(payload,form)?))).transpose()})?;
         self.require_scope(guard, scope)?;
         row.map(|(seq,event_id,payload)|{let payload:Value=serde_json::from_str(&payload)?;let data=&payload["data"];Ok(json!({"phase":data["phase"],"timestamp":data["timestamp"],"event_id":event_id,"sequence":seq}))}).transpose()
     }
@@ -585,10 +598,40 @@ impl Store {
         scope: &str,
     ) -> Result<Option<Value>> {
         self.require_scope(guard, scope)?;
-        let row:Option<(i64,String,String)>=self.database.read_only(|connection| -> Result<_> {Ok(connection.query_row("SELECT seq,event_id,json_extract(payload,'$.observations[#-1]') FROM events WHERE scope=? AND json_extract(payload,'$.kind')='metrics' AND json_type(payload,'$.observations[#-1]')='object' ORDER BY seq DESC LIMIT 1",[scope],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?)})?;
+        let row:Option<(i64,String,Value)>=self.database.read_only(|connection| -> Result<_> {let keyed=ScopeRow::find(connection,scope)?;let row:Option<(i64,String,Option<i64>,String,String)>=connection.query_row("SELECT seq,event_id,form,payload,json_extract(payload,'$.observations[#-1]') FROM events WHERE scope_key=? AND json_extract(payload,'$.kind')='metrics' AND json_type(payload,'$.observations[#-1]')='object' ORDER BY seq DESC LIMIT 1",[keyed.key],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?))).optional()?;row.map(|(seq,event_id,form,payload,last)|Ok((seq,event_id,last_observation(&keyed,form,payload,&last)?))).transpose()})?;
         self.require_scope(guard, scope)?;
-        row.map(|(seq,event_id,payload)|{let mut observation:Value=serde_json::from_str(&payload)?;if observation.get("timestamp").is_none(){observation["timestamp"]=Value::Null;}Ok(json!({"observation":observation,"event_id":event_id,"sequence":seq,"source":"record-journal"}))}).transpose()
+        row.map(|(seq,event_id,mut observation)|{if observation.get("timestamp").is_none(){observation["timestamp"]=Value::Null;}Ok(json!({"observation":observation,"event_id":event_id,"sequence":seq,"source":"record-journal"}))}).transpose()
     }
+}
+
+/// The latest lifecycle row of `scope`, as it was appended.
+fn lifecycle_text(connection: &rusqlite::Connection, scope: &str) -> Result<Option<String>> {
+    let keyed = ScopeRow::find(connection, scope)?;
+    let mut statement = connection.prepare(LATEST_LIFECYCLE)?;
+    let row: Option<(Option<i64>, String)> = statement
+        .query_row([keyed.key], |row| Ok((row.get(0)?, row.get(1)?)))
+        .optional()?;
+    match row {
+        Some((form, payload)) => Ok(Some(keyed.text(payload, form)?)),
+        None => Ok(None),
+    }
+}
+
+/// The last observation of a metric row. A full row keeps SQL's own text of
+/// it, as before; a compact row takes it from the text it restores.
+fn last_observation(
+    keyed: &ScopeRow,
+    form: Option<i64>,
+    payload: String,
+    last: &str,
+) -> Result<Value> {
+    if form.is_none() {
+        return Ok(serde_json::from_str(last)?);
+    }
+    let row: Value = serde_json::from_str(&keyed.text(payload, form)?)?;
+    let observations = row["observations"].as_array();
+    let last = observations.and_then(|items| items.last());
+    last.cloned().ok_or(Error::Invalid("metric observation"))
 }
 
 #[path = "derived.rs"]
@@ -602,7 +645,13 @@ mod mlflow;
 mod publication;
 
 fn initialize_schema(transaction: &rusqlite::Transaction<'_>, workspace_seed: &str) -> Result<()> {
-    transaction.execute_batch(SCHEMA)?;
+    // An old-layout journal is refused, never migrated or mixed in place.
+    if layout::layout(transaction)? == Layout::Legacy {
+        return Err(Error::LegacyLayout);
+    }
+    transaction.execute_batch(layout::TABLES)?;
+    transaction.execute_batch(layout::INDEXES)?;
+    transaction.execute(layout::MARK_LAYOUT, [])?;
     let workspace: Option<String> = transaction
         .query_row("SELECT value FROM meta WHERE key='workspace'", [], |row| {
             row.get(0)

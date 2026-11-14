@@ -1330,9 +1330,10 @@ fn derived_batches_stay_apart_from_training_records_and_repeat_as_the_same_batch
     assert_eq!(store.latest_lifecycle(&guard, &scope).unwrap(), lifecycle);
     let connection = Connection::open(store.path()).unwrap();
     let count = |table: &str| {
+        let key = "(SELECT scope_key FROM scope_keys WHERE scope=?)";
         connection
             .query_row(
-                &format!("SELECT COUNT(*) FROM {table} WHERE scope=?"),
+                &format!("SELECT COUNT(*) FROM {table} WHERE scope_key={key}"),
                 [&scope],
                 |row| row.get::<_, i64>(0),
             )
