@@ -5,8 +5,8 @@
 use super::*;
 use std::collections::BTreeSet;
 
-const LATEST_LIFECYCLE: &str = "SELECT payload FROM events WHERE scope=? AND json_extract(payload,'$.kind')='lifecycle' ORDER BY seq DESC LIMIT 1";
-const TRAINING_NAMES: &str = "SELECT DISTINCT json_extract(j.value,'$.name') FROM events AS e,json_each(e.payload,'$.observations') AS j WHERE e.scope=? AND json_extract(e.payload,'$.kind')='metrics'";
+const TRAINING_NAMES: &str = "SELECT DISTINCT json_extract(j.value,'$.name') FROM events AS e,json_each(e.payload,'$.observations') AS j WHERE e.scope_key=? AND json_extract(e.payload,'$.kind')='metrics'";
+const DERIVED_AFTER: &str = "SELECT EXISTS(SELECT 1 FROM derived_events WHERE scope_key=(SELECT scope_key FROM scope_keys WHERE scope=?) AND seq>?)";
 
 fn digest(value: &str) -> bool {
     value.len() == 64
@@ -77,10 +77,8 @@ impl Store {
                 if let Some(batch) = existing {
                     return Ok(batch);
                 }
-                let lifecycle: Option<String> = tx
-                    .query_row(LATEST_LIFECYCLE, [scope], |row| row.get(0))
-                    .optional()?;
-                let lifecycle = match lifecycle {
+                let keyed = ScopeRow::claim(tx, scope)?;
+                let lifecycle = match lifecycle_text(tx, scope)? {
                     Some(payload) => serde_json::from_str::<Value>(&payload)?["data"].clone(),
                     None => Value::Null,
                 };
@@ -90,7 +88,7 @@ impl Store {
                 let training: BTreeSet<String> = {
                     let mut statement = tx.prepare(TRAINING_NAMES)?;
                     let found = statement
-                        .query_map([scope], |row| row.get::<_, Option<String>>(0))?
+                        .query_map([keyed.key], |row| row.get::<_, Option<String>>(0))?
                         .collect::<std::result::Result<Vec<_>, _>>()?;
                     found.into_iter().flatten().collect()
                 };
@@ -110,8 +108,8 @@ impl Store {
                 };
                 for (seq, (event_id, body)) in (batch.first..).zip(&rows) {
                     let taken: bool = tx.query_row(
-                        "SELECT EXISTS(SELECT 1 FROM event_ids WHERE scope=? AND event_id=?)",
-                        params![scope, event_id],
+                        "SELECT EXISTS(SELECT 1 FROM event_ids WHERE scope_key=? AND event_id=?)",
+                        params![keyed.key, event_id],
                         |row| row.get(0),
                     )?;
                     if taken {
@@ -119,7 +117,7 @@ impl Store {
                     }
                     tx.execute(
                         "INSERT INTO derived_events VALUES (?,?,?,?,?)",
-                        params![scope, seq, event_id, body, sha256],
+                        params![keyed.key, seq, event_id, body, sha256],
                     )?;
                 }
                 tx.execute(
@@ -171,11 +169,9 @@ impl Store {
             return Ok(false);
         }
         let value = self.database.read_only(|connection| -> Result<_> {
-            Ok(connection.query_row(
-                "SELECT EXISTS(SELECT 1 FROM derived_events WHERE scope=? AND seq>?)",
-                params![scope, after],
-                |row| row.get(0),
-            )?)
+            let mut statement = connection.prepare(DERIVED_AFTER)?;
+            let found = statement.query_row(params![scope, after], |row| row.get(0))?;
+            Ok(found)
         })?;
         self.require_scope(guard, scope)?;
         Ok(value)

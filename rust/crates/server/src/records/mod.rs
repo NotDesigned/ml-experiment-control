@@ -1,7 +1,10 @@
 //! Canonical experiment journal I/O. SQLite acceptance is independent of optional
 //! publishers. All normal reads and writes require an exact Run guard.
 //! No HTTP, provider, scheduler or scientific payload file access.
+mod layout;
+pub mod migrate;
 mod store;
+pub use layout::{PREDATES_COMPACT_LAYOUT, predates_compact_layout};
 pub use store::{DerivedBatch, EventRow, ImportSummary, RecordGuard, Store, WandbRebuild};
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -41,7 +44,13 @@ pub enum Error {
     RebuildNotFinished,
     #[error("invalid record storage metadata: {0}")]
     Invalid(&'static str),
+    #[error("record journal has the old layout: run `ml-expd-rs migrate-journal`")]
+    LegacyLayout,
+    #[error("journal migration refused: {0}")]
+    Refused(String),
 }
 
+#[cfg(test)]
+mod layout_tests;
 #[cfg(test)]
 mod tests;

@@ -11,7 +11,6 @@ pub(super) const CURRENT_ID: &str =
     "SELECT new_wandb_id FROM wandb_rebuilds WHERE scope=? ORDER BY ordinal DESC LIMIT 1";
 const COLUMNS: &str =
     "ordinal,sha256,audit,old_wandb_id,new_wandb_id,requested_at,finished_at FROM wandb_rebuilds";
-const LATEST_LIFECYCLE: &str = "SELECT payload FROM events WHERE scope=? AND json_extract(payload,'$.kind')='lifecycle' ORDER BY seq DESC LIMIT 1";
 
 /// One accepted exclusion list for one scope, oldest first by `ordinal`.
 #[derive(Clone, Debug, PartialEq)]
@@ -142,10 +141,7 @@ impl Store {
                 {
                     return Err(Error::RebuildNotFinished);
                 }
-                let lifecycle: Option<String> = tx
-                    .query_row(LATEST_LIFECYCLE, [scope], |row| row.get(0))
-                    .optional()?;
-                let lifecycle = match lifecycle {
+                let lifecycle = match lifecycle_text(tx, scope)? {
                     Some(payload) => serde_json::from_str::<Value>(&payload)?["data"].clone(),
                     None => Value::Null,
                 };
@@ -157,21 +153,22 @@ impl Store {
                     "json_extract(e.payload,'$.kind') IN ('metrics','{}')",
                     records::DERIVED_KIND
                 );
+                let key = ScopeRow::find(tx, scope)?.key;
                 let counted: Vec<(String, i64)> = {
                     let mut statement = tx.prepare(&format!(
-                        "SELECT json_extract(j.value,'$.name'),COUNT(*) FROM {PUBLISHED} AS e,json_each(e.payload,'$.observations') AS j WHERE e.scope=?1 AND {kinds} AND json_extract(j.value,'$.name') IN (SELECT value FROM json_each(?2)) GROUP BY 1 ORDER BY 1"
+                        "SELECT json_extract(j.value,'$.name'),COUNT(*) FROM {PUBLISHED} AS e,json_each(e.payload,'$.observations') AS j WHERE e.scope_key=?1 AND {kinds} AND json_extract(j.value,'$.name') IN (SELECT value FROM json_each(?2)) GROUP BY 1 ORDER BY 1"
                     ))?;
                     statement
-                        .query_map(params![scope, listed], |row| {
+                        .query_map(params![key, listed], |row| {
                             Ok((row.get(0)?, row.get(1)?))
                         })?
                         .collect::<std::result::Result<_, _>>()?
                 };
                 let emptied: i64 = tx.query_row(
                     &format!(
-                        "SELECT COUNT(*) FROM {PUBLISHED} AS e WHERE e.scope=?1 AND {kinds} AND json_array_length(e.payload,'$.observations')>0 AND NOT EXISTS (SELECT 1 FROM json_each(e.payload,'$.observations') AS j WHERE json_extract(j.value,'$.name') IS NULL OR json_extract(j.value,'$.name') NOT IN (SELECT value FROM json_each(?2)))"
+                        "SELECT COUNT(*) FROM {PUBLISHED} AS e WHERE e.scope_key=?1 AND {kinds} AND json_array_length(e.payload,'$.observations')>0 AND NOT EXISTS (SELECT 1 FROM json_each(e.payload,'$.observations') AS j WHERE json_extract(j.value,'$.name') IS NULL OR json_extract(j.value,'$.name') NOT IN (SELECT value FROM json_each(?2)))"
                     ),
-                    params![scope, listed],
+                    params![key, listed],
                     |row| row.get(0),
                 )?;
                 let found: BTreeSet<&str> = counted.iter().map(|(name, _)| name.as_str()).collect();
