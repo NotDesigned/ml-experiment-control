@@ -47,9 +47,7 @@ impl Service {
     pub(super) fn resolve(&self, project: &str, run: &str) -> Result<RunRef> {
         let approved = self
             .settings
-            .projects
-            .iter()
-            .find(|p| p.project == project)
+            .find_project(project)
             .ok_or(Error::Authority)?;
         if approved.discovery_enabled() {
             let discovery = self

@@ -1460,14 +1460,31 @@ pub fn run(
     // The identity leaves the server out, and this state file belongs to one server.
     let server = canonical::digest(&json!(client.base_url())).map_err(|_| Error::Response)?;
     let state = state_directory.join(format!("{}-{}.json", identity.preparation_id, &server[..8]));
-    let path = format!(
-        "/api/projects/{}/experiment-preparations/{}",
-        spec.project, identity.preparation_id
-    );
-    let saved = match client.get(&path) {
-        Ok(view) => Some(view),
-        Err(Error::Http(failure)) if failure.status == 404 => None,
-        Err(error) => return Err(error),
+    let can_create_project = health["capabilities"]
+        .as_array()
+        .is_some_and(|values| values.iter().any(|v| v == "project-creation.v1"));
+    let new_project = if can_create_project {
+        let listed = client.get("/api/projects")?;
+        !listed
+            .as_array()
+            .ok_or(Error::Response)?
+            .iter()
+            .any(|row| row["project"].as_str() == Some(spec.project.as_str()))
+    } else {
+        false
+    };
+    let saved = if new_project {
+        None
+    } else {
+        let path = format!(
+            "/api/projects/{}/experiment-preparations/{}",
+            spec.project, identity.preparation_id
+        );
+        match client.get(&path) {
+            Ok(view) => Some(view),
+            Err(Error::Http(failure)) if failure.status == 404 => None,
+            Err(error) => return Err(error),
+        }
     };
     // Before anything about today's executors can refuse: a job that exists stays reachable.
     if let Some(id) = saved
@@ -1537,7 +1554,15 @@ pub fn run(
                     plan.executor
                 )));
             }
-            let delivery = deliver(client, spec, &plan, &dockerfile, &archive, executor)?;
+            let delivery = deliver(
+                client,
+                spec,
+                &plan,
+                &dockerfile,
+                &archive,
+                executor,
+                !new_project,
+            )?;
             (plan, delivery)
         }
     };
@@ -1546,9 +1571,25 @@ pub fn run(
             "the server does not allow submissions right now; nothing was sent",
         ));
     }
-    let question = summary(spec, &plan, archive.paths.len(), &delivery.line);
+    let mut question = summary(spec, &plan, archive.paths.len(), &delivery.line);
+    if new_project {
+        if let Some((first, rest)) = question.split_once('\n') {
+            question = format!(
+                "{first}\n  project   {} (new project)\n{rest}",
+                spec.project
+            );
+        }
+    }
     if !(hooks.confirm)(&question)? {
         return Err(Error::Observation("not submitted; nothing was sent"));
+    }
+    if new_project {
+        (hooks.progress)(&format!("creating project {}", spec.project));
+        let create = crate::projects::plan(crate::projects::Command::Create {
+            project: &spec.project,
+            title: None,
+        })?;
+        crate::projects::execute(client, &create, &health)?;
     }
     remember(
         state_directory,
@@ -1837,6 +1878,7 @@ struct Delivery {
     line: String,
 }
 /// Decided only by the directory and the executor, so a repeat decides the same.
+#[allow(clippy::too_many_arguments)]
 fn deliver(
     client: &Client,
     spec: &Spec,
@@ -1844,6 +1886,7 @@ fn deliver(
     dockerfile: &str,
     archive: &sources::PreparedArchive,
     executor: &Value,
+    project_exists: bool,
 ) -> Result<Delivery, Error> {
     use dockerfile::Split;
     let files = archive.paths.len();
@@ -1876,8 +1919,8 @@ fn deliver(
         Split::Files(paths) => paths.as_slice(),
         Split::Whole(_) => archive.paths.as_slice(),
     };
-    let reused =
-        worker.is_some_and(|worker| environment_ready(client, spec, plan, built_from, worker));
+    let reused = project_exists
+        && worker.is_some_and(|worker| environment_ready(client, spec, plan, built_from, worker));
     Ok(match split {
         Split::Files(paths) => {
             let line = if reused {

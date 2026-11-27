@@ -13,6 +13,7 @@ use std::{
 pub struct Service {
     root: PathBuf,
     workspace_id: String,
+    projects_root: Option<PathBuf>,
     approved: BTreeMap<String, PathBuf>,
     lifecycle: Option<Arc<projects::Service>>,
     evidence: experiments::Store,
@@ -60,17 +61,16 @@ impl Service {
         Ok(Self {
             root: settings.registry_root.clone(),
             workspace_id,
+            projects_root: settings.projects_root.clone(),
             approved: settings
                 .projects
                 .iter()
                 .map(|p| (p.project.clone(), p.project_file.clone()))
                 .collect(),
             lifecycle,
-            evidence: experiments::Store::open(
-                settings.bindings(),
-                RunFence::new(&settings.registry_root),
-            )
-            .map_err(why!(read_config::Error))?,
+            evidence: settings
+                .open_store(RunFence::new(&settings.registry_root))
+                .map_err(why!(read_config::Error))?,
             store,
             policy,
         })
@@ -93,7 +93,7 @@ impl Service {
     }
     fn scope(&self, project: &str) -> Result<(), crate::error::Error> {
         ml_exp_core::identity::validate_id(project).map_err(why!(invalid()))?;
-        if !self.approved.contains_key(project) {
+        if !self.approved.contains_key(project) && self.projects_root.is_none() {
             return Err(crate::error::Error {
                 status: 404,
                 code: "SOURCE_PROJECT_NOT_APPROVED",

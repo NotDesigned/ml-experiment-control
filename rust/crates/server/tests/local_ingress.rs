@@ -44,6 +44,7 @@ impl Fixture {
         let settings = read_config::Settings {
             schema_version: 1,
             registry_root: registry,
+            projects_root: None,
             projects: vec![read_config::Project {
                 project: "demo".into(),
                 project_file: project,

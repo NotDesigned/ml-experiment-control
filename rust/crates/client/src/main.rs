@@ -381,6 +381,12 @@ struct ProjectTarget {
 enum Project {
     /// List registered projects and lifecycle audit events.
     List,
+    /// Create or confirm a managed Project on the server; uploads no file.
+    Create {
+        project: String,
+        #[arg(long)]
+        title: Option<String>,
+    },
     /// Register an approved manifest already on the daemon host; uploads no file.
     Register {
         /// Absolute daemon-host path, not a path on this client.
@@ -410,6 +416,12 @@ impl Project {
     fn plan(&self) -> Result<projects::Plan, ml_exp_client::Error> {
         let (target, action) = match self {
             Self::List => return projects::plan(projects::Command::List),
+            Self::Create { project, title } => {
+                return projects::plan(projects::Command::Create {
+                    project,
+                    title: title.as_deref(),
+                });
+            }
             Self::Register {
                 manifest_path,
                 expected_revision,

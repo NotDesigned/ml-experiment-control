@@ -108,6 +108,7 @@ pub struct Service {
     lifecycle: Option<Arc<projects::Service>>,
     backends: BTreeMap<String, Backend>,
     enabled: bool,
+    run_creation_enabled: bool,
     creation_roots: BTreeMap<String, Directory>,
     tracking: ml_exp_core::tracking::RoutingSettings,
     runtime_builder: Option<Arc<dyn RuntimeBuilder>>,
@@ -328,7 +329,8 @@ impl Service {
             .map_err(why!(Error::Configuration))?;
         let actions = operations::Store::open_existing(settings.registry_root.join("actions"))?;
         let fence = RunFence::new(&settings.registry_root);
-        let evidence = experiments::Store::open(settings.bindings(), fence.clone())
+        let evidence = settings
+            .open_store(fence.clone())
             .map_err(why!(Error::Configuration))?;
         Ok(Self {
             settings,
@@ -342,6 +344,7 @@ impl Service {
             lifecycle,
             backends: bindings,
             enabled,
+            run_creation_enabled: false,
             creation_roots: BTreeMap::new(),
             tracking: ml_exp_core::tracking::RoutingSettings::default(),
             runtime_builder: None,

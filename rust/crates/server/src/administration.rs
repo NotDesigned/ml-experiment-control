@@ -5,7 +5,7 @@ use crate::{
     backends::{cloud::service as cloud, slurm::service as slurm},
     deletion::RunFence,
     error::Error,
-    experiments, read_config,
+    read_config,
     runs::Owner,
 };
 use ml_exp_core::{
@@ -274,12 +274,11 @@ impl Service {
         if checkpoints.is_empty() {
             return Ok(());
         }
-        let store = experiments::Store::open(
-            self.settings.bindings(),
-            RunFence::new(&self.settings.registry_root),
-        )
-        .map_err(why!(invalid()))?;
-        for project in &self.settings.projects {
+        let store = self
+            .settings
+            .open_store(RunFence::new(&self.settings.registry_root))
+            .map_err(why!(invalid()))?;
+        for project in self.settings.known_projects().map_err(why!(invalid()))? {
             let discovered = store.discover(&project.project).map_err(why!(invalid()))?;
             for entry in discovered.runs {
                 let snapshot = store
@@ -420,7 +419,9 @@ impl Service {
         }
         let _admission = admission(&self.settings.registry_root, true)?.ok_or_else(invalid)?;
         let fence = RunFence::new(&self.settings.registry_root);
-        let store = experiments::Store::open(self.settings.bindings(), fence.clone())
+        let store = self
+            .settings
+            .open_store(fence.clone())
             .map_err(why!(invalid()))?;
         let discovered = store.discover(project).map_err(why!(invalid()))?;
         let reference = &discovered

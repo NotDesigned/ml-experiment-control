@@ -11,6 +11,7 @@ use std::{
 pub struct Service {
     workspace_root: PathBuf,
     workspace_id: String,
+    projects_root: Option<PathBuf>,
     approved: BTreeMap<String, PathBuf>,
     evidence: experiments::Store,
     store: Store,
@@ -24,9 +25,9 @@ impl Service {
         settings.validate().map_err(why!(Error::Invalid))?;
         let (_, workspace_id) =
             read_config::workspace(&settings.registry_root).map_err(why!(Error::Invalid))?;
-        let evidence =
-            experiments::Store::open(settings.bindings(), RunFence::new(&settings.registry_root))
-                .map_err(why!(Error::Invalid))?;
+        let evidence = settings
+            .open_store(RunFence::new(&settings.registry_root))
+            .map_err(why!(Error::Invalid))?;
         let mut seeds = Vec::new();
         let mut observed = Vec::new();
         for project in &settings.projects {
@@ -68,20 +69,31 @@ impl Service {
         let service = Self {
             workspace_root: settings.registry_root.clone(),
             workspace_id,
+            projects_root: settings.projects_root.clone(),
             approved: settings
                 .projects
                 .iter()
                 .map(|p| (p.project.clone(), p.project_file.clone()))
                 .collect(),
-            evidence: experiments::Store::open(
-                settings.bindings(),
-                RunFence::new(&settings.registry_root),
-            )
-            .map_err(why!(Error::Invalid))?,
+            evidence: settings
+                .open_store(RunFence::new(&settings.registry_root))
+                .map_err(why!(Error::Invalid))?,
             store: Store::open(&settings.registry_root.join("projects"))?,
         };
         service.snapshot()?;
         Ok(service)
+    }
+    pub fn supports_creation(&self) -> bool {
+        self.projects_root.is_some()
+    }
+    fn is_approved_record(&self, project: &str, project_file: &str) -> bool {
+        if let Some(path) = self.approved.get(project) {
+            path.to_str() == Some(project_file)
+        } else if let Some(root) = &self.projects_root {
+            root.join(project).join("project.json").to_str() == Some(project_file)
+        } else {
+            false
+        }
     }
     fn validate(&self) -> Result<(), Error> {
         let (_, workspace) =
@@ -105,10 +117,8 @@ impl Service {
         self.validate()?;
         let snapshot = self.store.snapshot(200)?;
         for record in &snapshot.projects {
-            if self
-                .approved
-                .get(&record.project)
-                .is_some_and(|path| path.to_str() != Some(record.project_file.as_str()))
+            if (self.approved.contains_key(&record.project) || self.projects_root.is_some())
+                && !self.is_approved_record(&record.project, &record.project_file)
             {
                 return Err(Error::Binding);
             }
@@ -128,12 +138,15 @@ impl Service {
             .snapshot()?
             .projects
             .into_iter()
-            .filter(|p| p.state == LifecycleState::Active && self.approved.contains_key(&p.project))
+            .filter(|p| {
+                p.state == LifecycleState::Active
+                    && self.is_approved_record(&p.project, &p.project_file)
+            })
             .map(|p| p.project)
             .collect())
     }
     fn validated_project(&self, project: &str) -> Result<experiments::Document, Error> {
-        if !self.approved.contains_key(project) {
+        if !self.approved.contains_key(project) && self.projects_root.is_none() {
             return Err(Error::Invalid);
         }
         let document = self
@@ -145,6 +158,122 @@ impl Service {
             return Err(Error::Invalid);
         }
         Ok(document)
+    }
+    pub fn create_project(
+        &self,
+        project: &str,
+        title: Option<&str>,
+        now: &str,
+        identity: &str,
+    ) -> std::result::Result<Value, crate::error::Error> {
+        use ml_exp_io::directory::Directory;
+        use std::ffi::OsStr;
+        let bad = || crate::error::Error {
+            status: 422,
+            code: "INVALID_PROJECT_CREATE_REQUEST",
+            detail: "invalid project name or title",
+        };
+        ml_exp_core::identity::validate_id(project).map_err(|_| bad())?;
+        let title = title.unwrap_or(project);
+        let manifest = json!({
+            "schema_version": 1,
+            "project": project,
+            "title": title,
+            "run_roots": ["runs"],
+        });
+        ProjectDefinition::from_value(&manifest).map_err(|_| bad())?;
+        let snapshot = self.snapshot()?;
+        if let Some(existing) = snapshot.projects.iter().find(|p| p.project == project) {
+            if existing.state != LifecycleState::Active {
+                return Err(crate::error::Error {
+                    status: 409,
+                    code: "PROJECT_INACTIVE",
+                    detail: "project already exists and is paused or archived",
+                });
+            }
+            self.validated_project(project)
+                .map_err(crate::error::Error::from)?;
+            return Ok(experiment_redact::redact_json(
+                json!({"created": false, "project": existing}),
+            ));
+        }
+        let Some(root_path) = &self.projects_root else {
+            return Err(crate::error::Error {
+                status: 501,
+                code: "PROJECT_CREATION_NOT_CONFIGURED",
+                detail: "managed project creation is not configured on this server",
+            });
+        };
+        if self.approved.contains_key(project) {
+            return Err(crate::error::Error {
+                status: 409,
+                code: "PROJECT_PATH_CONFIGURED",
+                detail: "project is preconfigured at a fixed daemon path; register it explicitly",
+            });
+        }
+        if snapshot.projects.len() >= 256 {
+            return Err(crate::error::Error {
+                status: 409,
+                code: "PROJECT_LIMIT_REACHED",
+                detail: "workspace has reached its maximum number of projects",
+            });
+        }
+        let io_err = || crate::error::Error {
+            status: 500,
+            code: "PROJECT_CREATE_UNCERTAIN",
+            detail: "project directory may have been created; query /api/projects before retrying",
+        };
+        let root = Directory::open(root_path, false).map_err(why!(io_err()))?;
+        root.require_private().map_err(why!(io_err()))?;
+        let dir = if root
+            .entry_exists(OsStr::new(project))
+            .map_err(why!(io_err()))?
+        {
+            root.child(OsStr::new(project), false)
+                .map_err(why!(io_err()))?
+        } else {
+            root.create_new_child(OsStr::new(project))
+                .map_err(why!(io_err()))?
+        };
+        if !dir
+            .entry_exists(OsStr::new("runs"))
+            .map_err(why!(io_err()))?
+        {
+            dir.create_new_child(OsStr::new("runs"))
+                .map_err(why!(io_err()))?;
+        } else {
+            dir.child(OsStr::new("runs"), false)
+                .map_err(why!(io_err()))?;
+        }
+        if !dir
+            .entry_exists(OsStr::new("project.json"))
+            .map_err(why!(io_err()))?
+        {
+            let mut bytes = ml_exp_core::canonical::bytes(&manifest).map_err(|_| bad())?;
+            bytes.push(b'\n');
+            dir.publish_new(OsStr::new("project.json"), &bytes)
+                .map_err(why!(io_err()))?;
+        }
+        let document = self.validated_project(project)?;
+        let path_file = root_path.join(project).join("project.json");
+        let path = canonical_path(path_file.to_str().ok_or(Error::Invalid)?)?;
+        let result = self.store.execute(
+            &Operation::Onboard {
+                project: project.into(),
+                path,
+            },
+            now,
+            identity,
+            None,
+            Some((&self.approved, self.projects_root.as_deref())),
+        )?;
+        self.evidence
+            .project(project, Some(&document.raw_sha256))
+            .map_err(why!(Error::EffectUncertain))?;
+        self.validate().map_err(why!(Error::EffectUncertain))?;
+        Ok(experiment_redact::redact_json(
+            json!({"created": true, "project": result}),
+        ))
     }
     pub fn register(
         &self,
@@ -168,7 +297,7 @@ impl Service {
             now,
             identity,
             revision,
-            Some(&self.approved),
+            Some((&self.approved, self.projects_root.as_deref())),
         )?;
         // Registry identity binds name and canonical source path. A changed
         // authored manifest may be refreshed later; this particular call must
@@ -189,7 +318,10 @@ impl Service {
         revision: Option<u64>,
     ) -> Result<Value, Error> {
         self.validate()?;
-        if matches!(&operation, Operation::Register { .. }) {
+        if matches!(
+            &operation,
+            Operation::Register { .. } | Operation::Onboard { .. }
+        ) {
             return Err(Error::Invalid);
         }
         // Returning to active tracking requires fresh approved authored input.
@@ -200,9 +332,13 @@ impl Service {
             } if action == "resume" => Some((project.clone(), self.validated_project(project)?)),
             _ => None,
         };
-        let result =
-            self.store
-                .execute(&operation, now, identity, revision, Some(&self.approved))?;
+        let result = self.store.execute(
+            &operation,
+            now,
+            identity,
+            revision,
+            Some((&self.approved, self.projects_root.as_deref())),
+        )?;
         if let Some((project, document)) = resumed {
             self.evidence
                 .project(&project, Some(&document.raw_sha256))
@@ -216,7 +352,7 @@ impl Service {
             Operation::Unregister { .. } | Operation::UnregisterAll { .. } => {
                 json!({"unregistered":result,"effect":"Daemon tracking was removed; research files, artifacts and jobs are unchanged"})
             }
-            Operation::Register { .. } => return Err(Error::Invalid),
+            Operation::Register { .. } | Operation::Onboard { .. } => return Err(Error::Invalid),
         };
         Ok(experiment_redact::redact_json(body))
     }

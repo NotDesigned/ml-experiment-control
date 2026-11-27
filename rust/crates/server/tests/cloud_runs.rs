@@ -45,6 +45,7 @@ fn create_reuse_restart_and_frozen_guard_without_provider_effects() {
     let settings = read_config::Settings {
         schema_version: 1,
         registry_root: registry.clone(),
+        projects_root: None,
         projects: vec![read_config::Project {
             project: "demo".into(),
             project_file: project,

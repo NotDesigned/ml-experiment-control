@@ -9,7 +9,8 @@ impl Service {
         self
     }
     pub fn can_create_runs(&self) -> bool {
-        !self.creation_roots.is_empty()
+        self.run_creation_enabled
+            && (!self.creation_roots.is_empty() || self.settings.projects_root.is_some())
     }
     pub fn supports_script_preparation(&self, executor: &str) -> bool {
         self.backends
@@ -19,6 +20,7 @@ impl Service {
     /// Explicit operator opt-in. Existing read locators do not imply write
     /// permission; only a single canonical discoverable root is accepted.
     pub fn with_run_creation(mut self, enabled: bool) -> Result<Self> {
+        self.run_creation_enabled = enabled;
         if enabled {
             for project in &self.settings.projects {
                 if project.discovery_enabled() && project.run_roots.len() == 1 {
@@ -28,7 +30,7 @@ impl Service {
                         .insert(project.project.clone(), directory);
                 }
             }
-            if self.creation_roots.is_empty() {
+            if self.creation_roots.is_empty() && self.settings.projects_root.is_none() {
                 return Err(Error::Configuration);
             }
         } else {
@@ -51,10 +53,18 @@ impl Service {
         if !resolved {
             return Err(Error::CheckpointMissing);
         }
-        let root = self
-            .creation_roots
-            .get(project)
-            .ok_or(Error::RunCreationDisabled)?;
+        let root = if let Some(directory) = self.creation_roots.get(project) {
+            directory.clone()
+        } else if self.run_creation_enabled {
+            let found = self
+                .settings
+                .find_project(project)
+                .filter(|p| p.discovery_enabled() && p.run_roots.len() == 1)
+                .ok_or(Error::RunCreationDisabled)?;
+            Directory::open(&found.run_roots[0], false).map_err(why!(Error::Authority))?
+        } else {
+            return Err(Error::RunCreationDisabled);
+        };
         let _guard = self
             .fence
             .existing_observation_guard(project, &request.run_id)
@@ -226,7 +236,7 @@ impl Service {
                 return Err(Error::Authority);
             }
             let published = stage
-                .publish_directory(root, OsStr::new(&request.run_id))
+                .publish_directory(&root, OsStr::new(&request.run_id))
                 .map_err(why!(Error::Uncertain))?;
             self.validate_workspace(project, &request.run_id)
                 .map_err(why!(Error::Uncertain))?;

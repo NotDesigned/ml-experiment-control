@@ -15,7 +15,10 @@ use std::sync::Arc;
 
 pub(super) fn routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/api/projects", get(projects))
+        .route(
+            "/api/projects",
+            get(projects).post(crate::projects::http::create_project),
+        )
         .route("/api/runs/{project}/{run}", get(run))
         .route("/api/runs/{project}/{run}/attempts", get(attempts))
         .route("/api/submissions/{identity}", get(submission))

@@ -152,14 +152,14 @@ impl Service {
         self.require_live(project, run)?;
         let project = self
             .settings
-            .projects
-            .iter()
-            .find(|p| p.project == project && p.discovery_enabled() && p.run_roots.len() == 1)
+            .find_project(project)
+            .filter(|p| p.discovery_enabled() && p.run_roots.len() == 1)
             .ok_or_else(cloud::Error::configuration)?;
         Directory::open(&project.run_roots[0], false).map_err(io)
     }
     pub(super) fn project_hash(&self, project: &str) -> cloud::Result<String> {
-        experiments::Store::open(self.settings.bindings(), self.fence.clone())
+        self.settings
+            .open_store(self.fence.clone())
             .map_err(why!(cloud::Error::evidence()))?
             .project(project, None)
             .map(|p| p.raw_sha256)
