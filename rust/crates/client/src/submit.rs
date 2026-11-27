@@ -43,6 +43,13 @@ pub struct Spec {
     pub reason: Option<String>,
 }
 
+/// Which tracking destinations `submit --tracking` asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Tracking {
+    pub mlflow: bool,
+    pub wandb: bool,
+}
+
 /// What the command line gave. Anything it leaves out can come from a file or the
 /// saved settings, and the command line wins.
 #[derive(Default)]
@@ -62,6 +69,9 @@ pub struct Options {
     pub env: Vec<(String, String)>,
     /// `--allocation`, as a name clap has already checked.
     pub allocation: Option<String>,
+    pub tracking: Option<Tracking>,
+    pub mlflow_experiment: Option<String>,
+    pub wandb_project: Option<String>,
 }
 
 /// The experiment file `run start` reads, with everything `submit` derives optional.
@@ -181,6 +191,59 @@ pub fn spec(
             .as_object_mut()
             .ok_or_else(|| Error::Submit("run.scheduling in the file is not an object".into()))?
             .insert("allocation".into(), json!(allocation));
+    }
+    if options.mlflow_experiment.is_some() && options.tracking.is_some_and(|t| !t.mlflow) {
+        return Err(Error::Submit(
+            "--mlflow-experiment cannot be used when --tracking excludes mlflow".into(),
+        ));
+    }
+    if options.wandb_project.is_some() && options.tracking.is_some_and(|t| !t.wandb) {
+        return Err(Error::Submit(
+            "--wandb-project cannot be used when --tracking excludes wandb".into(),
+        ));
+    }
+    if let Some(tracking) = options.tracking {
+        extra
+            .entry("mlflow")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .ok_or_else(|| Error::Submit("run.mlflow in the file is not an object".into()))?
+            .insert("enabled".into(), json!(tracking.mlflow));
+        extra
+            .entry("wandb")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .ok_or_else(|| Error::Submit("run.wandb in the file is not an object".into()))?
+            .insert("enabled".into(), json!(tracking.wandb));
+    }
+    if let Some(experiment) = options.mlflow_experiment {
+        ml_exp_core::tracking::MlflowOptions::from_value(&json!({"experiment": &experiment}))
+            .map_err(|_| {
+                Error::Submit(
+                    "--mlflow-experiment must be a non-empty name up to 250 characters without surrounding spaces or control characters".into(),
+                )
+            })?;
+        extra
+            .entry("mlflow")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .ok_or_else(|| Error::Submit("run.mlflow in the file is not an object".into()))?
+            .insert("experiment".into(), json!(experiment));
+    }
+    if let Some(project) = options.wandb_project {
+        ml_exp_core::tracking::WandbOptions::from_value(&json!({"project": &project})).map_err(
+            |_| {
+                Error::Submit(
+                    "--wandb-project must start with a letter or digit and use only ASCII letters, digits, `_`, `.` or `-` (up to 128 characters)".into(),
+                )
+            },
+        )?;
+        extra
+            .entry("wandb")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .ok_or_else(|| Error::Submit("run.wandb in the file is not an object".into()))?
+            .insert("project".into(), json!(project));
     }
     Ok(Spec {
         project: options
@@ -391,6 +454,39 @@ pub fn parse_data(value: &str) -> Result<(String, String), String> {
         .filter(|(name, asset)| !name.is_empty() && asset.starts_with("asset."))
         .map(|(name, asset)| (name.to_owned(), asset.to_owned()))
         .ok_or_else(|| "use NAME=asset.HASH; ml-exp data upload returns the asset".into())
+}
+
+/// `mlflow,wandb`, `mlflow`, `wandb` or `none`.
+pub fn parse_tracking(value: &str) -> Result<Tracking, String> {
+    let usage = || "choose from `mlflow`, `wandb`, `mlflow,wandb` and `none`".to_owned();
+    let parts: Vec<&str> = value.split(',').map(str::trim).collect();
+    if parts.is_empty() || parts.contains(&"") {
+        return Err(usage());
+    }
+    if parts.iter().any(|part| part.eq_ignore_ascii_case("none")) {
+        return if parts.len() == 1 {
+            Ok(Tracking {
+                mlflow: false,
+                wandb: false,
+            })
+        } else {
+            Err("use `none` by itself, or choose from `mlflow` and `wandb`".into())
+        };
+    }
+    let mut tracking = Tracking {
+        mlflow: false,
+        wandb: false,
+    };
+    for part in parts {
+        if part.eq_ignore_ascii_case("mlflow") {
+            tracking.mlflow = true;
+        } else if part.eq_ignore_ascii_case("wandb") {
+            tracking.wandb = true;
+        } else {
+            return Err(usage());
+        }
+    }
+    Ok(tracking)
 }
 
 /// One instruction per entry: continuations joined, comments gone, as the builder reads them.

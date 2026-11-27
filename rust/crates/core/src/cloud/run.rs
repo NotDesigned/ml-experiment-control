@@ -151,6 +151,9 @@ pub fn documents(
     if let Some(wandb) = &request.wandb {
         run["wandb"] = wandb.to_value();
     }
+    if let Some(mlflow) = &request.mlflow {
+        run["mlflow"] = mlflow.to_value();
+    }
     if let Some(policy) = &request.artifacts {
         run["artifacts"] = json!(policy);
     }

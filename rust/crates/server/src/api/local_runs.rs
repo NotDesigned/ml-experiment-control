@@ -231,8 +231,9 @@ impl Api {
                 ));
             }
         } else {
-            let route = ml_exp_core::tracking::resolve(
+            let route = ml_exp_core::tracking::resolve_routes(
                 request.wandb.as_ref(),
+                request.mlflow.as_ref(),
                 &self.local_tracking,
                 project,
             );

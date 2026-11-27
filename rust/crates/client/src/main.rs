@@ -64,6 +64,16 @@ For every field and each separate step, see `ml-exp run start` and `ml-exp run e
         /// only the quota. A different choice is a different job.
         #[arg(long, value_parser = ["guaranteed", "allow_idle", "idle_only"])]
         allocation: Option<String>,
+        /// Where the server publishes metrics: `mlflow,wandb`, `mlflow`, `wandb` or `none`.
+        /// Both when configured unless given.
+        #[arg(long, value_parser = ml_exp_client::submit::parse_tracking)]
+        tracking: Option<ml_exp_client::submit::Tracking>,
+        /// MLflow experiment name, overriding the server's `<prefix><project>` default.
+        #[arg(long)]
+        mlflow_experiment: Option<String>,
+        /// W&B project name, overriding the server default or Project name.
+        #[arg(long)]
+        wandb_project: Option<String>,
         /// 0 unless given.
         #[arg(long)]
         seed: Option<i64>,
@@ -1294,6 +1304,9 @@ fn run(mut args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     data,
                     env,
                     allocation,
+                    tracking,
+                    mlflow_experiment,
+                    wandb_project,
                     seed,
                     run,
                     dockerfile,
@@ -1325,6 +1338,9 @@ fn run(mut args: Args) -> Result<(), Box<dyn std::error::Error>> {
                             data,
                             env,
                             allocation,
+                            tracking,
+                            mlflow_experiment,
+                            wandb_project,
                         },
                         file.as_deref(),
                         settings.project.as_deref(),

@@ -154,3 +154,107 @@ fn finite_parameter_validation_returns_the_same_values() {
         &value
     ));
 }
+
+#[test]
+fn mlflow_options_and_routes_allow_independent_selection_and_experiment_overrides() {
+    use ml_exp_core::tracking::{MlflowOptions, MlflowRouting};
+    assert_eq!(
+        MlflowOptions::from_value(&json!({})).unwrap().to_value(),
+        json!({"enabled": true, "experiment": null})
+    );
+    assert_eq!(
+        MlflowOptions::from_value(&json!({"enabled": false, "experiment": "custom/study"}))
+            .unwrap()
+            .to_value(),
+        json!({"enabled": false, "experiment": "custom/study"})
+    );
+    for invalid in [
+        json!([]),
+        json!({"unknown": true}),
+        json!({"experiment": ""}),
+        json!({"experiment": " leading"}),
+        json!({"experiment": "line\nbreak"}),
+    ] {
+        assert!(MlflowOptions::from_value(&invalid).is_err(), "{invalid}");
+    }
+
+    let both_configured = RoutingSettings {
+        enabled: true,
+        credentials_configured: true,
+        resolved_entity: Some("team".into()),
+        mlflow: Some(MlflowRouting {
+            enabled: true,
+            experiment_prefix: "ml-expd/".into(),
+            projects: None,
+        }),
+        ..Default::default()
+    };
+    // Default (both omitted): both destinations enabled.
+    let both = tracking::resolve_routes(None, None, &both_configured, "demo");
+    assert_eq!(both["enabled"], true);
+    assert_eq!(
+        both["mlflow"],
+        json!({"enabled": true, "reason": null, "experiment": "ml-expd/demo"})
+    );
+
+    // MLflow only, with custom experiment override.
+    let mlflow_only = tracking::resolve_routes(
+        Some(&WandbOptions {
+            enabled: false,
+            ..Default::default()
+        }),
+        Some(&MlflowOptions {
+            enabled: true,
+            experiment: Some("custom/exp".into()),
+        }),
+        &both_configured,
+        "demo",
+    );
+    assert_eq!(mlflow_only["enabled"], false);
+    assert_eq!(mlflow_only["reason"], "DISABLED_BY_REQUEST");
+    assert_eq!(
+        mlflow_only["mlflow"],
+        json!({"enabled": true, "reason": null, "experiment": "custom/exp"})
+    );
+
+    // W&B only.
+    let wandb_only = tracking::resolve_routes(
+        Some(&WandbOptions {
+            enabled: true,
+            project: Some("wb-proj".into()),
+            ..Default::default()
+        }),
+        Some(&MlflowOptions {
+            enabled: false,
+            experiment: None,
+        }),
+        &both_configured,
+        "demo",
+    );
+    assert_eq!(wandb_only["enabled"], true);
+    assert_eq!(wandb_only["project"], "wb-proj");
+    assert_eq!(
+        wandb_only["mlflow"],
+        json!({"enabled": false, "reason": "DISABLED_BY_REQUEST", "experiment": "ml-expd/demo"})
+    );
+
+    // Server without MLflow configured: omitted keeps route unchanged; explicit request records reason.
+    let no_mlflow = RoutingSettings::default();
+    assert!(
+        tracking::resolve_routes(None, None, &no_mlflow, "demo")
+            .get("mlflow")
+            .is_none()
+    );
+    assert_eq!(
+        tracking::resolve_routes(
+            None,
+            Some(&MlflowOptions {
+                enabled: true,
+                experiment: Some("wanted".into()),
+            }),
+            &no_mlflow,
+            "demo",
+        )["mlflow"],
+        json!({"enabled": false, "reason": "CREDENTIALS_NOT_CONFIGURED", "experiment": "wanted"})
+    );
+}

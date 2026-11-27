@@ -4,7 +4,7 @@ use crate::{
     canonical,
     metrics::MetricSchema,
     records::{Event, ImportCounts, JsonlImporter},
-    tracking::WandbOptions,
+    tracking::{MlflowOptions, WandbOptions},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -35,6 +35,8 @@ pub struct Registration {
     pub seed: u64,
     #[serde(default)]
     pub wandb: Option<WandbOptions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mlflow: Option<MlflowOptions>,
 }
 impl Registration {
     pub fn validate(&self, project: &str) -> Result<()> {

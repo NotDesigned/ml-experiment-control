@@ -1699,3 +1699,88 @@ fn a_dockerfile_git_ignores_is_named_before_anything_is_sent() {
     assert!(asked.is_empty());
     assert_eq!(fake.mutations(), 0);
 }
+
+#[test]
+fn tracking_target_list_and_destination_names_resolve_without_changing_untouched_identities() {
+    use ml_exp_client::submit::{Options, Tracking, parse_tracking};
+    assert_eq!(
+        parse_tracking("mlflow,wandb").unwrap(),
+        Tracking {
+            mlflow: true,
+            wandb: true
+        }
+    );
+    assert_eq!(
+        parse_tracking("wandb,mlflow").unwrap(),
+        Tracking {
+            mlflow: true,
+            wandb: true
+        }
+    );
+    assert_eq!(
+        parse_tracking("mlflow").unwrap(),
+        Tracking {
+            mlflow: true,
+            wandb: false
+        }
+    );
+    assert_eq!(
+        parse_tracking("wandb").unwrap(),
+        Tracking {
+            mlflow: false,
+            wandb: true
+        }
+    );
+    assert_eq!(
+        parse_tracking("none").unwrap(),
+        Tracking {
+            mlflow: false,
+            wandb: false
+        }
+    );
+    for bad in ["", ",", "mlflow,", "none,mlflow", "tensorboard"] {
+        assert!(parse_tracking(bad).is_err(), "{bad}");
+    }
+
+    let base = || Options {
+        command: vec!["python".into(), "train.py".into()],
+        gpus: Some(1),
+        walltime_seconds: Some(300),
+        ..Default::default()
+    };
+    let untouched = submit::spec(base(), None, Some("demo"), Some("dlc")).unwrap();
+    assert!(untouched.extra.is_empty());
+
+    let mut mlflow_only = base();
+    mlflow_only.tracking = Some(parse_tracking("mlflow").unwrap());
+    mlflow_only.mlflow_experiment = Some("study/exp-1".into());
+    let spec = submit::spec(
+        mlflow_only,
+        Some(br#"{"run":{"wandb":{"entity":"team-a"}}}"#),
+        Some("demo"),
+        Some("dlc"),
+    )
+    .unwrap();
+    assert_eq!(
+        spec.extra.get("mlflow"),
+        Some(&json!({"enabled": true, "experiment": "study/exp-1"}))
+    );
+    assert_eq!(
+        spec.extra.get("wandb"),
+        Some(&json!({"entity": "team-a", "enabled": false}))
+    );
+    let dockerfile = format!("FROM {IMAGE}\n");
+    let a = submit::identify(&untouched, &"0".repeat(64), &dockerfile, "src").unwrap();
+    let b = submit::identify(&spec, &"0".repeat(64), &dockerfile, "src").unwrap();
+    assert_ne!(a.request_id, b.request_id);
+
+    let mut conflict = base();
+    conflict.tracking = Some(parse_tracking("wandb").unwrap());
+    conflict.mlflow_experiment = Some("study/exp-1".into());
+    assert!(submit::spec(conflict, None, Some("demo"), Some("dlc")).is_err());
+
+    let mut conflict = base();
+    conflict.tracking = Some(parse_tracking("none").unwrap());
+    conflict.wandb_project = Some("proj".into());
+    assert!(submit::spec(conflict, None, Some("demo"), Some("dlc")).is_err());
+}

@@ -120,6 +120,7 @@ to skip the question in a script; without a terminal `--yes` is required.
 | Another Dockerfile | `--dockerfile docker/train.Dockerfile` |
 | Environment variables | `--env KEY=VALUE`. Platform names are refused |
 | An uploaded dataset | `--data train=asset.HASH`, from [`ml-exp data upload`](data.md); read its path from `DATASETS_JSON` |
+| Tracking destinations | `--tracking mlflow,wandb`, `mlflow`, `wandb` or `none`; `--mlflow-experiment NAME`; `--wandb-project NAME` |
 | Everything else | `--file experiment.json` |
 
 `--file` takes the experiment file below, with everything `submit` derives left out, for

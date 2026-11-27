@@ -123,8 +123,9 @@ impl Service {
             )
         } else {
             (
-                Some(ml_exp_core::tracking::resolve(
+                Some(ml_exp_core::tracking::resolve_routes(
                     request.wandb.as_ref(),
+                    request.mlflow.as_ref(),
                     &self.tracking,
                     project,
                 )),

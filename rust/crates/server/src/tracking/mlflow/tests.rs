@@ -523,6 +523,30 @@ fn without_an_mlflow_route_there_is_no_mlflow_work() {
             .get("mlflow")
             .is_none()
     );
+    assert_eq!(
+        ml_exp_core::tracking::resolve_routes(
+            None,
+            Some(&ml_exp_core::tracking::MlflowOptions {
+                enabled: false,
+                experiment: None,
+            }),
+            &settings,
+            "demo",
+        )["mlflow"],
+        json!({"enabled":false,"reason":"DISABLED_BY_REQUEST","experiment":"ml-expd/demo"})
+    );
+    assert_eq!(
+        ml_exp_core::tracking::resolve_routes(
+            None,
+            Some(&ml_exp_core::tracking::MlflowOptions {
+                enabled: true,
+                experiment: Some("override-exp".into()),
+            }),
+            &settings,
+            "demo",
+        )["mlflow"],
+        json!({"enabled":true,"reason":null,"experiment":"override-exp"})
+    );
 }
 
 #[test]

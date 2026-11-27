@@ -50,6 +50,8 @@ pub struct Request {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wandb: Option<crate::tracking::WandbOptions>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mlflow: Option<crate::tracking::MlflowOptions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduling: Option<Scheduling>,
     /// Code delivered to each Attempt instead of baked into the image. Absent, the
     /// Run works from the image and its identity is what it always was.
@@ -308,6 +310,9 @@ pub fn plan(
     }
     if let Some(options) = &request.wandb {
         run["wandb"] = options.to_value();
+    }
+    if let Some(options) = &request.mlflow {
+        run["mlflow"] = options.to_value();
     }
     if let Some(route) = authority.tracking_route {
         run["tracking_route"] = route.clone();
