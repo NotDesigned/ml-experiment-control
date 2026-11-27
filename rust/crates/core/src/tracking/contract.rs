@@ -107,6 +107,72 @@ impl WandbOptions {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct MlflowOptions {
+    pub enabled: bool,
+    pub experiment: Option<String>,
+}
+impl Default for MlflowOptions {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            experiment: None,
+        }
+    }
+}
+impl serde::Serialize for MlflowOptions {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        self.to_value().serialize(serializer)
+    }
+}
+impl<'de> serde::Deserialize<'de> for MlflowOptions {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let value = <Value as serde::Deserialize>::deserialize(deserializer)?;
+        Self::from_value(&value).map_err(serde::de::Error::custom)
+    }
+}
+fn experiment_name(value: Option<&Value>) -> Result<Option<String>> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value))
+            if !value.is_empty()
+                && value.chars().count() <= 250
+                && value.trim() == value
+                && !value.chars().any(char::is_control) =>
+        {
+            Ok(Some(value.clone()))
+        }
+        _ => Err(Error::Contract("MLflow experiment name")),
+    }
+}
+impl MlflowOptions {
+    pub fn from_value(value: &Value) -> Result<Self> {
+        let object = value.as_object().ok_or(Error::Contract("options object"))?;
+        if object
+            .keys()
+            .any(|key| !["enabled", "experiment"].contains(&key.as_str()))
+        {
+            return Err(Error::Contract("unknown option"));
+        }
+        Ok(Self {
+            enabled: object
+                .get("enabled")
+                .map(boolean)
+                .transpose()?
+                .unwrap_or(true),
+            experiment: experiment_name(object.get("experiment"))?,
+        })
+    }
+    pub fn to_value(&self) -> Value {
+        json!({"enabled":self.enabled,"experiment":self.experiment})
+    }
+}
+
 /// Validation-only request data. It intentionally has no Debug or Serialize
 /// implementation; accessing a credential requires an explicit accessor. The
 /// effect owner, rather than core, decides whether/where to store the secret.
@@ -205,9 +271,24 @@ pub struct MlflowRouting {
     /// When set, only these ML-Expd projects publish to MLflow.
     pub projects: Option<BTreeSet<String>>,
 }
-/// The frozen MLflow part of a Run's route: one MLflow experiment per project.
-pub fn mlflow_route(settings: &MlflowRouting, project: &str) -> Value {
-    let reason = if !settings.enabled {
+/// The frozen MLflow part of a Run's route: one MLflow experiment per project
+/// unless the request overrides `experiment`.
+pub fn mlflow_route_with(
+    options: Option<&MlflowOptions>,
+    settings: &MlflowRouting,
+    project: &str,
+) -> Value {
+    let default = MlflowOptions::default();
+    let options = options.unwrap_or(&default);
+    let experiment = options
+        .experiment
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("{}{project}", settings.experiment_prefix));
+    let reason = if !options.enabled {
+        Some("DISABLED_BY_REQUEST")
+    } else if !settings.enabled {
         Some("DISABLED_BY_SERVER")
     } else if settings
         .projects
@@ -218,9 +299,17 @@ pub fn mlflow_route(settings: &MlflowRouting, project: &str) -> Value {
     } else {
         None
     };
-    json!({"enabled":reason.is_none(),"reason":reason,"experiment":format!("{}{project}",settings.experiment_prefix)})
+    json!({"enabled":reason.is_none(),"reason":reason,"experiment":experiment})
 }
-pub fn resolve(options: Option<&WandbOptions>, settings: &RoutingSettings, project: &str) -> Value {
+pub fn mlflow_route(settings: &MlflowRouting, project: &str) -> Value {
+    mlflow_route_with(None, settings, project)
+}
+pub fn resolve_routes(
+    options: Option<&WandbOptions>,
+    mlflow: Option<&MlflowOptions>,
+    settings: &RoutingSettings,
+    project: &str,
+) -> Value {
     let default = WandbOptions::default();
     let options = options.unwrap_or(&default);
     let entity = options
@@ -241,10 +330,25 @@ pub fn resolve(options: Option<&WandbOptions>, settings: &RoutingSettings, proje
     };
     let mut route = json!({"requested":options.enabled,"enabled":reason.is_none(),"reason":reason,"entity":entity,"project":options.project.as_deref().filter(|value|!value.is_empty()).or(settings.project.as_deref().filter(|value|!value.is_empty())).unwrap_or(project)});
     // W&B options never change the MLflow decision: each destination stands alone.
-    if let Some(mlflow) = &settings.mlflow {
-        route["mlflow"] = mlflow_route(mlflow, project);
+    if let Some(server_mlflow) = &settings.mlflow {
+        route["mlflow"] = mlflow_route_with(mlflow, server_mlflow, project);
+    } else if let Some(requested) = mlflow {
+        let experiment = requested
+            .experiment
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .unwrap_or(project);
+        let reason = if requested.enabled {
+            "CREDENTIALS_NOT_CONFIGURED"
+        } else {
+            "DISABLED_BY_REQUEST"
+        };
+        route["mlflow"] = json!({"enabled":false,"reason":reason,"experiment":experiment});
     }
     route
+}
+pub fn resolve(options: Option<&WandbOptions>, settings: &RoutingSettings, project: &str) -> Value {
+    resolve_routes(options, None, settings, project)
 }
 pub fn resolve_preparation(
     options: Option<&WandbOptions>,

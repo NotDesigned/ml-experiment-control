@@ -27,6 +27,10 @@ that changes these settings.
 
 ## Choose publication per experiment
 
+With `ml-exp submit`, `--tracking` chooses `mlflow,wandb`, `wandb`, `mlflow` or
+`none` (defaulting to every configured destination), and `--wandb-project`
+overrides the W&B project name.
+
 In an experiment JSON or `POST /api/projects/P/runs` request:
 
 ```json

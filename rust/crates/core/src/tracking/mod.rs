@@ -6,8 +6,8 @@ mod display;
 pub mod publication;
 
 pub use contract::{
-    MlflowRouting, RoutingSettings, WandbOptions, WandbSettings, finite_parameters, mlflow_route,
-    resolve, resolve_preparation,
+    MlflowOptions, MlflowRouting, RoutingSettings, WandbOptions, WandbSettings, finite_parameters,
+    mlflow_route, mlflow_route_with, resolve, resolve_preparation, resolve_routes,
 };
 pub use display::{
     DISPLAY_VERSION, DefinitionSpec, Projection, SummaryPatch, curve_record, definition_specs,

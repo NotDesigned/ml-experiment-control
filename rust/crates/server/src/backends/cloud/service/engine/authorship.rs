@@ -66,7 +66,12 @@ impl Service {
             )?["tracking_route"]
                 .clone()
         } else {
-            ml_exp_core::tracking::resolve(request.wandb.as_ref(), &self.tracking, project)
+            ml_exp_core::tracking::resolve_routes(
+                request.wandb.as_ref(),
+                request.mlflow.as_ref(),
+                &self.tracking,
+                project,
+            )
         };
         let docs = self.documents(project, &request, &route, now)?;
         let checked = |directory: &Directory, reused: bool| -> cloud::Result<Value> {

@@ -43,6 +43,40 @@ For MLflow without W&B, leave the W&B fields out:
 files; it makes no MLflow request. The server reads them at start; restart it after
 changing them.
 
+## Choose publication per experiment
+
+By default, a new Run publishes to every configured destination (MLflow and W&B)
+unless `projects` restricts MLflow to selected ML-Expd projects. Choose
+destinations at submission time with `ml-exp submit`:
+
+```sh
+ml-exp submit ~/my-repo --gpus 1 --time 2h --tracking mlflow -- python3 train.py
+ml-exp submit ~/my-repo --gpus 1 --time 2h --tracking mlflow,wandb \
+  --mlflow-experiment my-study/ablation --wandb-project ablation -- python3 train.py
+ml-exp submit ~/my-repo --gpus 1 --time 2h --tracking none -- python3 train.py
+```
+
+Or in an experiment JSON (`run.mlflow`) or local registration request:
+
+```json
+{
+  "mlflow": {
+    "enabled": true,
+    "experiment": "my-study/ablation"
+  },
+  "wandb": {
+    "enabled": false
+  }
+}
+```
+
+| Option/default | Meaning |
+|---|---|
+| `enabled: true`, including omitted `mlflow` | Request MLflow publication; effective enablement still needs server `mlflow` settings |
+| `enabled: false` | Disable MLflow publication for this Run (`reason: "DISABLED_BY_REQUEST"`) |
+| `experiment` omitted | Use `experiment_prefix` + ML-Expd project name |
+| `experiment` provided | Publish to this exact MLflow experiment name (up to 250 non-control characters, trimmed) |
+
 ## Frozen per Run
 
 When a Run is created, its tracking route records the MLflow decision beside the
@@ -52,14 +86,15 @@ W&B one, in `tracking_route.mlflow`:
 {"enabled": true, "reason": null, "experiment": "ml-expd/fineweb"}
 ```
 
-`reason` is `DISABLED_BY_SERVER` or `PROJECT_NOT_SELECTED` when `enabled` is false.
+`reason` is `DISABLED_BY_REQUEST`, `DISABLED_BY_SERVER`, `PROJECT_NOT_SELECTED` or
+`CREDENTIALS_NOT_CONFIGURED` when `enabled` is false.
 The decision and the experiment name never change for that Run: later settings
 affect new Runs only, and retry Attempts inherit their Run's route. Runs created
 before MLflow was configured have no `mlflow` key and are never published to MLflow.
-The W&B request options (`wandb.enabled` and so on) do not affect MLflow, so a Run
-can publish to W&B, to MLflow, to both, or to neither. Preparation Runs are not
-published to MLflow. The server address and credentials are not frozen: publication
-always uses the current `url`.
+The W&B request options (`wandb.enabled` and so on) do not affect MLflow, and
+`mlflow` options do not affect W&B, so a Run can publish to W&B, to MLflow, to
+both, or to neither. Preparation Runs are not published to MLflow. The server
+address and credentials are not frozen: publication always uses the current `url`.
 
 ## What MLflow shows
 
