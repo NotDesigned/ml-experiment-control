@@ -23,7 +23,10 @@ ml-exp backend    # the executors, and what each allows
 ```
 
 The installer places `ml-exp` in `~/.local/bin` unless you pass `--prefix`. The saved
-Project and executor are only defaults; see [configuration](configuration.md).
+Project and executor are only defaults; see [configuration](configuration.md). When the
+server enables managed project creation (`project-creation.v1` in `/api/health`), a new
+`--project NAME` is created automatically after `ml-exp submit` confirmation, or ahead of
+time with `ml-exp project create NAME [--title TITLE]`.
 
 ## Run a repository
 

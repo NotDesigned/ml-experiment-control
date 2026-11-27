@@ -42,6 +42,10 @@ pub enum Operation {
         project: String,
         path: PathEvidence,
     },
+    Onboard {
+        project: String,
+        path: PathEvidence,
+    },
     Action {
         project: String,
         action: String,
@@ -326,17 +330,22 @@ impl Store {
         now: &str,
         identity: &str,
         expected_revision: Option<u64>,
-        approved: Option<&BTreeMap<String, PathBuf>>,
+        approved: Option<(&BTreeMap<String, PathBuf>, Option<&Path>)>,
     ) -> Result<Value, Error> {
         let lock = self.lock(true)?;
         let loaded = self.load(&lock)?;
-        if let Some(approved) = approved {
+        if let Some((approved, projects_root)) = approved {
             for record in loaded.registry.records() {
-                if approved
-                    .get(&record.project)
-                    .is_some_and(|path| path.to_str() != Some(record.project_file.as_str()))
-                {
-                    return Err(Error::Binding);
+                if let Some(path) = approved.get(&record.project) {
+                    if path.to_str() != Some(record.project_file.as_str()) {
+                        return Err(Error::Binding);
+                    }
+                } else if let Some(root) = projects_root {
+                    if root.join(&record.project).join("project.json").to_str()
+                        != Some(record.project_file.as_str())
+                    {
+                        return Err(Error::Binding);
+                    }
                 }
             }
         }
@@ -368,6 +377,9 @@ fn plan(
     match operation {
         Operation::Register { project, path } => {
             converted(registry.register(project, path, RegistrationSource::Manual, now)?)
+        }
+        Operation::Onboard { project, path } => {
+            converted(registry.register(project, path, RegistrationSource::Onboarding, now)?)
         }
         Operation::Action {
             project,

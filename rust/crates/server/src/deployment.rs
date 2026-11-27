@@ -107,6 +107,11 @@ impl Settings {
         }
         crate::Auth::load(&self.token_file)
             .map_err(why!(at("api_token"), "daemon token invalid"))?;
+        if let Some(root) = &reads.projects_root {
+            ml_exp_io::directory::Directory::open(root, false)
+                .and_then(|directory| directory.require_private())
+                .map_err(why!(at("projects_root")))?;
+        }
         for project in &reads.projects {
             let parent = ml_exp_io::directory::Directory::open(
                 project

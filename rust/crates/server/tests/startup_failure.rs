@@ -53,6 +53,7 @@ fn a_worker_that_cannot_start_says_why_until_it_first_reports() {
     let settings = read_config::Settings {
         schema_version: 1,
         registry_root: registry.clone(),
+        projects_root: None,
         projects: vec![read_config::Project {
             project: "demo".into(),
             project_file: project,

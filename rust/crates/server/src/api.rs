@@ -134,13 +134,13 @@ pub fn exact_identity(identity: &str) -> Result<(String, String), Error> {
 
 pub struct Api {
     store: Store,
+    settings: read_config::Settings,
     registry_root: PathBuf,
     registry: Directory,
     fence: RunFence,
     workspace_id: String,
     read_scope_sha256: String,
     runs: BTreeMap<(String, String), RunRef>,
-    projects: Vec<String>,
     discovery_projects: BTreeSet<String>,
     project_files: BTreeMap<String, PathBuf>,
     lifecycle: Option<Arc<crate::projects::Service>>,
@@ -165,17 +165,13 @@ impl Api {
     ) -> Result<Self, read_config::Error> {
         let read_scope_sha256 = settings.identity()?;
         let fence = RunFence::new(&settings.registry_root);
-        let store =
-            Store::open(settings.bindings(), fence.clone()).map_err(why!(read_config::Error))?;
+        let store = settings
+            .open_store(fence.clone())
+            .map_err(why!(read_config::Error))?;
         let runs = settings
             .runs()
             .into_iter()
             .map(|r| ((r.project.clone(), r.run_id.clone()), r))
-            .collect();
-        let projects = settings
-            .projects
-            .iter()
-            .map(|p| p.project.clone())
             .collect();
         let discovery_projects = settings
             .projects
@@ -210,13 +206,13 @@ impl Api {
                 .collect(),
             local_tracking: Default::default(),
             store,
-            registry_root: settings.registry_root,
+            registry_root: settings.registry_root.clone(),
+            settings,
             registry,
             fence,
             workspace_id,
             read_scope_sha256,
             runs,
-            projects,
             discovery_projects,
             project_files,
             lifecycle: None,
@@ -315,8 +311,22 @@ impl Api {
     pub fn active_project_count(&self) -> Result<usize, Error> {
         match &self.lifecycle {
             Some(service) => Ok(service.active_projects()?.len()),
-            None => Ok(self.projects.len()),
+            None => Ok(self
+                .settings
+                .known_projects()
+                .map_err(|_| {
+                    error(
+                        409,
+                        "PROJECT_EVIDENCE_UNAVAILABLE",
+                        "project directory listing is unavailable",
+                    )
+                })?
+                .len()),
         }
+    }
+    fn discovers_project(&self, project: &str) -> bool {
+        self.discovery_projects.contains(project)
+            || (!self.project_files.contains_key(project) && self.settings.projects_root.is_some())
     }
     fn ensure_active(&self, project: &str) -> Result<(), Error> {
         if let Some(service) = &self.lifecycle {
@@ -416,7 +426,9 @@ impl Api {
             )?;
         let project = value["project"].as_str().ok_or_else(invalid_query)?;
         let run = value["run_id"].as_str().ok_or_else(invalid_query)?;
-        if !self.project_files.contains_key(project) {
+        if !self.project_files.contains_key(project)
+            && self.settings.find_project(project).is_none()
+        {
             return Err(error(
                 404,
                 "UNKNOWN_SUBMISSION",
@@ -450,7 +462,7 @@ impl Api {
         ))
     }
     fn find_run(&self, project: &str, run: &str) -> Result<Option<RunRef>, Error> {
-        Ok(if self.discovery_projects.contains(project) {
+        Ok(if self.discovers_project(project) {
             self.store
                 .discover(project)?
                 .runs
@@ -483,7 +495,7 @@ impl Api {
             )))?;
         // Only a Run this cannot see directly costs a scan of its whole Project, whose
         // first bad entry would refuse every Run there.
-        let direct = if self.discovery_projects.contains(project) {
+        let direct = if self.discovers_project(project) {
             self.store.locate_direct(project, run)?
         } else {
             None
@@ -502,9 +514,22 @@ impl Api {
             Some(service) => Some(service.active_projects()?),
             None => None,
         };
+        let known: Vec<String> = self
+            .settings
+            .known_projects()
+            .map_err(|_| {
+                error(
+                    409,
+                    "PROJECT_EVIDENCE_UNAVAILABLE",
+                    "project directory listing is unavailable",
+                )
+            })?
+            .into_iter()
+            .map(|p| p.project)
+            .collect();
         let mut values = Vec::new();
         let mut value_bytes = 2;
-        for project in &self.projects {
+        for project in &known {
             if visible
                 .as_ref()
                 .is_some_and(|visible| !visible.contains(project))
@@ -517,7 +542,7 @@ impl Api {
                 .get("title")
                 .and_then(Value::as_str)
                 .unwrap_or(project);
-            let discovery = if self.discovery_projects.contains(project) {
+            let discovery = if self.discovers_project(project) {
                 Some(self.store.discover(project)?)
             } else {
                 None

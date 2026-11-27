@@ -62,6 +62,9 @@ struct World {
     action: &'static str,
     attempt: &'static str,
     run_id: String,
+    project: String,
+    project_creation: bool,
+    created_projects: Vec<String>,
 }
 impl World {
     fn new() -> Self {
@@ -94,11 +97,14 @@ impl World {
             action: ID,
             attempt: "attempt-001",
             run_id: "train".into(),
+            project: "demo".into(),
+            project_creation: false,
+            created_projects: vec!["demo".into()],
         }
     }
     fn submission(&self) -> Value {
         let (state, own) = self.job_states[0];
-        let mut value = json!({"submission_id":self.action,"project":"demo","run_id":self.run_id,
+        let mut value = json!({"submission_id":self.action,"project":self.project,"run_id":self.run_id,
             "attempt_id":self.attempt,
             "operation":"SUBMIT_RUN","status":self.status,"next_action":self.next_action,
             "confirmation":format!("EXECUTE {}",self.action),
@@ -134,7 +140,7 @@ impl World {
     fn view(&self, path: &str) -> Value {
         let id = path.rsplit('/').find(|p| p.starts_with("preparation-"));
         let ready = self.continues > self.continues_until_ready;
-        json!({"project":"demo","preparation_id":id,"run_id":self.run_id,
+        json!({"project":self.project,"preparation_id":id,"run_id":self.run_id,
             "runtime":{"runtime_id":RUNTIME,
                 "status":if self.build_failed || (self.restarted && !ready) {"RECONCILE_REQUIRED"} else if ready {"READY"} else {"EXECUTING"},
                 "build_error":if self.build_failed {
@@ -162,14 +168,52 @@ impl World {
     fn reply(&mut self, method: &str, path: &str, body: &[u8]) -> Option<(u16, Value)> {
         let route = path.split('?').next().unwrap_or(path);
         Some(match (method, route) {
-            ("GET", "/api/health") => (
+            ("GET", "/api/health") => {
+                let mut caps = vec![
+                    "native-submissions.v1",
+                    "source-archive.v1",
+                    "native-experiment-preparations.v1",
+                    "native-runtime-builds.v1",
+                    "native-scheduler-observation.v1",
+                    "native-attempt-retry.v1",
+                    "native-cancellation.v1",
+                ];
+                if self.project_creation {
+                    caps.push("project-lifecycle.v1");
+                    caps.push("project-creation.v1");
+                }
+                (200, json!({"capabilities":caps,"scheduler_mutations":true}))
+            }
+            ("GET", "/api/projects") => (
                 200,
-                json!({"capabilities":["native-submissions.v1","source-archive.v1",
-                    "native-experiment-preparations.v1","native-runtime-builds.v1",
-                    "native-scheduler-observation.v1","native-attempt-retry.v1",
-                    "native-cancellation.v1"],
-                    "scheduler_mutations":true}),
+                Value::Array(
+                    self.created_projects
+                        .iter()
+                        .map(|p| json!({"project":p,"title":p,"run_count":0}))
+                        .collect(),
+                ),
             ),
+            ("POST", "/api/projects") if self.project_creation => {
+                let req: Value = serde_json::from_slice(body).unwrap();
+                let name = req["project"].as_str().unwrap().to_owned();
+                let created = !self.created_projects.contains(&name);
+                if created {
+                    self.created_projects.push(name.clone());
+                }
+                self.project = name.clone();
+                (
+                    200,
+                    json!({"created":created,"project":{
+                        "project":name,
+                        "project_file":format!("/srv/projects/{name}/project.json"),
+                        "state":"ACTIVE",
+                        "source":"ONBOARDING",
+                        "registered_at":"2026-11-27T00:00:00Z",
+                        "updated_at":"2026-11-27T00:00:00Z",
+                        "state_reason":""
+                    }}),
+                )
+            }
             ("GET", "/api/executors") if self.no_executors => (200, json!({"executors":[]})),
             ("GET", "/api/executors") => (
                 200,
@@ -191,6 +235,14 @@ impl World {
             ("GET", r) if r.contains("/source-imports/") => (404, json!({"code":"NOT_FOUND"})),
             ("POST", "/api/source-imports/archive") => {
                 let sha = path.rsplit("sha256=").next().unwrap_or_default();
+                let project = path
+                    .split("project=")
+                    .nth(1)
+                    .and_then(|s| s.split('&').next())
+                    .unwrap_or("demo");
+                if self.project_creation && !self.created_projects.iter().any(|p| p == project) {
+                    return Some((409, json!({"code":"SOURCE_IMPORT_CONFLICT"})));
+                }
                 // Told apart only where this matters: the real one hashes the tree.
                 let digest = if self.code_delivery {
                     sha.to_owned()
@@ -199,24 +251,33 @@ impl World {
                 };
                 (
                     200,
-                    json!({"source_id":format!("source.{digest}"),"project":"demo",
+                    json!({"source_id":format!("source.{digest}"),"project":project,
                         "tree_digest":format!("sha256:{digest}"),
                         "observation":{"kind":"archive","sha256":sha},
                         "registration":{"existing":true}}),
                 )
             }
             ("GET", r) if r.contains("/experiment-preparations/") => {
+                let project = r.split('/').nth(3).unwrap_or("demo");
+                if self.project_creation && !self.created_projects.iter().any(|p| p == project) {
+                    return Some((409, json!({"code":"CLOUD_EVIDENCE_INVALID"})));
+                }
                 if self.prepared {
                     (200, self.view(r))
                 } else {
                     (404, json!({"code":"CLOUD_SUBMISSION_NOT_FOUND"}))
                 }
             }
-            ("POST", "/api/projects/demo/experiment-preparations") => {
+            ("POST", r) if r.ends_with("/experiment-preparations") => {
+                let project = r.split('/').nth(3).unwrap_or("demo").to_owned();
+                if self.project_creation && !self.created_projects.iter().any(|p| p == &project) {
+                    return Some((409, json!({"code":"CLOUD_EVIDENCE_INVALID"})));
+                }
                 if self.prepare_never_arrives {
                     return None;
                 }
                 self.prepared = true;
+                self.project = project.clone();
                 let request: Value = serde_json::from_slice(body).unwrap();
                 match &self.prepared_request {
                     Some(first) if *first != request => {
@@ -224,8 +285,8 @@ impl World {
                     }
                     _ => self.prepared_request = Some(request.clone()),
                 }
-                let id = ml_exp_core::preparation::id("demo", request["request_id"].as_str()?);
-                (200, json!({"project":"demo","preparation_id":id.unwrap()}))
+                let id = ml_exp_core::preparation::id(&project, request["request_id"].as_str()?);
+                (200, json!({"project":project,"preparation_id":id.unwrap()}))
             }
             ("POST", r) if r.ends_with("/continue") => {
                 self.continues += 1;
@@ -1783,4 +1844,65 @@ fn tracking_target_list_and_destination_names_resolve_without_changing_untouched
     conflict.tracking = Some(parse_tracking("none").unwrap());
     conflict.wandb_project = Some("proj".into());
     assert!(submit::spec(conflict, None, Some("demo"), Some("dlc")).is_err());
+}
+
+#[test]
+fn submit_creates_a_new_managed_project_only_after_confirmation() {
+    let files = Files::new();
+    let mut spec = files.spec();
+    spec.project = "r-gdn".into();
+    let state = files.root.path().join("states");
+
+    let mut world = World::new();
+    world.project_creation = true;
+    world.created_projects = vec!["demo".into()];
+    let fake = Fake::start(world);
+    let client = fake.client();
+
+    let mut prompt = String::new();
+    let err = submit::run(
+        &client,
+        &spec,
+        &state,
+        Hooks {
+            confirm: &mut |q| {
+                prompt = q.to_owned();
+                Ok(false)
+            },
+            progress: &mut |_| {},
+            poll: Duration::from_millis(1),
+            deadline: Duration::from_secs(5),
+            follow: false,
+            silence: Duration::from_millis(30),
+            follow_poll: Duration::from_millis(1),
+        },
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("not submitted"));
+    assert!(
+        prompt.contains("  project   r-gdn (new project)"),
+        "{prompt}"
+    );
+    assert_eq!(fake.mutations(), 0);
+
+    let mut progress = Vec::new();
+    let out = submit::run(
+        &client,
+        &spec,
+        &state,
+        Hooks {
+            confirm: &mut |_| Ok(true),
+            progress: &mut |line| progress.push(line.to_owned()),
+            poll: Duration::from_millis(1),
+            deadline: Duration::from_secs(5),
+            follow: false,
+            silence: Duration::from_millis(30),
+            follow_poll: Duration::from_millis(1),
+        },
+    )
+    .unwrap();
+    assert_eq!(out["project"], "r-gdn");
+    assert_eq!(out["status"], "VERIFIED");
+    assert!(progress.iter().any(|l| l == "creating project r-gdn"));
+    assert_eq!(fake.count("POST", "/api/projects"), 1);
 }

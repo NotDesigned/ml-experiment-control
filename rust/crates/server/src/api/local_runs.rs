@@ -63,21 +63,29 @@ impl Api {
         self
     }
     pub fn local_enabled(&self) -> bool {
-        !self.local_roots.is_empty()
+        !self.local_roots.is_empty() || self.settings.projects_root.is_some()
+    }
+    fn resolved_local_root(&self, project: &str) -> Option<PathBuf> {
+        self.local_roots.get(project).cloned().or_else(|| {
+            self.settings
+                .find_project(project)
+                .filter(|p| p.discovery_enabled() && p.run_roots.len() == 1)
+                .map(|mut p| p.run_roots.remove(0))
+        })
     }
     fn local_root(&self, project: &str, run: &str) -> Result<Directory, Error> {
         validate_id(project)
             .and_then(|_| validate_observation_id(run))
             .map_err(|_| invalid_query())?;
         self.ensure_active(project)?;
-        let p = self.local_roots.get(project).ok_or_else(|| {
+        let p = self.resolved_local_root(project).ok_or_else(|| {
             error(
                 404,
                 "LOCAL_PROJECT_NOT_FOUND",
                 "project has no canonical native Run root",
             )
         })?;
-        Directory::open(p, false).map_err(io)
+        Directory::open(&p, false).map_err(io)
     }
     /// Nonlocal Runs return None. Broken local authority is never a cloud fallback.
     fn local_document(
@@ -85,7 +93,7 @@ impl Api {
         project: &str,
         run: &str,
     ) -> Result<Option<(Directory, Value, String)>, Error> {
-        if !self.local_roots.contains_key(project) {
+        if self.resolved_local_root(project).is_none() {
             return Ok(None);
         }
         let root = self.local_root(project, run)?;

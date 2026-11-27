@@ -210,7 +210,11 @@ impl Service {
     }
     fn background_candidates(&self) -> Result<BTreeSet<String>> {
         let mut actions = BTreeSet::new();
-        for project in &self.settings.projects {
+        for project in self
+            .settings
+            .known_projects()
+            .map_err(why!(Error::Authority))?
+        {
             if !project.discovery_enabled() {
                 continue;
             }

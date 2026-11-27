@@ -331,8 +331,14 @@ research workflow. The daemon's workspace-local registry selects projects to ind
 and poll. Each record binds a stable identity to an absolute JSON Project file on the
 daemon host (see the [example](../rust/deploy/project.example.json)), lifecycle,
 source, timestamps and operator reason. A research question is not required or
-loaded. Use `ml-exp project` to register and change state; `project register` takes
-a daemon-host path and uploads nothing. Source import uploads to an approved Project.
+loaded.
+
+Set optional `"projects_root"` in `reads.json` (an existing private absolute directory
+distinct from `registry_root`) to let authenticated clients create managed projects under
+`<projects_root>/<project>/` via `POST /api/projects` (`ml-exp project create <PROJECT>`)
+or automatically on `ml-exp submit`. Without `projects_root`, only operator-configured
+entries in `reads.json` can be registered via `ml-exp project register <MANIFEST_PATH>`.
+Source import uploads to an active Project.
 
 The authored file holds exactly `schema_version` (1), `project`, `title` and `run_roots`;
 any other key is refused. Registry removal does not delete that file, source, Runs,

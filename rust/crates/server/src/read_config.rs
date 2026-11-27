@@ -31,6 +31,8 @@ pub struct Error;
 pub struct Settings {
     pub schema_version: u32,
     pub registry_root: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projects_root: Option<PathBuf>,
     pub projects: Vec<Project>,
     #[serde(default)]
     pub source_policy: Option<ml_exp_core::sources::Policy>,
@@ -97,7 +99,14 @@ impl Settings {
         {
             return Err(Error);
         }
-        if self.schema_version != 1 || !absolute(&self.registry_root) || self.projects.len() > 256 {
+        if self.schema_version != 1
+            || !absolute(&self.registry_root)
+            || self
+                .projects_root
+                .as_ref()
+                .is_some_and(|root| !absolute(root) || *root == self.registry_root)
+            || self.projects.len() > 256
+        {
             return Err(Error);
         }
         let mut projects = BTreeSet::new();
@@ -142,6 +151,63 @@ impl Settings {
                 run_roots: p.run_roots.clone(),
             })
             .collect()
+    }
+    pub fn open_store(
+        &self,
+        fence: RunFence,
+    ) -> Result<crate::experiments::Store, crate::experiments::Error> {
+        crate::experiments::Store::open_with_root(
+            self.bindings(),
+            self.projects_root.clone(),
+            fence,
+        )
+    }
+    pub fn find_project(&self, name: &str) -> Option<Project> {
+        if let Some(found) = self.projects.iter().find(|p| p.project == name) {
+            return Some(found.clone());
+        }
+        let root = self.projects_root.as_ref()?;
+        validate_id(name).ok()?;
+        let directory = Directory::open(root, false).ok()?;
+        if !directory.entry_exists(OsStr::new(name)).ok()? {
+            return None;
+        }
+        let child = directory.child(OsStr::new(name), false).ok()?;
+        if !child.entry_exists(OsStr::new("project.json")).ok()?
+            || !child.entry_exists(OsStr::new("runs")).ok()?
+        {
+            return None;
+        }
+        Some(Project {
+            project: name.to_owned(),
+            project_file: root.join(name).join("project.json"),
+            run_roots: vec![root.join(name).join("runs")],
+            runs: Vec::new(),
+            discover_runs: None,
+        })
+    }
+    pub fn known_projects(&self) -> Result<Vec<Project>, Error> {
+        let mut all = self.projects.clone();
+        let mut seen: BTreeSet<String> = all.iter().map(|p| p.project.clone()).collect();
+        if let Some(root) = &self.projects_root {
+            let directory = Directory::open(root, false).map_err(why!(Error))?;
+            for entry in directory.entry_names().map_err(why!(Error))? {
+                let Some(name) = entry.to_str() else {
+                    continue;
+                };
+                if name.starts_with('.') || validate_id(name).is_err() || seen.contains(name) {
+                    continue;
+                }
+                if let Some(project) = self.find_project(name) {
+                    if all.len() >= 256 {
+                        return Err(Error);
+                    }
+                    seen.insert(name.to_owned());
+                    all.push(project);
+                }
+            }
+        }
+        Ok(all)
     }
     pub fn runs(&self) -> Vec<RunRef> {
         self.projects

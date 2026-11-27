@@ -216,6 +216,12 @@ async fn health(State(state): State<Arc<AppState>>) -> Response {
         );
         document["deployment"] = readiness::observe(Some(api));
         let mut enabled = vec!["backend-catalogue.v1"];
+        if api
+            .lifecycle()
+            .is_some_and(|lifecycle| lifecycle.supports_creation())
+        {
+            enabled.push("project-creation.v1");
+        }
         if api.submissions().is_some() || api.cloud().is_some() {
             enabled.push("backend-capacity.v1");
         }
@@ -354,7 +360,7 @@ fn schema_document() -> serde_json::Value {
         "/api/health":{"get":{"description":"Authenticated health with active project count","responses":{"200":{"description":"Enabled capabilities and incomplete training readiness"},"401":{"description":"Authentication required"},"409":{"description":"Project lifecycle evidence is unavailable"},"429":{"description":"Local observation concurrency is full"},"504":{"description":"Observation deadline elapsed; underlying I/O can continue"}}}},
         "/api/readiness":operation("Readiness; training stays INCOMPLETE until acceptance evidence exists",vec![]),
         "/api/observer":operation("Local background observer progress and sanitized failure; never performs a provider query",vec![]),
-        "/api/runs/{project}/{run}/tracking":operation("Frozen W&B destination and local publication cursors; never queries cloud or creates a binding",run()),
+        "/api/runs/{project}/{run}/tracking":operation("Frozen W&B and MLflow destinations and local publication cursors; never queries external services or creates a binding",run()),
         "/api/v2/openapi.json":operation("This static contract",vec![]),
         "/api/projects":operation("List only configured projects, without filesystem paths or private configuration",vec![]),
         "/api/submissions/{identity}":operation("Read one committed Submission from existing Action storage; never repairs or submits",vec![parameter("submission")]),
@@ -377,15 +383,22 @@ fn schema_document() -> serde_json::Value {
         "description":description,"parameters":parameters,"requestBody":{"required":true,"description":"Strict JSON mapping; at most 64 KiB","content":{"application/json":{"schema":body}}},
         "responses":{"200":{"description":"Durable operation result with the original identity and state"},"401":{"description":"Bearer authentication required"},"403":{"description":"Operation is disabled by the operator"},"404":{"description":"Exact configured identity is unavailable"},"409":{"description":"Operation state conflict, binding mismatch or invalid durable evidence"},"413":{"description":"Request exceeds the 64 KiB body limit"},"422":{"description":"Invalid or unsupported request"},"429":{"description":"Local operation concurrency is full; no operation admitted"},"500":{"description":"Operation may have changed state, including after timeout or response failure; query the original identity before deciding whether to retry"},"501":{"description":"Operation was not explicitly configured"},"503":{"description":"Operation lock or transition context is unavailable"}}}})
     };
+    let mlflow_schema = json!({"type":["object","null"],"additionalProperties":false,"properties":{"enabled":{"type":"boolean","default":true},"experiment":{"type":["string","null"]}}});
     let paths = document["paths"]
         .as_object_mut()
         .expect("static OpenAPI paths object");
+    let create_project = post(
+        "Create or confirm an active Project in the server's managed projects_root; idempotent when already active, accepts no client filesystem paths",
+        json!({"type":"object","additionalProperties":false,"required":["project"],"properties":{"project":{"type":"string"},"title":{"type":["string","null"]}}}),
+        vec![],
+    );
+    paths.get_mut("/api/projects").expect("/api/projects")["post"] = create_project["post"].clone();
     let mut register_local = post(
         "Register an explicit local execution; identical definition reuses the Run, no process or scheduler effects",
         json!({"type":"object","additionalProperties":false,"required":["run_id","execution_id"],"properties":{
             "run_id":{"type":"string"},"execution_id":{"type":"string","pattern":"^[0-9a-f]{32}$"},
             "metrics_schema":{"type":"object"},"evaluation":{"type":"object"},"parameters":{"type":"object"},
-            "seed":{"type":"integer","minimum":0},"wandb":{"type":["object","null"]}}}),
+            "seed":{"type":"integer","minimum":0},"wandb":{"type":["object","null"]},"mlflow":mlflow_schema.clone()}}),
         vec![parameter("project")],
     );
     register_local["post"]["requestBody"]["description"] =
@@ -394,7 +407,7 @@ fn schema_document() -> serde_json::Value {
     paths.insert(
         "/api/local-runs/{project}/{run}".into(),
         operation(
-            "Read durable local cursor and W&B progress, process liveness remains unknown",
+            "Read durable local cursor and W&B/MLflow progress, process liveness remains unknown",
             run(),
         ),
     );
@@ -545,7 +558,7 @@ fn schema_document() -> serde_json::Value {
         json!({"type":"object","additionalProperties":false,"required":["run_id","runtime_id","executor","command","resources","walltime_seconds","seed"],"properties":{
             "run_id":{"type":"string"},"runtime_id":{"type":"string"},"executor":{"type":"string"},"command":{"type":"array","minItems":1,"maxItems":128,"items":{"type":"string"}},
             "resources":{"type":"object","additionalProperties":false,"required":["gpus","memory_gb"],"properties":{"gpus":{"type":"integer","minimum":1},"cpus":{"type":"integer","minimum":1,"default":8},"nodes":{"type":"integer","const":1,"default":1},"memory_gb":{"type":"integer","minimum":1}}},
-            "walltime_seconds":{"type":"integer","minimum":1,"maximum":3600000},"seed":{"type":"integer"},"wandb":{"type":"object","additionalProperties":false,"properties":{"enabled":{"type":"boolean","default":true},"preparation_enabled":{"type":"boolean","default":false},"entity":{"type":["string","null"]},"project":{"type":["string","null"]}}},"data":{"type":"array","maxItems":32,"items":{"type":"object","additionalProperties":false,"required":["name","asset_id"],"properties":{"name":{"type":"string"},"asset_id":{"type":"string"}}}},"parameters":{"type":"object"},"evaluation":{"type":"object"},"metrics_schema":{"type":"object"},"artifacts":{"type":"object","additionalProperties":false,"properties":{"required_files":{"type":"array","items":{"type":"string"},"maxItems":20000}}}}}),vec![parameter("project")]));
+            "walltime_seconds":{"type":"integer","minimum":1,"maximum":3600000},"seed":{"type":"integer"},"wandb":{"type":"object","additionalProperties":false,"properties":{"enabled":{"type":"boolean","default":true},"preparation_enabled":{"type":"boolean","default":false},"entity":{"type":["string","null"]},"project":{"type":["string","null"]}}},"mlflow":mlflow_schema,"data":{"type":"array","maxItems":32,"items":{"type":"object","additionalProperties":false,"required":["name","asset_id"],"properties":{"name":{"type":"string"},"asset_id":{"type":"string"}}}},"parameters":{"type":"object"},"evaluation":{"type":"object"},"metrics_schema":{"type":"object"},"artifacts":{"type":"object","additionalProperties":false,"properties":{"required_files":{"type":"array","items":{"type":"string"},"maxItems":20000}}}}}),vec![parameter("project")]));
     paths.insert("/api/runs/{project}/{run}/submissions".into(),post("Prepare the first authored Run/Attempt with trusted source and materialized-image receipts; never submits a scheduler job",json!({"type":"object","additionalProperties":false,"properties":{"max_gpu_hours":{"type":"number","default":0},"reason":{"type":"string","default":""}}}),run()));
     for (name, description, body) in [
         (
@@ -1002,7 +1015,8 @@ mod schema_tests {
         for (path, operations) in paths {
             if matches!(
                 path.as_str(),
-                "/api/debug"
+                "/api/projects"
+                    | "/api/debug"
                     | "/api/projects/{project}/runtimes"
                     | "/api/projects/{project}/datasets/{executor}"
             ) || path.ends_with("/diagnostic")

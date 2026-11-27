@@ -124,6 +124,34 @@ impl RegisterRequest {
     }
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateRequest {
+    project: String,
+    title: Option<String>,
+}
+
+pub(crate) async fn create_project(
+    State(state): State<Arc<AppState>>,
+    RawQuery(query): RawQuery,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    let parsed = (|| {
+        api::no_parameters(query.as_deref())?;
+        request::<CreateRequest>(body)
+    })();
+    let request = match parsed {
+        Ok(value) => value,
+        Err(error) => return http_effect::failure(error),
+    };
+    http_effect::execute(state, OnTimeout::Project, move |api, _| {
+        let service = service(api)?;
+        let (now, id) = transition_context().map_err(Error::from)?;
+        service.create_project(&request.project, request.title.as_deref(), &now, &id)
+    })
+    .await
+}
+
 async fn list(State(state): State<Arc<AppState>>, RawQuery(query): RawQuery) -> Response {
     if let Err(error) = api::no_parameters(query.as_deref()) {
         return http_effect::failure(error);
@@ -526,5 +554,102 @@ mod tests {
             StatusCode::UNPROCESSABLE_ENTITY
         );
         assert_eq!(fixture.files(), initial);
+    }
+    #[tokio::test]
+    async fn managed_project_creation_is_idempotent_and_immediately_usable() {
+        let unconfigured = Fixture::new();
+        let unconfigured_health = unconfigured.get("/api/health").await;
+        assert!(
+            !unconfigured_health["capabilities"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("project-creation.v1"))
+        );
+        let (status, value) = unconfigured
+            .post("/api/projects", json!({"project": "r-gdn"}))
+            .await;
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{value}");
+        assert_eq!(value["code"], "PROJECT_CREATION_NOT_CONFIGURED");
+
+        let temp = tempfile::tempdir().unwrap();
+        let registry = temp.path().join("registry");
+        crate::read_config::initialize(&registry).unwrap();
+        let projects_root = temp.path().join("projects");
+        ml_exp_io::create_private_dir(&projects_root).unwrap();
+        let settings = crate::read_config::Settings::from_json(
+            &serde_json::to_vec(&json!({
+                "schema_version": 1,
+                "registry_root": registry,
+                "projects_root": projects_root,
+                "projects": [],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        Service::initialize(&settings, "2026-10-27T00:00:00Z", &"1".repeat(32)).unwrap();
+        let service = Arc::new(Service::open(&settings).unwrap());
+        let api = crate::api::Api::open(settings)
+            .unwrap()
+            .with_lifecycle(service.clone())
+            .unwrap();
+        let fixture = Fixture {
+            temp,
+            service,
+            router: crate::app(
+                crate::Auth {
+                    token: TOKEN.into(),
+                },
+                Some(Arc::new(api)),
+            ),
+            project: String::new(),
+        };
+        let health = fixture.get("/api/health").await;
+        assert!(
+            health["capabilities"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("project-creation.v1"))
+        );
+        for bad in ["", "../escape", "a/b", ".hidden"] {
+            let (status, value) = fixture.post("/api/projects", json!({"project": bad})).await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{bad}: {value}");
+            assert_eq!(value["code"], "INVALID_PROJECT_CREATE_REQUEST");
+        }
+        let (status, created) = fixture
+            .post(
+                "/api/projects",
+                json!({"project": "r-gdn", "title": "R-GDN"}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{created}");
+        assert_eq!(created["created"], true);
+        assert_eq!(created["project"]["project"], "r-gdn");
+        assert_eq!(created["project"]["state"], "ACTIVE");
+        assert_eq!(created["project"]["source"], "ONBOARDING");
+
+        let (status, repeated) = fixture
+            .post("/api/projects", json!({"project": "r-gdn"}))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{repeated}");
+        assert_eq!(repeated["created"], false);
+        assert_eq!(repeated["project"]["state"], "ACTIVE");
+
+        let listed = fixture.get("/api/projects").await;
+        assert_eq!(
+            listed,
+            json!([{"project": "r-gdn", "title": "R-GDN", "run_counts": {}, "attention_count": 0}])
+        );
+
+        let (status, local) = fixture
+            .post(
+                "/api/projects/r-gdn/local-runs",
+                json!({
+                    "run_id": "smoke-001",
+                    "execution_id": "0123456789abcdef0123456789abcdef",
+                }),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{local}");
+        assert_eq!(local["run_id"], "smoke-001");
     }
 }

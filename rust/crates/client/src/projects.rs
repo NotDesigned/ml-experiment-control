@@ -39,6 +39,10 @@ impl Action {
 /// A daemon path refers to the server filesystem, never a client-local upload.
 pub enum Command<'a> {
     List,
+    Create {
+        project: &'a str,
+        title: Option<&'a str>,
+    },
     Register {
         manifest_path: &'a str,
         expected_revision: Option<u64>,
@@ -56,6 +60,7 @@ pub enum Command<'a> {
 }
 enum Expected {
     List,
+    Create { project: String },
     Register { manifest_path: String },
     Change { project: String, action: Action },
     UnregisterAll,
@@ -76,6 +81,9 @@ impl Plan {
     }
     pub fn is_mutation(&self) -> bool {
         self.body.is_some()
+    }
+    fn requires_creation(&self) -> bool {
+        matches!(self.expected, Expected::Create { .. })
     }
 }
 fn invalid() -> Error {
@@ -103,6 +111,26 @@ pub fn plan(command: Command<'_>) -> Result<Plan, Error> {
                 body: None,
                 expected: Expected::List,
             });
+        }
+        Command::Create { project, title } => {
+            identity::validate_id(project).map_err(|_| invalid())?;
+            if let Some(t) = title {
+                if t.trim().is_empty() || t.chars().count() > 200 || t.contains('\0') {
+                    return Err(invalid());
+                }
+            }
+            let mut body = json!({"project": project});
+            if let Some(t) = title {
+                body["title"] = json!(t);
+            }
+            (
+                "/api/projects".into(),
+                body,
+                Expected::Create {
+                    project: project.into(),
+                },
+                None,
+            )
         }
         Command::Register {
             manifest_path,
@@ -196,6 +224,15 @@ fn response(plan: &Plan, value: Value) -> Result<Value, Error> {
     let fields = value.as_object().ok_or(Error::Response)?;
     match &plan.expected {
         Expected::List => record_array(fields.get("projects").ok_or(Error::Response)?)?,
+        Expected::Create { project } => {
+            if !fields.get("created").is_some_and(Value::is_boolean) {
+                return Err(Error::Response);
+            }
+            let result = record(fields.get("project").ok_or(Error::Response)?)?;
+            if result.state != LifecycleState::Active || result.project != *project {
+                return Err(Error::Response);
+            }
+        }
         Expected::Register { manifest_path } => {
             let result = record(fields.get("project").ok_or(Error::Response)?)?;
             if result.state != LifecycleState::Active || result.project_file != *manifest_path {
@@ -230,10 +267,17 @@ fn response(plan: &Plan, value: Value) -> Result<Value, Error> {
 pub fn execute(client: &Client, plan: &Plan, health: &Value) -> Result<Value, Error> {
     session::validate_health(health)?;
     let capabilities = health.get("capabilities").and_then(Value::as_array);
-    if !capabilities.is_some_and(|values| values.iter().any(|v| v == "project-lifecycle.v1")) {
-        return Err(Error::Observation(
-            "daemon has not enabled project-lifecycle.v1; no project request was sent",
-        ));
+    let required = if plan.requires_creation() {
+        "project-creation.v1"
+    } else {
+        "project-lifecycle.v1"
+    };
+    if !capabilities.is_some_and(|values| values.iter().any(|v| v == required)) {
+        return Err(Error::Observation(if plan.requires_creation() {
+            "daemon has not enabled project-creation.v1; no project request was sent"
+        } else {
+            "daemon has not enabled project-lifecycle.v1; no project request was sent"
+        }));
     }
     client
         .send_project(plan)

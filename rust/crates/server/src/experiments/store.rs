@@ -57,6 +57,7 @@ pub struct AttemptRecord {
     pub attempt: Document,
     pub provenance: Provenance,
 }
+#[derive(Clone)]
 struct ProjectAnchor {
     parent: Directory,
     filename: OsString,
@@ -65,6 +66,7 @@ struct ProjectAnchor {
 pub struct Store {
     fence: RunFence,
     projects: BTreeMap<String, ProjectAnchor>,
+    projects_root: Option<Directory>,
 }
 
 fn check_sha(document: &Document, expected: Option<&str>) -> Result<()> {
@@ -128,8 +130,7 @@ impl Store {
         project: &str,
     ) -> std::result::Result<super::scanner::Discovery, super::scanner::DiscoveryError> {
         let anchor = self
-            .projects
-            .get(project)
+            .discovery_anchor(project)?
             .ok_or(super::scanner::DiscoveryError::UnknownProject)?;
         super::scanner::scan(
             project,
@@ -148,16 +149,71 @@ impl Store {
         run: &str,
     ) -> std::result::Result<Option<RunRef>, super::scanner::DiscoveryError> {
         let anchor = self
-            .projects
-            .get(project)
+            .discovery_anchor(project)?
             .ok_or(super::scanner::DiscoveryError::UnknownProject)?;
         super::scanner::locate_direct(project, run, &anchor.roots)
+    }
+
+    fn discovery_anchor(
+        &self,
+        project: &str,
+    ) -> std::result::Result<Option<ProjectAnchor>, super::scanner::DiscoveryError> {
+        if identity::validate_id(project).is_err() {
+            return Ok(None);
+        }
+        if let Some(anchor) = self.projects.get(project) {
+            return Ok(Some(anchor.clone()));
+        }
+        let Some(root) = &self.projects_root else {
+            return Ok(None);
+        };
+        if !root
+            .entry_exists(OsStr::new(project))
+            .map_err(|_| super::scanner::DiscoveryError::UnsafeEntry)?
+        {
+            return Ok(None);
+        }
+        let parent = root
+            .child(OsStr::new(project), false)
+            .map_err(|_| super::scanner::DiscoveryError::UnsafeEntry)?;
+        if !parent
+            .entry_exists(OsStr::new("runs"))
+            .map_err(|_| super::scanner::DiscoveryError::UnsafeEntry)?
+        {
+            return Ok(None);
+        }
+        let runs = parent
+            .child(OsStr::new("runs"), false)
+            .map_err(|_| super::scanner::DiscoveryError::UnsafeEntry)?;
+        Ok(Some(ProjectAnchor {
+            parent,
+            filename: OsString::from("project.json"),
+            roots: vec![runs],
+        }))
     }
 
     /// No directory, lock, manifest, SQLite file or recovery artifact is created.
     /// A missing existing deletion fence fails closed instead of bootstrapping.
     pub fn open(bindings: Vec<ProjectBinding>, fence: RunFence) -> Result<Self> {
+        Self::open_with_root(bindings, None, fence)
+    }
+    pub fn open_with_root(
+        bindings: Vec<ProjectBinding>,
+        projects_root: Option<PathBuf>,
+        fence: RunFence,
+    ) -> Result<Self> {
         let guard = fence.shared_existing()?;
+        let projects_root = match projects_root {
+            Some(path) => {
+                if !path.is_absolute() {
+                    return Err(Error::Binding);
+                }
+                let root = Directory::open(&path, false)?;
+                root.require_private()?;
+                Some(root)
+            }
+            None => None,
+        };
         let mut projects = BTreeMap::new();
         for binding in bindings {
             identity::validate_id(&binding.project).map_err(why!(Error::Binding))?;
@@ -187,11 +243,33 @@ impl Store {
             projects.insert(binding.project, anchor);
         }
         drop(guard);
-        Ok(Self { fence, projects })
+        Ok(Self {
+            fence,
+            projects,
+            projects_root,
+        })
     }
-    fn project_anchor(&self, project: &str) -> Result<&ProjectAnchor> {
+    fn project_anchor(&self, project: &str) -> Result<ProjectAnchor> {
         identity::validate_id(project).map_err(why!(Error::Binding))?;
-        self.projects.get(project).ok_or(Error::UnknownProject)
+        if let Some(anchor) = self.projects.get(project) {
+            return Ok(anchor.clone());
+        }
+        let Some(root) = &self.projects_root else {
+            return Err(Error::UnknownProject);
+        };
+        if !root.entry_exists(OsStr::new(project))? {
+            return Err(Error::UnknownProject);
+        }
+        let parent = root.child(OsStr::new(project), false)?;
+        if !parent.entry_exists(OsStr::new("runs"))? {
+            return Err(Error::UnknownProject);
+        }
+        let runs = parent.child(OsStr::new("runs"), false)?;
+        Ok(ProjectAnchor {
+            parent,
+            filename: OsString::from("project.json"),
+            roots: vec![runs],
+        })
     }
     pub fn project(&self, project: &str, expected_raw_sha256: Option<&str>) -> Result<Document> {
         let _guard = self.fence.shared_existing()?;
