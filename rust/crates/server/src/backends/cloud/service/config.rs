@@ -217,6 +217,9 @@ pub struct CheckpointArchive {
     /// The most bytes a second one Attempt's worker sends to the object store while
     /// its training runs and after. 0 is no limit.
     pub upload_bytes_per_second: u64,
+    /// Seconds after a terminal Attempt whose worker never reported its end is
+    /// automatically synced once to OSS and purged. `None` disables unfinished TTL purge.
+    pub unfinished_purge_delay_seconds: Option<u64>,
 }
 impl Default for CheckpointArchive {
     fn default() -> Self {
@@ -224,6 +227,7 @@ impl Default for CheckpointArchive {
             purge_delay_seconds: 15 * 60,
             automatic_purge: true,
             upload_bytes_per_second: 64 * 1024 * 1024,
+            unfinished_purge_delay_seconds: Some(48 * 3600),
         }
     }
 }

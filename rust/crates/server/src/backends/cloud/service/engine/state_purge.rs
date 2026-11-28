@@ -60,6 +60,12 @@ pub(super) struct Syncs {
     /// delivered the current state with every copy verified, after training ended.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     unfinished_delivered_at: Option<String>,
+    /// First time the automatic purger observed this unfinished Attempt proven terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    unfinished_terminal_since: Option<String>,
+    /// Deterministic request_id of the single automatic sync job requested after the TTL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    automatic_sync_request: Option<String>,
 }
 
 fn io_json(_: serde_json::Error) -> cloud::Error {
@@ -554,11 +560,13 @@ impl Service {
         self.purge_view(&prepared, &[])
     }
     /// One look at one Attempt by the automatic purge. Conditions are read without the
-    /// service lock; it is taken only to write the record.
-    fn purge_automatically(&self, prepared: &Prepared, now: &str) -> cloud::Result<()> {
+    /// service lock; it is taken only to write the record. Returns `true` when an
+    /// unfinished Attempt is permanently settled and needs no further pass.
+    fn purge_automatically(&self, prepared: &Prepared, now: &str) -> cloud::Result<bool> {
         let saved = self.purge_saved(prepared)?;
         if saved.as_ref().is_some_and(|s| s.submitted_at.is_some()) {
-            return self.purge_follow_up(prepared, AUTOMATIC_JOBS);
+            self.purge_follow_up(prepared, AUTOMATIC_JOBS)?;
+            return Ok(false);
         }
         let (blocked, checkpoints) = self.purge_blocked(prepared, false, false)?;
         let eligible_at = saved
@@ -572,7 +580,12 @@ impl Service {
             seconds(now)?,
             self.archive.purge_delay_seconds,
         ) {
-            Automatic::Nothing => Ok(()),
+            Automatic::Nothing => {
+                if let Some(delay) = self.archive.unfinished_purge_delay_seconds {
+                    return self.purge_unfinished_automatically(prepared, now, delay);
+                }
+                Ok(false)
+            }
             Automatic::ResetEligible => {
                 let _lock = self.lock("state_purge.purge_automatically")?;
                 if let Some(mut current) = self.purge_saved(prepared)? {
@@ -581,12 +594,12 @@ impl Service {
                         self.purge_save(prepared, &current)?;
                     }
                 }
-                Ok(())
+                Ok(false)
             }
             step @ (Automatic::StartDelay | Automatic::Submit) => {
                 let lock = self.lock("state_purge.purge_automatically")?;
                 let mut record = match self.purge_saved(prepared)? {
-                    Some(record) if record.submitted_at.is_some() => return Ok(()),
+                    Some(record) if record.submitted_at.is_some() => return Ok(false),
                     Some(record) => record,
                     None => Purge {
                         contract: CONTRACT.into(),
@@ -603,14 +616,135 @@ impl Service {
                 record.eligible_at.get_or_insert_with(|| now.into());
                 record.checkpoints = checkpoints;
                 if step == Automatic::StartDelay {
-                    return self.purge_save(prepared, &record);
+                    self.purge_save(prepared, &record)?;
+                    return Ok(false);
                 }
                 record.submitted_at = Some(now.into());
                 self.purge_save(prepared, &record)?;
                 drop(lock);
-                self.purge_submit(prepared, &record)
+                self.purge_submit(prepared, &record)?;
+                Ok(false)
             }
         }
+    }
+    /// After `unfinished_purge_delay_seconds` in a terminal state, an Attempt whose
+    /// worker never reported its end runs at most one automatic sync job to archive any
+    /// ready checkpoint to OSS, then purges `state/` once synced.
+    fn purge_unfinished_automatically(
+        &self,
+        prepared: &Prepared,
+        now: &str,
+        delay_seconds: u64,
+    ) -> cloud::Result<bool> {
+        let exchange = self.exchange_saved(prepared)?;
+        let worker_finished = exchange.as_ref().is_some_and(|s| {
+            s.evidence.worker.phase == ml_exp_core::managed::evidence::Phase::Finished
+                && s.evidence.worker.receipt.is_some()
+        });
+        if worker_finished {
+            return Ok(false);
+        }
+        let (blocked, checkpoints) = self.purge_blocked(prepared, true, true)?;
+        if blocked.contains(&"CHECKPOINT_ARCHIVE_NOT_ENABLED") {
+            return Ok(true);
+        }
+        if blocked.contains(&"ATTEMPT_NOT_TERMINAL") {
+            if self
+                .syncs_saved(prepared)?
+                .unfinished_terminal_since
+                .is_some()
+            {
+                let _lock = self.lock("state_purge.reset_unfinished_since")?;
+                let mut cur = self.syncs_saved(prepared)?;
+                cur.unfinished_terminal_since = None;
+                self.syncs_save(prepared, &cur)?;
+            }
+            return Ok(false);
+        }
+        let syncs = self.syncs_saved(prepared)?;
+        let since = match &syncs.unfinished_terminal_since {
+            Some(ts) => ts.clone(),
+            None => {
+                let _lock = self.lock("state_purge.unfinished_since")?;
+                let mut cur = self.syncs_saved(prepared)?;
+                let ts = cur
+                    .unfinished_terminal_since
+                    .get_or_insert_with(|| now.into())
+                    .clone();
+                self.syncs_save(prepared, &cur)?;
+                ts
+            }
+        };
+        let delay = delay_seconds.min(i64::MAX as u64) as i64;
+        if seconds(now)? < seconds(&since)?.saturating_add(delay) {
+            return Ok(false);
+        }
+        if blocked.is_empty() {
+            let lock = self.lock("state_purge.submit_unfinished")?;
+            let mut record = match self.purge_saved(prepared)? {
+                Some(record) if record.submitted_at.is_some() => return Ok(false),
+                Some(record) => record,
+                None => Purge {
+                    contract: CONTRACT.into(),
+                    plan: self.purge_plan(prepared)?,
+                    trigger: "automatic_unfinished".into(),
+                    eligible_at: None,
+                    checkpoints: Vec::new(),
+                    submitted_at: None,
+                    job_attempt: 0,
+                    receipt: None,
+                    completed_at: None,
+                },
+            };
+            record.eligible_at.get_or_insert(since);
+            record.checkpoints = checkpoints;
+            record.submitted_at = Some(now.into());
+            self.purge_save(prepared, &record)?;
+            drop(lock);
+            self.purge_submit(prepared, &record)?;
+            return Ok(false);
+        }
+        if blocked.contains(&"LAST_CHECKPOINT_UNVERIFIED") {
+            return Ok(true);
+        }
+        let action = prepared.plan["action_id"]
+            .as_str()
+            .ok_or_else(cloud::Error::evidence)?;
+        if self.actions.observe(action).map_err(op)?["execution"]["status"] != "VERIFIED" {
+            return Ok(true);
+        }
+        let req_id = canonical::digest(&json!(["native-auto-unfinished-sync.v1", action]))
+            .map_err(why!(cloud::Error::evidence()))?[..32]
+            .to_owned();
+        if let Some(existing_req) = syncs.automatic_sync_request {
+            let job = self.sync_recovery_job(prepared, action, &existing_req)?;
+            if ended(self.sync_outbox.optional_status(&job)?)?.is_none() {
+                let request = ml_exp_core::cloud::exchange::Sync {
+                    request_id: existing_req,
+                    confirmation: format!("SYNC {action}"),
+                };
+                self.synchronize(action, &request, now, &AtomicBool::new(false))?;
+                return Ok(false);
+            }
+            return Ok(true);
+        }
+        if blocked.contains(&"SYNC_IN_PROGRESS") {
+            return Ok(false);
+        }
+        {
+            let _lock = self.lock("state_purge.record_auto_sync")?;
+            let mut cur = self.syncs_saved(prepared)?;
+            if cur.automatic_sync_request.is_none() {
+                cur.automatic_sync_request = Some(req_id.clone());
+                self.syncs_save(prepared, &cur)?;
+            }
+        }
+        let request = ml_exp_core::cloud::exchange::Sync {
+            request_id: req_id,
+            confirmation: format!("SYNC {action}"),
+        };
+        self.synchronize(action, &request, now, &AtomicBool::new(false))?;
+        Ok(false)
     }
     /// Every Attempt whose Run copies checkpoints, looked at once. One Attempt's error
     /// never stops the others; its record says how far it got. `done` keeps the slots
@@ -657,10 +791,11 @@ impl Service {
                 continue;
             }
             match self.purge_automatically(&prepared, now) {
-                Ok(()) => {
-                    if self
-                        .purge_saved(&prepared)
-                        .is_ok_and(|s| s.is_some_and(|s| s.receipt.is_some()))
+                Ok(settled) => {
+                    if settled
+                        || self
+                            .purge_saved(&prepared)
+                            .is_ok_and(|s| s.is_some_and(|s| s.receipt.is_some()))
                     {
                         done.insert(name.to_owned());
                     }

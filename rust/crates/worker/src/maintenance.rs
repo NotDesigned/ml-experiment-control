@@ -81,87 +81,100 @@ pub fn run(plan: &Plan) -> io::Result<serde_json::Value> {
     // The file is created by managed::initialize, not client-authored metadata.
     let binding = plan.config.binding().map_err(|_| invalid())?;
     ml_exp_core::launch::verify_binding(&manifest, &binding).map_err(|_| invalid())?;
-    let store = if worker.entry_exists(OsStr::new(".storage-maintenance"))? {
-        worker.child(OsStr::new(".storage-maintenance"), false)?
-    } else {
-        worker.create_new_child(OsStr::new(".storage-maintenance"))?
-    };
     let id = plan.id().map_err(|_| invalid())?;
     let name = format!("{id}.json");
-    let mut saved = if store.entry_exists(OsStr::new(&name))? {
-        let saved: Saved =
-            serde_json::from_slice(&store.read_regular(OsStr::new(&name), 256 * 1024)?)?;
-        if saved.plan != *plan
-            || saved
-                .targets
-                .iter()
-                .map(|t| &t.path)
-                .ne(plan.paths().map_err(|_| invalid())?.iter())
-        {
-            return Err(invalid());
-        }
-        saved
+    let store = if worker.entry_exists(OsStr::new(".storage-maintenance"))? {
+        Some(worker.child(OsStr::new(".storage-maintenance"), false)?)
     } else {
-        let mut targets = Vec::new();
-        for path in plan.paths().map_err(|_| invalid())? {
-            let inode = match parent(&root, &path) {
-                Ok((parent, name)) => {
-                    if parent.entry_exists(OsStr::new(&name))? {
-                        let directory = parent.child(OsStr::new(&name), false)?;
-                        inspect(&directory, 0, &mut 0)?;
-                        Some(directory.identity()?.1)
-                    } else {
-                        None
-                    }
-                }
-                Err(e) if e.kind() == io::ErrorKind::NotFound => None,
-                Err(e) => return Err(e),
-            };
-            targets.push(Target {
-                path,
-                inode,
-                done: false,
-            });
-        }
-        let saved = Saved {
-            plan: plan.clone(),
-            targets,
-            complete: false,
-        };
-        store.publish_new(OsStr::new(&name), &serde_json::to_vec(&saved)?)?;
-        saved
+        None
     };
-    if saved.complete {
-        return plan.receipt().map_err(|_| invalid());
-    }
-    for index in 0..saved.targets.len() {
-        if saved.targets[index].done {
-            continue;
-        }
-        let target = &saved.targets[index];
-        if let Some(inode) = target.inode {
-            match parent(&root, &target.path) {
-                Ok((parent, leaf)) if parent.entry_exists(OsStr::new(&leaf))? => {
-                    let directory = parent.child(OsStr::new(&leaf), false)?;
-                    if directory.identity()?.1 != inode {
-                        return Err(invalid());
-                    }
-                    // The reviewed plan and worker lock already fence execution.
-                    // Delete through this retained exact inode, keeping its
-                    // original pathname attached; CPFS needs no directory rename.
-                    remove(&directory, 0, &mut 0)?;
-                    parent.remove_staged_empty_child(&directory)?;
-                }
-                Ok(_) => {}
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e),
+    if let Some(store) = &store {
+        if store.entry_exists(OsStr::new(&name))? {
+            let mut saved: Saved =
+                serde_json::from_slice(&store.read_regular(OsStr::new(&name), 256 * 1024)?)?;
+            if saved.plan != *plan
+                || saved
+                    .targets
+                    .iter()
+                    .map(|t| &t.path)
+                    .ne(plan.paths().map_err(|_| invalid())?.iter())
+            {
+                return Err(invalid());
             }
+            if saved.complete {
+                return plan.receipt().map_err(|_| invalid());
+            }
+            for index in 0..saved.targets.len() {
+                if saved.targets[index].done {
+                    continue;
+                }
+                let target = &saved.targets[index];
+                if let Some(inode) = target.inode {
+                    match parent(&root, &target.path) {
+                        Ok((parent, leaf)) if parent.entry_exists(OsStr::new(&leaf))? => {
+                            let directory = parent.child(OsStr::new(&leaf), false)?;
+                            if directory.identity()?.1 != inode {
+                                return Err(invalid());
+                            }
+                            remove(&directory, 0, &mut 0)?;
+                            parent.remove_staged_empty_child(&directory)?;
+                        }
+                        Ok(_) => {}
+                        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+                saved.targets[index].done = true;
+            }
+            saved.complete = true;
+            store.replace_regular(OsStr::new(&name), &serde_json::to_vec(&saved)?)?;
+            return plan.receipt().map_err(|_| invalid());
         }
-        saved.targets[index].done = true;
-        store.replace_regular(OsStr::new(&name), &serde_json::to_vec(&saved)?)?;
     }
-    saved.complete = true;
-    store.replace_regular(OsStr::new(&name), &serde_json::to_vec(&saved)?)?;
+    // Inspect all targets first so any permission or traversal error refuses cleanly
+    // before mutating, then unlink payloads BEFORE allocating `.storage-maintenance`
+    // blocks so a 0-byte full quota never deadlocks cleanup.
+    let mut pending = Vec::new();
+    for path in plan.paths().map_err(|_| invalid())? {
+        let entry = match parent(&root, &path) {
+            Ok((parent, leaf)) if parent.entry_exists(OsStr::new(&leaf))? => {
+                let directory = parent.child(OsStr::new(&leaf), false)?;
+                inspect(&directory, 0, &mut 0)?;
+                let inode = directory.identity()?.1;
+                Some((parent, directory, inode))
+            }
+            Ok(_) => None,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e),
+        };
+        pending.push((path, entry));
+    }
+    let mut targets = Vec::with_capacity(pending.len());
+    for (path, entry) in pending {
+        let inode = match entry {
+            Some((parent, directory, inode)) => {
+                remove(&directory, 0, &mut 0)?;
+                parent.remove_staged_empty_child(&directory)?;
+                Some(inode)
+            }
+            None => None,
+        };
+        targets.push(Target {
+            path,
+            inode,
+            done: true,
+        });
+    }
+    let store = match store {
+        Some(store) => store,
+        None => worker.create_new_child(OsStr::new(".storage-maintenance"))?,
+    };
+    let saved = Saved {
+        plan: plan.clone(),
+        targets,
+        complete: true,
+    };
+    store.publish_new(OsStr::new(&name), &serde_json::to_vec(&saved)?)?;
     plan.receipt().map_err(|_| invalid())
 }
 
@@ -393,5 +406,77 @@ mod tests {
         fs::write(&name, saved(inode)).unwrap();
         run(&plan).unwrap();
         assert!(!attempt.join("state").exists());
+    }
+
+    #[test]
+    fn payload_is_unlinked_before_any_ledger_write_so_zero_free_space_cannot_deadlock() {
+        const CHILD_ATTEMPT: &str = "ML_EXPD_MAINTENANCE_ZERO_SPACE_CHILD";
+        const TEST: &str = "maintenance::tests::payload_is_unlinked_before_any_ledger_write_so_zero_free_space_cannot_deadlock";
+        if let Some(attempt_dir) = std::env::var_os(CHILD_ATTEMPT) {
+            let attempt = std::path::PathBuf::from(attempt_dir);
+            let mut config = Config {
+                manifest_path: attempt.join("launch-manifest.json"),
+                endpoint: String::new(),
+                attempt_root: attempt.join("worker"),
+                workdir: "/tmp".into(),
+                maximum_timeout_seconds: 60,
+                base_environment: BTreeMap::new(),
+                local_binding: None,
+                output_directory: Some(attempt.join("outputs")),
+                runtime_environment: Vec::new(),
+                checkpoint_restore: None,
+                datasets: Vec::new(),
+                data_preparation: None,
+                code_source_id: None,
+            };
+            let bytes = fs::read(attempt.join("worker/launch-manifest.json")).unwrap();
+            config.local_binding = Some(launch::Binding {
+                identity: launch::Identity {
+                    project: "demo".into(),
+                    run_id: "train".into(),
+                    attempt_id: "attempt-001".into(),
+                },
+                sha256: ml_exp_core::slurm::helper::sha256_bytes(&bytes)[7..].into(),
+            });
+            // Under `ulimit -f 0`, regular-file writes fail with EFBIG while unlink/rmdir
+            // succeed: `state` must be deleted before the ledger write fails.
+            assert!(run(&plan(&config, Selection::State, 'f')).is_err());
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let attempt = temp.path().join("runs/demo/train/attempts/attempt-001");
+        let cfg = config(&attempt);
+        fs::create_dir_all(attempt.join("state/checkpoints/step-1")).unwrap();
+        fs::write(
+            attempt.join("state/checkpoints/step-1/huge.pt.tmp"),
+            vec![b'x'; 65536],
+        )
+        .unwrap();
+
+        let output = std::process::Command::new("/bin/sh")
+            .env_clear()
+            .env(CHILD_ATTEMPT, &attempt)
+            .args([
+                "-c",
+                "trap '' XFSZ; ulimit -f 0 || exit 90; exec \"$1\" \"$2\" --nocapture",
+                "zero-space-maintenance-test",
+            ])
+            .arg(std::env::current_exe().unwrap())
+            .arg(TEST)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "stdout={} stderr={}",
+            stdout,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        // The payload is already gone, freeing quota; the next pass records the receipt.
+        assert!(!attempt.join("state").exists());
+        assert_eq!(
+            run(&plan(&cfg, Selection::State, 'f')).unwrap()["paths"],
+            json!(["state"])
+        );
     }
 }

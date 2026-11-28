@@ -406,8 +406,11 @@ it never registered. Run `ml-exp run sync` first. Its job sends two packets buil
 storage as it is now, which registers the last ready marker, copies every registered
 checkpoint, and then tells the server so; the server keeps that only once the training
 job has ended. Then confirm with `'PURGE UNFINISHED my-study/training/attempt-001'` to
-accept that anything still unregistered is removed. The automatic purge never purges an
-unfinished worker's state. The endpoint is
+accept that anything still unregistered is removed. When
+`checkpoint_archive.unfinished_purge_delay_seconds` is set (default `172800`, 48 hours;
+`null` disables), a terminal Attempt whose worker never reported its end automatically
+runs one sync after that delay and purges `state/` once every registered checkpoint is on
+OSS. The endpoint is
 `POST /api/runs/P/R/attempts/A/purge-state` with `{"confirmation": ...}`.
 
 A registered checkpoint whose CPFS files were removed before its copy was made cannot
